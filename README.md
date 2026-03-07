@@ -48,6 +48,19 @@ bus.subscribe("device.#", lambda e: print(e.topic, e.data))
 bus.publish("device.heartbeat", {"id": "esp32-001"})
 ```
 
+## Part of Tritium
+
+[**Tritium**](https://github.com/Valpatel/tritium) is a distributed cybernetic
+operating system. It turns heterogeneous hardware — microcontrollers, single-board
+computers, robots, cameras, servers, radios — into a unified mesh that observes,
+thinks, and acts. Every device is a node. The network is the computer.
+
+tritium-lib is the **spine**: the shared contract that lets every node in the
+mesh speak the same language. It works alongside
+[tritium-sc](https://github.com/Valpatel/tritium-sc) (the brain — command,
+vision, models) and [tritium-edge](https://github.com/Valpatel/tritium-edge)
+(the nervous system — fleet management, OTA, heartbeat).
+
 ## License
 
 AGPL-3.0 — Created by Matthew Valancy / Copyright 2026 Valpatel Software LLC
