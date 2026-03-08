@@ -1,0 +1,284 @@
+# Created by Matthew Valancy
+# Copyright 2026 Valpatel Software LLC
+# Licensed under AGPL-3.0 — see LICENSE for details.
+"""Diagnostic and telemetry models for fleet health monitoring.
+
+These models support the remote diagnostics system. ESP32 nodes send
+health snapshots, diagnostic events, and anomaly reports to the fleet
+server. Both the ESP32 JSON serializer and the Python server use these
+shared types.
+"""
+
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class Severity(str, Enum):
+    """Log severity level for diagnostic events."""
+    TRACE = "trace"
+    DEBUG = "debug"
+    INFO = "info"
+    WARN = "warn"
+    ERROR = "error"
+    FATAL = "fatal"
+
+
+class AnomalyType(str, Enum):
+    """Categories of auto-detected anomalies."""
+    MEMORY_LEAK = "memory_leak"
+    BATTERY_DRAIN = "battery_drain"
+    WIFI_DEGRADATION = "wifi_degradation"
+    PERFORMANCE_DROP = "performance_drop"
+    I2C_FAILURE = "i2c_failure"
+    DISPLAY_FAILURE = "display_failure"
+    TEMPERATURE_HIGH = "temperature_high"
+    REBOOT_LOOP = "reboot_loop"
+
+
+class DiagEvent(BaseModel):
+    """A single diagnostic event from a node."""
+    timestamp: datetime
+    node_id: str
+    severity: Severity
+    subsystem: str  # display, power, imu, wifi, ble, memory, etc.
+    message: str
+    value: Optional[float] = None
+    expected_min: Optional[float] = None
+    expected_max: Optional[float] = None
+
+
+class HealthSnapshot(BaseModel):
+    """Periodic hardware health snapshot from a node."""
+    timestamp: datetime
+    node_id: str
+    # Memory
+    free_heap: int
+    min_free_heap: int
+    free_psram: int
+    largest_free_block: int
+    # Power
+    battery_voltage: Optional[float] = None
+    battery_percent: Optional[float] = None
+    power_source: Optional[str] = None
+    # Temperature
+    cpu_temp_c: Optional[float] = None
+    pmic_temp_c: Optional[float] = None
+    # Display
+    display_initialized: bool = True
+    display_fps: Optional[float] = None
+    # Connectivity
+    wifi_rssi: Optional[int] = None
+    wifi_connected: bool = False
+    wifi_disconnects: int = 0
+    # I2C
+    i2c_devices_found: int = 0
+    i2c_errors: int = 0
+    # Performance
+    loop_time_us: int = 0
+    max_loop_time_us: int = 0
+    uptime_s: int = 0
+    reboot_count: int = 0
+    reset_reason: Optional[str] = None
+
+
+class Anomaly(BaseModel):
+    """Auto-detected anomaly from health trend analysis."""
+    timestamp: datetime
+    node_id: str
+    anomaly_type: AnomalyType
+    subsystem: str
+    description: str
+    severity_score: float = Field(ge=0.0, le=1.0)
+
+
+class NodeDiagReport(BaseModel):
+    """Full diagnostic report from a single node."""
+    node_id: str
+    board_type: str
+    firmware_version: str
+    current_health: HealthSnapshot
+    recent_events: list[DiagEvent] = Field(default_factory=list)
+    active_anomalies: list[Anomaly] = Field(default_factory=list)
+
+
+class FleetHealthSummary(BaseModel):
+    """Aggregated fleet health across all nodes."""
+    total_nodes: int
+    healthy_nodes: int
+    warning_nodes: int
+    critical_nodes: int
+    nodes: list[NodeDiagReport] = Field(default_factory=list)
+
+    @property
+    def health_score(self) -> float:
+        if self.total_nodes == 0:
+            return 1.0
+        return self.healthy_nodes / self.total_nodes
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+# Thresholds for node health classification
+_CRITICAL_HEAP_BYTES = 20_000
+_WARNING_HEAP_BYTES = 50_000
+_CRITICAL_ANOMALY_SCORE = 0.8
+_WARNING_ANOMALY_SCORE = 0.4
+_WARNING_I2C_ERRORS = 5
+_CRITICAL_I2C_ERRORS = 20
+_REBOOT_LOOP_THRESHOLD = 3
+
+
+def classify_node_health(report: NodeDiagReport) -> str:
+    """Classify a node as ``"healthy"``, ``"warning"``, or ``"critical"``.
+
+    Classification rules (first match wins):
+
+    * **critical** — any anomaly with severity_score >= 0.8, free heap below
+      20 KB, display not initialized, reboot_count >= 3, or I2C errors >= 20.
+    * **warning** — any anomaly with severity_score >= 0.4, free heap below
+      50 KB, WiFi disconnected, or I2C errors >= 5.
+    * **healthy** — everything else.
+    """
+    health = report.current_health
+
+    # --- Critical checks ---
+    for anomaly in report.active_anomalies:
+        if anomaly.severity_score >= _CRITICAL_ANOMALY_SCORE:
+            return "critical"
+
+    if health.free_heap < _CRITICAL_HEAP_BYTES:
+        return "critical"
+
+    if not health.display_initialized:
+        return "critical"
+
+    if health.reboot_count >= _REBOOT_LOOP_THRESHOLD:
+        return "critical"
+
+    if health.i2c_errors >= _CRITICAL_I2C_ERRORS:
+        return "critical"
+
+    # --- Warning checks ---
+    for anomaly in report.active_anomalies:
+        if anomaly.severity_score >= _WARNING_ANOMALY_SCORE:
+            return "warning"
+
+    if health.free_heap < _WARNING_HEAP_BYTES:
+        return "warning"
+
+    if not health.wifi_connected:
+        return "warning"
+
+    if health.i2c_errors >= _WARNING_I2C_ERRORS:
+        return "warning"
+
+    return "healthy"
+
+
+def aggregate_fleet_health(
+    reports: list[NodeDiagReport],
+) -> FleetHealthSummary:
+    """Build a :class:`FleetHealthSummary` from individual node reports."""
+    healthy = warning = critical = 0
+    for report in reports:
+        status = classify_node_health(report)
+        if status == "healthy":
+            healthy += 1
+        elif status == "warning":
+            warning += 1
+        else:
+            critical += 1
+
+    return FleetHealthSummary(
+        total_nodes=len(reports),
+        healthy_nodes=healthy,
+        warning_nodes=warning,
+        critical_nodes=critical,
+        nodes=reports,
+    )
+
+
+def detect_fleet_anomalies(
+    reports: list[NodeDiagReport],
+) -> list[Anomaly]:
+    """Detect cross-node anomalies that indicate infrastructure issues.
+
+    Current detectors:
+
+    * **WiFi infrastructure** — if more than half the nodes have WiFi
+      disconnected or RSSI below -80, emit a single WIFI_DEGRADATION
+      anomaly attributed to infrastructure rather than individual nodes.
+    * **Widespread reboots** — if more than half the nodes have
+      ``reboot_count >= 2``, flag as a potential power or firmware issue.
+    * **I2C bus failures** — if more than half report I2C errors, flag as
+      a possible environmental/electrical issue.
+    """
+    if not reports:
+        return []
+
+    anomalies: list[Anomaly] = []
+    n = len(reports)
+    threshold = n / 2
+
+    # Use the latest timestamp from reports for anomaly timestamps
+    latest_ts = max(r.current_health.timestamp for r in reports)
+
+    # --- WiFi infrastructure degradation ---
+    wifi_bad = sum(
+        1 for r in reports
+        if not r.current_health.wifi_connected
+        or (r.current_health.wifi_rssi is not None and r.current_health.wifi_rssi < -80)
+    )
+    if wifi_bad > threshold:
+        anomalies.append(Anomaly(
+            timestamp=latest_ts,
+            node_id="fleet",
+            anomaly_type=AnomalyType.WIFI_DEGRADATION,
+            subsystem="wifi",
+            description=(
+                f"{wifi_bad}/{n} nodes have degraded WiFi — "
+                "likely infrastructure issue, not individual nodes"
+            ),
+            severity_score=min(1.0, wifi_bad / n),
+        ))
+
+    # --- Widespread reboots ---
+    reboot_nodes = sum(
+        1 for r in reports if r.current_health.reboot_count >= 2
+    )
+    if reboot_nodes > threshold:
+        anomalies.append(Anomaly(
+            timestamp=latest_ts,
+            node_id="fleet",
+            anomaly_type=AnomalyType.REBOOT_LOOP,
+            subsystem="power",
+            description=(
+                f"{reboot_nodes}/{n} nodes rebooting frequently — "
+                "possible power or firmware issue"
+            ),
+            severity_score=min(1.0, reboot_nodes / n),
+        ))
+
+    # --- I2C bus failures ---
+    i2c_bad = sum(
+        1 for r in reports if r.current_health.i2c_errors >= 5
+    )
+    if i2c_bad > threshold:
+        anomalies.append(Anomaly(
+            timestamp=latest_ts,
+            node_id="fleet",
+            anomaly_type=AnomalyType.I2C_FAILURE,
+            subsystem="i2c",
+            description=(
+                f"{i2c_bad}/{n} nodes reporting I2C errors — "
+                "possible environmental or electrical issue"
+            ),
+            severity_score=min(1.0, i2c_bad / n),
+        ))
+
+    return anomalies
