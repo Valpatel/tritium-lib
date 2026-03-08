@@ -172,6 +172,13 @@ class HealthSnapshot(BaseModel):
     i2c_devices_found: int = 0
     i2c_errors: int = 0
     i2c_slaves: list[I2cSlaveHealth] = Field(default_factory=list)
+    # Camera
+    camera_available: bool = False
+    camera_frames: int = 0
+    camera_fails: int = 0
+    camera_last_us: int = 0
+    camera_max_us: int = 0
+    camera_avg_fps: float = 0.0
     # Performance
     loop_time_us: int = 0
     max_loop_time_us: int = 0
