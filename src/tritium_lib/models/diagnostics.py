@@ -131,6 +131,17 @@ def summarize_diag_log(
     )
 
 
+class MeshPeer(BaseModel):
+    """A single mesh peer reported in a node's health snapshot.
+
+    The ESP32 firmware sends mesh_peers as a list of these objects in
+    the health JSON, representing the node's direct ESP-NOW neighbors.
+    """
+    mac: str  # MAC address of the peer (e.g., "AA:BB:CC:DD:EE:FF")
+    rssi: int = 0  # Signal strength to this peer
+    hops: int = 0  # Hop distance (0 = direct neighbor)
+
+
 class I2cSlaveHealth(BaseModel):
     """Per-slave I2C bus health metrics."""
     addr: str  # I2C address as hex string (e.g., "0x34")
@@ -196,6 +207,7 @@ class HealthSnapshot(BaseModel):
     ntp_last_sync_age_s: int = 0
     # Mesh networking
     mesh_peers: int = 0
+    mesh_peer_list: list[MeshPeer] = Field(default_factory=list)
     mesh_routes: int = 0
     mesh_tx: int = 0
     mesh_rx: int = 0
@@ -311,6 +323,11 @@ def classify_node_health(report: NodeDiagReport) -> str:
     for slave in health.i2c_slaves:
         if slave.total_transactions > 10 and slave.success_rate < 0.95:
             return "warning"
+
+    # Mesh isolation: node participates in mesh but has no peers
+    mesh_active = (health.mesh_tx + health.mesh_rx) > 0 or health.mesh_routes > 0
+    if mesh_active and health.mesh_peers == 0 and len(health.mesh_peer_list) == 0:
+        return "warning"
 
     return "healthy"
 

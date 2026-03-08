@@ -97,6 +97,7 @@ from .diagnostics import (
     DiagLogSummary,
     HeapTrend,
     I2cSlaveHealth,
+    MeshPeer,
     analyze_heap_trends,
     summarize_diag_log,
 )
@@ -105,6 +106,7 @@ from .topology import (
     FleetTopology,
     ConnectivityReport,
     build_topology,
+    build_fleet_topology_from_mesh,
     analyze_connectivity,
 )
 from .alert import (
@@ -210,6 +212,7 @@ __all__ = [
     "FleetTopology",
     "ConnectivityReport",
     "build_topology",
+    "build_fleet_topology_from_mesh",
     "analyze_connectivity",
     # Diagnostic log
     "CrashInfo",
@@ -218,6 +221,7 @@ __all__ = [
     "DiagLogSummary",
     "HeapTrend",
     "I2cSlaveHealth",
+    "MeshPeer",
     "analyze_heap_trends",
     "summarize_diag_log",
 ]

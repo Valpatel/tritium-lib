@@ -16,6 +16,7 @@ from tritium_lib.models.diagnostics import (
     HeapTrend,
     HealthSnapshot,
     I2cSlaveHealth,
+    MeshPeer,
     NodeDiagReport,
     Severity,
     aggregate_fleet_health,
@@ -774,3 +775,83 @@ class TestHealthSnapshotExtended:
         h = _make_health(ntp_synced=True, ntp_last_sync_age_s=120)
         assert h.ntp_synced is True
         assert h.ntp_last_sync_age_s == 120
+
+
+# ---------------------------------------------------------------------------
+# MeshPeer model tests
+# ---------------------------------------------------------------------------
+
+class TestMeshPeer:
+    def test_create(self):
+        p = MeshPeer(mac="AA:BB:CC:DD:EE:FF", rssi=-45, hops=0)
+        assert p.mac == "AA:BB:CC:DD:EE:FF"
+        assert p.rssi == -45
+        assert p.hops == 0
+
+    def test_defaults(self):
+        p = MeshPeer(mac="11:22:33:44:55:66")
+        assert p.rssi == 0
+        assert p.hops == 0
+
+    def test_json_roundtrip(self):
+        p = MeshPeer(mac="AA:BB:CC:DD:EE:FF", rssi=-60, hops=1)
+        p2 = MeshPeer.model_validate_json(p.model_dump_json())
+        assert p2.mac == "AA:BB:CC:DD:EE:FF"
+        assert p2.rssi == -60
+        assert p2.hops == 1
+
+    def test_mesh_peer_list_in_health(self):
+        peers = [
+            MeshPeer(mac="AA:BB:CC:DD:EE:FF", rssi=-45, hops=0),
+            MeshPeer(mac="11:22:33:44:55:66", rssi=-70, hops=1),
+        ]
+        h = _make_health(mesh_peer_list=peers, mesh_peers=2)
+        assert len(h.mesh_peer_list) == 2
+        assert h.mesh_peer_list[0].mac == "AA:BB:CC:DD:EE:FF"
+        assert h.mesh_peers == 2
+
+    def test_mesh_peer_list_default_empty(self):
+        h = _make_health()
+        assert h.mesh_peer_list == []
+
+    def test_health_with_mesh_peers_json_roundtrip(self):
+        peers = [MeshPeer(mac="AA:BB:CC:DD:EE:FF", rssi=-45, hops=0)]
+        h = _make_health(mesh_peer_list=peers, mesh_peers=1)
+        h2 = HealthSnapshot.model_validate_json(h.model_dump_json())
+        assert len(h2.mesh_peer_list) == 1
+        assert h2.mesh_peer_list[0].mac == "AA:BB:CC:DD:EE:FF"
+
+
+# ---------------------------------------------------------------------------
+# Mesh isolation in classify_node_health
+# ---------------------------------------------------------------------------
+
+class TestClassifyNodeHealthMeshIsolation:
+    def test_mesh_active_no_peers_is_warning(self):
+        """A node that has mesh traffic but zero peers is isolated."""
+        report = _make_report(mesh_tx=50, mesh_rx=10, mesh_peers=0)
+        assert classify_node_health(report) == "warning"
+
+    def test_mesh_active_with_peers_is_healthy(self):
+        """A node with mesh traffic and peers is fine."""
+        peers = [MeshPeer(mac="AA:BB:CC:DD:EE:FF", rssi=-45, hops=0)]
+        report = _make_report(mesh_tx=50, mesh_rx=10, mesh_peers=1,
+                              mesh_peer_list=peers)
+        assert classify_node_health(report) == "healthy"
+
+    def test_mesh_inactive_no_peers_still_healthy(self):
+        """A node not using mesh at all (no tx/rx/routes) stays healthy."""
+        report = _make_report(mesh_tx=0, mesh_rx=0, mesh_routes=0, mesh_peers=0)
+        assert classify_node_health(report) == "healthy"
+
+    def test_mesh_routes_but_no_peers_is_warning(self):
+        """A node with routes configured but no peers is isolated."""
+        report = _make_report(mesh_routes=3, mesh_peers=0)
+        assert classify_node_health(report) == "warning"
+
+    def test_mesh_peer_list_counts_as_peers(self):
+        """mesh_peers=0 but mesh_peer_list populated should not be warning."""
+        peers = [MeshPeer(mac="AA:BB:CC:DD:EE:FF", rssi=-45, hops=0)]
+        report = _make_report(mesh_tx=10, mesh_rx=5, mesh_peers=0,
+                              mesh_peer_list=peers)
+        assert classify_node_health(report) == "healthy"

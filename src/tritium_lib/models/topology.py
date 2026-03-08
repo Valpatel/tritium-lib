@@ -152,6 +152,57 @@ def build_topology(links: list[NetworkLink]) -> FleetTopology:
     return FleetTopology(nodes=sorted(node_set), links=links)
 
 
+def build_fleet_topology_from_mesh(
+    node_health_map: dict[str, list],
+) -> FleetTopology:
+    """Build a FleetTopology from mesh_peer_list data in health snapshots.
+
+    Args:
+        node_health_map: Mapping of node_id -> list of MeshPeer-like dicts
+            (or MeshPeer objects) with ``mac``, ``rssi``, and ``hops`` fields.
+            Each entry represents the mesh peers that *node_id* reported.
+
+    Returns:
+        A FleetTopology with ESP-NOW links derived from actual peer data.
+        Nodes are identified by their node_id (reporter) and peer MAC.
+    """
+    node_set: set[str] = set()
+    links: list[NetworkLink] = []
+    seen_edges: set[tuple[str, str]] = set()
+
+    for node_id, peers in node_health_map.items():
+        node_set.add(node_id)
+        for peer in peers:
+            # Accept both dicts and objects with .mac/.rssi/.hops
+            if isinstance(peer, dict):
+                mac = peer.get("mac", "")
+                rssi = peer.get("rssi", 0)
+            else:
+                mac = getattr(peer, "mac", "")
+                rssi = getattr(peer, "rssi", 0)
+
+            if not mac:
+                continue
+
+            node_set.add(mac)
+
+            # Deduplicate edges (A->B == B->A)
+            edge_key = tuple(sorted((node_id, mac)))
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+
+            links.append(NetworkLink(
+                source_id=node_id,
+                target_id=mac,
+                transport="espnow",
+                rssi=rssi,
+                active=True,
+            ))
+
+    return FleetTopology(nodes=sorted(node_set), links=links)
+
+
 def analyze_connectivity(topology: FleetTopology) -> ConnectivityReport:
     """Analyze a FleetTopology and produce a ConnectivityReport."""
     components = topology.connected_components()

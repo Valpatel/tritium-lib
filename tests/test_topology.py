@@ -7,8 +7,10 @@ from tritium_lib.models.topology import (
     FleetTopology,
     ConnectivityReport,
     build_topology,
+    build_fleet_topology_from_mesh,
     analyze_connectivity,
 )
+from tritium_lib.models.diagnostics import MeshPeer
 
 
 def _link(src: str, tgt: str, transport: str = "wifi", active: bool = True) -> NetworkLink:
@@ -370,3 +372,94 @@ class TestTopologyEdgeCases:
         assert report.connected_nodes == 0
         assert report.num_components == 1
         assert report.avg_links_per_node == 0.0
+
+
+# -- build_fleet_topology_from_mesh tests ------------------------------------
+
+class TestBuildFleetTopologyFromMesh:
+    def test_basic_mesh_peers(self):
+        """Build topology from two nodes that see each other."""
+        mesh_data = {
+            "node-A": [{"mac": "AA:BB:CC:DD:EE:01", "rssi": -45, "hops": 0}],
+            "node-B": [{"mac": "AA:BB:CC:DD:EE:02", "rssi": -50, "hops": 0}],
+        }
+        topo = build_fleet_topology_from_mesh(mesh_data)
+        assert "node-A" in topo.nodes
+        assert "node-B" in topo.nodes
+        assert "AA:BB:CC:DD:EE:01" in topo.nodes
+        assert "AA:BB:CC:DD:EE:02" in topo.nodes
+        assert len(topo.links) == 2
+        for link in topo.links:
+            assert link.transport == "espnow"
+            assert link.active is True
+
+    def test_mutual_peers_deduped(self):
+        """If node-A sees MAC-B and node-B (with MAC-B) sees node-A, edges deduplicated."""
+        mesh_data = {
+            "node-A": [{"mac": "node-B", "rssi": -45, "hops": 0}],
+            "node-B": [{"mac": "node-A", "rssi": -50, "hops": 0}],
+        }
+        topo = build_fleet_topology_from_mesh(mesh_data)
+        assert len(topo.links) == 1  # Deduplicated
+        assert topo.reachable("node-A", "node-B") is True
+
+    def test_empty_input(self):
+        topo = build_fleet_topology_from_mesh({})
+        assert topo.nodes == []
+        assert topo.links == []
+
+    def test_node_with_no_peers(self):
+        """A node reporting empty peer list still appears in topology."""
+        mesh_data = {"node-A": [], "node-B": []}
+        topo = build_fleet_topology_from_mesh(mesh_data)
+        assert len(topo.nodes) == 2
+        assert len(topo.links) == 0
+
+    def test_accepts_mesh_peer_objects(self):
+        """Accepts MeshPeer model objects, not just dicts."""
+        mesh_data = {
+            "node-A": [MeshPeer(mac="BB:CC:DD:EE:FF:00", rssi=-55, hops=0)],
+        }
+        topo = build_fleet_topology_from_mesh(mesh_data)
+        assert "BB:CC:DD:EE:FF:00" in topo.nodes
+        assert len(topo.links) == 1
+        assert topo.links[0].rssi == -55
+
+    def test_multi_hop_topology(self):
+        """Three-node chain: A->B->C."""
+        mesh_data = {
+            "node-A": [{"mac": "node-B", "rssi": -40, "hops": 0}],
+            "node-B": [
+                {"mac": "node-A", "rssi": -42, "hops": 0},
+                {"mac": "node-C", "rssi": -60, "hops": 0},
+            ],
+            "node-C": [{"mac": "node-B", "rssi": -62, "hops": 0}],
+        }
+        topo = build_fleet_topology_from_mesh(mesh_data)
+        assert len(topo.nodes) == 3
+        # A-B and B-C = 2 unique edges
+        assert len(topo.links) == 2
+        assert topo.reachable("node-A", "node-C") is True
+
+    def test_connectivity_report_from_mesh(self):
+        """End-to-end: build mesh topology then analyze connectivity."""
+        mesh_data = {
+            "node-A": [{"mac": "node-B", "rssi": -45, "hops": 0}],
+            "node-B": [{"mac": "node-A", "rssi": -47, "hops": 0}],
+            "node-C": [],  # isolated
+        }
+        topo = build_fleet_topology_from_mesh(mesh_data)
+        report = analyze_connectivity(topo)
+        assert report.total_nodes == 3
+        assert report.connected_nodes == 2
+        assert report.isolated_nodes == 1
+        assert "espnow" in report.transports_used
+
+    def test_skips_empty_mac(self):
+        """Peers with empty MAC are skipped."""
+        mesh_data = {
+            "node-A": [{"mac": "", "rssi": -45, "hops": 0}],
+        }
+        topo = build_fleet_topology_from_mesh(mesh_data)
+        assert len(topo.nodes) == 1  # Only node-A
+        assert len(topo.links) == 0
