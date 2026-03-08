@@ -143,6 +143,7 @@ from .timeseries import (
 from .trilateration import (
     AnchorPoint,
     PositionEstimate,
+    RSSIFilter,
     rssi_to_distance,
     trilaterate_2d,
     estimate_position,
@@ -275,6 +276,7 @@ __all__ = [
     # BLE trilateration
     "AnchorPoint",
     "PositionEstimate",
+    "RSSIFilter",
     "rssi_to_distance",
     "trilaterate_2d",
     "estimate_position",

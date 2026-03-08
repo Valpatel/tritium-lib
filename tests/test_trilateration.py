@@ -10,6 +10,7 @@ import pytest
 from tritium_lib.models.trilateration import (
     AnchorPoint,
     PositionEstimate,
+    RSSIFilter,
     estimate_position,
     rssi_to_distance,
     trilaterate_2d,
@@ -295,3 +296,79 @@ class TestModels:
             PositionEstimate(lat=0, lon=0, confidence=1.5, anchors_used=1)
         with pytest.raises(Exception):
             PositionEstimate(lat=0, lon=0, confidence=-0.1, anchors_used=1)
+
+
+# ---------------------------------------------------------------------------
+# RSSIFilter (Kalman)
+# ---------------------------------------------------------------------------
+
+class TestRSSIFilter:
+    """Kalman filter for RSSI smoothing."""
+
+    def test_initial_state(self):
+        f = RSSIFilter(initial_estimate=-70.0)
+        assert f.estimate == -70.0
+
+    def test_converges_to_stable_signal(self):
+        """Repeated identical readings should converge to that value."""
+        f = RSSIFilter(initial_estimate=-70.0)
+        for _ in range(20):
+            f.update(-55.0)
+        assert abs(f.estimate - (-55.0)) < 0.5
+
+    def test_smooths_noisy_signal(self):
+        """Noisy readings around -60 should produce a stable estimate near -60."""
+        import random
+        random.seed(42)
+        f = RSSIFilter(initial_estimate=-60.0, measurement_noise=5.0)
+        readings = [-60 + random.gauss(0, 5) for _ in range(50)]
+        for r in readings:
+            f.update(r)
+        # Should be close to -60 despite noise
+        assert abs(f.estimate - (-60.0)) < 3.0
+
+    def test_responds_to_movement(self):
+        """Filter should track a step change in signal."""
+        f = RSSIFilter(initial_estimate=-50.0, process_noise=1.0)
+        # Stabilize at -50
+        for _ in range(10):
+            f.update(-50.0)
+        # Step change to -70
+        for _ in range(20):
+            f.update(-70.0)
+        # Should have tracked most of the way to -70
+        assert f.estimate < -65.0
+
+    def test_reset(self):
+        f = RSSIFilter()
+        f.update(-80.0)
+        f.update(-80.0)
+        f.reset(-50.0)
+        assert f.estimate == -50.0
+
+    def test_single_update(self):
+        """Single update should move estimate toward measurement."""
+        f = RSSIFilter(initial_estimate=-70.0, measurement_noise=3.0)
+        result = f.update(-60.0)
+        # Should be between -70 and -60
+        assert -70.0 < result < -60.0
+
+    def test_improves_distance_estimate(self):
+        """Filtered RSSI should give more stable distance than raw."""
+        import random
+        random.seed(123)
+        f = RSSIFilter(initial_estimate=-65.0)
+
+        raw_distances = []
+        filtered_distances = []
+
+        for _ in range(30):
+            raw = -65 + random.gauss(0, 6)  # Noisy RSSI
+            raw_distances.append(rssi_to_distance(raw))
+            smoothed = f.update(raw)
+            filtered_distances.append(rssi_to_distance(smoothed))
+
+        # Variance of filtered distances should be lower
+        raw_var = sum((d - sum(raw_distances)/len(raw_distances))**2 for d in raw_distances) / len(raw_distances)
+        filt_var = sum((d - sum(filtered_distances)/len(filtered_distances))**2 for d in filtered_distances) / len(filtered_distances)
+        assert filt_var < raw_var

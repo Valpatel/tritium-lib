@@ -36,6 +36,70 @@ class PositionEstimate(BaseModel):
     method: str = "weighted_centroid"
 
 
+class RSSIFilter:
+    """1D Kalman filter for smoothing BLE RSSI readings over time.
+
+    BLE RSSI is notoriously noisy (5-15 dBm variance per reading).
+    A Kalman filter dramatically improves distance estimates by
+    smoothing the signal while responding to real movement.
+
+    Usage:
+        filt = RSSIFilter()
+        for rssi_reading in readings:
+            smoothed = filt.update(rssi_reading)
+            distance = rssi_to_distance(smoothed)
+    """
+
+    def __init__(
+        self,
+        process_noise: float = 0.5,
+        measurement_noise: float = 3.0,
+        initial_estimate: float = -70.0,
+    ):
+        """Initialize the RSSI Kalman filter.
+
+        Args:
+            process_noise: How much we expect the true RSSI to change between
+                readings (Q). Lower = smoother, slower response. Default 0.5 dBm.
+            measurement_noise: Expected variance of RSSI measurements (R).
+                Typical BLE noise is 3-10 dBm. Default 3.0.
+            initial_estimate: Starting RSSI estimate. Default -70 dBm.
+        """
+        self.q = process_noise
+        self.r = measurement_noise
+        self.x = initial_estimate  # State estimate
+        self.p = measurement_noise  # Error covariance
+
+    def update(self, measurement: float) -> float:
+        """Process a new RSSI measurement and return the filtered value.
+
+        Args:
+            measurement: Raw RSSI reading in dBm.
+
+        Returns:
+            Smoothed RSSI value in dBm.
+        """
+        # Predict
+        self.p += self.q
+
+        # Update (Kalman gain)
+        k = self.p / (self.p + self.r)
+        self.x += k * (measurement - self.x)
+        self.p *= (1.0 - k)
+
+        return self.x
+
+    @property
+    def estimate(self) -> float:
+        """Current filtered RSSI estimate."""
+        return self.x
+
+    def reset(self, initial: float = -70.0) -> None:
+        """Reset filter state."""
+        self.x = initial
+        self.p = self.r
+
+
 def rssi_to_distance(
     rssi: float,
     tx_power: float = -59.0,
