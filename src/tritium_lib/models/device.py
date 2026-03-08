@@ -77,6 +77,7 @@ class Device(BaseModel):
     """Device record — stored by fleet server, consumed by both systems."""
     device_id: str
     device_name: str = ""
+    mac: str = ""
     board: str = "unknown"
     family: str = "esp32"
     firmware_version: str = "unknown"
@@ -88,3 +89,13 @@ class Device(BaseModel):
     registered_at: Optional[datetime] = None
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+
+
+class DeviceGroup(BaseModel):
+    """A named group of devices with shared configuration."""
+    id: str
+    name: str
+    devices: list[str] = Field(default_factory=list)
+    config: dict = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None

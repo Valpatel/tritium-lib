@@ -6,7 +6,9 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from enum import Enum
+
+from pydantic import BaseModel, Field
 
 
 class FirmwareMeta(BaseModel):
@@ -22,3 +24,24 @@ class FirmwareMeta(BaseModel):
     build_timestamp: Optional[datetime] = None
     uploaded_at: Optional[datetime] = None
     notes: str = ""
+
+
+class OTAStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class OTAJob(BaseModel):
+    """An OTA firmware update job targeting one or more devices."""
+    id: str
+    firmware_url: str
+    target_devices: list[str] = Field(default_factory=list)
+    status: OTAStatus = OTAStatus.PENDING
+    created_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    firmware_version: str = ""
+    firmware_sha256: str = ""
+    error: Optional[str] = None

@@ -7,18 +7,21 @@ These models are the contract between tritium-sc and tritium-edge.
 Any device that speaks the Tritium protocol uses these types.
 """
 
-from .device import Device, DeviceHeartbeat, DeviceCapabilities
+from .device import Device, DeviceGroup, DeviceHeartbeat, DeviceCapabilities
 from .command import Command, CommandType, CommandStatus
-from .firmware import FirmwareMeta
+from .firmware import FirmwareMeta, OTAJob, OTAStatus
 from .sensor import SensorReading
 
 __all__ = [
     "Device",
+    "DeviceGroup",
     "DeviceHeartbeat",
     "DeviceCapabilities",
     "Command",
     "CommandType",
     "CommandStatus",
     "FirmwareMeta",
+    "OTAJob",
+    "OTAStatus",
     "SensorReading",
 ]

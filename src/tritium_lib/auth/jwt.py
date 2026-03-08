@@ -7,6 +7,9 @@ Both systems use the same token format so that a token issued by one
 can be validated by the other (when using the same secret key).
 """
 
+import hashlib
+import hmac
+import secrets
 import time
 import uuid
 from enum import Enum
@@ -61,3 +64,35 @@ def decode_token(secret: str, token: str) -> Optional[dict]:
         return jwt.decode(token, secret, algorithms=[ALGORITHM])
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
+
+
+# --- API Key utilities ---
+
+_API_KEY_PREFIX = "tritium_"
+
+
+def generate_api_key() -> str:
+    """Generate a new API key with the tritium_ prefix.
+
+    Returns a 48-character key: 'tritium_' + 40 hex chars.
+    """
+    return f"{_API_KEY_PREFIX}{secrets.token_hex(20)}"
+
+
+def hash_api_key(api_key: str) -> str:
+    """Hash an API key for storage (SHA-256).
+
+    Store this hash in your database, not the raw key.
+    """
+    return hashlib.sha256(api_key.encode()).hexdigest()
+
+
+def validate_api_key(api_key: str, stored_hash: str) -> bool:
+    """Validate an API key against its stored hash.
+
+    Uses constant-time comparison to prevent timing attacks.
+    """
+    if not api_key or not stored_hash:
+        return False
+    candidate = hashlib.sha256(api_key.encode()).hexdigest()
+    return hmac.compare_digest(candidate, stored_hash)

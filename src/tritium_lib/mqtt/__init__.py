@@ -6,10 +6,41 @@
 All Tritium services use the same topic hierarchy:
   tritium/{site}/{domain}/{device_id}/{data_type}
 
+Device-centric topics (flat namespace):
+  tritium/devices/{device_id}/{message_type}
+
 This module defines the topic patterns and JSON codecs so that
 tritium-sc and tritium-edge speak the same language.
 """
 
-from .topics import TritiumTopics
+from .topics import (
+    TritiumTopics,
+    ParsedTopic,
+    parse_topic,
+    device_heartbeat,
+    device_sensors,
+    device_commands,
+    device_ota_status,
+    fleet_broadcast,
+    TOPIC_HEARTBEAT,
+    TOPIC_SENSORS,
+    TOPIC_COMMANDS,
+    TOPIC_OTA_STATUS,
+    TOPIC_FLEET_BROADCAST,
+)
 
-__all__ = ["TritiumTopics"]
+__all__ = [
+    "TritiumTopics",
+    "ParsedTopic",
+    "parse_topic",
+    "device_heartbeat",
+    "device_sensors",
+    "device_commands",
+    "device_ota_status",
+    "fleet_broadcast",
+    "TOPIC_HEARTBEAT",
+    "TOPIC_SENSORS",
+    "TOPIC_COMMANDS",
+    "TOPIC_OTA_STATUS",
+    "TOPIC_FLEET_BROADCAST",
+]
