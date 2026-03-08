@@ -11,6 +11,21 @@ from .device import Device, DeviceGroup, DeviceHeartbeat, DeviceCapabilities
 from .command import Command, CommandType, CommandStatus
 from .firmware import FirmwareMeta, OTAJob, OTAStatus
 from .sensor import SensorReading
+from .ble import (
+    BleDevice,
+    BleSighting,
+    BlePresence,
+    BlePresenceMap,
+    triangulate_position,
+    set_node_positions,
+)
+from .fleet import (
+    FleetNode,
+    FleetStatus,
+    NodeEvent,
+    NodeStatus,
+    fleet_health_score,
+)
 
 __all__ = [
     "Device",
@@ -24,4 +39,15 @@ __all__ = [
     "OTAJob",
     "OTAStatus",
     "SensorReading",
+    "BleDevice",
+    "BleSighting",
+    "BlePresence",
+    "BlePresenceMap",
+    "triangulate_position",
+    "set_node_positions",
+    "FleetNode",
+    "FleetStatus",
+    "NodeEvent",
+    "NodeStatus",
+    "fleet_health_score",
 ]
