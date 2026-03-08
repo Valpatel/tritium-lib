@@ -194,6 +194,13 @@ class HealthSnapshot(BaseModel):
     # NTP
     ntp_synced: bool = False
     ntp_last_sync_age_s: int = 0
+    # Mesh networking
+    mesh_peers: int = 0
+    mesh_routes: int = 0
+    mesh_tx: int = 0
+    mesh_rx: int = 0
+    mesh_tx_fail: int = 0
+    mesh_relayed: int = 0
     # Performance
     loop_time_us: int = 0
     max_loop_time_us: int = 0

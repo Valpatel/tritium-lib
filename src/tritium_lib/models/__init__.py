@@ -100,6 +100,13 @@ from .diagnostics import (
     analyze_heap_trends,
     summarize_diag_log,
 )
+from .topology import (
+    NetworkLink,
+    FleetTopology,
+    ConnectivityReport,
+    build_topology,
+    analyze_connectivity,
+)
 from .alert import (
     Alert,
     AlertDelivery,
@@ -198,6 +205,12 @@ __all__ = [
     "WebhookConfig",
     "classify_alert_severity",
     "summarize_alerts",
+    # Fleet topology
+    "NetworkLink",
+    "FleetTopology",
+    "ConnectivityReport",
+    "build_topology",
+    "analyze_connectivity",
     # Diagnostic log
     "CrashInfo",
     "DiagLogEntry",
