@@ -116,6 +116,15 @@ from .correlation import (
     classify_correlation_severity,
     summarize_correlations,
 )
+from .transport import (
+    TransportType,
+    TransportState,
+    TransportMetrics,
+    TransportPreference,
+    NodeTransportStatus,
+    select_best_transport,
+    transport_summary,
+)
 from .alert import (
     Alert,
     AlertDelivery,
@@ -227,6 +236,14 @@ __all__ = [
     "CorrelationSummary",
     "classify_correlation_severity",
     "summarize_correlations",
+    # Transport negotiation
+    "TransportType",
+    "TransportState",
+    "TransportMetrics",
+    "TransportPreference",
+    "NodeTransportStatus",
+    "select_best_transport",
+    "transport_summary",
     # Diagnostic log
     "CrashInfo",
     "DiagLogEntry",
