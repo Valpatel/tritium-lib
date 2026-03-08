@@ -14,6 +14,7 @@ from tritium_lib.models.diagnostics import (
     DiagLogSummary,
     FleetHealthSummary,
     HealthSnapshot,
+    I2cSlaveHealth,
     NodeDiagReport,
     Severity,
     aggregate_fleet_health,
@@ -582,3 +583,95 @@ class TestSummarizeDiagLog:
         ]
         summary = summarize_diag_log(entries)
         assert len(summary.most_frequent_codes) <= 10
+
+
+# ---------------------------------------------------------------------------
+# I2cSlaveHealth model tests
+# ---------------------------------------------------------------------------
+
+class TestI2cSlaveHealth:
+    def test_defaults(self):
+        s = I2cSlaveHealth(addr="0x34")
+        assert s.nack_count == 0
+        assert s.timeout_count == 0
+        assert s.success_count == 0
+        assert s.last_latency_us == 0
+
+    def test_total_transactions(self):
+        s = I2cSlaveHealth(addr="0x6B", success_count=90, nack_count=5, timeout_count=5)
+        assert s.total_transactions == 100
+
+    def test_success_rate(self):
+        s = I2cSlaveHealth(addr="0x6B", success_count=90, nack_count=5, timeout_count=5)
+        assert s.success_rate == 0.9
+
+    def test_success_rate_no_transactions(self):
+        s = I2cSlaveHealth(addr="0x34")
+        assert s.success_rate == 1.0
+
+    def test_error_count(self):
+        s = I2cSlaveHealth(addr="0x18", nack_count=3, timeout_count=7)
+        assert s.error_count == 10
+
+    def test_perfect_health(self):
+        s = I2cSlaveHealth(addr="0x51", success_count=1000)
+        assert s.success_rate == 1.0
+        assert s.error_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-slave I2C in classify_node_health
+# ---------------------------------------------------------------------------
+
+class TestClassifyNodeHealthI2cSlaves:
+    def test_healthy_with_good_slaves(self):
+        health = _make_health(i2c_slaves=[
+            I2cSlaveHealth(addr="0x34", success_count=100, nack_count=1),
+            I2cSlaveHealth(addr="0x6B", success_count=100, nack_count=2),
+        ])
+        report = NodeDiagReport(
+            node_id="esp32-001", board_type="touch-lcd-35bc",
+            firmware_version="1.0.0", current_health=health,
+        )
+        assert classify_node_health(report) == "healthy"
+
+    def test_critical_slave_below_90_percent(self):
+        health = _make_health(i2c_slaves=[
+            I2cSlaveHealth(addr="0x34", success_count=80, nack_count=15, timeout_count=5),
+        ])
+        report = NodeDiagReport(
+            node_id="esp32-001", board_type="touch-lcd-35bc",
+            firmware_version="1.0.0", current_health=health,
+        )
+        assert classify_node_health(report) == "critical"
+
+    def test_warning_slave_below_95_percent(self):
+        health = _make_health(i2c_slaves=[
+            I2cSlaveHealth(addr="0x6B", success_count=93, nack_count=4, timeout_count=3),
+        ])
+        report = NodeDiagReport(
+            node_id="esp32-001", board_type="touch-lcd-35bc",
+            firmware_version="1.0.0", current_health=health,
+        )
+        assert classify_node_health(report) == "warning"
+
+    def test_slave_with_few_transactions_ignored(self):
+        """Slaves with <= 10 transactions don't trigger thresholds."""
+        health = _make_health(i2c_slaves=[
+            I2cSlaveHealth(addr="0x34", success_count=1, nack_count=5, timeout_count=4),
+        ])
+        report = NodeDiagReport(
+            node_id="esp32-001", board_type="touch-lcd-35bc",
+            firmware_version="1.0.0", current_health=health,
+        )
+        assert classify_node_health(report) == "healthy"
+
+    def test_display_timing_fields(self):
+        health = _make_health(display_frame_us=5000, display_max_frame_us=12000)
+        assert health.display_frame_us == 5000
+        assert health.display_max_frame_us == 12000
+
+    def test_display_timing_defaults(self):
+        health = _make_health()
+        assert health.display_frame_us is None
+        assert health.display_max_frame_us is None

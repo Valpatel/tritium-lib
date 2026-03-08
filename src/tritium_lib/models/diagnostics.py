@@ -121,6 +121,28 @@ def summarize_diag_log(
     )
 
 
+class I2cSlaveHealth(BaseModel):
+    """Per-slave I2C bus health metrics."""
+    addr: str  # I2C address as hex string (e.g., "0x34")
+    nack_count: int = 0
+    timeout_count: int = 0
+    success_count: int = 0
+    last_latency_us: int = 0
+
+    @property
+    def total_transactions(self) -> int:
+        return self.success_count + self.nack_count + self.timeout_count
+
+    @property
+    def success_rate(self) -> float:
+        total = self.total_transactions
+        return self.success_count / total if total > 0 else 1.0
+
+    @property
+    def error_count(self) -> int:
+        return self.nack_count + self.timeout_count
+
+
 class HealthSnapshot(BaseModel):
     """Periodic hardware health snapshot from a node."""
     timestamp: datetime
@@ -140,6 +162,8 @@ class HealthSnapshot(BaseModel):
     # Display
     display_initialized: bool = True
     display_fps: Optional[float] = None
+    display_frame_us: Optional[int] = None
+    display_max_frame_us: Optional[int] = None
     # Connectivity
     wifi_rssi: Optional[int] = None
     wifi_connected: bool = False
@@ -147,6 +171,7 @@ class HealthSnapshot(BaseModel):
     # I2C
     i2c_devices_found: int = 0
     i2c_errors: int = 0
+    i2c_slaves: list[I2cSlaveHealth] = Field(default_factory=list)
     # Performance
     loop_time_us: int = 0
     max_loop_time_us: int = 0
@@ -234,6 +259,11 @@ def classify_node_health(report: NodeDiagReport) -> str:
     if health.i2c_errors >= _CRITICAL_I2C_ERRORS:
         return "critical"
 
+    # Per-slave I2C health: any slave below 90% success rate is critical
+    for slave in health.i2c_slaves:
+        if slave.total_transactions > 10 and slave.success_rate < 0.90:
+            return "critical"
+
     # --- Warning checks ---
     for anomaly in report.active_anomalies:
         if anomaly.severity_score >= _WARNING_ANOMALY_SCORE:
@@ -247,6 +277,11 @@ def classify_node_health(report: NodeDiagReport) -> str:
 
     if health.i2c_errors >= _WARNING_I2C_ERRORS:
         return "warning"
+
+    # Per-slave I2C health: any slave below 95% success rate is warning
+    for slave in health.i2c_slaves:
+        if slave.total_transactions > 10 and slave.success_rate < 0.95:
+            return "warning"
 
     return "healthy"
 

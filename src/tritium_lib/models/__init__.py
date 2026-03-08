@@ -94,6 +94,7 @@ from .diagnostics import (
     DiagLogEntry,
     DiagLogBatch,
     DiagLogSummary,
+    I2cSlaveHealth,
     summarize_diag_log,
 )
 from .alert import (
