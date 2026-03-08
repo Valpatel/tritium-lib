@@ -50,6 +50,77 @@ class DiagEvent(BaseModel):
     expected_max: Optional[float] = None
 
 
+class DiagLogEntry(BaseModel):
+    """A single persistent diagnostic log entry from firmware ring buffer.
+
+    This is the on-wire format used when the ESP32 uploads its diagnostic
+    event log to the fleet server.  Uses epoch timestamps (int) since the
+    firmware stores them as uint32_t.
+    """
+    timestamp: int  # Unix epoch seconds
+    severity: Severity
+    subsystem: str  # i2c, wifi, power, display, memory, spi, etc.
+    code: int = 0  # Subsystem-specific event code
+    message: str = ""  # Human-readable description (max ~80 chars on device)
+    value: float = 0.0  # Optional numeric value (e.g., heap bytes, voltage)
+
+
+class DiagLogBatch(BaseModel):
+    """Batch upload of diagnostic log events from a device."""
+    device_id: str
+    boot_count: int = 0
+    events: list[DiagLogEntry] = Field(default_factory=list)
+
+
+class DiagLogSummary(BaseModel):
+    """Fleet-wide diagnostic log summary statistics."""
+    total_events: int = 0
+    total_devices: int = 0
+    events_by_severity: dict[str, int] = Field(default_factory=dict)
+    events_by_subsystem: dict[str, int] = Field(default_factory=dict)
+    devices_with_criticals: list[str] = Field(default_factory=list)
+    most_frequent_codes: list[dict] = Field(default_factory=list)
+
+
+def summarize_diag_log(
+    entries: list[DiagLogEntry],
+    device_ids: list[str] | None = None,
+) -> DiagLogSummary:
+    """Build a summary from a collection of diagnostic log entries.
+
+    Args:
+        entries: All log entries to summarize.
+        device_ids: Optional list of device IDs that contributed entries.
+
+    Returns:
+        Aggregated summary statistics.
+    """
+    by_severity: dict[str, int] = {}
+    by_subsystem: dict[str, int] = {}
+    code_counts: dict[str, int] = {}
+
+    for e in entries:
+        sev = e.severity.value if isinstance(e.severity, Severity) else str(e.severity)
+        by_severity[sev] = by_severity.get(sev, 0) + 1
+        by_subsystem[e.subsystem] = by_subsystem.get(e.subsystem, 0) + 1
+        key = f"{e.subsystem}:{e.code}"
+        code_counts[key] = code_counts.get(key, 0) + 1
+
+    # Top 10 most frequent event codes
+    top_codes = sorted(code_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    most_frequent = [
+        {"subsystem_code": k, "count": v} for k, v in top_codes
+    ]
+
+    return DiagLogSummary(
+        total_events=len(entries),
+        total_devices=len(set(device_ids)) if device_ids else 0,
+        events_by_severity=by_severity,
+        events_by_subsystem=by_subsystem,
+        most_frequent_codes=most_frequent,
+    )
+
+
 class HealthSnapshot(BaseModel):
     """Periodic hardware health snapshot from a node."""
     timestamp: datetime

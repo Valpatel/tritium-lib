@@ -90,6 +90,12 @@ from .provision import (
     compute_provision_status,
     validate_provision_data,
 )
+from .diagnostics import (
+    DiagLogEntry,
+    DiagLogBatch,
+    DiagLogSummary,
+    summarize_diag_log,
+)
 from .alert import (
     Alert,
     AlertDelivery,
@@ -188,4 +194,9 @@ __all__ = [
     "WebhookConfig",
     "classify_alert_severity",
     "summarize_alerts",
+    # Diagnostic log
+    "DiagLogEntry",
+    "DiagLogBatch",
+    "DiagLogSummary",
+    "summarize_diag_log",
 ]

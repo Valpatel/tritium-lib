@@ -9,6 +9,9 @@ from tritium_lib.models.diagnostics import (
     Anomaly,
     AnomalyType,
     DiagEvent,
+    DiagLogBatch,
+    DiagLogEntry,
+    DiagLogSummary,
     FleetHealthSummary,
     HealthSnapshot,
     NodeDiagReport,
@@ -16,6 +19,7 @@ from tritium_lib.models.diagnostics import (
     aggregate_fleet_health,
     classify_node_health,
     detect_fleet_anomalies,
+    summarize_diag_log,
 )
 
 
@@ -465,3 +469,116 @@ class TestDetectFleetAnomalies:
         anomalies = detect_fleet_anomalies(reports)
         for a in anomalies:
             assert 0.0 <= a.severity_score <= 1.0
+
+
+# ── DiagLogEntry ──────────────────────────────────────────────────────────
+
+
+class TestDiagLogEntry:
+    """DiagLogEntry — persistent diagnostic log entry model."""
+
+    def test_create_minimal(self):
+        entry = DiagLogEntry(
+            timestamp=1709836800,
+            severity=Severity.INFO,
+            subsystem="wifi",
+        )
+        assert entry.timestamp == 1709836800
+        assert entry.severity == Severity.INFO
+        assert entry.subsystem == "wifi"
+        assert entry.code == 0
+        assert entry.message == ""
+        assert entry.value == 0.0
+
+    def test_create_full(self):
+        entry = DiagLogEntry(
+            timestamp=1709836800,
+            severity=Severity.ERROR,
+            subsystem="i2c",
+            code=3,
+            message="Bus timeout on addr 0x34",
+            value=52.0,
+        )
+        assert entry.code == 3
+        assert entry.message == "Bus timeout on addr 0x34"
+        assert entry.value == 52.0
+
+    def test_severity_values(self):
+        for sev in Severity:
+            entry = DiagLogEntry(
+                timestamp=0, severity=sev, subsystem="test"
+            )
+            assert entry.severity == sev
+
+
+class TestDiagLogBatch:
+    """DiagLogBatch — batch upload model."""
+
+    def test_empty_batch(self):
+        batch = DiagLogBatch(device_id="node-1")
+        assert batch.device_id == "node-1"
+        assert batch.boot_count == 0
+        assert batch.events == []
+
+    def test_batch_with_events(self):
+        events = [
+            DiagLogEntry(timestamp=100, severity=Severity.WARN, subsystem="wifi", message="RSSI low"),
+            DiagLogEntry(timestamp=200, severity=Severity.ERROR, subsystem="i2c", code=1, message="Timeout"),
+        ]
+        batch = DiagLogBatch(device_id="node-2", boot_count=5, events=events)
+        assert len(batch.events) == 2
+        assert batch.boot_count == 5
+
+
+class TestSummarizeDiagLog:
+    """summarize_diag_log — aggregation function."""
+
+    def test_empty(self):
+        summary = summarize_diag_log([])
+        assert summary.total_events == 0
+        assert summary.total_devices == 0
+        assert summary.events_by_severity == {}
+        assert summary.events_by_subsystem == {}
+
+    def test_single_device(self):
+        entries = [
+            DiagLogEntry(timestamp=100, severity=Severity.WARN, subsystem="wifi"),
+            DiagLogEntry(timestamp=200, severity=Severity.ERROR, subsystem="i2c", code=1),
+            DiagLogEntry(timestamp=300, severity=Severity.WARN, subsystem="wifi"),
+        ]
+        summary = summarize_diag_log(entries, device_ids=["node-1", "node-1", "node-1"])
+        assert summary.total_events == 3
+        assert summary.total_devices == 1
+        assert summary.events_by_severity["warn"] == 2
+        assert summary.events_by_severity["error"] == 1
+        assert summary.events_by_subsystem["wifi"] == 2
+        assert summary.events_by_subsystem["i2c"] == 1
+
+    def test_multiple_devices(self):
+        entries = [
+            DiagLogEntry(timestamp=100, severity=Severity.INFO, subsystem="memory"),
+            DiagLogEntry(timestamp=200, severity=Severity.ERROR, subsystem="power"),
+        ]
+        summary = summarize_diag_log(entries, device_ids=["node-1", "node-2"])
+        assert summary.total_devices == 2
+        assert summary.total_events == 2
+
+    def test_most_frequent_codes(self):
+        entries = [
+            DiagLogEntry(timestamp=i, severity=Severity.WARN, subsystem="i2c", code=1)
+            for i in range(10)
+        ] + [
+            DiagLogEntry(timestamp=100, severity=Severity.ERROR, subsystem="wifi", code=2)
+        ]
+        summary = summarize_diag_log(entries)
+        assert len(summary.most_frequent_codes) >= 1
+        assert summary.most_frequent_codes[0]["count"] == 10
+        assert summary.most_frequent_codes[0]["subsystem_code"] == "i2c:1"
+
+    def test_top_codes_limited_to_10(self):
+        entries = [
+            DiagLogEntry(timestamp=i, severity=Severity.INFO, subsystem=f"sub{i}", code=i)
+            for i in range(20)
+        ]
+        summary = summarize_diag_log(entries)
+        assert len(summary.most_frequent_codes) <= 10
