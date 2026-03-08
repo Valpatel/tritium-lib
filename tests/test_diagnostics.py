@@ -13,11 +13,13 @@ from tritium_lib.models.diagnostics import (
     DiagLogEntry,
     DiagLogSummary,
     FleetHealthSummary,
+    HeapTrend,
     HealthSnapshot,
     I2cSlaveHealth,
     NodeDiagReport,
     Severity,
     aggregate_fleet_health,
+    analyze_heap_trends,
     classify_node_health,
     detect_fleet_anomalies,
     summarize_diag_log,
@@ -675,3 +677,100 @@ class TestClassifyNodeHealthI2cSlaves:
         health = _make_health()
         assert health.display_frame_us is None
         assert health.display_max_frame_us is None
+
+
+# ---------------------------------------------------------------------------
+# Heap trend analysis tests
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeHeapTrends:
+    def test_empty_input(self):
+        assert analyze_heap_trends([]) == []
+
+    def test_single_sample_ignored(self):
+        """Need at least 2 samples per device."""
+        result = analyze_heap_trends([
+            {"device_id": "n1", "free_heap": 100000, "uptime_s": 0},
+        ])
+        assert result == []
+
+    def test_stable_heap(self):
+        snapshots = [
+            {"device_id": "n1", "free_heap": 100000, "uptime_s": 0},
+            {"device_id": "n1", "free_heap": 99000, "uptime_s": 3600},
+        ]
+        result = analyze_heap_trends(snapshots)
+        assert len(result) == 1
+        assert result[0].device_id == "n1"
+        assert result[0].delta == -1000
+        assert not result[0].leak_suspected
+
+    def test_leak_detected(self):
+        snapshots = [
+            {"device_id": "n1", "free_heap": 200000, "uptime_s": 0},
+            {"device_id": "n1", "free_heap": 180000, "uptime_s": 3600},
+        ]
+        result = analyze_heap_trends(snapshots)
+        assert len(result) == 1
+        assert result[0].delta == -20000
+        assert result[0].delta_per_hour == -20000.0
+        assert result[0].leak_suspected  # -20000/h < -5000/h threshold
+
+    def test_multiple_devices(self):
+        snapshots = [
+            {"device_id": "n1", "free_heap": 100000, "uptime_s": 0},
+            {"device_id": "n2", "free_heap": 200000, "uptime_s": 0},
+            {"device_id": "n1", "free_heap": 95000, "uptime_s": 7200},
+            {"device_id": "n2", "free_heap": 150000, "uptime_s": 7200},
+        ]
+        result = analyze_heap_trends(snapshots)
+        assert len(result) == 2
+        by_id = {r.device_id: r for r in result}
+        assert not by_id["n1"].leak_suspected  # -2500/h
+        assert by_id["n2"].leak_suspected      # -25000/h
+
+    def test_custom_threshold(self):
+        snapshots = [
+            {"device_id": "n1", "free_heap": 100000, "uptime_s": 0},
+            {"device_id": "n1", "free_heap": 98000, "uptime_s": 3600},
+        ]
+        # With default threshold (-5000/h) this is fine
+        result = analyze_heap_trends(snapshots)
+        assert not result[0].leak_suspected
+        # With stricter threshold (-1000/h) this is a leak
+        result = analyze_heap_trends(snapshots, leak_threshold_per_hour=-1000)
+        assert result[0].leak_suspected
+
+    def test_min_heap_tracked(self):
+        snapshots = [
+            {"device_id": "n1", "free_heap": 100000, "uptime_s": 0},
+            {"device_id": "n1", "free_heap": 50000, "uptime_s": 1800},
+            {"device_id": "n1", "free_heap": 90000, "uptime_s": 3600},
+        ]
+        result = analyze_heap_trends(snapshots)
+        assert result[0].min_heap == 50000
+        assert result[0].samples == 3
+
+
+# ---------------------------------------------------------------------------
+# Touch / NTP field tests
+# ---------------------------------------------------------------------------
+
+class TestHealthSnapshotExtended:
+    def test_touch_default(self):
+        h = _make_health()
+        assert h.touch_available is False
+
+    def test_touch_available(self):
+        h = _make_health(touch_available=True)
+        assert h.touch_available is True
+
+    def test_ntp_default(self):
+        h = _make_health()
+        assert h.ntp_synced is False
+        assert h.ntp_last_sync_age_s == 0
+
+    def test_ntp_synced(self):
+        h = _make_health(ntp_synced=True, ntp_last_sync_age_s=120)
+        assert h.ntp_synced is True
+        assert h.ntp_last_sync_age_s == 120

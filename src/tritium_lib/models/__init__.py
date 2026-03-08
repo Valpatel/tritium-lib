@@ -95,7 +95,9 @@ from .diagnostics import (
     DiagLogEntry,
     DiagLogBatch,
     DiagLogSummary,
+    HeapTrend,
     I2cSlaveHealth,
+    analyze_heap_trends,
     summarize_diag_log,
 )
 from .alert import (
@@ -201,6 +203,8 @@ __all__ = [
     "DiagLogEntry",
     "DiagLogBatch",
     "DiagLogSummary",
+    "HeapTrend",
     "I2cSlaveHealth",
+    "analyze_heap_trends",
     "summarize_diag_log",
 ]

@@ -189,6 +189,11 @@ class HealthSnapshot(BaseModel):
     camera_last_us: int = 0
     camera_max_us: int = 0
     camera_avg_fps: float = 0.0
+    # Touch
+    touch_available: bool = False
+    # NTP
+    ntp_synced: bool = False
+    ntp_last_sync_age_s: int = 0
     # Performance
     loop_time_us: int = 0
     max_loop_time_us: int = 0
@@ -405,3 +410,76 @@ def detect_fleet_anomalies(
         ))
 
     return anomalies
+
+
+# ---------------------------------------------------------------------------
+# Heap trend analysis
+# ---------------------------------------------------------------------------
+
+class HeapTrend(BaseModel):
+    """Heap usage trend for a single device over time."""
+    device_id: str
+    samples: int = 0
+    first_heap: int = 0
+    last_heap: int = 0
+    min_heap: int = 0
+    delta: int = 0          # last - first (negative = shrinking)
+    delta_per_hour: float = 0.0  # Normalized rate
+    leak_suspected: bool = False
+
+
+def analyze_heap_trends(
+    snapshots: list[dict],
+    leak_threshold_per_hour: int = -5000,
+) -> list[HeapTrend]:
+    """Analyze heap usage trends across device snapshots.
+
+    Args:
+        snapshots: List of dicts with keys: device_id, free_heap, uptime_s.
+            Should be sorted chronologically per device.
+        leak_threshold_per_hour: Heap delta per hour below which a leak is
+            suspected (negative value, e.g. -5000 = losing 5KB/hour).
+
+    Returns:
+        Per-device heap trend analysis.
+    """
+    from collections import defaultdict
+
+    # Group by device
+    by_device: dict[str, list[dict]] = defaultdict(list)
+    for s in snapshots:
+        did = s.get("device_id", "")
+        if did:
+            by_device[did].append(s)
+
+    results = []
+    for device_id, samples in by_device.items():
+        if len(samples) < 2:
+            continue
+
+        first = samples[0]
+        last = samples[-1]
+        first_heap = first.get("free_heap", 0)
+        last_heap = last.get("free_heap", 0)
+        min_heap = min(s.get("free_heap", 0) for s in samples)
+        delta = last_heap - first_heap
+
+        # Calculate time span
+        first_uptime = first.get("uptime_s", 0)
+        last_uptime = last.get("uptime_s", 0)
+        elapsed_h = (last_uptime - first_uptime) / 3600.0 if last_uptime > first_uptime else 0.0
+
+        delta_per_hour = delta / elapsed_h if elapsed_h > 0.5 else 0.0
+
+        results.append(HeapTrend(
+            device_id=device_id,
+            samples=len(samples),
+            first_heap=first_heap,
+            last_heap=last_heap,
+            min_heap=min_heap,
+            delta=delta,
+            delta_per_hour=round(delta_per_hour, 1),
+            leak_suspected=delta_per_hour < leak_threshold_per_hour,
+        ))
+
+    return results
