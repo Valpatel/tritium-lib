@@ -60,6 +60,15 @@ from .mesh import (
     MeshMessage,
     MeshMessageStatus,
 )
+from .config import (
+    ConfigDrift,
+    ConfigDriftSeverity,
+    DeviceConfig,
+    FleetConfigStatus,
+    compute_config_drift,
+    compute_fleet_config_status,
+    classify_drift_severity,
+)
 from .cot import (
     CotEvent,
     CotPoint,
@@ -137,4 +146,12 @@ __all__ = [
     "COT_FRIENDLY_UAV",
     "COT_FRIENDLY_GROUND_SENSOR",
     "COT_HOSTILE_GROUND_UNIT",
+    # Config sync
+    "ConfigDrift",
+    "ConfigDriftSeverity",
+    "DeviceConfig",
+    "FleetConfigStatus",
+    "compute_config_drift",
+    "compute_fleet_config_status",
+    "classify_drift_severity",
 ]
