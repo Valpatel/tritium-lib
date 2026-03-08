@@ -134,6 +134,19 @@ from .alert import (
     classify_alert_severity,
     summarize_alerts,
 )
+from .timeseries import (
+    TimeSeriesPoint,
+    TimeSeries,
+    FleetTimeSeries,
+    PagedResult,
+)
+from .trilateration import (
+    AnchorPoint,
+    PositionEstimate,
+    rssi_to_distance,
+    trilaterate_2d,
+    estimate_position,
+)
 
 __all__ = [
     "Device",
@@ -254,4 +267,15 @@ __all__ = [
     "MeshPeer",
     "analyze_heap_trends",
     "summarize_diag_log",
+    # Time series & pagination
+    "TimeSeriesPoint",
+    "TimeSeries",
+    "FleetTimeSeries",
+    "PagedResult",
+    # BLE trilateration
+    "AnchorPoint",
+    "PositionEstimate",
+    "rssi_to_distance",
+    "trilaterate_2d",
+    "estimate_position",
 ]

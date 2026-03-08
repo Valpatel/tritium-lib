@@ -19,8 +19,13 @@ class CorrelationType(str, Enum):
     """Types of cross-device correlation patterns."""
     SYNCHRONIZED_REBOOT = "synchronized_reboot"
     CASCADING_FAILURE = "cascading_failure"
+    CASCADING_WIFI_FAILURE = "cascading_wifi_failure"
     ENVIRONMENTAL = "environmental"
+    ENVIRONMENTAL_FAULT = "environmental_fault"
     PERIODIC_FAILURE = "periodic_failure"
+    CORRELATED_MEMORY_LEAK = "correlated_memory_leak"
+    FIRMWARE_ANOMALY = "firmware_anomaly"
+    FLEET_UPDATE = "fleet_update"
 
 
 class CorrelationEvent(BaseModel):
@@ -38,6 +43,10 @@ class CorrelationEvent(BaseModel):
     confidence: float = Field(
         0.0, ge=0.0, le=1.0,
         description="Detection confidence (0=low, 1=certain)",
+    )
+    severity: str = Field(
+        "info",
+        description="Alert severity: critical, warning, or info",
     )
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -79,17 +88,28 @@ def classify_correlation_severity(event: CorrelationEvent) -> str:
 
     Returns one of: "critical", "warning", "info".
     """
+    # Use pre-set severity if explicitly set to non-default
+    if event.severity and event.severity not in ("info", ""):
+        return event.severity
+
     if event.type == CorrelationType.SYNCHRONIZED_REBOOT:
         if len(event.devices_involved) >= 5:
             return "critical"
         return "warning"
-    if event.type == CorrelationType.CASCADING_FAILURE:
-        if event.confidence >= 0.7:
+
+    critical_types = {
+        CorrelationType.CASCADING_FAILURE,
+        CorrelationType.CASCADING_WIFI_FAILURE,
+        CorrelationType.FIRMWARE_ANOMALY,
+        CorrelationType.CORRELATED_MEMORY_LEAK,
+    }
+    if event.type in critical_types:
+        if event.confidence >= 0.7 or len(event.devices_involved) >= 5:
             return "critical"
         return "warning"
-    if event.type == CorrelationType.ENVIRONMENTAL:
+    if event.type in (CorrelationType.ENVIRONMENTAL, CorrelationType.ENVIRONMENTAL_FAULT):
         return "warning"
-    if event.type == CorrelationType.PERIODIC_FAILURE:
+    if event.type == CorrelationType.FLEET_UPDATE:
         return "info"
     return "info"
 
