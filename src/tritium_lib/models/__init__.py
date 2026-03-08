@@ -91,6 +91,7 @@ from .provision import (
     validate_provision_data,
 )
 from .diagnostics import (
+    CrashInfo,
     DiagLogEntry,
     DiagLogBatch,
     DiagLogSummary,
@@ -196,8 +197,10 @@ __all__ = [
     "classify_alert_severity",
     "summarize_alerts",
     # Diagnostic log
+    "CrashInfo",
     "DiagLogEntry",
     "DiagLogBatch",
     "DiagLogSummary",
+    "I2cSlaveHealth",
     "summarize_diag_log",
 ]

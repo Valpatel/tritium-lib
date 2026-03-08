@@ -50,6 +50,16 @@ class DiagEvent(BaseModel):
     expected_max: Optional[float] = None
 
 
+class CrashInfo(BaseModel):
+    """Crash info from a previous device boot, stored in NVS."""
+    epoch_time: int = 0
+    uptime_ms: int = 0
+    free_heap: int = 0
+    reset_reason: str = ""
+    message: str = ""
+    task_name: str = ""
+
+
 class DiagLogEntry(BaseModel):
     """A single persistent diagnostic log entry from firmware ring buffer.
 
