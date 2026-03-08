@@ -270,3 +270,103 @@ class TestAnalyzeConnectivity:
         report2 = ConnectivityReport.model_validate_json(report.model_dump_json())
         assert report2.total_nodes == 5
         assert report2.transports_used == ["wifi", "ble"]
+
+    def test_mixed_active_inactive_links(self):
+        """Active links counted, inactive excluded from avg_links."""
+        topo = FleetTopology(
+            nodes=["a", "b", "c"],
+            links=[
+                _link("a", "b", active=True),
+                _link("a", "c", active=False),
+                _link("b", "c", active=True),
+            ],
+        )
+        report = analyze_connectivity(topo)
+        # Only a-b and b-c are active: a=1, b=2, c=1 -> 4/3 = 1.33
+        assert report.avg_links_per_node == round(4 / 3, 2)
+        assert report.connected_nodes == 3
+        assert report.isolated_nodes == 0
+
+
+# -- Edge case tests ---------------------------------------------------------
+
+class TestTopologyEdgeCases:
+    def test_reachable_unknown_target(self):
+        """Target node not in graph returns False."""
+        topo = FleetTopology(nodes=["a", "b"], links=[_link("a", "b")])
+        assert topo.reachable("a", "z") is False
+
+    def test_self_loop_link(self):
+        """A link where source == target should not break anything."""
+        topo = FleetTopology(
+            nodes=["a", "b"],
+            links=[_link("a", "a"), _link("a", "b")],
+        )
+        assert topo.neighbors("a") == ["a", "b"]
+        assert topo.reachable("a", "b") is True
+        report = analyze_connectivity(topo)
+        assert report.total_nodes == 2
+
+    def test_duplicate_links_different_transports(self):
+        """Multiple transports between same pair appear as separate links."""
+        topo = FleetTopology(
+            nodes=["a", "b"],
+            links=[
+                _link("a", "b", transport="wifi"),
+                _link("a", "b", transport="espnow"),
+            ],
+        )
+        # neighbors are still just ["b"] (set-based adjacency)
+        assert topo.neighbors("a") == ["b"]
+        report = analyze_connectivity(topo)
+        # 2 active links, each touching a and b: a=2, b=2 -> 4/2 = 2.0
+        assert report.avg_links_per_node == 2.0
+        assert report.transports_used == ["espnow", "wifi"]
+
+    def test_build_topology_inactive_links_still_extract_nodes(self):
+        """Inactive links still contribute their nodes to the graph."""
+        links = [_link("x", "y", active=False)]
+        topo = build_topology(links)
+        assert topo.nodes == ["x", "y"]
+        assert len(topo.links) == 1
+
+    def test_star_topology_average_path_length(self):
+        """Star graph: hub connects to N leaves, leaves are 2 hops apart."""
+        # hub -> a, hub -> b, hub -> c
+        topo = FleetTopology(
+            nodes=["hub", "a", "b", "c"],
+            links=[_link("hub", "a"), _link("hub", "b"), _link("hub", "c")],
+        )
+        # hub-a=1, hub-b=1, hub-c=1, a-b=2, a-c=2, b-c=2 (x2 for both dirs)
+        # total = (1+1+1+2+2+2)*2 = 18, pairs = 12, avg = 1.5
+        assert abs(topo.average_path_length() - 1.5) < 0.001
+
+    def test_components_with_inactive_links(self):
+        """Inactive links don't merge components."""
+        topo = FleetTopology(
+            nodes=["a", "b", "c", "d"],
+            links=[
+                _link("a", "b"),
+                _link("c", "d"),
+                _link("b", "c", active=False),  # bridge is down
+            ],
+        )
+        components = topo.connected_components()
+        assert len(components) == 2
+        assert ["a", "b"] in components
+        assert ["c", "d"] in components
+
+    def test_network_link_default_timestamp(self):
+        """NetworkLink gets a UTC timestamp by default."""
+        link = NetworkLink(source_id="a", target_id="b", transport="wifi")
+        assert link.last_seen.tzinfo is not None
+
+    def test_analyze_connectivity_single_node_no_links(self):
+        """Single node with no links is isolated."""
+        topo = FleetTopology(nodes=["solo"], links=[])
+        report = analyze_connectivity(topo)
+        assert report.total_nodes == 1
+        assert report.isolated_nodes == 1
+        assert report.connected_nodes == 0
+        assert report.num_components == 1
+        assert report.avg_links_per_node == 0.0
