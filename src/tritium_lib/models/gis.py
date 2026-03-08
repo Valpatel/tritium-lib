@@ -46,6 +46,30 @@ class TileCoord(BaseModel):
         return f"{self.zoom}/{self.x}/{self.y}"
 
 
+class TileBounds(BaseModel):
+    """Geographic bounding box for a tile or set of tiles.
+
+    Uses WGS84 coordinates with min/max lat/lon convention.
+    """
+    min_lat: float
+    min_lon: float
+    max_lat: float
+    max_lon: float
+
+    @property
+    def center_lat(self) -> float:
+        return (self.min_lat + self.max_lat) / 2.0
+
+    @property
+    def center_lon(self) -> float:
+        return (self.min_lon + self.max_lon) / 2.0
+
+    def contains(self, lat: float, lon: float) -> bool:
+        """Check if a point falls within these bounds."""
+        return (self.min_lat <= lat <= self.max_lat
+                and self.min_lon <= lon <= self.max_lon)
+
+
 class MapLayerType(str, Enum):
     """Types of map layers."""
     RASTER = "raster"
@@ -113,6 +137,29 @@ class TilePackage(BaseModel):
     # MBTiles metadata fields
     mbtiles_type: str = "baselayer"  # baselayer, overlay
     mbtiles_version: str = "1.3"
+
+
+class OfflineRegion(BaseModel):
+    """An offline map region defined by bounds and zoom level range.
+
+    Lighter weight than TilePackage — just the spec for what to download,
+    with computed tile count and estimated size.
+    """
+    id: str
+    name: str
+    bounds: TileBounds
+    zoom_levels: list[int] = Field(default_factory=list)  # e.g. [10, 11, 12, 13, 14]
+    tile_count: int = 0
+    size_bytes: int = 0
+    description: str = ""
+
+    @property
+    def min_zoom(self) -> int:
+        return min(self.zoom_levels) if self.zoom_levels else 0
+
+    @property
+    def max_zoom(self) -> int:
+        return max(self.zoom_levels) if self.zoom_levels else 0
 
 
 # ---------------------------------------------------------------------------

@@ -2,10 +2,12 @@
 
 from tritium_lib.models.gis import (
     TileCoord,
+    TileBounds,
     MapLayer,
     MapLayerType,
     MapRegion,
     TilePackage,
+    OfflineRegion,
     lat_lon_to_tile,
     tile_to_lat_lon,
     tiles_in_bounds,
@@ -176,3 +178,63 @@ class TestTilePackage:
         pkg2 = TilePackage.model_validate_json(pkg.model_dump_json())
         assert pkg2.id == pkg.id
         assert pkg2.region.bounds == region.bounds
+
+
+class TestTileBounds:
+    def test_create(self):
+        b = TileBounds(min_lat=37.0, min_lon=-122.5, max_lat=38.0, max_lon=-121.5)
+        assert b.min_lat == 37.0
+        assert b.max_lon == -121.5
+
+    def test_center(self):
+        b = TileBounds(min_lat=10.0, min_lon=20.0, max_lat=30.0, max_lon=40.0)
+        assert b.center_lat == 20.0
+        assert b.center_lon == 30.0
+
+    def test_contains(self):
+        b = TileBounds(min_lat=10.0, min_lon=20.0, max_lat=30.0, max_lon=40.0)
+        assert b.contains(20.0, 30.0) is True
+        assert b.contains(10.0, 20.0) is True  # edge
+        assert b.contains(5.0, 30.0) is False
+        assert b.contains(20.0, 50.0) is False
+
+    def test_json_roundtrip(self):
+        b = TileBounds(min_lat=1.0, min_lon=2.0, max_lat=3.0, max_lon=4.0)
+        b2 = TileBounds.model_validate_json(b.model_dump_json())
+        assert b2.min_lat == 1.0
+        assert b2.max_lon == 4.0
+
+
+class TestOfflineRegion:
+    def test_create(self):
+        bounds = TileBounds(min_lat=37.0, min_lon=-122.5, max_lat=38.0, max_lon=-121.5)
+        region = OfflineRegion(
+            id="sf-offline",
+            name="SF Bay Area",
+            bounds=bounds,
+            zoom_levels=[10, 11, 12, 13, 14],
+            tile_count=5000,
+            size_bytes=50_000_000,
+        )
+        assert region.min_zoom == 10
+        assert region.max_zoom == 14
+        assert region.tile_count == 5000
+
+    def test_empty_zoom_levels(self):
+        bounds = TileBounds(min_lat=0, min_lon=0, max_lat=1, max_lon=1)
+        region = OfflineRegion(id="r1", name="Test", bounds=bounds)
+        assert region.min_zoom == 0
+        assert region.max_zoom == 0
+
+    def test_json_roundtrip(self):
+        bounds = TileBounds(min_lat=1, min_lon=2, max_lat=3, max_lon=4)
+        region = OfflineRegion(
+            id="r1",
+            name="Test",
+            bounds=bounds,
+            zoom_levels=[5, 6, 7],
+        )
+        region2 = OfflineRegion.model_validate_json(region.model_dump_json())
+        assert region2.id == "r1"
+        assert region2.bounds.min_lat == 1.0
+        assert region2.max_zoom == 7

@@ -28,10 +28,12 @@ from .fleet import (
 )
 from .gis import (
     TileCoord,
+    TileBounds,
     MapLayer,
     MapLayerType,
     MapRegion,
     TilePackage,
+    OfflineRegion,
     lat_lon_to_tile,
     tile_to_lat_lon,
     tiles_in_bounds,
@@ -41,6 +43,22 @@ from .seed import (
     SeedManifest,
     SeedPackage,
     SeedStatus,
+    SeedTransfer,
+    SeedTransferStatus,
+)
+from .acoustic_modem import (
+    AcousticFrame,
+    AcousticConfig,
+    AcousticChannelStats,
+    ModulationType,
+)
+from .mesh import (
+    MeshNode,
+    MeshRoute,
+    MeshEdge,
+    MeshTopology,
+    MeshMessage,
+    MeshMessageStatus,
 )
 from .cot import (
     CotEvent,
@@ -80,10 +98,12 @@ __all__ = [
     "fleet_health_score",
     # GIS
     "TileCoord",
+    "TileBounds",
     "MapLayer",
     "MapLayerType",
     "MapRegion",
     "TilePackage",
+    "OfflineRegion",
     "lat_lon_to_tile",
     "tile_to_lat_lon",
     "tiles_in_bounds",
@@ -92,6 +112,20 @@ __all__ = [
     "SeedManifest",
     "SeedPackage",
     "SeedStatus",
+    "SeedTransfer",
+    "SeedTransferStatus",
+    # Acoustic modem
+    "AcousticFrame",
+    "AcousticConfig",
+    "AcousticChannelStats",
+    "ModulationType",
+    # Mesh networking
+    "MeshNode",
+    "MeshRoute",
+    "MeshEdge",
+    "MeshTopology",
+    "MeshMessage",
+    "MeshMessageStatus",
     # CoT models
     "CotEvent",
     "CotPoint",

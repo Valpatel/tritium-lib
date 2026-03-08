@@ -7,6 +7,8 @@ from tritium_lib.models.seed import (
     SeedManifest,
     SeedPackage,
     SeedStatus,
+    SeedTransfer,
+    SeedTransferStatus,
 )
 
 
@@ -155,3 +157,74 @@ class TestSeedPackage:
         assert pkg2.id == pkg.id
         assert pkg2.manifest.firmware_version == "1.0.0"
         assert pkg2.total_size == 500
+
+
+class TestSeedTransfer:
+    def _manifest(self, size: int = 1000) -> SeedManifest:
+        return SeedManifest(
+            package_id="seed-001",
+            firmware_version="1.0.0",
+            boards=["b1"],
+            total_size_bytes=size,
+        )
+
+    def test_create(self):
+        transfer = SeedTransfer(
+            id="xfer-001",
+            source_node="esp32-001",
+            dest_node="esp32-002",
+            manifest=self._manifest(5000),
+        )
+        assert transfer.status == SeedTransferStatus.PENDING
+        assert transfer.progress == 0.0
+        assert transfer.remaining_bytes == 5000
+
+    def test_in_progress(self):
+        transfer = SeedTransfer(
+            id="xfer-001",
+            source_node="esp32-001",
+            dest_node="esp32-002",
+            manifest=self._manifest(10000),
+            status=SeedTransferStatus.TRANSFERRING,
+            progress=0.5,
+            bytes_transferred=5000,
+        )
+        assert transfer.is_active is True
+        assert transfer.remaining_bytes == 5000
+
+    def test_complete(self):
+        transfer = SeedTransfer(
+            id="xfer-001",
+            source_node="esp32-001",
+            dest_node="esp32-002",
+            manifest=self._manifest(1000),
+            status=SeedTransferStatus.COMPLETE,
+            progress=1.0,
+            bytes_transferred=1000,
+        )
+        assert transfer.is_active is False
+        assert transfer.remaining_bytes == 0
+
+    def test_failed(self):
+        transfer = SeedTransfer(
+            id="xfer-001",
+            source_node="esp32-001",
+            dest_node="esp32-002",
+            manifest=self._manifest(),
+            status=SeedTransferStatus.FAILED,
+            error="CRC mismatch",
+        )
+        assert transfer.is_active is False
+        assert "CRC" in transfer.error
+
+    def test_json_roundtrip(self):
+        transfer = SeedTransfer(
+            id="xfer-001",
+            source_node="esp32-001",
+            dest_node="esp32-002",
+            manifest=self._manifest(2000),
+            bytes_transferred=500,
+        )
+        transfer2 = SeedTransfer.model_validate_json(transfer.model_dump_json())
+        assert transfer2.id == "xfer-001"
+        assert transfer2.remaining_bytes == 1500

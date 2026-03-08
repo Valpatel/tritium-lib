@@ -64,6 +64,44 @@ class SeedStatus(str, Enum):
     FAILED = "failed"
 
 
+class SeedTransferStatus(str, Enum):
+    """Status of a seed transfer between nodes."""
+    PENDING = "pending"
+    TRANSFERRING = "transferring"
+    VERIFYING = "verifying"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+class SeedTransfer(BaseModel):
+    """Tracks a seed package transfer between two nodes.
+
+    Represents an active or completed transfer of a seed package from
+    one device to another, with progress tracking.
+    """
+    id: str
+    source_node: str  # device_id of sender
+    dest_node: str  # device_id of receiver
+    manifest: SeedManifest
+    progress: float = 0.0  # 0.0 to 1.0
+    status: SeedTransferStatus = SeedTransferStatus.PENDING
+    bytes_transferred: int = 0
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in (
+            SeedTransferStatus.TRANSFERRING,
+            SeedTransferStatus.VERIFYING,
+        )
+
+    @property
+    def remaining_bytes(self) -> int:
+        return max(0, self.manifest.total_size_bytes - self.bytes_transferred)
+
+
 class SeedPackage(BaseModel):
     """A complete seed package for firmware distribution.
 
