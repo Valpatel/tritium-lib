@@ -81,6 +81,15 @@ from .cot import (
     COT_FRIENDLY_GROUND_SENSOR,
     COT_HOSTILE_GROUND_UNIT,
 )
+from .alert import (
+    Alert,
+    AlertDelivery,
+    AlertHistory,
+    AlertSeverity,
+    WebhookConfig,
+    classify_alert_severity,
+    summarize_alerts,
+)
 
 __all__ = [
     "Device",
@@ -154,4 +163,12 @@ __all__ = [
     "compute_config_drift",
     "compute_fleet_config_status",
     "classify_drift_severity",
+    # Alert / webhook
+    "Alert",
+    "AlertDelivery",
+    "AlertHistory",
+    "AlertSeverity",
+    "WebhookConfig",
+    "classify_alert_severity",
+    "summarize_alerts",
 ]
