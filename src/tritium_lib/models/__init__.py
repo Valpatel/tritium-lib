@@ -81,6 +81,15 @@ from .cot import (
     COT_FRIENDLY_GROUND_SENSOR,
     COT_HOSTILE_GROUND_UNIT,
 )
+from .provision import (
+    ProvisionData,
+    ProvisionRecord,
+    ProvisionSource,
+    ProvisionState,
+    FleetProvisionStatus,
+    compute_provision_status,
+    validate_provision_data,
+)
 from .alert import (
     Alert,
     AlertDelivery,
@@ -163,6 +172,14 @@ __all__ = [
     "compute_config_drift",
     "compute_fleet_config_status",
     "classify_drift_severity",
+    # Provisioning
+    "ProvisionData",
+    "ProvisionRecord",
+    "ProvisionSource",
+    "ProvisionState",
+    "FleetProvisionStatus",
+    "compute_provision_status",
+    "validate_provision_data",
     # Alert / webhook
     "Alert",
     "AlertDelivery",
