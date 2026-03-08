@@ -109,6 +109,13 @@ from .topology import (
     build_fleet_topology_from_mesh,
     analyze_connectivity,
 )
+from .correlation import (
+    CorrelationType,
+    CorrelationEvent,
+    CorrelationSummary,
+    classify_correlation_severity,
+    summarize_correlations,
+)
 from .alert import (
     Alert,
     AlertDelivery,
@@ -214,6 +221,12 @@ __all__ = [
     "build_topology",
     "build_fleet_topology_from_mesh",
     "analyze_connectivity",
+    # Event correlation
+    "CorrelationType",
+    "CorrelationEvent",
+    "CorrelationSummary",
+    "classify_correlation_severity",
+    "summarize_correlations",
     # Diagnostic log
     "CrashInfo",
     "DiagLogEntry",
