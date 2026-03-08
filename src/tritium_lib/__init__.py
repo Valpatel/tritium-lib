@@ -9,6 +9,7 @@ Provides reusable components across tritium-sc and tritium-edge:
   - tritium_lib.config   — Pydantic settings base classes
   - tritium_lib.models   — Shared data models (Device, Sensor, Command)
   - tritium_lib.auth     — JWT utilities
+  - tritium_lib.web      — Web UI theme, components, dashboards, templates
 """
 
 __version__ = "0.1.0"
