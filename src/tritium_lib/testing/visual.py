@@ -86,6 +86,8 @@ class VisualCheck:
         report.issues.extend(self.check_content_overflow(img, has_nav_bar))
         report.issues.extend(self.check_button_accessibility(img, has_nav_bar))
         report.issues.extend(self.check_text_rendering(img))
+        report.issues.extend(self.check_empty_space(img, has_nav_bar))
+        report.issues.extend(self.check_density(img, has_nav_bar))
 
         # Multi-frame flicker check requires a frame sequence
         # (called separately via check_flicker)
@@ -819,5 +821,189 @@ class VisualCheck:
                                 f"outside expected regions between frames {i-1}-{i}",
                                 region=(x, y, w, h),
                             ))
+
+        return issues
+
+    # ------------------------------------------------------------------
+    # Layout density checks
+    # ------------------------------------------------------------------
+
+    def check_empty_space(self, img: np.ndarray,
+                          has_nav_bar: bool = True) -> list[LayoutIssue]:
+        """Detect excessive empty/black space in the content viewport.
+
+        Divides the content area (between status bar and nav bar) into a
+        grid of cells and measures what fraction are nearly black. On a
+        well-designed UI, content should use at least 25% of the viewport
+        area. A launcher with tiny icons centered in a vast dark void fails
+        this check.
+
+        The algorithm:
+          1. Extract the viewport region (below status bar, above nav bar).
+          2. Divide it into NxN cells.
+          3. A cell is "empty" if its mean brightness is below the dark
+             background threshold.
+          4. If >75% of cells are empty, the UI is wasting space.
+        """
+        issues = []
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        vp_top = self.STATUS_BAR_H
+        vp_bottom = (self.height - self.NAV_BAR_H) if has_nav_bar else self.height
+        viewport = gray[vp_top:vp_bottom, :]
+        vp_h, vp_w = viewport.shape
+
+        if vp_h < 10 or vp_w < 10:
+            return issues
+
+        # Grid analysis — 8x8 cells across viewport
+        cell_rows, cell_cols = 8, 8
+        cell_h = vp_h // cell_rows
+        cell_w = vp_w // cell_cols
+        empty_cells = 0
+        total_cells = cell_rows * cell_cols
+
+        for r in range(cell_rows):
+            for c in range(cell_cols):
+                cell = viewport[r * cell_h:(r + 1) * cell_h,
+                                c * cell_w:(c + 1) * cell_w]
+                if np.mean(cell) < self.BG_DARK_THRESHOLD:
+                    empty_cells += 1
+
+        empty_ratio = empty_cells / total_cells
+
+        # Also measure the bounding box of all non-dark content
+        content_mask = viewport > self.BG_DARK_THRESHOLD
+        content_rows = np.any(content_mask, axis=1)
+        content_cols = np.any(content_mask, axis=0)
+
+        if np.any(content_rows) and np.any(content_cols):
+            row_min = int(np.argmax(content_rows))
+            row_max = vp_h - int(np.argmax(content_rows[::-1])) - 1
+            col_min = int(np.argmax(content_cols))
+            col_max = vp_w - int(np.argmax(content_cols[::-1])) - 1
+            content_bbox_area = (row_max - row_min) * (col_max - col_min)
+            viewport_area = vp_h * vp_w
+            fill_ratio = content_bbox_area / viewport_area if viewport_area > 0 else 0
+        else:
+            fill_ratio = 0.0
+
+        # Use both metrics: grid cell emptiness and bounding box fill.
+        # A high fill_ratio (>80%) means content spans most of the viewport
+        # even if individual cells are dark (e.g. dark-themed card backgrounds).
+        if fill_ratio >= 0.80:
+            # Content fills the space — only flag if nearly ALL cells are empty
+            # (which would mean a tiny bright element in one corner, not real fill)
+            if empty_ratio > 0.95:
+                issues.append(LayoutIssue(
+                    "excessive_empty_space", Severity.WARNING,
+                    f"{empty_ratio:.0%} of viewport cells are empty — "
+                    f"bounding box fills {fill_ratio:.0%} but content is sparse.",
+                    region=(0, vp_top, vp_w, vp_h),
+                ))
+        elif empty_ratio > 0.85:
+            issues.append(LayoutIssue(
+                "excessive_empty_space", Severity.ERROR,
+                f"{empty_ratio:.0%} of viewport cells are empty — "
+                f"UI elements use only {fill_ratio:.0%} of available space. "
+                f"Content should scale to fill the screen.",
+                region=(0, vp_top, vp_w, vp_h),
+            ))
+        elif empty_ratio > 0.75:
+            issues.append(LayoutIssue(
+                "excessive_empty_space", Severity.WARNING,
+                f"{empty_ratio:.0%} of viewport cells are empty — "
+                f"consider enlarging UI elements to use available space.",
+                region=(0, vp_top, vp_w, vp_h),
+            ))
+
+        return issues
+
+    def check_density(self, img: np.ndarray,
+                      has_nav_bar: bool = True) -> list[LayoutIssue]:
+        """Detect excessively dense UI with overlapping elements.
+
+        Scans the content area for regions where edge density is
+        abnormally high, indicating overlapping widgets, text on text,
+        or elements crammed too close together.
+
+        The algorithm:
+          1. Extract the viewport and compute Canny edges.
+          2. Divide into cells (smaller than empty-space cells for precision).
+          3. A cell is "overcrowded" if its edge density exceeds a threshold
+             AND its mean brightness suggests visible content (not just noise
+             on dark background).
+          4. Adjacent overcrowded cells form "dense clusters" — if a cluster
+             spans a significant area, elements are likely overlapping.
+        """
+        issues = []
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        vp_top = self.STATUS_BAR_H
+        vp_bottom = (self.height - self.NAV_BAR_H) if has_nav_bar else self.height
+        viewport = gray[vp_top:vp_bottom, :]
+        vp_h, vp_w = viewport.shape
+
+        if vp_h < 20 or vp_w < 20:
+            return issues
+
+        edges = cv2.Canny(viewport, 50, 150)
+
+        # 16x16 cell grid for fine-grained density mapping
+        cell_h = max(vp_h // 16, 1)
+        cell_w = max(vp_w // 16, 1)
+        rows = vp_h // cell_h
+        cols = vp_w // cell_w
+
+        # Build a density map
+        dense_map = np.zeros((rows, cols), dtype=np.uint8)
+        for r in range(rows):
+            for c in range(cols):
+                cell_edges = edges[r * cell_h:(r + 1) * cell_h,
+                                   c * cell_w:(c + 1) * cell_w]
+                cell_gray = viewport[r * cell_h:(r + 1) * cell_h,
+                                     c * cell_w:(c + 1) * cell_w]
+                density = float(np.mean(cell_edges > 0))
+                brightness = float(np.mean(cell_gray))
+
+                # High edge density + visible content = potential overlap
+                if density > 0.30 and brightness > 25:
+                    dense_map[r, c] = 255
+
+        # Find connected clusters of dense cells
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            dense_map, connectivity=8
+        )
+
+        for label_idx in range(1, num_labels):  # skip background
+            area = stats[label_idx, cv2.CC_STAT_AREA]
+            cx = stats[label_idx, cv2.CC_STAT_LEFT]
+            cy = stats[label_idx, cv2.CC_STAT_TOP]
+            cw = stats[label_idx, cv2.CC_STAT_WIDTH]
+            ch = stats[label_idx, cv2.CC_STAT_HEIGHT]
+
+            # A cluster of 6+ overcrowded cells indicates real overlap
+            if area >= 6:
+                pixel_x = cx * cell_w
+                pixel_y = vp_top + cy * cell_h
+                pixel_w = cw * cell_w
+                pixel_h = ch * cell_h
+                issues.append(LayoutIssue(
+                    "ui_too_dense", Severity.ERROR,
+                    f"Dense UI cluster ({area} cells, {pixel_w}x{pixel_h}px) — "
+                    f"possible overlapping elements or text",
+                    region=(pixel_x, pixel_y, pixel_w, pixel_h),
+                ))
+            elif area >= 4:
+                pixel_x = cx * cell_w
+                pixel_y = vp_top + cy * cell_h
+                pixel_w = cw * cell_w
+                pixel_h = ch * cell_h
+                issues.append(LayoutIssue(
+                    "ui_too_dense", Severity.WARNING,
+                    f"Moderately dense UI cluster ({area} cells) — "
+                    f"elements may be too close together",
+                    region=(pixel_x, pixel_y, pixel_w, pixel_h),
+                ))
 
         return issues
