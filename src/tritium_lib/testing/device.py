@@ -124,6 +124,38 @@ class DeviceAPI:
             currently_pressed=d.get("currently_pressed", False),
         )
 
+    def frame_stats(self) -> Optional[dict]:
+        """Get per-frame flush stats ring buffer for flicker detection.
+
+        Returns dict with keys:
+            target_fps (int): Target frame rate (60)
+            dropped (int): Total frames exceeding 2x target period
+            count (int): Number of frames in ring buffer
+            frames (list[dict]): Recent frames with:
+                us (int): Total frame flush duration in microseconds
+                fl (int): Number of flush calls this frame
+                j (int): Jitter vs previous frame in microseconds
+        """
+        try:
+            r = self._get("/api/diag/frames", timeout=3)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+        return None
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int,
+              duration_ms: int = 300) -> bool:
+        """Inject a swipe gesture from (x1,y1) to (x2,y2)."""
+        try:
+            r = self._post("/api/remote/swipe", json={
+                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                "duration_ms": duration_ms,
+            })
+            return r.status_code == 200
+        except Exception:
+            return False
+
     def is_reachable(self) -> bool:
         """Check if the device web server is responding."""
         try:
