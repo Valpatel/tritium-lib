@@ -172,6 +172,16 @@ class DeviceAPI:
         except Exception:
             return False
 
+    def tasks(self) -> Optional[dict]:
+        """Get FreeRTOS task details (name, priority, state, stack watermark)."""
+        try:
+            r = self._get("/api/diag/tasks", timeout=3)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+        return None
+
     def is_reachable(self) -> bool:
         """Check if the device web server is responding."""
         try:
