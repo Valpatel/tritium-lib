@@ -156,6 +156,22 @@ class DeviceAPI:
         except Exception:
             return False
 
+    def disable_screensaver(self) -> bool:
+        """Disable the screensaver (dismiss + set timeout to 0)."""
+        try:
+            r = self._post("/api/shell/screensaver", json={"action": "disable"}, timeout=3)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def enable_screensaver(self) -> bool:
+        """Re-enable the screensaver (reload settings from NVS)."""
+        try:
+            r = self._post("/api/shell/screensaver", json={"action": "enable"}, timeout=3)
+            return r.status_code == 200
+        except Exception:
+            return False
+
     def is_reachable(self) -> bool:
         """Check if the device web server is responding."""
         try:
