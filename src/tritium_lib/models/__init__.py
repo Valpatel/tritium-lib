@@ -180,6 +180,13 @@ from .reid import (
     ReIDEmbedding,
     ReIDMatch,
 )
+from .radio import (
+    RadioMode,
+    RadioSchedulerConfig,
+    RadioSchedulerStatus,
+    CameraMqttConfig,
+    CameraMqttStats,
+)
 
 __all__ = [
     "Device",
@@ -339,4 +346,10 @@ __all__ = [
     # ReID (re-identification)
     "ReIDEmbedding",
     "ReIDMatch",
+    # Radio scheduler (BLE/WiFi TDM)
+    "RadioMode",
+    "RadioSchedulerConfig",
+    "RadioSchedulerStatus",
+    "CameraMqttConfig",
+    "CameraMqttStats",
 ]
