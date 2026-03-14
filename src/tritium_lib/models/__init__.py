@@ -225,6 +225,18 @@ from .acoustic_event import (
     AcousticStats,
     classify_event_severity,
 )
+from .behavior import (
+    AnomalySeverity,
+    AnomalyType,
+    BehaviorAnomaly,
+    BehaviorPattern,
+    BehaviorType,
+    CorrelationScore,
+    PositionSample,
+    TargetRoutine,
+    classify_anomaly_severity,
+    compute_correlation_score,
+)
 from .terrain import (
     CoverageAnalysis,
     CoverageCell,
@@ -448,6 +460,17 @@ __all__ = [
     "AcousticSpectrum",
     "AcousticStats",
     "classify_event_severity",
+    # Behavioral pattern recognition
+    "AnomalySeverity",
+    "AnomalyType",
+    "BehaviorAnomaly",
+    "BehaviorPattern",
+    "BehaviorType",
+    "CorrelationScore",
+    "PositionSample",
+    "TargetRoutine",
+    "classify_anomaly_severity",
+    "compute_correlation_score",
     # Terrain analysis & RF propagation
     "CoverageAnalysis",
     "CoverageCell",
