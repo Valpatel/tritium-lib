@@ -206,6 +206,25 @@ from .ais import (
     FlightCategory,
     SquawkCode,
 )
+from .lpr import (
+    PlateAlert,
+    PlateColor,
+    PlateDetection,
+    PlateRecord,
+    PlateRegion,
+    PlateWatchEntry,
+    PlateWatchlist,
+    LPRStats,
+)
+from .acoustic_event import (
+    AcousticEvent,
+    AcousticEventType,
+    AcousticSensorConfig,
+    AcousticSeverity,
+    AcousticSpectrum,
+    AcousticStats,
+    classify_event_severity,
+)
 from .federation import (
     ConnectionState,
     FederatedSite,
@@ -400,6 +419,23 @@ __all__ = [
     "ADSBFlight",
     "FlightCategory",
     "SquawkCode",
+    # License Plate Recognition
+    "PlateAlert",
+    "PlateColor",
+    "PlateDetection",
+    "PlateRecord",
+    "PlateRegion",
+    "PlateWatchEntry",
+    "PlateWatchlist",
+    "LPRStats",
+    # Acoustic event classification
+    "AcousticEvent",
+    "AcousticEventType",
+    "AcousticSensorConfig",
+    "AcousticSeverity",
+    "AcousticSpectrum",
+    "AcousticStats",
+    "classify_event_severity",
     # Multi-site federation
     "ConnectionState",
     "FederatedSite",
