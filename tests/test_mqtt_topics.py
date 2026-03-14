@@ -85,6 +85,25 @@ class TestTritiumTopics:
     def test_escalation(self):
         assert self.topics.escalation() == "tritium/home/escalation/change"
 
+    # --- Meshtastic topics ---
+
+    def test_meshtastic_nodes(self):
+        assert self.topics.meshtastic_nodes("bridge-01") == "tritium/home/meshtastic/bridge-01/nodes"
+
+    def test_meshtastic_message(self):
+        assert self.topics.meshtastic_message("bridge-01") == "tritium/home/meshtastic/bridge-01/message"
+
+    def test_meshtastic_command(self):
+        assert self.topics.meshtastic_command("bridge-01") == "tritium/home/meshtastic/bridge-01/command"
+
+    # --- Camera feed topics ---
+
+    def test_camera_feed(self):
+        assert self.topics.camera_feed("cam-01") == "tritium/home/cameras/cam-01/feed"
+
+    def test_camera_snapshot(self):
+        assert self.topics.camera_snapshot("cam-01") == "tritium/home/cameras/cam-01/snapshot"
+
     # --- Wildcards ---
 
     def test_all_edge(self):
@@ -95,3 +114,6 @@ class TestTritiumTopics:
 
     def test_all_cameras(self):
         assert self.topics.all_cameras() == "tritium/home/cameras/+/#"
+
+    def test_all_meshtastic(self):
+        assert self.topics.all_meshtastic() == "tritium/home/meshtastic/+/#"

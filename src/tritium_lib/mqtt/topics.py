@@ -152,6 +152,30 @@ class TritiumTopics:
     def mesh_peers(self, device_id: str) -> str:
         return f"{self.prefix}/mesh/{device_id}/peers"
 
+    # --- Meshtastic topics ---
+
+    def meshtastic_nodes(self, device_id: str) -> str:
+        """Topic for Meshtastic node list updates from a bridge device."""
+        return f"{self.prefix}/meshtastic/{device_id}/nodes"
+
+    def meshtastic_message(self, device_id: str) -> str:
+        """Topic for Meshtastic text messages received by a bridge device."""
+        return f"{self.prefix}/meshtastic/{device_id}/message"
+
+    def meshtastic_command(self, device_id: str) -> str:
+        """Topic for commands sent to a Meshtastic bridge device."""
+        return f"{self.prefix}/meshtastic/{device_id}/command"
+
+    # --- Camera feed topics ---
+
+    def camera_feed(self, device_id: str) -> str:
+        """Topic for continuous camera MJPEG feed frames."""
+        return f"{self.prefix}/cameras/{device_id}/feed"
+
+    def camera_snapshot(self, device_id: str) -> str:
+        """Topic for single camera snapshot requests/responses."""
+        return f"{self.prefix}/cameras/{device_id}/snapshot"
+
     # --- Robot topics (tritium-sc) ---
 
     def robot_telemetry(self, robot_id: str) -> str:
@@ -181,3 +205,6 @@ class TritiumTopics:
 
     def all_cameras(self) -> str:
         return f"{self.prefix}/cameras/+/#"
+
+    def all_meshtastic(self) -> str:
+        return f"{self.prefix}/meshtastic/+/#"
