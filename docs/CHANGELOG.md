@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 31: ConfigStore
+
+- Added `store/config_store.py` — persistent system configuration store (Unit Tested)
+  - Namespaced key-value pairs in SQLite WAL
+  - `set/get/delete/clear_namespace/list_namespaces/count/set_many`
+  - JSON serialization: `set_json/get_json` for complex values
+  - Thread-safe via BaseStore locking
+  - 16 tests passing in `tests/store/test_config_store.py`
+  - Exported in `tritium_lib.store.__init__`
+
+---
+
 ## 2026-03-14 — Wave 26: Event Schema System
 
 ### Event Schemas
