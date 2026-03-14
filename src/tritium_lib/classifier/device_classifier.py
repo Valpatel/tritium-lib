@@ -183,6 +183,20 @@ _WIFI_SSID_PATTERNS: list[tuple[str, str, float]] = [
 ]
 
 
+def _normalize_hex_key(value: str) -> str:
+    """Normalize a hex key to match JSON format: 0x prefix with uppercase hex digits.
+
+    JSON keys in ble_fingerprints.json use the format ``0xABCD`` (lowercase ``0x``
+    prefix, uppercase hex digits).  Input may be ``0X02``, ``02``, ``0x02`` etc.
+    """
+    v = value.strip()
+    # Strip any 0x/0X prefix
+    if v.upper().startswith("0X"):
+        v = v[2:]
+    # Re-add lowercase 0x prefix with uppercase hex digits
+    return f"0x{v.upper()}"
+
+
 class DeviceClassifier:
     """Multi-signal device type classifier using BLE fingerprint data.
 
@@ -422,11 +436,11 @@ class DeviceClassifier:
     def _classify_appearance(self, appearance: int) -> dict[str, Any] | None:
         """Classify from GAP Appearance value."""
         gap_values = self._data.get("gap_appearance_values", {})
-        key = f"0x{appearance:04X}"
+        key = _normalize_hex_key(f"{appearance:04X}")
         entry = gap_values.get(key)
         if not entry:
             # Try category (upper byte)
-            category_key = f"0x{(appearance & 0xFFC0):04X}"
+            category_key = _normalize_hex_key(f"{(appearance & 0xFFC0):04X}")
             entry = gap_values.get(category_key)
         if not entry or entry.get("type") == "unknown":
             return None
@@ -442,14 +456,15 @@ class DeviceClassifier:
     def _classify_service_uuid(self, uuid: str) -> dict[str, Any] | None:
         """Classify from advertised service UUID."""
         service_uuids = self._data.get("service_uuids", {})
-        # Normalize: if it's a 4-char hex, prefix with 0x
-        uuid_upper = uuid.upper()
-        if len(uuid_upper) == 4:
-            uuid_upper = f"0x{uuid_upper}"
-        elif len(uuid_upper) == 6 and uuid_upper.startswith("0X"):
-            uuid_upper = f"0x{uuid_upper[2:]}"
+        # Normalize short UUIDs (4 or 6 chars with 0x prefix)
+        stripped = uuid.strip()
+        if len(stripped) <= 6:
+            uuid_key = _normalize_hex_key(stripped)
+        else:
+            # 128-bit UUID — keep as-is for vendor pattern matching below
+            uuid_key = stripped
 
-        entry = service_uuids.get(uuid_upper)
+        entry = service_uuids.get(uuid_key)
         if not entry or not entry.get("device_type"):
             # Try vendor UUID patterns (128-bit UUIDs)
             vendor_patterns = self._data.get("vendor_uuid_patterns", {})
@@ -469,7 +484,7 @@ class DeviceClassifier:
             "signal": "service_uuid",
             "device_type": entry["device_type"],
             "device_name": entry.get("name", ""),
-            "uuid": uuid_upper,
+            "uuid": uuid_key,
             "confidence": 0.8,
         }
 
@@ -494,12 +509,9 @@ class DeviceClassifier:
     def _classify_fast_pair(self, model_id: str) -> dict[str, Any] | None:
         """Classify from Google Fast Pair model ID."""
         fast_pair = self._data.get("fast_pair_models", {})
-        # Normalize key format
-        model_upper = model_id.upper()
-        if not model_upper.startswith("0X"):
-            model_upper = f"0x{model_upper}"
+        model_key = _normalize_hex_key(model_id)
 
-        entry = fast_pair.get(model_upper)
+        entry = fast_pair.get(model_key)
         if not entry:
             return None
 
@@ -507,18 +519,16 @@ class DeviceClassifier:
             "signal": "fast_pair",
             "device_type": entry.get("type", "unknown"),
             "device_name": entry.get("name", ""),
-            "model_id": model_upper,
+            "model_id": model_key,
             "confidence": 0.92,
         }
 
     def _classify_apple_device(self, device_class: str) -> dict[str, Any] | None:
         """Classify from Apple continuity device class byte."""
         apple_classes = self._data.get("apple_device_classes", {})
-        dc_upper = device_class.upper()
-        if not dc_upper.startswith("0X"):
-            dc_upper = f"0x{dc_upper}"
+        dc_key = _normalize_hex_key(device_class)
 
-        entry = apple_classes.get(dc_upper)
+        entry = apple_classes.get(dc_key)
         if not entry:
             return None
 
@@ -526,7 +536,7 @@ class DeviceClassifier:
             "signal": "apple_device_class",
             "device_type": entry.get("type", "unknown"),
             "device_name": entry.get("name", ""),
-            "apple_class": dc_upper,
+            "apple_class": dc_key,
             "confidence": 0.93,
         }
 

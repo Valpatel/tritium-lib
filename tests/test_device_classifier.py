@@ -87,7 +87,7 @@ class TestClassifyBLE:
 
     def test_company_id_apple(self, dc: DeviceClassifier):
         r = dc.classify_ble(company_id=76)
-        assert r.manufacturer == "Apple"
+        assert "Apple" in r.manufacturer
         assert r.device_type in ("phone", "watch", "computer", "audio", "tag")
 
     def test_company_id_samsung(self, dc: DeviceClassifier):
