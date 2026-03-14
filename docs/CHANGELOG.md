@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-13 — Wave 7: Dossiers & Target Intelligence
+
+### Models — Dossier
+| Change | Verification |
+|--------|-------------|
+| `models/dossier.py` — Target Dossier model for persistent entity intelligence | Unit Tested |
+
+### Stores — DossierStore
+| Change | Verification |
+|--------|-------------|
+| `store/dossier.py` — SQLite-backed DossierStore for persistent target intelligence | Unit Tested |
+
+---
+
 ## 2026-03-13
 
 ### Models — New
