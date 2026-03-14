@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 53: Intelligence Scorer ABC
+
+### CorrelationScorer ABC (Unit Tested, 19 tests)
+- New `intelligence/scorer.py` — CorrelationScorer ABC with predict(features) -> ScorerResult
+- `StaticScorer`: hand-tuned weighted linear model with sigmoid, configurable weights and bias
+- `LearnedScorer`: wraps trained sklearn LogisticRegression, falls back to StaticScorer on error
+- Save/load trained models to pickle files via `LearnedScorer.from_file()` / `.save()`
+- `ScorerResult` dataclass: probability, confidence, method, detail
+- Canonical `FEATURE_NAMES`: distance, rssi_delta, co_movement, device_type_match, time_gap, signal_pattern
+- Numerically stable sigmoid implementation
+- New `intelligence/__init__.py` — exports all scorer classes
+
+---
+
 ## 2026-03-14 — Wave 52: ML Training Data Models
 
 ### Training Data Models (Unit Tested, 11 tests)
