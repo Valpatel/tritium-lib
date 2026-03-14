@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 67: Deployment Models
+
+### Deployment Config Models (Unit Tested, 18 tests)
+- New `models/deployment.py` — deployment configuration and service status tracking
+- `ServiceName` enum: sc_server, mqtt_broker, meshtastic_bridge, ollama, edge_fleet_server, ros2_bridge, go2rtc
+- `ServiceState` enum: running, stopped, error, starting, unknown
+- `ServiceStatus`: name, display_name, state, pid, uptime_s, port, version, can_start/stop, start/stop commands
+- `SystemRequirements`: python_version, system_packages, python_packages, optional_packages, min_ram_mb, ports_needed
+- `DeployedService`: service + host + status + installed + autostart
+- `DeploymentConfig`: site_id, hostname, services, requirements, edge_devices + helper methods (service_by_name, all_running, summary)
+- Exported from `models/__init__.py`
+
+---
+
 ## 2026-03-14 — Wave 64: Environment Sensor Model
 
 ### EnvironmentReading Model (Unit Tested, 10 tests)

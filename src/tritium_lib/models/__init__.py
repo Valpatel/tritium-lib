@@ -406,6 +406,14 @@ from .environment import (
     EnvironmentSnapshot,
     EnvironmentSource,
 )
+from .deployment import (
+    DeployedService,
+    DeploymentConfig,
+    ServiceName,
+    ServiceState,
+    ServiceStatus,
+    SystemRequirements,
+)
 from .ble_interrogation import (
     BleDeviceProfile as BleGATTProfile,
     BleGATTCharacteristic,
@@ -418,6 +426,13 @@ from .ble_interrogation import (
 )
 
 __all__ = [
+    # Deployment
+    "DeployedService",
+    "DeploymentConfig",
+    "ServiceName",
+    "ServiceState",
+    "ServiceStatus",
+    "SystemRequirements",
     "Device",
     "DeviceGroup",
     "DeviceHeartbeat",
