@@ -196,6 +196,16 @@ from .drone import (
     DroneType,
     Waypoint,
 )
+from .ais import (
+    AISPosition,
+    AISVessel,
+    VesselType,
+    NavigationStatus,
+    ADSBPosition,
+    ADSBFlight,
+    FlightCategory,
+    SquawkCode,
+)
 
 __all__ = [
     "Device",
@@ -369,4 +379,13 @@ __all__ = [
     "DroneTelemetry",
     "DroneType",
     "Waypoint",
+    # AIS/ADS-B maritime & aviation
+    "AISPosition",
+    "AISVessel",
+    "VesselType",
+    "NavigationStatus",
+    "ADSBPosition",
+    "ADSBFlight",
+    "FlightCategory",
+    "SquawkCode",
 ]
