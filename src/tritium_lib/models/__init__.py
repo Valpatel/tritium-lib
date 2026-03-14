@@ -167,6 +167,13 @@ from .meshtastic import (
     MeshtasticWaypoint,
     MeshtasticStatus,
 )
+from .mesh_node_extended import (
+    MeshNodeExtended,
+    MeshNodePosition,
+    MeshNodeDeviceMetrics,
+    MeshNodeEnvironment,
+    MeshNodeRadioMetrics,
+)
 from .wifi import (
     WiFiProbeRequest,
     WiFiNetwork,
@@ -553,6 +560,12 @@ __all__ = [
     "MeshtasticMessage",
     "MeshtasticWaypoint",
     "MeshtasticStatus",
+    # Meshtastic extended (real hardware)
+    "MeshNodeExtended",
+    "MeshNodePosition",
+    "MeshNodeDeviceMetrics",
+    "MeshNodeEnvironment",
+    "MeshNodeRadioMetrics",
     # WiFi passive fingerprinting
     "WiFiProbeRequest",
     "WiFiNetwork",

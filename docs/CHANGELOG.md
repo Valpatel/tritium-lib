@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 63: MeshNodeExtended Model
+
+### MeshNodeExtended (Unit Tested, 18 tests)
+- New `models/mesh_node_extended.py` — full Meshtastic node model for real hardware
+- `MeshNodePosition`: GPS with sats_in_view, ground_speed, fix_quality
+- `MeshNodeDeviceMetrics`: battery_level, voltage, channel_utilization, air_util_tx, uptime
+- `MeshNodeEnvironment`: temperature, humidity, barometric_pressure, gas_resistance, IAQ
+- `MeshNodeRadioMetrics`: snr, rssi, hop_limit, hop_start, computed hops_away
+- `MeshNodeExtended.from_meshtastic_node()`: factory from meshtastic library dict format
+- Properties: has_position, battery_percent, display_name, age_seconds
+- Exported from `models/__init__.py`
+
+---
+
 ## 2026-03-14 — Wave 59: Screenshot Store
 
 ### ScreenshotStore (Unit Tested, 9 tests)
