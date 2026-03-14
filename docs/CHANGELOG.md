@@ -12,6 +12,22 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 43: Device Capability Advertisement Models
+
+### Capability Advertisement (Unit Tested, 13 tests)
+- Added `models/capability.py` — DeviceCapability, CapabilityAdvertisement, CapabilityType
+- `DeviceCapability`: cap_type, version, enabled, config, description with to_summary()
+- `CapabilityAdvertisement`: device_id, board, firmware_version, capabilities list
+  - has_capability() / get_capability() for querying
+  - capability_types() for listing enabled capabilities
+  - to_heartbeat_list() for backward compatibility with DeviceCapabilities.from_list()
+- `CapabilityType` enum: 26 standard types matching edge HAL names
+- Added ble/wifi boolean fields to DeviceCapabilities model
+- Added edge_capabilities() topic to TritiumTopics MQTT builder
+- All 1,462 tests passing (no regressions)
+
+---
+
 ## 2026-03-14 — Wave 41: Operational Period Models
 
 ### Operational Period (Unit Tested, 17 tests)

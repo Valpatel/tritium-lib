@@ -120,6 +120,10 @@ class TritiumTopics:
     def edge_ota_status(self, device_id: str) -> str:
         return f"{self.prefix}/edge/{device_id}/ota"
 
+    def edge_capabilities(self, device_id: str) -> str:
+        """Topic for device capability advertisement (retained, published on boot)."""
+        return f"{self.prefix}/edge/{device_id}/capabilities"
+
     # --- Sensor topics (shared) ---
 
     def sensor(self, device_id: str, sensor_type: str) -> str:

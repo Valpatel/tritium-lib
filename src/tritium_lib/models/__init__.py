@@ -8,6 +8,11 @@ Any device that speaks the Tritium protocol uses these types.
 """
 
 from .device import Device, DeviceGroup, DeviceHeartbeat, DeviceCapabilities
+from .capability import (
+    CapabilityAdvertisement,
+    CapabilityType,
+    DeviceCapability,
+)
 from .command import Command, CommandType, CommandStatus
 from .firmware import FirmwareMeta, OTAJob, OTAStatus
 from .sensor import SensorReading
@@ -336,6 +341,10 @@ __all__ = [
     "DeviceGroup",
     "DeviceHeartbeat",
     "DeviceCapabilities",
+    # Capability advertisement
+    "CapabilityAdvertisement",
+    "CapabilityType",
+    "DeviceCapability",
     "Command",
     "CommandType",
     "CommandStatus",

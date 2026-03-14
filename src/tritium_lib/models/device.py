@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 
 class DeviceCapabilities(BaseModel):
     """What a device can do — reported in heartbeat, drives server UI."""
+    ble: bool = False
+    wifi: bool = False
     camera: bool = False
     audio: bool = False
     imu: bool = False
