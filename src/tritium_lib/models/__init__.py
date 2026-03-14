@@ -366,6 +366,17 @@ from .user import (
     UserRole,
     UserSession,
 )
+from .template import (
+    BRIEFING_TEMPLATE,
+    BUILTIN_TEMPLATES,
+    INVESTIGATION_TEMPLATE,
+    ReportFormat,
+    ReportTemplate,
+    SITREP_TEMPLATE,
+    TemplateSection,
+    TemplateSectionType,
+    TemplateVariable,
+)
 
 __all__ = [
     "Device",
@@ -690,4 +701,14 @@ __all__ = [
     "User",
     "UserRole",
     "UserSession",
+    # Report templates
+    "BRIEFING_TEMPLATE",
+    "BUILTIN_TEMPLATES",
+    "INVESTIGATION_TEMPLATE",
+    "ReportFormat",
+    "ReportTemplate",
+    "SITREP_TEMPLATE",
+    "TemplateSection",
+    "TemplateSectionType",
+    "TemplateVariable",
 ]

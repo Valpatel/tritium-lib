@@ -12,6 +12,21 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 51: Map Sharing, Macros, Grid, Power Tracking, Templates
+
+### Report Template Models (Unit Tested, 18 tests)
+- New `models/template.py` — ReportTemplate, TemplateSection, TemplateVariable
+- `ReportFormat` enum: plaintext, markdown, HTML, PDF, cot_xml
+- `TemplateSectionType` enum: header, summary, findings, timeline, targets, recommendations, appendix, map_snapshot, sensor_data, custom
+- `TemplateVariable`: name, label, type, default_value, required, source (auto-fill from tracker/fleet/dossier)
+- `TemplateSection`: section_id, title, body_template with {{variable}} placeholders, ordering
+- `ReportTemplate`: template_id, name, sections, variables, format, version, tags
+- `render_preview()`: substitutes variables with provided/default values
+- `get_required_variables()`, `get_section_order()` helper methods
+- 3 built-in templates: SITREP, Mission Briefing, Investigation Report
+- `BUILTIN_TEMPLATES` list for programmatic access
+- Full Pydantic v2 serialization roundtrip verified
+
 ## 2026-03-14 — Wave 50: Multi-User & Operational Readiness
 
 ### User & Session Models (Unit Tested, 18 tests)
