@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 70: MILESTONE — Movement Analytics Models
+
+### MovementAnalytics + FleetMetrics (Unit Tested, 14 tests)
+- New `models/movement_analytics.py` — per-target movement analytics and fleet aggregates
+- `MovementAnalytics`: target_id, avg_speed_mps, max_speed_mps, total_distance_m, dwell_times, direction_histogram (8 compass bins), activity_periods, current_speed/heading, is_stationary
+- `FleetMetrics`: total/moving/stationary targets, avg/max fleet speed, total distance, busiest zone, dominant direction
+- `FleetMetrics.from_analytics()` factory — computes aggregates from list of per-target analytics
+- `ActivityPeriod`: start/end epoch, avg speed, distance, duration
+- `DwellTime`: zone_id, zone_name, total_seconds, entry_count, last entry/exit
+- All models with `to_dict()` / `from_dict()` roundtrip serialization
+- Exported from `models/__init__.py`
+
+---
+
 ## 2026-03-14 — Wave 67: Deployment Models
 
 ### Deployment Config Models (Unit Tested, 18 tests)

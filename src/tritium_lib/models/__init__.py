@@ -418,6 +418,12 @@ from .deployment import (
     ServiceStatus,
     SystemRequirements,
 )
+from .movement_analytics import (
+    ActivityPeriod,
+    DwellTime,
+    FleetMetrics,
+    MovementAnalytics,
+)
 from .ble_interrogation import (
     BleDeviceProfile as BleGATTProfile,
     BleGATTCharacteristic,
@@ -806,4 +812,9 @@ __all__ = [
     "STANDARD_SERVICE_UUIDS",
     "classify_device_from_profile",
     "lookup_service_name",
+    # Movement analytics
+    "ActivityPeriod",
+    "DwellTime",
+    "FleetMetrics",
+    "MovementAnalytics",
 ]
