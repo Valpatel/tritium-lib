@@ -176,6 +176,16 @@ class TritiumTopics:
         """Topic for single camera snapshot requests/responses."""
         return f"{self.prefix}/cameras/{device_id}/snapshot"
 
+    # --- WiFi passive fingerprinting topics ---
+
+    def wifi_probe(self, device_id: str) -> str:
+        """Topic for WiFi probe request observations from an edge node."""
+        return f"{self.prefix}/edge/{device_id}/wifi_probe"
+
+    def wifi_scan(self, device_id: str) -> str:
+        """Topic for WiFi network scan results from an edge node."""
+        return f"{self.prefix}/edge/{device_id}/wifi_scan"
+
     # --- Robot topics (tritium-sc) ---
 
     def robot_telemetry(self, robot_id: str) -> str:

@@ -155,6 +155,12 @@ from .meshtastic import (
     MeshtasticWaypoint,
     MeshtasticStatus,
 )
+from .wifi import (
+    WiFiProbeRequest,
+    WiFiNetwork,
+    WiFiFingerprint,
+    WiFiNetworkType,
+)
 from .camera import (
     CameraSourceType,
     CameraFrameFormat,
@@ -302,6 +308,11 @@ __all__ = [
     "MeshtasticMessage",
     "MeshtasticWaypoint",
     "MeshtasticStatus",
+    # WiFi passive fingerprinting
+    "WiFiProbeRequest",
+    "WiFiNetwork",
+    "WiFiFingerprint",
+    "WiFiNetworkType",
     # Camera sources & detection
     "CameraSourceType",
     "CameraFrameFormat",
