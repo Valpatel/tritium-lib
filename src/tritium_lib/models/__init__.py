@@ -454,6 +454,14 @@ from .ble_interrogation import (
     classify_device_from_profile,
     lookup_service_name,
 )
+from .visualization import (
+    AllianceColor,
+    CoverageVolume,
+    Scene3DConfig,
+    SensorVolumeType,
+    TimelineConfig,
+    TrajectoryRibbon,
+)
 
 __all__ = [
     # Deployment
@@ -855,4 +863,11 @@ __all__ = [
     "RoomOccupancy",
     "RoomType",
     "WiFiRSSIFingerprint",
+    # 3D visualization configuration
+    "AllianceColor",
+    "CoverageVolume",
+    "Scene3DConfig",
+    "SensorVolumeType",
+    "TimelineConfig",
+    "TrajectoryRibbon",
 ]

@@ -12,6 +12,21 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 74: 3D Visualization Models
+
+### Scene3DConfig + TrajectoryRibbon + CoverageVolume + TimelineConfig (Unit Tested, 18 tests)
+- New `models/visualization.py` — 3D scene rendering parameter contracts
+- `TrajectoryRibbon`: target_id, alliance, color, min/max width, opacity, fade_tail, time_height_scale, max_points, glow
+- `CoverageVolume`: sensor_id, volume_type (cone/sphere/cylinder/frustum), range, FOV, heading, tilt, color, wireframe, pulse
+- Factory methods: `for_camera()`, `for_ble()`, `for_wifi()` with sensible defaults
+- `TimelineConfig`: start/end/current time, speed, loop, trail_duration, computed duration/progress properties
+- `Scene3DConfig`: aggregates ribbons, volumes, timeline, plus scene settings (grid, fog, lighting, shadows, fps)
+- `AllianceColor` enum: standard alliance-to-hex-color mapping
+- `SensorVolumeType` enum: cone, sphere, cylinder, frustum
+- All 6 types exported from `tritium_lib.models` top-level package
+
+---
+
 ## 2026-03-14 — Wave 73: Spatial Intelligence + Indoor Mapping Models
 
 ### FloorPlan + Room + IndoorPosition + WiFiRSSIFingerprint (Unit Tested, 17 tests)
