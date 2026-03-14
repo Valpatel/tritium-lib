@@ -7,7 +7,7 @@ the [Tritium](https://github.com/Valpatel/tritium) ecosystem.
 
 | Package | Description |
 |---------|-------------|
-| `models` | 116+ Pydantic models covering devices, firmware, mesh, BLE, CoT, alerts, topology, diagnostics, and more |
+| `models` | 130+ Pydantic models covering devices, firmware, mesh, BLE, CoT, alerts, topology, diagnostics, camera, Meshtastic, and more |
 | `events` | Thread-safe and async pub/sub event bus (`EventBus`, `AsyncEventBus`) |
 | `mqtt` | MQTT topic hierarchy (`tritium/{site}/{domain}/{device}/{type}`) and parsers |
 | `auth` | JWT token creation/decoding and API key management |

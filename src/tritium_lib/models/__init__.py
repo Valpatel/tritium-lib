@@ -148,6 +148,22 @@ from .trilateration import (
     trilaterate_2d,
     estimate_position,
 )
+from .meshtastic import (
+    MeshtasticConnectionType,
+    MeshtasticNode,
+    MeshtasticMessage,
+    MeshtasticWaypoint,
+    MeshtasticStatus,
+)
+from .camera import (
+    CameraSourceType,
+    CameraFrameFormat,
+    CameraPosition,
+    CameraSource,
+    CameraFrame,
+    BoundingBox,
+    CameraDetection,
+)
 
 __all__ = [
     "Device",
@@ -280,4 +296,18 @@ __all__ = [
     "rssi_to_distance",
     "trilaterate_2d",
     "estimate_position",
+    # Meshtastic BLE bridge
+    "MeshtasticConnectionType",
+    "MeshtasticNode",
+    "MeshtasticMessage",
+    "MeshtasticWaypoint",
+    "MeshtasticStatus",
+    # Camera sources & detection
+    "CameraSourceType",
+    "CameraFrameFormat",
+    "CameraPosition",
+    "CameraSource",
+    "CameraFrame",
+    "BoundingBox",
+    "CameraDetection",
 ]
