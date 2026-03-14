@@ -282,6 +282,11 @@ from .event_schema import (
     get_event_schema,
     list_event_types,
 )
+from .summary import (
+    FleetSummary,
+    SystemSummary,
+    TargetCounts,
+)
 from .export import (
     ExportFormat,
     ExportManifest,
@@ -543,6 +548,10 @@ __all__ = [
     "validate_event_type",
     "get_event_schema",
     "list_event_types",
+    # System summary
+    "FleetSummary",
+    "SystemSummary",
+    "TargetCounts",
     # Export / import
     "ExportFormat",
     "ExportManifest",
