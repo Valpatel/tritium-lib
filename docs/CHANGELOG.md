@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 35: Intelligence Reports
+
+- Added `models/report.py` — IntelligenceReport model (Unit Tested)
+  - `IntelligenceReport`: report_id, title, summary, entities, findings, recommendations, created_by, classification_level
+  - `ReportFinding`: structured findings with confidence scores and evidence refs
+  - `ReportRecommendation`: actionable recommendations with priority levels
+  - `ClassificationLevel` enum: unclassified, fouo, confidential, secret
+  - `ReportStatus` enum: draft, review, final, archived
+  - `mark_final()`, `add_finding()`, `add_recommendation()` methods
+  - Exported from `tritium_lib.models` package
+  - 6 new tests passing
+
+---
+
 ## 2026-03-14 — Wave 33: System Config + Mission Management
 
 - Added `TritiumSystemConfig` model to `models/config.py` (Unit Tested)

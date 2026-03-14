@@ -309,6 +309,13 @@ from .mission import (
     MissionStatus,
     MissionType,
 )
+from .report import (
+    ClassificationLevel,
+    IntelligenceReport,
+    ReportFinding,
+    ReportRecommendation,
+    ReportStatus,
+)
 
 __all__ = [
     "Device",
@@ -583,4 +590,10 @@ __all__ = [
     "MissionObjective",
     "MissionStatus",
     "MissionType",
+    # Intelligence reports
+    "ClassificationLevel",
+    "IntelligenceReport",
+    "ReportFinding",
+    "ReportRecommendation",
+    "ReportStatus",
 ]
