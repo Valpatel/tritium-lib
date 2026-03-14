@@ -225,6 +225,18 @@ from .acoustic_event import (
     AcousticStats,
     classify_event_severity,
 )
+from .terrain import (
+    CoverageAnalysis,
+    CoverageCell,
+    ElevationPoint,
+    ElevationProfile,
+    SensorPlacement,
+    TerrainType,
+    WeatherConditions,
+    estimate_signal_strength,
+    free_space_path_loss_db,
+    terrain_path_loss_db,
+)
 from .federation import (
     ConnectionState,
     FederatedSite,
@@ -436,6 +448,17 @@ __all__ = [
     "AcousticSpectrum",
     "AcousticStats",
     "classify_event_severity",
+    # Terrain analysis & RF propagation
+    "CoverageAnalysis",
+    "CoverageCell",
+    "ElevationPoint",
+    "ElevationProfile",
+    "SensorPlacement",
+    "TerrainType",
+    "WeatherConditions",
+    "estimate_signal_strength",
+    "free_space_path_loss_db",
+    "terrain_path_loss_db",
     # Multi-site federation
     "ConnectionState",
     "FederatedSite",
