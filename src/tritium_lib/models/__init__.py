@@ -267,6 +267,14 @@ from .notification_rules import (
     NotificationRule,
     NotificationSeverity,
 )
+from .event_schema import (
+    ALL_EVENT_TYPES,
+    EventDomain,
+    TritiumEvent,
+    validate_event_type,
+    get_event_schema,
+    list_event_types,
+)
 
 __all__ = [
     "Device",
@@ -504,4 +512,11 @@ __all__ = [
     "NotificationChannel",
     "NotificationRule",
     "NotificationSeverity",
+    # Event schemas
+    "ALL_EVENT_TYPES",
+    "EventDomain",
+    "TritiumEvent",
+    "validate_event_type",
+    "get_event_schema",
+    "list_event_types",
 ]
