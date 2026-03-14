@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 50: Multi-User & Operational Readiness
+
+### User & Session Models (Unit Tested, 18 tests)
+- New `models/user.py` — User, UserRole, Permission, UserSession, ROLE_PERMISSIONS
+- `UserRole` enum: admin, commander, analyst, operator, observer
+- `Permission` enum: 22 granular permissions covering targets, missions, fleet, intel, sensors, system, automation, briefings, Amy
+- `ROLE_PERMISSIONS` mapping: default permission sets per role (admin=all, commander=tactical, analyst=intel, operator=fleet, observer=read-only)
+- `User` dataclass: user_id, username, display_name, role, permissions, active_since, last_action, email, color
+- `UserSession` dataclass: session tracking with cursor_lat/lng for real-time sharing
+- `has_permission()`: checks explicit overrides then falls back to role defaults
+- `get_effective_permissions()`: returns full effective permission set
+- Roundtrip serialization via `to_dict()`/`from_dict()`
+- `DeviceHeartbeat` gains `device_group` field for edge device group management
+
 ## 2026-03-14 — Wave 48: Network Topology Models
 
 ### NetworkNode, NodeRole, PeerQuality Models (Unit Tested, 12 tests)

@@ -73,6 +73,7 @@ class DeviceHeartbeat(BaseModel):
     command_acks: list[dict] = Field(default_factory=list)
     mesh_peers: Optional[int] = None
     timestamp: Optional[int] = None
+    device_group: str = ""  # perimeter, interior, mobile, reserve
 
 
 class Device(BaseModel):

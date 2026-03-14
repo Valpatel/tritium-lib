@@ -359,6 +359,13 @@ from .scenario import (
     ScenarioStatus,
     TacticalScenario,
 )
+from .user import (
+    Permission,
+    ROLE_PERMISSIONS,
+    User,
+    UserRole,
+    UserSession,
+)
 
 __all__ = [
     "Device",
@@ -677,4 +684,10 @@ __all__ = [
     "ScenarioObjective",
     "ScenarioStatus",
     "TacticalScenario",
+    # User / session management
+    "Permission",
+    "ROLE_PERMISSIONS",
+    "User",
+    "UserRole",
+    "UserSession",
 ]
