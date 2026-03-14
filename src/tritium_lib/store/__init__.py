@@ -5,6 +5,7 @@
 
 from .ble import BleStore
 from .dossiers import DossierStore
+from .reid import ReIDStore
 from .targets import TargetStore
 
-__all__ = ["BleStore", "DossierStore", "TargetStore"]
+__all__ = ["BleStore", "DossierStore", "ReIDStore", "TargetStore"]

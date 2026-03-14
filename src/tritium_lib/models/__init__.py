@@ -176,6 +176,10 @@ from .dossier import (
     PositionRecord,
     TargetDossier,
 )
+from .reid import (
+    ReIDEmbedding,
+    ReIDMatch,
+)
 
 __all__ = [
     "Device",
@@ -332,4 +336,7 @@ __all__ = [
     "DossierEnrichment",
     "PositionRecord",
     "TargetDossier",
+    # ReID (re-identification)
+    "ReIDEmbedding",
+    "ReIDMatch",
 ]
