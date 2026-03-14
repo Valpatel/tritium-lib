@@ -19,14 +19,14 @@ Usage
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+from .base import BaseStore
 
 # ---------------------------------------------------------------------------
 # SQL schema
@@ -99,7 +99,7 @@ class AuditEntry:
 # ---------------------------------------------------------------------------
 
 
-class AuditStore:
+class AuditStore(BaseStore):
     """SQLite-backed audit log for security compliance.
 
     Thread-safe. Each instance manages its own database connection.
@@ -112,22 +112,15 @@ class AuditStore:
         Maximum entries to retain. Oldest are pruned during cleanup.
     """
 
+    _SCHEMAS = (_SCHEMA_AUDIT,)
+
     def __init__(
         self,
         db_path: str | Path = ":memory:",
         max_entries: int = 100_000,
     ) -> None:
-        self._db_path = str(db_path)
         self._max_entries = max_entries
-        self._lock = threading.Lock()
-
-        # Create parent directory if needed
-        if self._db_path != ":memory:":
-            Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA_AUDIT)
+        super().__init__(db_path)
 
     def log(
         self,
@@ -340,11 +333,6 @@ class AuditStore:
             self._conn.execute("DELETE FROM audit_log")
             self._conn.commit()
         return count
-
-    def close(self) -> None:
-        """Close the database connection."""
-        with self._lock:
-            self._conn.close()
 
     # -- Internal ----------------------------------------------------------
 

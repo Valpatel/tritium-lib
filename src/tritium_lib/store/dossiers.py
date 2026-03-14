@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 import time
 import uuid
-from pathlib import Path
+
+from .base import BaseStore
 
 # ---------------------------------------------------------------------------
 # SQL schemas
@@ -102,7 +102,7 @@ END;
 """
 
 
-class DossierStore:
+class DossierStore(BaseStore):
     """SQLite-backed persistent target intelligence.
 
     Accumulates signals, enrichments, and metadata into dossiers that
@@ -110,27 +110,14 @@ class DossierStore:
     lookup, and merging of duplicate dossiers.
     """
 
-    def __init__(self, db_path: str | Path) -> None:
-        self._db_path = str(db_path)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._create_tables()
-
-    def _create_tables(self) -> None:
-        cur = self._conn.cursor()
-        cur.executescript(_SCHEMA_DOSSIERS)
-        cur.executescript(_SCHEMA_SIGNALS)
-        cur.executescript(_SCHEMA_ENRICHMENTS)
-        cur.executescript(_SCHEMA_FTS)
-        cur.executescript(_SCHEMA_FTS_TRIGGERS)
-        self._conn.commit()
-
-    def close(self) -> None:
-        """Close the database connection."""
-        self._conn.close()
+    _SCHEMAS = (
+        _SCHEMA_DOSSIERS,
+        _SCHEMA_SIGNALS,
+        _SCHEMA_ENRICHMENTS,
+        _SCHEMA_FTS,
+        _SCHEMA_FTS_TRIGGERS,
+    )
+    _FOREIGN_KEYS = True
 
     # ------------------------------------------------------------------
     # Internal helpers

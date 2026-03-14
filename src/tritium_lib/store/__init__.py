@@ -3,6 +3,7 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """Shared persistence stores for the Tritium ecosystem."""
 
+from .base import BaseStore
 from .ble import BleStore
 from .dossiers import DossierStore
 from .reid import ReIDStore
@@ -10,6 +11,7 @@ from .targets import TargetStore
 from .audit_log import AuditStore, AuditEntry, AuditSeverity
 
 __all__ = [
+    "BaseStore",
     "BleStore",
     "DossierStore",
     "ReIDStore",
