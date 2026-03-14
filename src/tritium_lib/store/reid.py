@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .base import BaseStore
+
 # ---------------------------------------------------------------------------
 # Optional numpy — pure-Python fallback for cosine similarity
 # ---------------------------------------------------------------------------
@@ -124,11 +126,12 @@ def _utcnow() -> str:
 # ReIDStore
 # ---------------------------------------------------------------------------
 
-class ReIDStore:
+class ReIDStore(BaseStore):
     """SQLite-backed re-identification embedding store.
 
     Stores appearance feature vectors and performs cosine similarity search
-    to find cross-camera matches.  Thread-safe via a lock around writes.
+    to find cross-camera matches.  Inherits from BaseStore for standardized
+    SQLite WAL setup, thread safety, and convenience query methods.
 
     Parameters
     ----------
@@ -137,23 +140,10 @@ class ReIDStore:
         ephemeral in-memory database (useful for testing).
     """
 
-    def __init__(self, db_path: str | Path) -> None:
-        self._db_path = str(db_path)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._create_tables()
-
-    def _create_tables(self) -> None:
-        cur = self._conn.cursor()
-        cur.executescript(_SCHEMA_EMBEDDINGS)
-        cur.executescript(_SCHEMA_MATCHES)
-        self._conn.commit()
-
-    def close(self) -> None:
-        """Close the database connection."""
-        self._conn.close()
+    _SCHEMAS = (
+        _SCHEMA_EMBEDDINGS,
+        _SCHEMA_MATCHES,
+    )
 
     # ------------------------------------------------------------------
     # Embedding storage

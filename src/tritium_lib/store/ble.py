@@ -17,6 +17,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .base import BaseStore
+
 # ---------------------------------------------------------------------------
 # SQL schemas
 # ---------------------------------------------------------------------------
@@ -94,46 +96,24 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class BleStore:
+class BleStore(BaseStore):
     """SQLite-backed BLE sighting persistence.
 
     Shared across the Tritium ecosystem — any service (edge server,
     command center, standalone tool) can instantiate this with a path
     to get persistent BLE tracking.
+
+    Inherits from BaseStore for standardized SQLite WAL setup, thread
+    safety, and convenience query methods.
     """
 
-    def __init__(self, db_path: str | Path) -> None:
-        """Open (or create) the BLE sighting database.
-
-        Parameters
-        ----------
-        db_path:
-            Path to the SQLite database file.  Use ``":memory:"`` for
-            an ephemeral in-memory database (useful for testing).
-        """
-        self._db_path = str(db_path)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._create_tables()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _create_tables(self) -> None:
-        cur = self._conn.cursor()
-        cur.executescript(_SCHEMA_SIGHTINGS)
-        cur.executescript(_SCHEMA_TARGETS)
-        cur.executescript(_SCHEMA_WIFI_SIGHTINGS)
-        cur.executescript(_SCHEMA_WIFI_TARGETS)
-        cur.executescript(_SCHEMA_NODE_POSITIONS)
-        self._conn.commit()
-
-    def close(self) -> None:
-        """Close the database connection."""
-        self._conn.close()
+    _SCHEMAS = (
+        _SCHEMA_SIGHTINGS,
+        _SCHEMA_TARGETS,
+        _SCHEMA_WIFI_SIGHTINGS,
+        _SCHEMA_WIFI_TARGETS,
+        _SCHEMA_NODE_POSITIONS,
+    )
 
     # ------------------------------------------------------------------
     # Sighting recording
