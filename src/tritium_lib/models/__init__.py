@@ -170,6 +170,12 @@ from .camera import (
     BoundingBox,
     CameraDetection,
 )
+from .dossier import (
+    DossierSignal,
+    DossierEnrichment,
+    PositionRecord,
+    TargetDossier,
+)
 
 __all__ = [
     "Device",
@@ -321,4 +327,9 @@ __all__ = [
     "CameraFrame",
     "BoundingBox",
     "CameraDetection",
+    # Target Dossier
+    "DossierSignal",
+    "DossierEnrichment",
+    "PositionRecord",
+    "TargetDossier",
 ]
