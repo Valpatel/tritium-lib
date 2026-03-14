@@ -206,6 +206,18 @@ from .ais import (
     FlightCategory,
     SquawkCode,
 )
+from .federation import (
+    ConnectionState,
+    FederatedSite,
+    FederationMessage,
+    FederationMessageType,
+    SharedTarget,
+    SharePolicy,
+    SiteConnection,
+    SiteRole,
+    federation_topic,
+    is_message_expired,
+)
 
 __all__ = [
     "Device",
@@ -388,4 +400,15 @@ __all__ = [
     "ADSBFlight",
     "FlightCategory",
     "SquawkCode",
+    # Multi-site federation
+    "ConnectionState",
+    "FederatedSite",
+    "FederationMessage",
+    "FederationMessageType",
+    "SharedTarget",
+    "SharePolicy",
+    "SiteConnection",
+    "SiteRole",
+    "federation_topic",
+    "is_message_expired",
 ]
