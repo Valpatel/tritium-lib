@@ -1,12 +1,16 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Device classifier package — identifies devices from BLE and WiFi signals
-using comprehensive public lookup databases."""
+"""Device classifier — multi-signal BLE and WiFi device type classification.
+
+Uses BLE fingerprint data (GAP appearance, service UUIDs, company IDs, name
+patterns, Apple continuity, Google Fast Pair) to produce a rich device type
+classification from whatever signals are available.
+"""
 
 from tritium_lib.classifier.device_classifier import (
-    DeviceClassification,
     DeviceClassifier,
+    DeviceClassification,
 )
 
 __all__ = ["DeviceClassifier", "DeviceClassification"]
