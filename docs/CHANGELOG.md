@@ -12,6 +12,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 56: Anomaly Detection ABC
+
+### AnomalyDetector ABC (Unit Tested, 18 tests)
+- New `intelligence/anomaly.py` — AnomalyDetector ABC with `detect(current_metrics, baseline) -> list[Anomaly]`
+- `SimpleThresholdDetector`: flags metrics > N sigma from baseline mean, severity levels, no external deps
+- `AutoencoderDetector`: trains single-hidden-layer autoencoder, flags high reconstruction error, requires numpy
+- `Anomaly` dataclass: metric_name, current_value, baseline stats, deviation sigma, severity, score
+- Exported from `tritium_lib.intelligence` package
+
 ## 2026-03-14 — Wave 53: Intelligence Scorer ABC
 
 ### CorrelationScorer ABC (Unit Tested, 19 tests)
