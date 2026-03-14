@@ -12,6 +12,24 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 73: Spatial Intelligence + Indoor Mapping Models
+
+### FloorPlan + Room + IndoorPosition + WiFiRSSIFingerprint (Unit Tested, 17 tests)
+- New `models/floorplan.py` — indoor spatial intelligence data contracts
+- `FloorPlan`: plan_id, name, building, floor_level, image_path, bounds, rooms, anchors, status, opacity, rotation
+- `Room`: room_id, name, room_type (13 types), polygon (lat/lon), capacity, ray-casting contains_point()
+- `FloorPlanBounds`: north/south/east/west with contains() and center properties
+- `GeoAnchor`: pixel-to-lat/lon mapping for floor plan geo-referencing
+- `IndoorPosition`: target_id, plan_id, room_id, floor_level, lat/lon, confidence, method
+- `RoomOccupancy`: per-room person/device counts with occupancy_ratio
+- `BuildingOccupancy`: whole-building occupancy summary
+- `WiFiRSSIFingerprint`: BSSID->RSSI map at known position for fingerprint-based positioning
+- `FloorPlanStatus` enum: draft, active, archived
+- `RoomType` enum: office, conference, hallway, bathroom, kitchen, lobby, storage, server_room, stairwell, elevator, open_area, restricted, other
+- All 11 types exported from `tritium_lib.models` top-level package
+
+---
+
 ## 2026-03-14 — Wave 71: Edge-to-Cloud Intelligence Pipeline Models
 
 ### FeatureVector + ClassificationFeedback + EdgeIntelligenceMetrics (Unit Tested, 17 tests)

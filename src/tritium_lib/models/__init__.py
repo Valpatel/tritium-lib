@@ -431,6 +431,19 @@ from .feature_vector import (
     FeatureSource,
     FeatureVector,
 )
+from .floorplan import (
+    BuildingOccupancy,
+    FloorPlan,
+    FloorPlanBounds,
+    FloorPlanStatus,
+    GeoAnchor,
+    IndoorPosition,
+    PolygonPoint,
+    Room,
+    RoomOccupancy,
+    RoomType,
+    WiFiRSSIFingerprint,
+)
 from .ble_interrogation import (
     BleDeviceProfile as BleGATTProfile,
     BleGATTCharacteristic,
@@ -830,4 +843,16 @@ __all__ = [
     "DwellTime",
     "FleetMetrics",
     "MovementAnalytics",
+    # Indoor floor plans & spatial intelligence
+    "BuildingOccupancy",
+    "FloorPlan",
+    "FloorPlanBounds",
+    "FloorPlanStatus",
+    "GeoAnchor",
+    "IndoorPosition",
+    "PolygonPoint",
+    "Room",
+    "RoomOccupancy",
+    "RoomType",
+    "WiFiRSSIFingerprint",
 ]
