@@ -324,6 +324,12 @@ from .sensor_config import (
     SensorStatus,
     SensorType,
 )
+from .operational import (
+    OperationalObjective,
+    OperationalPeriod,
+    OperationalPhase,
+    WeatherInfo,
+)
 
 __all__ = [
     "Device",
@@ -611,4 +617,9 @@ __all__ = [
     "SensorPosition",
     "SensorStatus",
     "SensorType",
+    # Operational periods
+    "OperationalObjective",
+    "OperationalPeriod",
+    "OperationalPhase",
+    "WeatherInfo",
 ]

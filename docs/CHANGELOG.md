@@ -12,6 +12,21 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 41: Operational Period Models
+
+### Operational Period (Unit Tested, 17 tests)
+- Added `models/operational.py` — OperationalPeriod for structuring operations into defined time blocks
+- `OperationalPeriod`: period_id, start, end, commander, objectives, weather, personnel_count, phase, site_id
+- `OperationalPhase` enum: planned, briefing, active, transition, debriefing, completed, cancelled
+- `OperationalObjective`: description, priority, completed status, assigned_to
+- `WeatherInfo`: condition, temperature, wind speed/direction, visibility, humidity
+- Lifecycle methods: `activate()`, `complete()`, `cancel()`, `complete_objective()`
+- Properties: `progress` (0.0-1.0), `is_terminal`, `duration_seconds`
+- Full `to_dict()` serialization for JSON transport
+- Exported from `tritium_lib.models` namespace
+
+---
+
 ## 2026-03-14 — Wave 39: Graph Store Fix, Test Baseline
 
 - Fixed `TritiumGraph.__init__` — `mkdir(parents=True)` now inside try/except block so invalid paths (e.g., `/dev/null/...`) correctly raise RuntimeError instead of NotADirectoryError (Unit Tested)
