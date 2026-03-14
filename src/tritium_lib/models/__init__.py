@@ -335,6 +335,17 @@ from .operational import (
     OperationalPhase,
     WeatherInfo,
 )
+from .comms import (
+    AuthType,
+    ChannelAuth,
+    ChannelHealth,
+    ChannelInventory,
+    ChannelStatus,
+    ChannelType,
+    CommChannel,
+    select_best_channel,
+    summarize_channels,
+)
 
 __all__ = [
     "Device",
@@ -631,4 +642,14 @@ __all__ = [
     "OperationalPeriod",
     "OperationalPhase",
     "WeatherInfo",
+    # Communication channels
+    "AuthType",
+    "ChannelAuth",
+    "ChannelHealth",
+    "ChannelInventory",
+    "ChannelStatus",
+    "ChannelType",
+    "CommChannel",
+    "select_best_channel",
+    "summarize_channels",
 ]
