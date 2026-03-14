@@ -275,6 +275,17 @@ from .event_schema import (
     get_event_schema,
     list_event_types,
 )
+from .export import (
+    ExportFormat,
+    ExportManifest,
+    ExportPackage,
+    ExportScope,
+    ExportSection,
+    ExportSectionType,
+    ImportResult,
+    create_export_manifest,
+    validate_import_compatibility,
+)
 
 __all__ = [
     "Device",
@@ -519,4 +530,14 @@ __all__ = [
     "validate_event_type",
     "get_event_schema",
     "list_event_types",
+    # Export / import
+    "ExportFormat",
+    "ExportManifest",
+    "ExportPackage",
+    "ExportScope",
+    "ExportSection",
+    "ExportSectionType",
+    "ImportResult",
+    "create_export_manifest",
+    "validate_import_compatibility",
 ]
