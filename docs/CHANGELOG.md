@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 38: Sensor Config, Multi-Camera, Target Merge, Power Saver
+
+- Added `models/sensor_config.py` — SensorPlacement configuration model (Unit Tested, 19 tests)
+  - `SensorPlacement`: sensor_id, position, height, fov, rotation, tilt, coverage_radius, sensor_type, mounting_type, status
+  - `SensorPosition`: lat/lng/alt + local x/y/z coordinates
+  - `SensorArray`: collection of sensors with filtering by type/status
+  - `SensorType` enum: ble_radio, wifi_radio, camera, microphone, radar, lidar, pir, etc.
+  - `MountingType` enum: wall, ceiling, pole, tripod, vehicle, drone, handheld, etc.
+  - `SensorStatus` enum: online, offline, degraded, calibrating, error
+  - Coverage area calculation (omni vs. sector), bearing containment check
+- Exported all sensor_config types from `models/__init__.py`
+
+---
+
 ## 2026-03-14 — Wave 35: Intelligence Reports
 
 - Added `models/report.py` — IntelligenceReport model (Unit Tested)

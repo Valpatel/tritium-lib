@@ -316,6 +316,14 @@ from .report import (
     ReportRecommendation,
     ReportStatus,
 )
+from .sensor_config import (
+    MountingType,
+    SensorArray,
+    SensorPlacement as SensorPlacementConfig,
+    SensorPosition,
+    SensorStatus,
+    SensorType,
+)
 
 __all__ = [
     "Device",
@@ -596,4 +604,11 @@ __all__ = [
     "ReportFinding",
     "ReportRecommendation",
     "ReportStatus",
+    # Sensor placement & configuration
+    "MountingType",
+    "SensorArray",
+    "SensorPlacementConfig",
+    "SensorPosition",
+    "SensorStatus",
+    "SensorType",
 ]
