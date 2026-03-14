@@ -25,6 +25,10 @@ Common code library for the entire Tritium ecosystem. Used by tritium-edge (firm
 | `config` | Pydantic base settings class for service configuration | `src/tritium_lib/config/` |
 | `geo` | Coordinate transforms (local meters <-> lat/lng), camera projection, haversine | `src/tritium_lib/geo/__init__.py` |
 | `notifications` | Notification model and thread-safe NotificationManager | `src/tritium_lib/notifications/__init__.py` |
+| `graph` | KuzuDB embedded graph database for entity/relationship storage | `src/tritium_lib/graph/store.py` |
+| `ontology` | Semantic type system — entity types, relationship types, schema validation | `src/tritium_lib/ontology/schema.py` |
+| `classifier` | Multi-signal BLE/WiFi device type classification with fingerprint databases | `src/tritium_lib/classifier/device_classifier.py` |
+| `data` | JSON lookup tables for BLE, WiFi, OUI fingerprinting (11 databases) | `src/tritium_lib/data/` |
 | `web` | Cyberpunk HTML theme engine and dashboard components | `src/tritium_lib/web/` |
 | `testing` | Visual regression checks and ESP32 device automation | `src/tritium_lib/testing/` |
 
@@ -59,6 +63,20 @@ tritium-lib/
 │   │   └── codec.py     # CoT XML ↔ Pydantic
 │   ├── config/
 │   │   └── __init__.py  # Base settings
+│   ├── graph/
+│   │   └── store.py     # TritiumGraph — KuzuDB wrapper
+│   ├── ontology/
+│   │   ├── schema.py    # Entity/relationship type definitions
+│   │   └── registry.py  # OntologyRegistry — runtime lookup
+│   ├── classifier/
+│   │   └── device_classifier.py  # Multi-signal BLE/WiFi classifier
+│   ├── data/
+│   │   ├── ble_fingerprints.json  # BLE device fingerprints
+│   │   ├── ble_appearance_values.json  # GAP appearance codes
+│   │   ├── ble_service_uuids.json     # Service UUID mapping
+│   │   ├── oui_device_types.json      # OUI to device type
+│   │   ├── wifi_ssid_patterns.json    # WiFi SSID classification
+│   │   └── ...            # 11 JSON lookup databases
 │   ├── web/
 │   │   ├── theme.py     # Cyberpunk color palette
 │   │   ├── components.py # Reusable HTML components
