@@ -462,6 +462,19 @@ from .visualization import (
     TimelineConfig,
     TrajectoryRibbon,
 )
+from .pattern import (
+    BehaviorPattern as LearnedBehaviorPattern,
+    CoPresenceRelationship,
+    DeviationType,
+    LocationCluster,
+    PatternAlert,
+    PatternAnomaly,
+    PatternStatus,
+    PatternType,
+    TimeSlot,
+    compute_temporal_correlation,
+    detect_time_regularity,
+)
 
 __all__ = [
     # Deployment
@@ -870,4 +883,16 @@ __all__ = [
     "SensorVolumeType",
     "TimelineConfig",
     "TrajectoryRibbon",
+    # Behavioral pattern learning
+    "LearnedBehaviorPattern",
+    "CoPresenceRelationship",
+    "DeviationType",
+    "LocationCluster",
+    "PatternAlert",
+    "PatternAnomaly",
+    "PatternStatus",
+    "PatternType",
+    "TimeSlot",
+    "compute_temporal_correlation",
+    "detect_time_regularity",
 ]
