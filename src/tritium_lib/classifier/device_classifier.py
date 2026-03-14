@@ -407,13 +407,6 @@ class DeviceClassifier:
         prefix = mac_clean[:8]
 
         manufacturer = _OUI_MANUFACTURERS.get(prefix, "")
-        if not manufacturer:
-            # Try tritium-lib's full OUI store
-            try:
-                from tritium_lib.store.ble import oui_lookup
-                manufacturer = oui_lookup(mac_clean) or ""
-            except (ImportError, Exception):
-                pass
 
         if not manufacturer:
             return None
