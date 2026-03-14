@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 79: Acoustic Intelligence Models
+
+### AudioFeatureVector, SoundSignature, SoundClassification, AcousticTrilateration (Unit Tested, 16 tests)
+- New `models/acoustic_intelligence.py` — acoustic ML classification and TDoA localization models
+- `AudioFeatureVector`: 13 MFCCs + spectral centroid/bandwidth/rolloff/flatness + ZCR + RMS + peak
+- `SoundSignature`: reference profiles for sound classes with `matches_features()` heuristic matcher
+- `SoundClassification`: ML model output with top-N predictions and model version
+- `AcousticObserver`: sensor node observation for TDoA (lat, lon, arrival_time, amplitude)
+- `AcousticTrilateration`: multi-node localization result with confidence scoring
+- `acoustic_trilaterate()`: TDoA weighted centroid localization from 2+ observers
+- All models exported from `tritium_lib.models.__init__`
+
+---
+
 ## 2026-03-14 — Wave 77: Fleet Operations Models
 
 ### FleetCommand + ConfigTemplate + FleetAnalyticsSnapshot (Unit Tested, 13 tests)

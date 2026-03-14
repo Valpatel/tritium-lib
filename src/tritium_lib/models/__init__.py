@@ -244,6 +244,15 @@ from .acoustic_event import (
     AcousticStats,
     classify_event_severity,
 )
+from .acoustic_intelligence import (
+    AcousticObserver,
+    AcousticTrilateration,
+    AudioFeatureVector,
+    SoundClassification,
+    SoundSignature,
+    acoustic_trilaterate,
+    SPEED_OF_SOUND_MPS,
+)
 from .behavior import (
     AnomalySeverity,
     AnomalyType,
@@ -710,6 +719,14 @@ __all__ = [
     "AcousticSpectrum",
     "AcousticStats",
     "classify_event_severity",
+    # Acoustic intelligence (ML classification + localization)
+    "AcousticObserver",
+    "AcousticTrilateration",
+    "AudioFeatureVector",
+    "SoundClassification",
+    "SoundSignature",
+    "acoustic_trilaterate",
+    "SPEED_OF_SOUND_MPS",
     # Behavioral pattern recognition
     "AnomalySeverity",
     "AnomalyType",
