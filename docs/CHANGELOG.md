@@ -12,6 +12,23 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 76: Behavioral Pattern Learning Models
+
+### BehaviorPattern + PatternAnomaly + CoPresenceRelationship + PatternAlert (Unit Tested, 24 tests)
+- New `models/pattern.py` — behavioral pattern learning data contracts
+- `BehaviorPattern`: pattern_id, target_id, pattern_type, status, confidence, schedule, locations, observation_count
+- `PatternAnomaly`: anomaly_id, deviation_type, deviation_score, expected/actual behavior descriptions
+- `CoPresenceRelationship`: temporal/spatial correlation, co-occurrence count, confidence computation
+- `PatternAlert`: alert_id, pattern_id, severity, deviation_threshold, cooldown, fire tracking
+- `TimeSlot`: recurring schedule with day-of-week filtering and midnight wrap
+- `LocationCluster`: spatial cluster center, radius, visit count, dwell time
+- `compute_temporal_correlation()`: sliding-window co-occurrence correlation for two timestamp lists
+- `detect_time_regularity()`: circular mean time-of-day with configurable tolerance
+- 8 enums: PatternType (daily/weekly/commute/dwell/arrival/departure/co_presence/periodic), PatternStatus, DeviationType
+- Exported in models/__init__.py as LearnedBehaviorPattern (avoids collision with behavior.py)
+
+---
+
 ## 2026-03-14 — Wave 74: 3D Visualization Models
 
 ### Scene3DConfig + TrajectoryRibbon + CoverageVolume + TimelineConfig (Unit Tested, 18 tests)
