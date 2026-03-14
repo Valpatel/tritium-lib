@@ -12,6 +12,31 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-13 — Wave 9: Graph Database & Ontology Schema
+
+### KuzuDB Graph Store
+| Change | Verification |
+|--------|-------------|
+| `graph/kuzu_store.py` — KuzuDB embedded graph database for ontology layer | Unit Tested |
+| Node CRUD: create, read, update, delete typed entities | Unit Tested |
+| Edge CRUD: typed relationships between entities (CARRIES, DETECTED_WITH, etc.) | Unit Tested |
+| Cypher query interface for traversal and pattern matching | Unit Tested |
+
+### Ontology Schema & Registry
+| Change | Verification |
+|--------|-------------|
+| `ontology/schema.py` — formal ontology: 10 entity types, 12 relationships, 3 interfaces | Unit Tested |
+| Entity types: Person, Device, Vehicle, Location, Network, Organization, Event, Alert, Asset, Zone | Unit Tested |
+| Relationship types: OWNS, CARRIES, DETECTED_AT, CONNECTED_TO, MEMBER_OF, etc. | Unit Tested |
+| Schema validation and type-safe entity/relationship construction | Unit Tested |
+
+### DossierStore Enhancements
+| Change | Verification |
+|--------|-------------|
+| `_update_json_field` helper for atomic tag/note updates in DossierStore | Unit Tested |
+
+---
+
 ## 2026-03-13 — Wave 7: Dossiers & Target Intelligence
 
 ### Models — Dossier
