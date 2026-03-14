@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 25: Maintenance & Quality
+
+### BaseStore Migration
+| Change | Verification |
+|--------|-------------|
+| BleStore, TargetStore, ReIDStore now inherit from BaseStore | Unit Tested (1273 tests) |
+| Removed 85 lines of duplicated boilerplate (connect, WAL, lock, close) | Unit Tested |
+| Dead `oui_lookup` import removed from DeviceClassifier | Unit Tested |
+| READMEs added for `web/` and `config/` modules | Documented |
+
+---
+
 ## 2026-03-14 — Wave 15: Federation Models
 
 ### Multi-Site Federation
