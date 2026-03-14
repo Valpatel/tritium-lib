@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 15: Federation Models
+
+### Multi-Site Federation
+| Change | Verification |
+|--------|-------------|
+| `models/federation.py` — FederatedSite, SiteConnection, SharedTarget, FederationMessage | Unit Tested (23 tests) |
+| Enums: SiteRole, ConnectionState, SharePolicy, FederationMessageType | Unit Tested |
+| Utilities: federation_topic() builder, is_message_expired() checker | Unit Tested |
+| All models registered in models/__init__.py with proper __all__ exports | Unit Tested |
+
+---
+
 ## 2026-03-13 — Wave 9: Graph Database & Ontology Schema
 
 ### KuzuDB Graph Store
