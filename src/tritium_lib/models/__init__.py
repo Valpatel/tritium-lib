@@ -384,6 +384,16 @@ from .training import (
     FeedbackRecord,
     TrainingExample,
 )
+from .ble_interrogation import (
+    BleDeviceProfile as BleGATTProfile,
+    BleGATTCharacteristic,
+    BleGATTService,
+    BleInterrogationQueue,
+    BleInterrogationResult,
+    STANDARD_SERVICE_UUIDS,
+    classify_device_from_profile,
+    lookup_service_name,
+)
 
 __all__ = [
     "Device",
@@ -724,4 +734,13 @@ __all__ = [
     "DecisionType",
     "FeedbackRecord",
     "TrainingExample",
+    # BLE GATT interrogation
+    "BleGATTProfile",
+    "BleGATTCharacteristic",
+    "BleGATTService",
+    "BleInterrogationQueue",
+    "BleInterrogationResult",
+    "STANDARD_SERVICE_UUIDS",
+    "classify_device_from_profile",
+    "lookup_service_name",
 ]
