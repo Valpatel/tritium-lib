@@ -397,6 +397,21 @@ class DossierStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def _update_json_field(self, dossier_id: str, field: str, value: object) -> bool:
+        """Update a JSON-encoded column (tags, notes, identifiers).
+
+        Returns True if the row existed.
+        """
+        if field not in ("tags", "notes", "identifiers"):
+            raise ValueError(f"Cannot update field: {field}")
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE dossiers SET {field} = ? WHERE dossier_id = ?",
+                (json.dumps(value), dossier_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     # ------------------------------------------------------------------
     # Merge
     # ------------------------------------------------------------------
