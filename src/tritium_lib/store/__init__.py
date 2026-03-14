@@ -4,6 +4,7 @@
 """Shared persistence stores for the Tritium ecosystem."""
 
 from .ble import BleStore
+from .dossiers import DossierStore
 from .targets import TargetStore
 
-__all__ = ["BleStore", "TargetStore"]
+__all__ = ["BleStore", "DossierStore", "TargetStore"]
