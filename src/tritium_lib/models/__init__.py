@@ -187,6 +187,15 @@ from .radio import (
     CameraMqttConfig,
     CameraMqttStats,
 )
+from .drone import (
+    DroneCommand,
+    DroneMission,
+    DroneRegistration,
+    DroneState,
+    DroneTelemetry,
+    DroneType,
+    Waypoint,
+)
 
 __all__ = [
     "Device",
@@ -352,4 +361,12 @@ __all__ = [
     "RadioSchedulerStatus",
     "CameraMqttConfig",
     "CameraMqttStats",
+    # Drone/UAV integration
+    "DroneCommand",
+    "DroneMission",
+    "DroneRegistration",
+    "DroneState",
+    "DroneTelemetry",
+    "DroneType",
+    "Waypoint",
 ]
