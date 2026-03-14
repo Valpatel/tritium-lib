@@ -289,6 +289,149 @@ class TestOntologyRegistry:
         assert len(r.list_entity_types()) == 1
         assert r.get_entity_type("widget").display_name == "Widget"
 
+    # ------------------------------------------------------------------
+    # Edge cases
+    # ------------------------------------------------------------------
+
+    def test_empty_schema_loads(self) -> None:
+        """Loading an empty schema should work with no types."""
+        schema = OntologySchema(version="0.0.0")
+        r = OntologyRegistry()
+        r.load_schema(schema)
+        assert r.version == "0.0.0"
+        assert r.list_entity_types() == []
+        assert r.list_relationship_types() == []
+
+    def test_empty_schema_validate_entity_raises(self) -> None:
+        """Validating against an empty schema raises KeyError."""
+        r = OntologyRegistry()
+        r.load_schema(OntologySchema(version="0.0.0"))
+        with pytest.raises(KeyError, match="Unknown entity type"):
+            r.validate_entity("device", {"mac_address": "AA:BB:CC"})
+
+    def test_load_schema_replaces_previous(self) -> None:
+        """Loading a new schema replaces old types entirely."""
+        r = OntologyRegistry()
+        r.load_schema(TRITIUM_ONTOLOGY)
+        assert len(r.list_entity_types()) == 10
+
+        empty = OntologySchema(version="2.0.0")
+        r.load_schema(empty)
+        assert r.version == "2.0.0"
+        assert r.list_entity_types() == []
+
+    def test_validate_entity_with_empty_properties(
+        self, registry: OntologyRegistry
+    ) -> None:
+        """Entities with no required properties should validate
+        with empty dict (if all properties are optional)."""
+        # chat_message has required fields, so it should fail with empty
+        with pytest.raises(OntologyValidationError, match="missing required"):
+            registry.validate_entity("chat_message", {})
+
+    def test_validate_relationship_unknown_type(
+        self, registry: OntologyRegistry
+    ) -> None:
+        """Unknown relationship type raises KeyError."""
+        with pytest.raises(KeyError, match="Unknown relationship type"):
+            registry.validate_relationship("fake_rel", "device", "device")
+
+    def test_validate_schema_canonical_is_valid(
+        self, registry: OntologyRegistry
+    ) -> None:
+        """The canonical TRITIUM_ONTOLOGY should be fully consistent."""
+        errors = registry.validate_schema()
+        assert errors == [], f"Schema errors: {errors}"
+
+    def test_validate_schema_catches_bad_interface_ref(self) -> None:
+        """validate_schema catches entity types referencing non-existent
+        interfaces."""
+        schema = OntologySchema(
+            version="0.1.0",
+            entity_types={
+                "widget": EntityType(
+                    api_name="widget",
+                    display_name="Widget",
+                    primary_key_field="wid",
+                    properties={
+                        "wid": PropertyDef(
+                            name="wid", data_type=DataType.STRING,
+                            required=True,
+                        ),
+                    },
+                    interfaces=["nonexistent_iface"],
+                ),
+            },
+        )
+        r = OntologyRegistry()
+        r.load_schema(schema)
+        errors = r.validate_schema()
+        assert len(errors) >= 1
+        assert "nonexistent_iface" in errors[0]
+
+    def test_validate_schema_catches_bad_rel_endpoint(self) -> None:
+        """validate_schema catches relationships referencing non-existent
+        entity types."""
+        schema = OntologySchema(
+            version="0.1.0",
+            relationship_types={
+                "bad_rel": RelationshipType(
+                    api_name="bad_rel",
+                    display_name="Bad Rel",
+                    from_type="ghost_from",
+                    to_type="ghost_to",
+                ),
+            },
+        )
+        r = OntologyRegistry()
+        r.load_schema(schema)
+        errors = r.validate_schema()
+        assert len(errors) >= 2
+        assert any("ghost_from" in e for e in errors)
+        assert any("ghost_to" in e for e in errors)
+
+    def test_validate_schema_catches_missing_interface_props(self) -> None:
+        """validate_schema catches entities implementing interfaces without
+        the required properties."""
+        schema = OntologySchema(
+            version="0.1.0",
+            interfaces={
+                "locatable": InterfaceDef(
+                    api_name="locatable",
+                    display_name="Locatable",
+                    required_properties=["latitude", "longitude"],
+                ),
+            },
+            entity_types={
+                "thing": EntityType(
+                    api_name="thing",
+                    display_name="Thing",
+                    primary_key_field="tid",
+                    properties={
+                        "tid": PropertyDef(
+                            name="tid", data_type=DataType.STRING,
+                            required=True,
+                        ),
+                        # Missing latitude and longitude
+                    },
+                    interfaces=["locatable"],
+                ),
+            },
+        )
+        r = OntologyRegistry()
+        r.load_schema(schema)
+        errors = r.validate_schema()
+        assert len(errors) >= 2
+        assert any("latitude" in e for e in errors)
+        assert any("longitude" in e for e in errors)
+
+    def test_get_interface_implementors_unknown_raises(
+        self, registry: OntologyRegistry
+    ) -> None:
+        """Getting implementors for a non-existent interface raises."""
+        with pytest.raises(KeyError, match="Unknown interface"):
+            registry.get_interface_implementors("nonexistent")
+
 
 # -----------------------------------------------------------------------
 # Serialization round-trip

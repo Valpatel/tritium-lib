@@ -189,7 +189,7 @@ class TargetStore:
             if existing is None:
                 # Insert new target
                 self._conn.execute(
-                    """INSERT INTO targets
+                    """INSERT OR IGNORE INTO targets
                        (target_id, name, alliance, asset_type, source,
                         first_seen, last_seen,
                         position_x, position_y, position_confidence, metadata)
@@ -200,7 +200,16 @@ class TargetStore:
                         position_x, position_y, position_confidence, meta_json,
                     ),
                 )
-            else:
+                # If another thread inserted first, fall through to update
+                if self._conn.execute(
+                    "SELECT changes()"
+                ).fetchone()[0] == 0:
+                    existing = self._conn.execute(
+                        "SELECT * FROM targets WHERE target_id = ?",
+                        (target_id,),
+                    ).fetchone()
+
+            if existing is not None:
                 # Update existing — only overwrite non-empty fields
                 updates: list[str] = ["last_seen = ?"]
                 params: list[object] = [ts]
@@ -248,7 +257,12 @@ class TargetStore:
 
             self._conn.commit()
 
-        return self.get_target(target_id)  # type: ignore[return-value]
+            # Read the result within the lock to avoid concurrent access
+            row = self._conn.execute(
+                "SELECT * FROM targets WHERE target_id = ?", (target_id,)
+            ).fetchone()
+
+        return self._row_to_target(row)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
     # Queries

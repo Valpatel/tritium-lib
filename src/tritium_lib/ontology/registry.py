@@ -153,6 +153,51 @@ class OntologyRegistry:
 
         return True
 
+    def validate_schema(self) -> list[str]:
+        """Validate internal consistency of the loaded schema.
+
+        Checks for:
+        - Entity types that reference non-existent interfaces
+        - Relationship types that reference non-existent entity types
+        - Interfaces whose required_properties don't exist on implementors
+
+        Returns a list of error messages (empty means valid).
+        """
+        errors: list[str] = []
+
+        # Check interface references on entity types
+        for et in self._entity_types.values():
+            for iface_name in et.interfaces:
+                if iface_name not in self._interfaces:
+                    errors.append(
+                        f"Entity '{et.api_name}' references unknown "
+                        f"interface '{iface_name}'"
+                    )
+                else:
+                    iface = self._interfaces[iface_name]
+                    for prop in iface.required_properties:
+                        if prop not in et.properties:
+                            errors.append(
+                                f"Entity '{et.api_name}' implements "
+                                f"'{iface_name}' but missing required "
+                                f"property '{prop}'"
+                            )
+
+        # Check relationship endpoint references
+        for rt in self._relationship_types.values():
+            if rt.from_type not in self._entity_types:
+                errors.append(
+                    f"Relationship '{rt.api_name}' from_type "
+                    f"'{rt.from_type}' is not a known entity type"
+                )
+            if rt.to_type not in self._entity_types:
+                errors.append(
+                    f"Relationship '{rt.api_name}' to_type "
+                    f"'{rt.to_type}' is not a known entity type"
+                )
+
+        return errors
+
     def validate_relationship(
         self,
         rel_type: str,

@@ -180,6 +180,57 @@ class TestSearch:
         assert graph.search("zzzzz") == []
 
 
+class TestCloseAndErrorHandling:
+    """Test close behavior and error handling after close."""
+
+    def test_close_prevents_create_entity(self, graph):
+        graph.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            graph.create_entity("Device", "d-1", "Sensor")
+
+    def test_close_prevents_get_entity(self, graph):
+        graph.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            graph.get_entity("d-1")
+
+    def test_close_prevents_add_relationship(self, graph):
+        graph.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            graph.add_relationship("a", "b", "CARRIES")
+
+    def test_close_prevents_get_relationships(self, graph):
+        graph.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            graph.get_relationships("d-1")
+
+    def test_close_prevents_traverse(self, graph):
+        graph.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            graph.traverse("d-1")
+
+    def test_close_prevents_query(self, graph):
+        graph.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            graph.query("MATCH (n:Device) RETURN n.id")
+
+    def test_close_prevents_search(self, graph):
+        graph.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            graph.search("test")
+
+    def test_double_close_is_safe(self, graph):
+        graph.close()
+        graph.close()  # should not raise
+
+    def test_invalid_db_path_raises_runtime_error(self):
+        """Opening a DB at an invalid path should raise RuntimeError."""
+        from tritium_lib.graph.store import TritiumGraph
+
+        # /dev/null is not a valid directory for a KuzuDB database
+        with pytest.raises(RuntimeError, match="Failed to open"):
+            TritiumGraph("/dev/null/impossible/path/db")
+
+
 class TestImportError:
     def test_helpful_import_error(self):
         """Verify the module docstring mentions install instructions."""

@@ -312,3 +312,134 @@ class TestMerge:
         did = store.create_dossier("Solo")
         assert store.merge_dossiers(did, "nope") is False
         assert store.merge_dossiers("nope", did) is False
+
+
+# ------------------------------------------------------------------
+# Thread safety
+# ------------------------------------------------------------------
+
+
+class TestThreadSafety:
+    """Verify concurrent writes don't corrupt the DossierStore."""
+
+    def test_concurrent_creates(self, store: DossierStore):
+        import threading
+
+        errors: list[Exception] = []
+        num_threads = 5
+        writes_per_thread = 10
+        dossier_ids: list[str] = []
+        ids_lock = threading.Lock()
+
+        def writer(thread_id: int):
+            try:
+                for i in range(writes_per_thread):
+                    did = store.create_dossier(
+                        f"Target-{thread_id}-{i}",
+                        entity_type="person",
+                        tags=[f"thread-{thread_id}"],
+                    )
+                    with ids_lock:
+                        dossier_ids.append(did)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer, args=(t,))
+            for t in range(num_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Errors during concurrent creates: {errors}"
+        assert len(dossier_ids) == num_threads * writes_per_thread
+
+    def test_concurrent_signals(self, store: DossierStore):
+        """Multiple threads adding signals to the same dossier."""
+        import threading
+
+        did = store.create_dossier("Shared Dossier")
+        errors: list[Exception] = []
+
+        def writer(thread_id: int):
+            try:
+                for i in range(10):
+                    store.add_signal(
+                        did,
+                        source=f"source-{thread_id}",
+                        signal_type="sighting",
+                        data={"i": i},
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer, args=(t,))
+            for t in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Errors during concurrent signals: {errors}"
+        dossier = store.get_dossier(did)
+        assert len(dossier["signals"]) == 50
+
+
+# ------------------------------------------------------------------
+# Update JSON fields
+# ------------------------------------------------------------------
+
+
+class TestUpdateJsonField:
+    def test_update_tags(self, store: DossierStore):
+        did = store.create_dossier("Tag Test", tags=["old"])
+        assert store._update_json_field(did, "tags", ["new", "updated"]) is True
+        dossier = store.get_dossier(did)
+        assert dossier["tags"] == ["new", "updated"]
+
+    def test_update_notes(self, store: DossierStore):
+        did = store.create_dossier("Notes Test")
+        store._update_json_field(did, "notes", ["First note", "Second note"])
+        dossier = store.get_dossier(did)
+        assert dossier["notes"] == ["First note", "Second note"]
+
+    def test_update_identifiers(self, store: DossierStore):
+        did = store.create_dossier("ID Test")
+        store._update_json_field(did, "identifiers", {"mac": "FF:FF:FF"})
+        dossier = store.get_dossier(did)
+        assert dossier["identifiers"] == {"mac": "FF:FF:FF"}
+
+    def test_update_invalid_field_raises(self, store: DossierStore):
+        did = store.create_dossier("Bad Field")
+        with pytest.raises(ValueError, match="Cannot update field"):
+            store._update_json_field(did, "name", "evil")
+
+    def test_update_nonexistent_dossier(self, store: DossierStore):
+        assert store._update_json_field("nope", "tags", []) is False
+
+
+# ------------------------------------------------------------------
+# Close and reopen
+# ------------------------------------------------------------------
+
+
+class TestCloseAndReopen:
+    def test_file_backed_persistence(self):
+        import tempfile
+        import os
+
+        tmpfile = os.path.join(tempfile.mkdtemp(), "dossier_test.db")
+        s = DossierStore(tmpfile)
+        did = s.create_dossier("Persisted", entity_type="vehicle")
+        s.close()
+
+        s2 = DossierStore(tmpfile)
+        dossier = s2.get_dossier(did)
+        assert dossier is not None
+        assert dossier["name"] == "Persisted"
+        assert dossier["entity_type"] == "vehicle"
+        s2.close()

@@ -250,6 +250,98 @@ class TestReIDStore:
         assert abs(result["confidence"] - 0.85) < 1e-6
 
 
+class TestReIDStorePrune:
+    """Test pruning old embeddings."""
+
+    def test_prune_old_embeddings(self, store: ReIDStore) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        # Store an embedding with a very old timestamp by manipulating the DB
+        vec = [1.0, 0.0, 0.0]
+        store.store_embedding("t1", vec, "cam_a", embedding_id="old_e1")
+        store.store_embedding("t2", vec, "cam_b", embedding_id="new_e1")
+
+        # Backdate the old embedding
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        store._conn.execute(
+            "UPDATE reid_embeddings SET timestamp = ? WHERE embedding_id = ?",
+            (old_ts, "old_e1"),
+        )
+        store._conn.commit()
+
+        # Add a match involving the old embedding
+        store.record_match("old_e1", "new_e1", 0.9)
+        assert store.count_matches() == 1
+
+        deleted = store.prune_old_embeddings(days=30)
+        assert deleted == 1
+        assert store.count_embeddings() == 1
+        assert store.get_embedding("old_e1") is None
+        assert store.get_embedding("new_e1") is not None
+        # Match should also be cleaned up
+        assert store.count_matches() == 0
+
+    def test_prune_nothing_to_delete(self, store: ReIDStore) -> None:
+        store.store_embedding("t1", [1.0, 0.0], "cam_a", embedding_id="e1")
+        deleted = store.prune_old_embeddings(days=30)
+        assert deleted == 0
+        assert store.count_embeddings() == 1
+
+
+class TestReIDStoreThreadSafety:
+    """Verify concurrent writes don't corrupt the ReID database."""
+
+    def test_concurrent_writes(self, store: ReIDStore) -> None:
+        import threading
+
+        errors: list[Exception] = []
+        num_threads = 5
+        writes_per_thread = 10
+
+        def writer(thread_id: int) -> None:
+            try:
+                for i in range(writes_per_thread):
+                    store.store_embedding(
+                        f"t{thread_id}_{i}",
+                        [float(i), float(thread_id)],
+                        f"cam_{thread_id}",
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer, args=(t,))
+            for t in range(num_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Errors during concurrent writes: {errors}"
+        assert store.count_embeddings() == num_threads * writes_per_thread
+
+
+class TestReIDStoreCloseHandling:
+    """Test behavior after close."""
+
+    def test_close_and_reopen(self) -> None:
+        """Close then reopen should work for file-backed stores."""
+        import tempfile
+        import os
+
+        tmpfile = os.path.join(tempfile.mkdtemp(), "reid_test.db")
+        s = ReIDStore(tmpfile)
+        s.store_embedding("t1", [1.0, 2.0], "cam_a", embedding_id="e1")
+        s.close()
+
+        s2 = ReIDStore(tmpfile)
+        result = s2.get_embedding("e1")
+        assert result is not None
+        assert result["target_id"] == "t1"
+        s2.close()
+
+
 class TestReIDStoreImports:
     """Verify the store is accessible from the package __init__."""
 

@@ -237,3 +237,100 @@ class TestStats:
         stats = store.get_stats()
         assert stats["total_targets"] == 2
         assert stats["active_last_hour"] == 1
+
+
+# ------------------------------------------------------------------
+# Thread safety
+# ------------------------------------------------------------------
+
+
+class TestThreadSafety:
+    """Verify concurrent writes don't corrupt the TargetStore."""
+
+    def test_concurrent_sightings(self, store: TargetStore):
+        import threading
+
+        errors: list[Exception] = []
+        num_threads = 5
+        writes_per_thread = 20
+
+        def writer(thread_id: int):
+            try:
+                for i in range(writes_per_thread):
+                    store.record_sighting(
+                        f"tgt-{thread_id}-{i}",
+                        name=f"Target {thread_id}-{i}",
+                        source="ble",
+                        position_x=float(i),
+                        position_y=float(thread_id),
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer, args=(t,))
+            for t in range(num_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Errors during concurrent writes: {errors}"
+        stats = store.get_stats()
+        assert stats["total_targets"] == num_threads * writes_per_thread
+
+    def test_concurrent_upserts(self, store: TargetStore):
+        """Multiple threads upserting the same target should not corrupt."""
+        import threading
+
+        errors: list[Exception] = []
+
+        def writer(thread_id: int):
+            try:
+                for i in range(20):
+                    store.record_sighting(
+                        "shared-target",
+                        name=f"Thread-{thread_id}",
+                        source="ble",
+                        position_x=float(i + thread_id),
+                        position_y=float(thread_id),
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer, args=(t,))
+            for t in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Errors during concurrent upserts: {errors}"
+        # Should still be one target
+        target = store.get_target("shared-target")
+        assert target is not None
+
+
+# ------------------------------------------------------------------
+# Close and reopen
+# ------------------------------------------------------------------
+
+
+class TestCloseAndReopen:
+    def test_file_backed_persistence(self):
+        import tempfile
+        import os
+
+        tmpfile = os.path.join(tempfile.mkdtemp(), "targets_test.db")
+        s = TargetStore(tmpfile)
+        s.record_sighting("t1", name="Persisted Target", source="ble")
+        s.close()
+
+        s2 = TargetStore(tmpfile)
+        target = s2.get_target("t1")
+        assert target is not None
+        assert target["name"] == "Persisted Target"
+        s2.close()

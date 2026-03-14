@@ -59,11 +59,21 @@ class TritiumGraph:
         Args:
             db_path: Path for the KuzuDB database (file or directory).
                      Parent directories are created if needed.
+
+        Raises:
+            RuntimeError: If the database cannot be opened (corrupted,
+                locked, or invalid path).
         """
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = kuzu.Database(str(self._db_path))
-        self._conn = kuzu.Connection(self._db)
+        self._closed = False
+        try:
+            self._db = kuzu.Database(str(self._db_path))
+            self._conn = kuzu.Connection(self._db)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to open graph database at '{db_path}': {exc}"
+            ) from exc
         self._ensure_schema()
 
     # ── Schema ───────────────────────────────────────────────────────
@@ -120,6 +130,7 @@ class TritiumGraph:
         Raises:
             ValueError: If entity_type is not a valid node table.
         """
+        self._check_open()
         if entity_type not in NODE_TABLES:
             raise ValueError(
                 f"Unknown entity type '{entity_type}'. "
@@ -152,6 +163,7 @@ class TritiumGraph:
         Returns:
             Dict with all properties, or None if not found.
         """
+        self._check_open()
         for table in NODE_TABLES:
             result = self._conn.execute(
                 f"MATCH (n:{table}) WHERE n.id = $id "
@@ -184,6 +196,7 @@ class TritiumGraph:
         Raises:
             ValueError: If rel_type is not valid or entities not found.
         """
+        self._check_open()
         if rel_type not in REL_TABLES:
             raise ValueError(
                 f"Unknown relationship type '{rel_type}'. "
@@ -234,6 +247,7 @@ class TritiumGraph:
         Returns:
             List of relationship dicts with from_id, to_id, rel_type, and properties.
         """
+        self._check_open()
         table = self._find_entity_table(id)
         if table is None:
             return []
@@ -281,6 +295,7 @@ class TritiumGraph:
         Returns:
             Subgraph dict with 'nodes' and 'edges' lists.
         """
+        self._check_open()
         table = self._find_entity_table(start_id)
         if table is None:
             return {"nodes": [], "edges": []}
@@ -332,6 +347,7 @@ class TritiumGraph:
         Returns:
             List of result rows (each row is a list of values).
         """
+        self._check_open()
         result = self._conn.execute(cypher, parameters=parameters or {})
         rows: list[list[Any]] = []
         while result.has_next():
@@ -349,6 +365,7 @@ class TritiumGraph:
         Returns:
             List of matching entity dicts.
         """
+        self._check_open()
         results: list[dict[str, Any]] = []
         pattern = f"%{text}%"
 
@@ -382,9 +399,15 @@ class TritiumGraph:
                 return table
         return None
 
+    def _check_open(self) -> None:
+        """Raise RuntimeError if the store has been closed."""
+        if self._closed:
+            raise RuntimeError("TritiumGraph is closed")
+
     def close(self) -> None:
         """Close the database connection."""
         # KuzuDB cleans up via Python garbage collection
+        self._closed = True
         self._conn = None  # type: ignore[assignment]
         self._db = None  # type: ignore[assignment]
 
