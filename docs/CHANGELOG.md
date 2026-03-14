@@ -12,6 +12,19 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 33: System Config + Mission Management
+
+- Added `TritiumSystemConfig` model to `models/config.py` (Unit Tested)
+  - System-level configuration: map defaults, scan intervals, notification prefs, theme
+  - `MapDefaults`: center lat/lng, zoom, tilt, bearing, style
+  - `ScanIntervals`: BLE, WiFi, probe, heartbeat, sighting intervals
+  - `NotificationPrefs`: sound, geofence breach, threat escalation, suspicious device toggles
+  - `to_dict()`, `from_dict()`, `save_to_store()`, `load_from_store()` for ConfigStore integration
+  - All 4 classes exported from `tritium_lib.models`
+  - 1351 tests passing
+
+---
+
 ## 2026-03-14 — Wave 31: ConfigStore
 
 - Added `store/config_store.py` — persistent system configuration store (Unit Tested)

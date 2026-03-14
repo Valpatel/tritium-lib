@@ -145,6 +145,151 @@ def compute_config_drift(
     return drifts
 
 
+@dataclass
+class MapDefaults:
+    """Default map view settings."""
+    center_lat: float = 39.7392
+    center_lng: float = -104.9903
+    zoom: int = 16
+    tilt: float = 0.0
+    bearing: float = 0.0
+    style: str = "satellite"  # satellite, streets, terrain, dark
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "center_lat": self.center_lat,
+            "center_lng": self.center_lng,
+            "zoom": self.zoom,
+            "tilt": self.tilt,
+            "bearing": self.bearing,
+            "style": self.style,
+        }
+
+
+@dataclass
+class ScanIntervals:
+    """Scan timing configuration for edge devices."""
+    ble_scan_s: int = 10
+    wifi_scan_s: int = 30
+    probe_report_s: int = 15
+    heartbeat_s: int = 30
+    sighting_s: int = 15
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ble_scan_s": self.ble_scan_s,
+            "wifi_scan_s": self.wifi_scan_s,
+            "probe_report_s": self.probe_report_s,
+            "heartbeat_s": self.heartbeat_s,
+            "sighting_s": self.sighting_s,
+        }
+
+
+@dataclass
+class NotificationPrefs:
+    """User notification preferences."""
+    sound_enabled: bool = True
+    sound_volume: float = 0.5  # 0.0 to 1.0
+    geofence_breach: bool = True
+    threat_escalation: bool = True
+    suspicious_device: bool = True
+    new_device: bool = False
+    system_alerts: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sound_enabled": self.sound_enabled,
+            "sound_volume": self.sound_volume,
+            "geofence_breach": self.geofence_breach,
+            "threat_escalation": self.threat_escalation,
+            "suspicious_device": self.suspicious_device,
+            "new_device": self.new_device,
+            "system_alerts": self.system_alerts,
+        }
+
+
+@dataclass
+class TritiumSystemConfig:
+    """System-level configuration for the entire Tritium installation.
+
+    Aggregates map defaults, demo mode preferences, notification settings,
+    theme, and scan intervals into a single model. Backed by ConfigStore
+    for persistent storage.
+    """
+    map: MapDefaults = field(default_factory=MapDefaults)
+    scan_intervals: ScanIntervals = field(default_factory=ScanIntervals)
+    notifications: NotificationPrefs = field(default_factory=NotificationPrefs)
+    demo_mode: bool = False
+    demo_auto_start: bool = False
+    theme: str = "cyberpunk"  # cyberpunk, dark, light
+    site_name: str = "Tritium HQ"
+    site_id: str = "home"
+    mqtt_broker: str = "localhost"
+    mqtt_port: int = 1883
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "map": self.map.to_dict(),
+            "scan_intervals": self.scan_intervals.to_dict(),
+            "notifications": self.notifications.to_dict(),
+            "demo_mode": self.demo_mode,
+            "demo_auto_start": self.demo_auto_start,
+            "theme": self.theme,
+            "site_name": self.site_name,
+            "site_id": self.site_id,
+            "mqtt_broker": self.mqtt_broker,
+            "mqtt_port": self.mqtt_port,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TritiumSystemConfig:
+        """Construct from a plain dict (e.g., loaded from ConfigStore)."""
+        cfg = cls()
+        if "map" in data and isinstance(data["map"], dict):
+            cfg.map = MapDefaults(**{
+                k: v for k, v in data["map"].items()
+                if k in MapDefaults.__dataclass_fields__
+            })
+        if "scan_intervals" in data and isinstance(data["scan_intervals"], dict):
+            cfg.scan_intervals = ScanIntervals(**{
+                k: v for k, v in data["scan_intervals"].items()
+                if k in ScanIntervals.__dataclass_fields__
+            })
+        if "notifications" in data and isinstance(data["notifications"], dict):
+            cfg.notifications = NotificationPrefs(**{
+                k: v for k, v in data["notifications"].items()
+                if k in NotificationPrefs.__dataclass_fields__
+            })
+        for scalar in ("demo_mode", "demo_auto_start", "theme",
+                        "site_name", "site_id", "mqtt_broker", "mqtt_port"):
+            if scalar in data:
+                setattr(cfg, scalar, data[scalar])
+        return cfg
+
+    def save_to_store(self, store: Any) -> None:
+        """Persist all fields to a ConfigStore instance."""
+        import json
+        d = self.to_dict()
+        for key, value in d.items():
+            if isinstance(value, dict):
+                store.set("system", key, json.dumps(value))
+            else:
+                store.set("system", key, json.dumps(value))
+
+    @classmethod
+    def load_from_store(cls, store: Any) -> TritiumSystemConfig:
+        """Load from a ConfigStore instance."""
+        import json
+        ns = store.get_namespace("system")
+        data: dict[str, Any] = {}
+        for key, raw in ns.items():
+            try:
+                data[key] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                data[key] = raw
+        return cls.from_dict(data)
+
+
 def compute_fleet_config_status(
     devices: list[dict],
 ) -> FleetConfigStatus:
