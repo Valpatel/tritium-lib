@@ -96,7 +96,7 @@ class Mission:
     geofence_zone: Optional[GeofenceZone] = None
 
     # Timestamps
-    created: datetime = field(default_factory=datetime.utcnow)
+    created: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started: Optional[datetime] = None
     completed: Optional[datetime] = None
 

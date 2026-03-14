@@ -8,7 +8,7 @@ import time
 from tritium_lib.auth import TokenType, create_token, decode_token
 
 
-SECRET = "test-secret-key-for-unit-tests"
+SECRET = "test-secret-key-for-unit-tests-32b"
 
 
 class TestCreateToken:

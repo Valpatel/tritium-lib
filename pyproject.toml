@@ -23,5 +23,11 @@ full = ["paho-mqtt>=2.0", "bcrypt>=4.1.0", "requests>=2.28", "opencv-python-head
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    "ignore::jwt.warnings.InsecureKeyLengthWarning",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]

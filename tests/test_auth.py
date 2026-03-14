@@ -13,7 +13,7 @@ from tritium_lib.auth import (
 
 
 class TestJWT:
-    SECRET = "test-secret-key-do-not-use"
+    SECRET = "test-secret-key-do-not-use-32bc"
 
     def test_create_and_decode(self):
         token = create_token(self.SECRET, "esp32-001", TokenType.DEVICE)
