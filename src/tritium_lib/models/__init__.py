@@ -462,6 +462,18 @@ from .visualization import (
     TimelineConfig,
     TrajectoryRibbon,
 )
+from .fleet_ops import (
+    BUILTIN_TEMPLATES as FLEET_BUILTIN_TEMPLATES,
+    ConfigTemplate,
+    ConfigTemplateName,
+    CoveragePoint,
+    DeviceUptimeRecord,
+    FleetAnalyticsSnapshot,
+    FleetCommand,
+    FleetCommandStatus,
+    FleetCommandType,
+    SightingRateRecord,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -883,6 +895,17 @@ __all__ = [
     "SensorVolumeType",
     "TimelineConfig",
     "TrajectoryRibbon",
+    # Fleet operations
+    "FLEET_BUILTIN_TEMPLATES",
+    "ConfigTemplate",
+    "ConfigTemplateName",
+    "CoveragePoint",
+    "DeviceUptimeRecord",
+    "FleetAnalyticsSnapshot",
+    "FleetCommand",
+    "FleetCommandStatus",
+    "FleetCommandType",
+    "SightingRateRecord",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",

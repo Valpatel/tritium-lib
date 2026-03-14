@@ -12,6 +12,21 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 77: Fleet Operations Models
+
+### FleetCommand + ConfigTemplate + FleetAnalyticsSnapshot (Unit Tested, 13 tests)
+- New `models/fleet_ops.py` — fleet coordination data contracts
+- `FleetCommand`: command_type, target_group, payload, status tracking, ack/fail counts
+- `FleetCommandType`: reboot, scan_burst, increase_rate, decrease_rate, ota_update, apply_template, set_group, identify, sleep
+- `ConfigTemplate`: named config templates with scan intervals, report rates, power mode
+- `ConfigTemplateName`: perimeter_high_security, indoor_normal, power_saver_mobile, custom
+- `BUILTIN_TEMPLATES`: 3 pre-built templates for common deployment scenarios
+- `FleetAnalyticsSnapshot`: fleet-wide analytics with uptime records, sighting rates, coverage, groups
+- `DeviceUptimeRecord`, `SightingRateRecord`, `CoveragePoint` supporting models
+- All models exported from `tritium_lib.models` as `FLEET_BUILTIN_TEMPLATES`, etc.
+
+---
+
 ## 2026-03-14 — Wave 76: Behavioral Pattern Learning Models
 
 ### BehaviorPattern + PatternAnomaly + CoPresenceRelationship + PatternAlert (Unit Tested, 24 tests)
