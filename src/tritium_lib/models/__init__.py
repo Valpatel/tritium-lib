@@ -298,6 +298,13 @@ from .export import (
     create_export_manifest,
     validate_import_compatibility,
 )
+from .mission import (
+    GeofenceZone,
+    Mission,
+    MissionObjective,
+    MissionStatus,
+    MissionType,
+)
 
 __all__ = [
     "Device",
@@ -562,4 +569,10 @@ __all__ = [
     "ImportResult",
     "create_export_manifest",
     "validate_import_compatibility",
+    # Mission management
+    "GeofenceZone",
+    "Mission",
+    "MissionObjective",
+    "MissionStatus",
+    "MissionType",
 ]
