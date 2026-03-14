@@ -384,6 +384,16 @@ from .training import (
     FeedbackRecord,
     TrainingExample,
 )
+from .swarm import (
+    SwarmCommand,
+    SwarmCommandType,
+    SwarmFormation,
+    SwarmFormationType,
+    SwarmMember,
+    SwarmMemberStatus,
+    SwarmRole,
+    SwarmStatus,
+)
 from .ble_interrogation import (
     BleDeviceProfile as BleGATTProfile,
     BleGATTCharacteristic,
@@ -734,6 +744,15 @@ __all__ = [
     "DecisionType",
     "FeedbackRecord",
     "TrainingExample",
+    # Swarm coordination
+    "SwarmCommand",
+    "SwarmCommandType",
+    "SwarmFormation",
+    "SwarmFormationType",
+    "SwarmMember",
+    "SwarmMemberStatus",
+    "SwarmRole",
+    "SwarmStatus",
     # BLE GATT interrogation
     "BleGATTProfile",
     "BleGATTCharacteristic",
