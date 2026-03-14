@@ -5,6 +5,7 @@
 
 from .base import BaseStore
 from .ble import BleStore
+from .config_store import ConfigStore
 from .dossiers import DossierStore
 from .reid import ReIDStore
 from .targets import TargetStore
@@ -13,6 +14,7 @@ from .audit_log import AuditStore, AuditEntry, AuditSeverity
 __all__ = [
     "BaseStore",
     "BleStore",
+    "ConfigStore",
     "DossierStore",
     "ReIDStore",
     "TargetStore",
