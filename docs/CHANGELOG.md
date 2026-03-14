@@ -12,6 +12,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 26: Event Schema System
+
+### Event Schemas
+| Change | Verification |
+|--------|-------------|
+| Added `models/event_schema.py` with 41 typed event schemas across 17 domains | Unit Tested (1273 tests) |
+| EventDomain enum: simulation, combat, game, NPC, fleet, mesh, edge, TAK, sensor, target, dossier, federation, hazard, unit, mission, Amy, audio | Unit Tested |
+| `validate_event_type()`, `get_event_schema()`, `list_event_types()` helpers | Unit Tested |
+
+---
+
 ## 2026-03-14 — Wave 25: Maintenance & Quality
 
 ### BaseStore Migration
