@@ -306,6 +306,10 @@ from .summary import (
     SystemSummary,
     TargetCounts,
 )
+from .analytics import (
+    DailyAnalytics,
+    DeviceActivity,
+)
 from .export import (
     ExportFormat,
     ExportManifest,
@@ -702,6 +706,9 @@ __all__ = [
     "FleetSummary",
     "SystemSummary",
     "TargetCounts",
+    # Daily analytics
+    "DailyAnalytics",
+    "DeviceActivity",
     # Export / import
     "ExportFormat",
     "ExportManifest",
