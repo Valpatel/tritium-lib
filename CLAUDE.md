@@ -23,6 +23,8 @@ Common code library for the entire Tritium ecosystem. Used by tritium-edge (firm
 | `store` | Persistent data stores (BLE sightings, targets) | `src/tritium_lib/store/` |
 | `cot` | Cursor on Target XML codec for TAK/ATAK integration | `src/tritium_lib/cot/codec.py` |
 | `config` | Pydantic base settings class for service configuration | `src/tritium_lib/config/` |
+| `geo` | Coordinate transforms (local meters <-> lat/lng), camera projection, haversine | `src/tritium_lib/geo/__init__.py` |
+| `notifications` | Notification model and thread-safe NotificationManager | `src/tritium_lib/notifications/__init__.py` |
 | `web` | Cyberpunk HTML theme engine and dashboard components | `src/tritium_lib/web/` |
 | `testing` | Visual regression checks and ESP32 device automation | `src/tritium_lib/testing/` |
 
