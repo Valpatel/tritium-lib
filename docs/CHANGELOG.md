@@ -12,6 +12,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 48: Network Topology Models
+
+### NetworkNode, NodeRole, PeerQuality Models (Unit Tested, 12 tests)
+- New `NetworkNode` model: node_id, name, role, position, health metrics, peer stats
+- New `NodeRole` enum: gateway, relay, leaf, sensor
+- New `PeerQuality` model: per-peer RSSI trend, packet loss, tx/rx counts
+- `PeerQuality.quality_score` property: 0-100 computed from RSSI + loss penalty
+- `NetworkLink` gains `packet_loss_pct` and `quality_score` fields
+- `FleetTopology` gains optional `network_nodes` list for rich visualization
+- All exported from `tritium_lib.models` — used by fleet dashboard and comm-link layer
+
 ## 2026-03-14 — Wave 45: Tactical Scenario Models
 
 ### TacticalScenario Model (Unit Tested, 12 tests)
