@@ -7,15 +7,88 @@ These models represent the fleet as a connectivity graph where links can span
 multiple transport types (WiFi, ESP-NOW, BLE, LoRa, MQTT).  The fleet server
 builds a FleetTopology from heartbeat data and link advertisements, then
 analyzes it for partitions, reachability, and overall connectivity health.
+
+NetworkNode represents a single device in the mesh with its capabilities,
+position, and health metrics.  NetworkLink is a directional connection
+between two nodes.  FleetTopology holds the full graph and supports BFS
+traversal, component detection, and connectivity analysis.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
+
+
+class NodeRole(str, Enum):
+    """Roles a network node can play in the mesh."""
+    GATEWAY = "gateway"     # Bridges mesh to WiFi/server
+    RELAY = "relay"         # Forwards packets between peers
+    LEAF = "leaf"           # End device, does not relay
+    SENSOR = "sensor"       # Deep-sleep wake-transmit-sleep node
+
+
+class NetworkNode(BaseModel):
+    """A single device in the fleet network graph.
+
+    Contains identity, role, position, health metrics, and peer quality
+    statistics.  Used by comm-link visualization and fleet dashboard.
+    """
+    node_id: str
+    name: str = ""
+    role: NodeRole = NodeRole.RELAY
+    ip: str = ""
+    mac: str = ""
+    firmware: str = ""
+    board_type: str = ""
+    battery_pct: Optional[int] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    online: bool = True
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Peer quality stats (populated from heartbeat peer data)
+    peer_count: int = 0
+    avg_peer_rssi: Optional[float] = None
+    packet_loss_pct: float = 0.0
+    avg_latency_ms: Optional[float] = None
+    transports: list[str] = Field(default_factory=list)
+
+    model_config = {"frozen": False}
+
+
+class PeerQuality(BaseModel):
+    """Quality metrics for a single peer relationship.
+
+    Tracked per-peer by edge firmware and included in heartbeat data
+    so the command center can visualize network health per link.
+    """
+    peer_mac: str
+    rssi_current: int = -100
+    rssi_avg: float = -100.0
+    rssi_min: int = -100
+    rssi_max: int = 0
+    packet_loss_pct: float = 0.0
+    avg_latency_ms: float = 0.0
+    tx_count: int = 0
+    rx_count: int = 0
+    tx_fail: int = 0
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    model_config = {"frozen": False}
+
+    @property
+    def quality_score(self) -> int:
+        """Compute a 0-100 quality score from RSSI and packet loss."""
+        # RSSI component: map -90..-30 to 0..100
+        rssi_score = max(0, min(100, int((self.rssi_avg + 90) * (100 / 60))))
+        # Loss penalty: each 1% loss costs 2 points
+        loss_penalty = min(100, int(self.packet_loss_pct * 2))
+        return max(0, rssi_score - loss_penalty)
 
 
 class NetworkLink(BaseModel):
@@ -30,6 +103,8 @@ class NetworkLink(BaseModel):
     rssi: Optional[int] = None
     latency_ms: Optional[float] = None
     bandwidth_kbps: Optional[float] = None
+    packet_loss_pct: float = 0.0
+    quality_score: int = 0  # 0-100, computed from RSSI + loss
     last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     active: bool = True
 
@@ -40,9 +115,14 @@ class FleetTopology(BaseModel):
     Nodes are identified by string IDs.  Links connect pairs of nodes
     and may use different transports.  Graph algorithms operate on the
     active links only.
+
+    The optional ``network_nodes`` list holds rich node metadata for
+    visualization (positions, roles, health).  If empty, only ``nodes``
+    (string IDs) are used for graph algorithms.
     """
     nodes: list[str] = Field(default_factory=list)
     links: list[NetworkLink] = Field(default_factory=list)
+    network_nodes: list[NetworkNode] = Field(default_factory=list)
 
     def _adjacency(self, active_only: bool = True) -> dict[str, set[str]]:
         """Build an adjacency map from the link list."""

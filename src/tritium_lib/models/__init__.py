@@ -112,6 +112,9 @@ from .diagnostics import (
 )
 from .topology import (
     NetworkLink,
+    NetworkNode,
+    NodeRole,
+    PeerQuality,
     FleetTopology,
     ConnectivityReport,
     build_topology,
@@ -455,6 +458,9 @@ __all__ = [
     "summarize_alerts",
     # Fleet topology
     "NetworkLink",
+    "NetworkNode",
+    "NodeRole",
+    "PeerQuality",
     "FleetTopology",
     "ConnectivityReport",
     "build_topology",
