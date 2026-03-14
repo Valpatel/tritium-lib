@@ -65,9 +65,9 @@ class TritiumGraph:
                 locked, or invalid path).
         """
         self._db_path = Path(db_path)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._closed = False
         try:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
             self._db = kuzu.Database(str(self._db_path))
             self._conn = kuzu.Connection(self._db)
         except Exception as exc:

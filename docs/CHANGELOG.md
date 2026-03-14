@@ -12,6 +12,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 39: Graph Store Fix, Test Baseline
+
+- Fixed `TritiumGraph.__init__` — `mkdir(parents=True)` now inside try/except block so invalid paths (e.g., `/dev/null/...`) correctly raise RuntimeError instead of NotADirectoryError (Unit Tested)
+- Test baseline: 1404 passed, 0 failures (up from 1357 in Wave 36)
+- Model `__all__` exports verified: 250 symbols importable via `from tritium_lib.models import *`
+- All 42 model files have explicit imports in `__init__.py`
+
+---
+
 ## 2026-03-14 — Wave 38: Sensor Config, Multi-Camera, Target Merge, Power Saver
 
 - Added `models/sensor_config.py` — SensorPlacement configuration model (Unit Tested, 19 tests)
