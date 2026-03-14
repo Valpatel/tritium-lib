@@ -377,6 +377,13 @@ from .template import (
     TemplateSectionType,
     TemplateVariable,
 )
+from .training import (
+    ClassificationTrainingData,
+    CorrelationTrainingData,
+    DecisionType,
+    FeedbackRecord,
+    TrainingExample,
+)
 
 __all__ = [
     "Device",
@@ -711,4 +718,10 @@ __all__ = [
     "TemplateSection",
     "TemplateSectionType",
     "TemplateVariable",
+    # ML training data
+    "ClassificationTrainingData",
+    "CorrelationTrainingData",
+    "DecisionType",
+    "FeedbackRecord",
+    "TrainingExample",
 ]
