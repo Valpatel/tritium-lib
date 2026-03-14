@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 64: Environment Sensor Model
+
+### EnvironmentReading Model (Unit Tested, 10 tests)
+- New `models/environment.py` — standardized environmental sensor data model
+- `EnvironmentReading`: temperature_c, humidity_pct, pressure_hpa, air_quality_index, light_level_lux, noise_level_db, gas_resistance_ohm, uv_index, wind/rainfall
+- `EnvironmentSnapshot`: aggregated readings from multiple sources with avg_temperature_c, avg_humidity_pct, avg_pressure_hpa
+- `EnvironmentSource` enum: meshtastic, edge_device, weather_api, manual
+- Properties: temperature_f (auto-conversion), has_data, summary_line()
+- Exported from `models/__init__.py`
+
+---
+
 ## 2026-03-14 — Wave 63: MeshNodeExtended Model
 
 ### MeshNodeExtended (Unit Tested, 18 tests)

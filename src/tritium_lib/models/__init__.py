@@ -401,6 +401,11 @@ from .swarm import (
     SwarmRole,
     SwarmStatus,
 )
+from .environment import (
+    EnvironmentReading,
+    EnvironmentSnapshot,
+    EnvironmentSource,
+)
 from .ble_interrogation import (
     BleDeviceProfile as BleGATTProfile,
     BleGATTCharacteristic,
@@ -766,6 +771,10 @@ __all__ = [
     "SwarmMemberStatus",
     "SwarmRole",
     "SwarmStatus",
+    # Environment sensors
+    "EnvironmentReading",
+    "EnvironmentSnapshot",
+    "EnvironmentSource",
     # BLE GATT interrogation
     "BleGATTProfile",
     "BleGATTCharacteristic",
