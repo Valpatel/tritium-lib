@@ -12,6 +12,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 45: Tactical Scenario Models
+
+### TacticalScenario Model (Unit Tested, 12 tests)
+- Added `models/scenario.py` — structured test scenarios and training exercises
+- `TacticalScenario`: scenario_id, title, description, actors, events, timeline, objectives
+- `ScenarioActor`: actor_id, name, type, alliance, position, BLE/WiFi properties, waypoints
+- `ScenarioEvent`: event_type, time_offset_s, actor associations, expected results
+- `ScenarioObjective`: description, priority, success_criteria, time_limit, score_value
+- Enums: ScenarioStatus (7 states), ActorType (9 types), ActorAlliance (4 values), ScenarioEventType (13 types)
+- Helper methods: computed_duration(), actor_by_id(), events_for_actor(), sorted_events(), completion_pct(), to_dict()
+- Exported in `models/__init__.py` with full `__all__` entries
+
+---
+
 ## 2026-03-14 — Wave 44: Communication Channel Models
 
 ### CommChannel Model (Unit Tested, 14 tests)

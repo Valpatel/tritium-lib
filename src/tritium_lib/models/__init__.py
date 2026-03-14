@@ -346,6 +346,16 @@ from .comms import (
     select_best_channel,
     summarize_channels,
 )
+from .scenario import (
+    ActorAlliance,
+    ActorType,
+    ScenarioActor,
+    ScenarioEvent,
+    ScenarioEventType,
+    ScenarioObjective,
+    ScenarioStatus,
+    TacticalScenario,
+)
 
 __all__ = [
     "Device",
@@ -652,4 +662,13 @@ __all__ = [
     "CommChannel",
     "select_best_channel",
     "summarize_channels",
+    # Tactical scenarios
+    "ActorAlliance",
+    "ActorType",
+    "ScenarioActor",
+    "ScenarioEvent",
+    "ScenarioEventType",
+    "ScenarioObjective",
+    "ScenarioStatus",
+    "TacticalScenario",
 ]
