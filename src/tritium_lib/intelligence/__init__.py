@@ -1,9 +1,11 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Intelligence subsystem — scorer ABCs, anomaly detection, and implementations.
+"""Intelligence subsystem — scorer ABCs, anomaly detection, learner base, model registry.
 
 Exports:
+    BaseLearner        — ABC for ML learners (train, predict, save, load, get_stats)
+    ModelRegistry      — SQLite-backed versioned ML model storage
     CorrelationScorer  — ABC for correlation scoring models
     StaticScorer       — Hand-tuned weighted scorer (baseline)
     LearnedScorer      — Trained logistic regression scorer (data-driven)
@@ -23,6 +25,8 @@ from tritium_lib.intelligence.anomaly import (
     AutoencoderDetector,
     SimpleThresholdDetector,
 )
+from tritium_lib.intelligence.base_learner import BaseLearner
+from tritium_lib.intelligence.model_registry import ModelRegistry
 from tritium_lib.intelligence.scorer import (
     CorrelationFeatures,
     CorrelationScorer,
@@ -37,11 +41,13 @@ __all__ = [
     "Anomaly",
     "AnomalyDetector",
     "AutoencoderDetector",
+    "BaseLearner",
     "CorrelationFeatures",
     "CorrelationScorer",
     "DEFAULT_WEIGHTS",
     "FEATURE_NAMES",
     "LearnedScorer",
+    "ModelRegistry",
     "ScorerResult",
     "SimpleThresholdDetector",
     "StaticScorer",
