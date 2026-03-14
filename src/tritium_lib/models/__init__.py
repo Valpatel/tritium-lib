@@ -424,6 +424,13 @@ from .movement_analytics import (
     FleetMetrics,
     MovementAnalytics,
 )
+from .feature_vector import (
+    AggregatedFeatures,
+    ClassificationFeedback,
+    EdgeIntelligenceMetrics,
+    FeatureSource,
+    FeatureVector,
+)
 from .ble_interrogation import (
     BleDeviceProfile as BleGATTProfile,
     BleGATTCharacteristic,
@@ -812,6 +819,12 @@ __all__ = [
     "STANDARD_SERVICE_UUIDS",
     "classify_device_from_profile",
     "lookup_service_name",
+    # Edge intelligence / feature vectors
+    "AggregatedFeatures",
+    "ClassificationFeedback",
+    "EdgeIntelligenceMetrics",
+    "FeatureSource",
+    "FeatureVector",
     # Movement analytics
     "ActivityPeriod",
     "DwellTime",

@@ -12,6 +12,19 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 71: Edge-to-Cloud Intelligence Pipeline Models
+
+### FeatureVector + ClassificationFeedback + EdgeIntelligenceMetrics (Unit Tested, 17 tests)
+- New `models/feature_vector.py` — compact feature vectors for edge ML pipeline
+- `FeatureVector`: source_id, mac, source_type (BLE/WiFi/acoustic/RF/camera), features dict, version, timestamp, feature_list() helper
+- `AggregatedFeatures`: per-device aggregation across edge nodes with compute_mean()
+- `ClassificationFeedback`: SC-to-edge classification result feedback (mac, predicted_type, confidence, confirmed_by)
+- `EdgeIntelligenceMetrics`: per-node ML health (devices seen, classified, feedback received, accuracy rate)
+- `FeatureSource` enum: BLE, WIFI, ACOUSTIC, RF, CAMERA
+- All exported from `tritium_lib.models` top-level package
+
+---
+
 ## 2026-03-14 — Wave 70: MILESTONE — Movement Analytics Models
 
 ### MovementAnalytics + FleetMetrics (Unit Tested, 14 tests)
