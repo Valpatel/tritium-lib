@@ -12,6 +12,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 52: ML Training Data Models
+
+### Training Data Models (Unit Tested, 11 tests)
+- New `models/training.py` — TrainingExample, CorrelationTrainingData, ClassificationTrainingData, FeedbackRecord
+- `DecisionType` enum: correlation, classification, threat_assessment, alliance_override
+- `TrainingExample`: features dict, label, confidence (0-1 validated), source, timestamp, confirmed_by
+- `CorrelationTrainingData`: target pair, features, score, decision, outcome for correlation pipeline
+- `ClassificationTrainingData`: target_id, features, predicted/correct types and alliances
+- `FeedbackRecord`: operator confirm/reject with notes for RL training
+- Exported via models `__init__.py`, added to `__all__`
+
 ## 2026-03-14 — Wave 51: Map Sharing, Macros, Grid, Power Tracking, Templates
 
 ### Report Template Models (Unit Tested, 18 tests)
