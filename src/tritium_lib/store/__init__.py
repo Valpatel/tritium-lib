@@ -10,6 +10,7 @@ from .dossiers import DossierStore
 from .reid import ReIDStore
 from .targets import TargetStore
 from .audit_log import AuditStore, AuditEntry, AuditSeverity
+from .screenshot_store import ScreenshotStore
 
 __all__ = [
     "BaseStore",
@@ -17,6 +18,7 @@ __all__ = [
     "ConfigStore",
     "DossierStore",
     "ReIDStore",
+    "ScreenshotStore",
     "TargetStore",
     "AuditStore",
     "AuditEntry",

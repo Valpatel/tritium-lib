@@ -12,6 +12,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 59: Screenshot Store
+
+### ScreenshotStore (Unit Tested, 9 tests)
+- New `store/screenshot_store.py` — SQLite-backed tactical map screenshot persistence
+- Save PNG binary with operator, description, dimensions, tags metadata
+- List (paginated, filterable by operator), get (with binary), delete, count
+- Exported from `store/__init__.py`
+
+---
+
 ## 2026-03-14 — Wave 56: Anomaly Detection ABC
 
 ### AnomalyDetector ABC (Unit Tested, 18 tests)
