@@ -12,6 +12,21 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 44: Communication Channel Models
+
+### CommChannel Model (Unit Tested, 14 tests)
+- Added `models/comms.py` — CommChannel, ChannelType, ChannelStatus, ChannelAuth
+- ChannelType enum: MQTT, TAK, WebSocket, federation, serial, HTTP, ESP-NOW, LoRa
+- ChannelStatus: disconnected, connecting, connected, error, disabled
+- AuthType: none, basic, token, certificate, PSK
+- ChannelHealth: uptime, latency, error rate, throughput summary
+- ChannelInventory: aggregate summary with type/status counts
+- `summarize_channels()` — build inventory from channel list
+- `select_best_channel()` — pick best connected channel by priority and latency
+- Exported in `models/__init__.py` with full `__all__` entries
+
+---
+
 ## 2026-03-14 — Wave 43: Device Capability Advertisement Models
 
 ### Capability Advertisement (Unit Tested, 13 tests)
