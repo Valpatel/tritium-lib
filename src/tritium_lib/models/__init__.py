@@ -261,6 +261,12 @@ from .federation import (
     federation_topic,
     is_message_expired,
 )
+from .notification_rules import (
+    DEFAULT_RULES,
+    NotificationChannel,
+    NotificationRule,
+    NotificationSeverity,
+)
 
 __all__ = [
     "Device",
@@ -493,4 +499,9 @@ __all__ = [
     "SiteRole",
     "federation_topic",
     "is_message_expired",
+    # Notification rules
+    "DEFAULT_RULES",
+    "NotificationChannel",
+    "NotificationRule",
+    "NotificationSeverity",
 ]
