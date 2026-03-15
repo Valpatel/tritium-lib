@@ -536,6 +536,16 @@ from .gpx import (
     GPXTrack,
     GPXWaypoint,
 )
+from .kml import (
+    KMLDocument,
+    KMLPoint,
+    KMLTrack,
+)
+from .trail_export import (
+    TrailExport,
+    TrailFormat,
+    TrailPoint,
+)
 from .collaboration import (
     ChatMessageType,
     DrawingType,
@@ -1300,6 +1310,14 @@ __all__ = [
     "GPXRoute",
     "GPXTrack",
     "GPXWaypoint",
+    # KML export
+    "KMLDocument",
+    "KMLPoint",
+    "KMLTrack",
+    # Trail export models
+    "TrailExport",
+    "TrailFormat",
+    "TrailPoint",
     # Behavioral clustering
     "BehaviorCluster",
     "ClusterSummary",
