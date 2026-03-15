@@ -624,6 +624,14 @@ from .dwell import (
     DWELL_THRESHOLD_S,
     classify_dwell_severity,
 )
+from .personality import (
+    CommanderPersonality,
+    PRESET_PERSONALITIES,
+    PATROL_PERSONALITY,
+    BATTLE_PERSONALITY,
+    STEALTH_PERSONALITY,
+    OBSERVER_PERSONALITY,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1076,6 +1084,13 @@ __all__ = [
     "DWELL_RADIUS_M",
     "DWELL_THRESHOLD_S",
     "classify_dwell_severity",
+    # Commander personality
+    "CommanderPersonality",
+    "PRESET_PERSONALITIES",
+    "PATROL_PERSONALITY",
+    "BATTLE_PERSONALITY",
+    "STEALTH_PERSONALITY",
+    "OBSERVER_PERSONALITY",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",

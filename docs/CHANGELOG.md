@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 116: Commander Personality Model
+
+| Change | Verification |
+|--------|-------------|
+| models/personality.py — CommanderPersonality dataclass with 5 traits: aggression, curiosity, verbosity, caution, initiative | Unit Tested (18 tests passing) |
+| Preset profiles: PATROL, BATTLE, STEALTH, OBSERVER with tuned defaults for different operational contexts | Unit Tested |
+| profile_label property for human-readable dominant trait description | Unit Tested |
+| Clamping, serialization (to_dict/from_dict), roundtrip tested | Unit Tested |
+| Exported from tritium_lib.models — available to tritium-sc Amy personality API | Consumer Tested |
+
+---
+
 ## 2026-03-14 — Wave 111: Benchmark Result Models
 
 | Change | Verification |
