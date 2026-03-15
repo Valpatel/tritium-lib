@@ -319,6 +319,12 @@ from .analytics import (
     DailyAnalytics,
     DeviceActivity,
 )
+from .analytics_dashboard import (
+    DEFAULT_WIDGETS,
+    DashboardWidget,
+    WidgetConfig,
+    WidgetType,
+)
 from .export import (
     ExportFormat,
     ExportManifest,
@@ -847,6 +853,11 @@ __all__ = [
     # Daily analytics
     "DailyAnalytics",
     "DeviceActivity",
+    # Analytics dashboard widgets
+    "DEFAULT_WIDGETS",
+    "DashboardWidget",
+    "WidgetConfig",
+    "WidgetType",
     # Export / import
     "ExportFormat",
     "ExportManifest",

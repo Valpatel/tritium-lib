@@ -12,6 +12,14 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 94: Analytics Dashboard Widgets
+
+| Change | Verification |
+|--------|-------------|
+| models/analytics_dashboard.py — DashboardWidget, WidgetType (counter/chart/table/map/timeline), WidgetConfig, DEFAULT_WIDGETS (5 pre-configured widgets) | Unit Tested (import verified) |
+| Exported in models/__init__.py — DashboardWidget, WidgetConfig, WidgetType, DEFAULT_WIDGETS | Import verified |
+| tests/models/test_analytics_dashboard.py — 9 tests covering roundtrip, defaults, invalid type fallback, default widgets | Written |
+
 ## 2026-03-14 — Wave 92: Unified Threat Assessment Engine
 
 | Change | Verification |
