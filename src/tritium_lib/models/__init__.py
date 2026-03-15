@@ -616,6 +616,14 @@ from .benchmark import (
     BenchmarkSuite,
     BenchmarkUnit,
 )
+from .dwell import (
+    DwellEvent,
+    DwellSeverity,
+    DwellState,
+    DWELL_RADIUS_M,
+    DWELL_THRESHOLD_S,
+    classify_dwell_severity,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1061,6 +1069,13 @@ __all__ = [
     "FleetCommandStatus",
     "FleetCommandType",
     "SightingRateRecord",
+    # Dwell detection
+    "DwellEvent",
+    "DwellSeverity",
+    "DwellState",
+    "DWELL_RADIUS_M",
+    "DWELL_THRESHOLD_S",
+    "classify_dwell_severity",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",
