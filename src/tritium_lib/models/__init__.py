@@ -483,6 +483,10 @@ from .fleet_ops import (
     FleetCommandType,
     SightingRateRecord,
 )
+from .prediction import (
+    PredictedPosition,
+    TargetPrediction,
+)
 from .device_capability_matrix import (
     CapabilityMatrix,
     DeviceCapabilityEntry,
@@ -946,6 +950,9 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Target prediction
+    "PredictedPosition",
+    "TargetPrediction",
     # Device capability matrix
     "CapabilityMatrix",
     "DeviceCapabilityEntry",
