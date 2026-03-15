@@ -12,11 +12,12 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
-## 2026-03-15 — Wave 146: Maintenance
+## 2026-03-15 — Wave 146: Notification Template Enhancements
 
 | Change | Verification |
 |--------|-------------|
-| Lib total: 2,452 tests passing, 94 model files, 128 test files | Verified |
+| NotificationTemplate: added ble:first_seen and convoy_detected built-in templates | 2477 tests pass |
+| Lib total: 2,477 tests passing, 94 model files, 128 test files | Verified |
 
 ---
 

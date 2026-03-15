@@ -219,4 +219,30 @@ BUILTIN_NOTIFICATION_TEMPLATES: list[NotificationTemplate] = [
         ],
         cooldown_seconds=30,
     ),
+    NotificationTemplate(
+        template_id="tpl-ble-first-seen",
+        name="BLE Device First Seen",
+        event_type="ble:first_seen",
+        title_template="New Device First Seen",
+        body_template="New device first seen: {name}, RSSI {rssi}dBm.",
+        severity=NotificationTemplateSeverity.INFO,
+        channels=[NotificationTemplateChannel.WEBSOCKET],
+        cooldown_seconds=5,
+    ),
+    NotificationTemplate(
+        template_id="tpl-convoy-detected",
+        name="Convoy Detected",
+        event_type="convoy_detected",
+        title_template="Convoy Detected: {member_count} targets",
+        body_template=(
+            "Convoy of {member_count} targets detected moving together. "
+            "Suspicious score: {suspicious_score}."
+        ),
+        severity=NotificationTemplateSeverity.WARNING,
+        channels=[
+            NotificationTemplateChannel.WEBSOCKET,
+            NotificationTemplateChannel.MQTT,
+        ],
+        cooldown_seconds=60,
+    ),
 ]
