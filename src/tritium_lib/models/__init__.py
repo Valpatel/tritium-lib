@@ -717,6 +717,21 @@ from .convoy_visualization import (
 from .acoustic_feature_vector import (
     AcousticFeatureVector,
 )
+from .radar import (
+    RadarClassification,
+    RadarConfig,
+    RadarMode,
+    RadarScan,
+    RadarTrack,
+)
+from .sdr import (
+    ADSBTrack,
+    AISTrack,
+    ISMDevice,
+    Modulation,
+    RFSignal,
+    SpectrumScan,
+)
 
 __all__ = [
     # Deployment
@@ -1344,4 +1359,17 @@ __all__ = [
     "LatLng",
     # Acoustic feature vector (MFCC transport)
     "AcousticFeatureVector",
+    # Radar integration
+    "RadarClassification",
+    "RadarConfig",
+    "RadarMode",
+    "RadarScan",
+    "RadarTrack",
+    # SDR (Software Defined Radio)
+    "ADSBTrack",
+    "AISTrack",
+    "ISMDevice",
+    "Modulation",
+    "RFSignal",
+    "SpectrumScan",
 ]
