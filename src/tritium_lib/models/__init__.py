@@ -635,6 +635,11 @@ from .personality import (
 from .geofence_event import (
     GeofenceEvent,
 )
+from .camera_link import (
+    CameraDetectionLink,
+    CameraLinkSummary,
+    FramePosition,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1096,6 +1101,10 @@ __all__ = [
     "OBSERVER_PERSONALITY",
     # Geofence crossing events
     "GeofenceEvent",
+    # Camera-to-target detection links
+    "CameraDetectionLink",
+    "CameraLinkSummary",
+    "FramePosition",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",
