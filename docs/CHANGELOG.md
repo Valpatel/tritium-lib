@@ -12,6 +12,14 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 104: GPX Export Models
+
+| Change | Verification |
+|--------|-------------|
+| models/gpx.py — GPXDocument, GPXTrack, GPXRoute, GPXWaypoint for GPX 1.1 XML generation | Unit Tested (17 tests) |
+| Builder pattern for creating valid GPX exports for ATAK, Google Earth, GIS tools | Unit Tested |
+| Added to models/__init__.py exports | Unit Tested |
+
 ## 2026-03-14 — Wave 103: Intelligence Package Model
 
 | Change | Verification |

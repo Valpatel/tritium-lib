@@ -524,6 +524,12 @@ from .tactical_situation import (
     TacticalSituation,
     ThreatLevel,
 )
+from .gpx import (
+    GPXDocument,
+    GPXRoute,
+    GPXTrack,
+    GPXWaypoint,
+)
 from .collaboration import (
     ChatMessageType,
     DrawingType,
@@ -1146,4 +1152,9 @@ __all__ = [
     "TargetCountsSummary",
     "TacticalSituation",
     "ThreatLevel",
+    # GPX export
+    "GPXDocument",
+    "GPXRoute",
+    "GPXTrack",
+    "GPXWaypoint",
 ]
