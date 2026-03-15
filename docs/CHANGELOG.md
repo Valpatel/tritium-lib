@@ -12,6 +12,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 131: Target Group Model
+
+| Change | Verification |
+|--------|-------------|
+| models/target_group.py — TargetGroup and TargetGroupSummary models for operator-defined target collections | 7 tests passing |
+| TargetGroup supports add/remove/has_target, color, icon, created_by | Unit Tested |
+| Exported in models/__init__.py | Consumer Tested |
+
+---
+
 ## 2026-03-15 — Wave 129: Vehicle Tracking Model
 
 | Change | Verification |

@@ -653,6 +653,10 @@ from .camera_link import (
     CameraLinkSummary,
     FramePosition,
 )
+from .target_group import (
+    TargetGroup,
+    TargetGroupSummary,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1123,6 +1127,9 @@ __all__ = [
     "CameraDetectionLink",
     "CameraLinkSummary",
     "FramePosition",
+    # Target groups
+    "TargetGroup",
+    "TargetGroupSummary",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",
