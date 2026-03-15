@@ -27,6 +27,12 @@ from tritium_lib.intelligence.anomaly import (
 )
 from tritium_lib.intelligence.base_learner import BaseLearner
 from tritium_lib.intelligence.model_registry import ModelRegistry
+from tritium_lib.intelligence.pattern_learning import (
+    PatternLearner,
+    PredictionResult,
+    TrainingExample,
+    PATTERN_FEATURES,
+)
 from tritium_lib.intelligence.scorer import (
     CorrelationFeatures,
     CorrelationScorer,
@@ -48,7 +54,11 @@ __all__ = [
     "FEATURE_NAMES",
     "LearnedScorer",
     "ModelRegistry",
+    "PATTERN_FEATURES",
+    "PatternLearner",
+    "PredictionResult",
     "ScorerResult",
     "SimpleThresholdDetector",
     "StaticScorer",
+    "TrainingExample",
 ]
