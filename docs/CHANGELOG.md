@@ -12,6 +12,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 108: Proximity Alert Models
+
+| Change | Verification |
+|--------|-------------|
+| models/proximity.py — ProximityAlert, ProximityRule, AlliancePair, ProximitySeverity for entity-to-entity distance monitoring | Unit Tested (17 tests) |
+| classify_proximity_severity() — severity classification based on distance/threshold ratio | Unit Tested |
+| ProximityRule.matches_alliance() — alliance pair matching including any_different mode | Unit Tested |
+| DEFAULT_PROXIMITY_RULES — hostile_friendly at 10m, unknown_friendly at 15m | Unit Tested |
+| Added all exports to models/__init__.py and __all__ | Unit Tested |
+
 ## 2026-03-14 — Wave 107: CoT Target Export Models
 
 | Change | Verification |
