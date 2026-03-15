@@ -51,6 +51,10 @@ from tritium_lib.intelligence.scorer import (
     ScorerResult,
     StaticScorer,
 )
+from tritium_lib.intelligence.rl_metrics import (
+    RLMetrics,
+    TrainingSnapshot,
+)
 from tritium_lib.intelligence.threat_model import (
     DEFAULT_SIGNAL_WEIGHTS,
     THREAT_THRESHOLDS,
@@ -83,6 +87,7 @@ __all__ = [
     "PATTERN_FEATURES",
     "PatternLearner",
     "PredictionResult",
+    "RLMetrics",
     "ScorerResult",
     "SimpleThresholdDetector",
     "StaticScorer",
@@ -92,5 +97,6 @@ __all__ = [
     "ThreatModel",
     "ThreatSignal",
     "TrainingExample",
+    "TrainingSnapshot",
     "score_to_threat_level",
 ]
