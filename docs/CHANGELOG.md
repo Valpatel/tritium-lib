@@ -12,6 +12,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 95: Confidence Decay Model
+
+| Change | Verification |
+|--------|-------------|
+| models/confidence.py — ConfidenceModel with exponential decay, SourceType enum, DEFAULT_HALF_LIVES (BLE 30s, WiFi 45s, YOLO 15s, mesh 120s, sim never), decay/is_stale/time_to_stale methods | Unit Tested (15 tests) |
+| Exported in models/__init__.py — ConfidenceModel, DEFAULT_HALF_LIVES, SourceType | Import verified |
+| tests/models/test_confidence.py — 15 tests covering decay math, staleness, serialization, source fallback | All passing |
+| Wave 94 test_analytics_dashboard.py — verified 9/9 passing | Verified |
+
 ## 2026-03-14 — Wave 94: Analytics Dashboard Widgets
 
 | Change | Verification |

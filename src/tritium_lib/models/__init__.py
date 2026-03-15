@@ -551,6 +551,11 @@ from .autonomous import (
     EdgeAlertRule,
     OverrideState,
 )
+from .confidence import (
+    ConfidenceModel,
+    DEFAULT_HALF_LIVES,
+    SourceType,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1008,6 +1013,10 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Confidence decay
+    "ConfidenceModel",
+    "DEFAULT_HALF_LIVES",
+    "SourceType",
     # Autonomous edge decisions
     "AutonomousDecision",
     "AutonomousDecisionLog",
