@@ -680,6 +680,12 @@ from .pattern import (
     compute_temporal_correlation,
     detect_time_regularity,
 )
+from .clustering import (
+    BehaviorCluster,
+    ClusterSummary,
+    CommonPattern,
+    FormationType,
+)
 
 __all__ = [
     # Deployment
@@ -1276,4 +1282,9 @@ __all__ = [
     "GPXRoute",
     "GPXTrack",
     "GPXWaypoint",
+    # Behavioral clustering
+    "BehaviorCluster",
+    "ClusterSummary",
+    "CommonPattern",
+    "FormationType",
 ]

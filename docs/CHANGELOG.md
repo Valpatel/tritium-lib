@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 141: BehaviorCluster Model
+
+| Change | Verification |
+|--------|-------------|
+| models/clustering.py — BehaviorCluster, ClusterSummary, CommonPattern, FormationType for behavioral target grouping | 7 tests passing |
+| BehaviorCluster supports add/remove/merge targets, weighted centroid merging, formation detection | Unit Tested |
+| FormationType enum: convoy, swarm, patrol, dispersed, stationary, unknown | Unit Tested |
+| ClusterSummary.from_cluster() for lightweight API responses | Unit Tested |
+| Added to models/__init__.py and __all__ | Import verified |
+
+---
+
 ## 2026-03-15 — Wave 132: Transition Event Model
 
 | Change | Verification |
