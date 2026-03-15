@@ -12,6 +12,14 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 91: Autonomous Decision Models
+
+| Change | Verification |
+|--------|-------------|
+| models/autonomous.py — AutonomousDecision, AutonomousDecisionLog, AutonomousDecisionType, AutonomousTrigger, EdgeAlertRule, OverrideState | Unit Tested (15 tests) |
+| 6 decision types (alert, classify, escalate, lockdown, evade, report), 9 trigger types, 4 override states | Unit Tested |
+| Registered in models/__init__.py with __all__ exports | Consumer Tested |
+
 ## 2026-03-14 — Wave 89: Forensic Reconstruction Models
 
 | Change | Verification |

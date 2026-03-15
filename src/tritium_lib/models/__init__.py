@@ -537,6 +537,14 @@ from .correlation_evidence import (
     compute_composite_confidence,
     make_pair_id,
 )
+from .autonomous import (
+    AutonomousDecision,
+    AutonomousDecisionLog,
+    AutonomousDecisionType,
+    AutonomousTrigger,
+    EdgeAlertRule,
+    OverrideState,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -989,6 +997,13 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Autonomous edge decisions
+    "AutonomousDecision",
+    "AutonomousDecisionLog",
+    "AutonomousDecisionType",
+    "AutonomousTrigger",
+    "EdgeAlertRule",
+    "OverrideState",
     # Correlation evidence
     "CorrelationEvidence",
     "EvidenceType",
