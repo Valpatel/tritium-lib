@@ -12,6 +12,14 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 107: CoT Target Export Models
+
+| Change | Verification |
+|--------|-------------|
+| models/tak_export.py — CoTExportEvent, CoTExportPoint for generating Cursor on Target XML from target data | Unit Tested (11 tests) |
+| targets_to_cot_xml() and targets_to_cot_file() for batch CoT export | Unit Tested |
+| Alliance-based type codes, asset type mapping, team colors, position fallback to x/y | Unit Tested |
+
 ## 2026-03-14 — Wave 104: GPX Export Models
 
 | Change | Verification |
