@@ -130,3 +130,62 @@ class TestRLMetrics:
         assert status["total_incorrect"] == 1
         assert status["models"]["correlation"]["correct_predictions"] == 1
         assert status["models"]["correlation"]["incorrect_predictions"] == 1
+
+    def test_export_empty(self):
+        m = RLMetrics()
+        export = m.export()
+        assert "status" in export
+        assert "models_detail" in export
+        assert export["total_trainings"] == 0
+        assert export["total_predictions"] == 0
+        assert "export_timestamp" in export
+        assert isinstance(export["export_timestamp"], float)
+
+    def test_export_with_data(self):
+        m = RLMetrics()
+        m.record_training(
+            accuracy=0.85,
+            training_count=300,
+            feature_importance={"distance": 0.3, "rssi": 0.2},
+            model_name="correlation",
+            duration_s=1.5,
+        )
+        m.record_training(
+            accuracy=0.90,
+            training_count=500,
+            model_name="classifier",
+        )
+        m.record_prediction(predicted_class=1, probability=0.9, correct=True, model_name="correlation")
+        m.record_prediction(predicted_class=0, probability=0.3, correct=False, model_name="correlation")
+
+        export = m.export()
+        assert export["total_trainings"] == 2
+        assert export["total_predictions"] == 2
+        assert export["total_correct"] == 1
+        assert export["total_incorrect"] == 1
+        assert export["training_history_size"] == 2
+        assert export["prediction_history_size"] == 2
+
+        # Models detail includes trend and feature importance
+        assert "correlation" in export["models_detail"]
+        corr = export["models_detail"]["correlation"]
+        assert "accuracy_trend" in corr
+        assert "training_growth" in corr
+        assert "feature_importance" in corr
+        assert len(corr["accuracy_trend"]) >= 1
+        assert corr["feature_importance"].get("distance") is not None
+
+        assert "classifier" in export["models_detail"]
+
+    def test_export_serializable(self):
+        """Export output must be JSON-serializable."""
+        import json
+        m = RLMetrics()
+        m.record_training(accuracy=0.75, training_count=100)
+        m.record_prediction(predicted_class=1, probability=0.8, correct=True)
+        export = m.export()
+        # Should not raise
+        json_str = json.dumps(export)
+        assert len(json_str) > 10
+        parsed = json.loads(json_str)
+        assert parsed["total_trainings"] == 1

@@ -52,6 +52,7 @@ from tritium_lib.intelligence.scorer import (
     StaticScorer,
 )
 from tritium_lib.intelligence.rl_metrics import (
+    PredictionRecord,
     RLMetrics,
     TrainingSnapshot,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "ModelRegistry",
     "PATTERN_FEATURES",
     "PatternLearner",
+    "PredictionRecord",
     "PredictionResult",
     "RLMetrics",
     "ScorerResult",

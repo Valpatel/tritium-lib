@@ -395,6 +395,44 @@ class RLMetrics:
                 "prediction_distribution": self.get_prediction_distribution(),
             }
 
+    def export(self) -> dict[str, Any]:
+        """Export all metrics as a serializable dictionary for persistence or API.
+
+        Returns a comprehensive snapshot including:
+        - Full status report
+        - Accuracy trend per model
+        - Training data growth per model
+        - Feature importance per model
+        - Raw training history and prediction counts
+
+        Suitable for JSON serialization, dashboard consumption, or
+        inter-process metrics sharing.
+        """
+        with self._lock:
+            status = self.get_status()
+
+            # Per-model detailed metrics
+            models_detail = {}
+            for name, mm in self._model_metrics.items():
+                models_detail[name] = {
+                    **mm.to_dict(),
+                    "accuracy_trend": self.get_accuracy_trend(model_name=name),
+                    "training_growth": self.get_training_data_growth(model_name=name),
+                    "feature_importance": self.get_feature_importance(model_name=name),
+                }
+
+            return {
+                "status": status,
+                "models_detail": models_detail,
+                "total_trainings": self._total_trainings,
+                "total_predictions": self._total_predictions,
+                "total_correct": self._total_correct,
+                "total_incorrect": self._total_incorrect,
+                "training_history_size": len(self._training_history),
+                "prediction_history_size": len(self._predictions),
+                "export_timestamp": time.time(),
+            }
+
     def reset(self) -> None:
         """Reset all metrics. Useful for testing."""
         with self._lock:
