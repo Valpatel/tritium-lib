@@ -12,6 +12,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 147: KML Builder + TrailExport Models
+
+| Change | Verification |
+|--------|-------------|
+| KmlDocument, KmlPlacemark, KmlStyle — KML document builder for target trail export | Unit Tested |
+| TrailExport models — structured trail output with format selection (GPX/KML) | Unit Tested |
+| Lib total: 2,516 tests passing, 96 model files, 130 test files | Verified |
+
+---
+
 ## 2026-03-15 — Wave 146: Notification Template Enhancements
 
 | Change | Verification |
