@@ -12,6 +12,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 82: EventStore for Tactical Event Persistence
+
+| Change | Verification |
+|--------|-------------|
+| `store/event_store.py` — EventStore with SQLite WAL, time-range queries, type/severity/target/source filtering, batch insert, cleanup, stats | Unit tested (26 tests) |
+| `TacticalEvent` dataclass with event_id, timestamp, event_type, severity, source, target_id, operator, summary, data, position, site_id | Unit tested |
+| `SEVERITY_LEVELS` tuple for ordered severity filtering (debug < info < warning < error < critical) | Unit tested |
+| Exported from `tritium_lib.store` package: EventStore, TacticalEvent, SEVERITY_LEVELS | Consumer tested |
+
 ## 2026-03-14 — Wave 79: Acoustic Intelligence Models
 
 ### AudioFeatureVector, SoundSignature, SoundClassification, AcousticTrilateration (Unit Tested, 16 tests)
