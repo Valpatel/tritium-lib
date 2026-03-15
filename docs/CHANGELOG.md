@@ -12,6 +12,13 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 111: Benchmark Result Models
+
+| Change | Verification |
+|--------|-------------|
+| models/benchmark.py — BenchmarkResult, BenchmarkSuite, BenchmarkUnit for standardized performance reporting across the ecosystem | Unit Tested (2236 tests passing) |
+| BenchmarkSuite.add() with auto pass/fail evaluation (higher_is_better support), report() for multi-line output, to_dict() for API serialization | Consumer Tested |
+
 ## 2026-03-14 — Wave 108: Proximity Alert Models
 
 | Change | Verification |
