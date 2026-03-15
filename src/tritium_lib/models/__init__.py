@@ -611,6 +611,11 @@ from .proximity import (
     classify_proximity_severity,
     DEFAULT_PROXIMITY_RULES,
 )
+from .benchmark import (
+    BenchmarkResult,
+    BenchmarkSuite,
+    BenchmarkUnit,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1093,6 +1098,10 @@ __all__ = [
     "QuickAction",
     "QuickActionLog",
     "QuickActionType",
+    # Benchmark results
+    "BenchmarkResult",
+    "BenchmarkSuite",
+    "BenchmarkUnit",
     # Velocity profiling
     "VelocityProfile",
     "compute_anomaly_score",
