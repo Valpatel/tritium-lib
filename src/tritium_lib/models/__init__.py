@@ -505,6 +505,16 @@ from .tactical_situation import (
     TacticalSituation,
     ThreatLevel,
 )
+from .collaboration import (
+    ChatMessageType,
+    DrawingType,
+    MapDrawing,
+    OperatorAction,
+    OperatorChatMessage,
+    SharedWorkspace,
+    WorkspaceEvent,
+    WorkspaceEventType,
+)
 from .correlation_evidence import (
     CorrelationEvidence,
     EvidenceType,
@@ -986,6 +996,15 @@ __all__ = [
     # Device capability matrix
     "CapabilityMatrix",
     "DeviceCapabilityEntry",
+    # Collaboration
+    "ChatMessageType",
+    "DrawingType",
+    "MapDrawing",
+    "OperatorAction",
+    "OperatorChatMessage",
+    "SharedWorkspace",
+    "WorkspaceEvent",
+    "WorkspaceEventType",
     # Tactical situation
     "AmyStatus",
     "TacticalFleetHealth",

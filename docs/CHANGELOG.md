@@ -12,6 +12,13 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 88: Collaboration Models
+
+| Change | Verification |
+|--------|-------------|
+| models/collaboration.py — SharedWorkspace, WorkspaceEvent, OperatorAction, MapDrawing, OperatorChatMessage, DrawingType, ChatMessageType enums | Unit Tested (13 tests) |
+| Registered in models/__init__.py with full __all__ exports | Unit Tested |
+
 ## 2026-03-14 — Wave 86: Correlation Evidence Models
 
 | Change | Verification |
