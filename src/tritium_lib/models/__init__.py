@@ -253,6 +253,12 @@ from .acoustic_intelligence import (
     acoustic_trilaterate,
     SPEED_OF_SOUND_MPS,
 )
+from .acoustic_tdoa import (
+    TDoAObservation,
+    TDoAResult,
+    compute_tdoa_position,
+    SPEED_OF_SOUND_MPS as TDOA_SPEED_OF_SOUND_MPS,
+)
 from .behavior import (
     AnomalySeverity,
     AnomalyType,
@@ -884,6 +890,11 @@ __all__ = [
     "SoundSignature",
     "acoustic_trilaterate",
     "SPEED_OF_SOUND_MPS",
+    # Acoustic TDoA (Time Difference of Arrival)
+    "TDoAObservation",
+    "TDoAResult",
+    "compute_tdoa_position",
+    "TDOA_SPEED_OF_SOUND_MPS",
     # Behavioral pattern recognition
     "AnomalySeverity",
     "AnomalyType",
