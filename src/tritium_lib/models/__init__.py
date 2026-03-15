@@ -580,6 +580,13 @@ from .velocity import (
     VelocityProfile,
     compute_anomaly_score,
 )
+from .vehicle import (
+    VehicleTrack,
+    compute_heading,
+    compute_speed_mph,
+    compute_suspicious_score,
+    heading_to_label,
+)
 from .device_lifecycle import (
     DeviceLifecycleEvent,
     DeviceLifecycleStatus,
@@ -1160,6 +1167,12 @@ __all__ = [
     # Velocity profiling
     "VelocityProfile",
     "compute_anomaly_score",
+    # Vehicle tracking
+    "VehicleTrack",
+    "compute_heading",
+    "compute_speed_mph",
+    "compute_suspicious_score",
+    "heading_to_label",
     # Confidence decay
     "ConfidenceModel",
     "DEFAULT_HALF_LIVES",

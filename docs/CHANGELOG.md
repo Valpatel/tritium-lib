@@ -12,6 +12,19 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 129: Vehicle Tracking Model
+
+| Change | Verification |
+|--------|-------------|
+| models/vehicle.py — VehicleTrack Pydantic model for YOLO-detected vehicle behavior analysis | 27 tests passing |
+| compute_speed_mph(): speed from consecutive frame positions | Unit Tested |
+| compute_heading(): compass heading from position delta | Unit Tested |
+| compute_suspicious_score(): loitering, unusual location, slow crawling, erratic speed/heading | Unit Tested |
+| heading_to_label(): compass direction (N, NE, E, etc.) | Unit Tested |
+| Exported from tritium_lib.models | Consumer Tested |
+
+---
+
 ## 2026-03-15 — Wave 126: Feature Engineering for RL Correlation
 
 | Change | Verification |
