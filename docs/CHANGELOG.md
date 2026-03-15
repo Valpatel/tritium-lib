@@ -12,6 +12,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 97: Sensor Health Monitoring Models
+
+| Change | Verification |
+|--------|-------------|
+| models/sensor_health.py — SensorHealthMetrics, SensorArrayHealth, SensorBaseline, SensorAlert, SensorHealthStatus enum, classify_sensor_health() function | Unit Tested (20 tests) |
+| SensorBaseline — learned baseline with mean/stddev/training window, deviation_from() method | Unit Tested |
+| SensorAlert — alert model with severity, deviation %, sigma, recommended action | Unit Tested |
+| Exported in models/__init__.py — SensorArrayHealth, SensorAlert, SensorBaseline, SensorHealthMetrics, SensorHealthStatus, classify_sensor_health | Import verified |
+| tests/test_sensor_health.py — 20 tests covering classification thresholds, array health aggregation, roundtrip serialization | All passing |
+
 ## 2026-03-14 — Wave 95: Confidence Decay Model
 
 | Change | Verification |
