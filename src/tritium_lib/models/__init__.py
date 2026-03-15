@@ -687,6 +687,12 @@ from .clustering import (
     FormationType,
 )
 from .daily_pattern import DailyPattern
+from .convoy import (
+    Convoy,
+    ConvoyFormation,
+    ConvoyStatus,
+    ConvoySummary,
+)
 
 __all__ = [
     # Deployment
@@ -1290,4 +1296,9 @@ __all__ = [
     "FormationType",
     # Daily patterns
     "DailyPattern",
+    # Convoy detection
+    "Convoy",
+    "ConvoyFormation",
+    "ConvoyStatus",
+    "ConvoySummary",
 ]

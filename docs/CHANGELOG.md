@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 145: Convoy Model
+
+| Change | Verification |
+|--------|-------------|
+| Convoy model — convoy_id, member_target_ids, speed_avg, heading_avg, formation, suspicious_score | 12 tests pass |
+| ConvoyFormation enum — LINE, CLUSTER, SPREAD, UNKNOWN | Unit Tested |
+| ConvoyStatus enum — ACTIVE, DISPERSED, STOPPED, MERGED | Unit Tested |
+| ConvoySummary — aggregate stats for active convoys | Unit Tested |
+| compute_suspicious_score — weighted scoring: heading/speed coordination, duration, member count | Unit Tested |
+
+---
+
 ## 2026-03-15 — Wave 144: DailyPattern Model
 
 | Change | Verification |
