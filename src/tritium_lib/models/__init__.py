@@ -662,6 +662,11 @@ from .transition import (
     TransitionHistory,
     TransitionType,
 )
+from .acoustic_training import (
+    AcousticTrainingExample,
+    AcousticTrainingSet,
+    TrainingSource,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1139,6 +1144,10 @@ __all__ = [
     "TransitionEvent",
     "TransitionHistory",
     "TransitionType",
+    # Acoustic ML training data
+    "AcousticTrainingExample",
+    "AcousticTrainingSet",
+    "TrainingSource",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",
