@@ -12,6 +12,23 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 158: Maintenance
+
+| Change | Verification |
+|--------|-------------|
+| Lib pytest: 2,569 passing (up from 2,527) | pytest verified |
+| 97 model files, 133 test files, 262+ Pydantic classes | Verified |
+
+---
+
+## 2026-03-15 — Wave 157: BLE Company ID Expansion
+
+| Change | Verification |
+|--------|-------------|
+| BLE company ID database expanded to 933 entries in ble_fingerprints.json | Verified |
+
+---
+
 ## 2026-03-15 — Wave 152: Maintenance
 
 | Change | Verification |
