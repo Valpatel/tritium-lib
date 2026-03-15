@@ -42,6 +42,15 @@ from tritium_lib.intelligence.scorer import (
     ScorerResult,
     StaticScorer,
 )
+from tritium_lib.intelligence.threat_model import (
+    DEFAULT_SIGNAL_WEIGHTS,
+    THREAT_THRESHOLDS,
+    ThreatAssessment,
+    ThreatLevel,
+    ThreatModel,
+    ThreatSignal,
+    score_to_threat_level,
+)
 
 __all__ = [
     "Anomaly",
@@ -50,6 +59,7 @@ __all__ = [
     "BaseLearner",
     "CorrelationFeatures",
     "CorrelationScorer",
+    "DEFAULT_SIGNAL_WEIGHTS",
     "DEFAULT_WEIGHTS",
     "FEATURE_NAMES",
     "LearnedScorer",
@@ -60,5 +70,11 @@ __all__ = [
     "ScorerResult",
     "SimpleThresholdDetector",
     "StaticScorer",
+    "THREAT_THRESHOLDS",
+    "ThreatAssessment",
+    "ThreatLevel",
+    "ThreatModel",
+    "ThreatSignal",
     "TrainingExample",
+    "score_to_threat_level",
 ]

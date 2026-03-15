@@ -12,6 +12,14 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 92: Unified Threat Assessment Engine
+
+| Change | Verification |
+|--------|-------------|
+| intelligence/threat_model.py — ThreatModel unified assessment engine with time decay, per-target signal buffers, weighted composite scores, and ThreatLevel derivation | Unit Tested (29 tests) |
+| ThreatSignal with TTL expiry, ThreatAssessment with sub-scores, score_to_threat_level helper | Unit Tested |
+| intelligence/__init__.py updated with new exports | Import Tested |
+
 ## 2026-03-14 — Wave 91: Autonomous Decision Models
 
 | Change | Verification |
