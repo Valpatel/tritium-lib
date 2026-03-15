@@ -12,6 +12,23 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 126: Feature Engineering for RL Correlation
+
+| Change | Verification |
+|--------|-------------|
+| intelligence/feature_engineering.py — 5 reusable feature functions for correlation learners | Unit Tested (34 tests passing) |
+| device_type_match(): semantic cross-sensor type compatibility (phone+person=1.0, watch+person=0.95) | Unit Tested |
+| co_movement_score(): trail-based co-located movement with linear interpolation | Unit Tested |
+| time_similarity(): circular time-of-day matching wrapping around midnight | Unit Tested |
+| source_diversity(): cross-category sensor diversity scoring (RF+visual bonus) | Unit Tested |
+| wifi_probe_temporal_correlation(): BLE + WiFi probe timing match with same_observer bonus | Unit Tested |
+| EXTENDED_FEATURE_NAMES constant: all 10 features listed for correlation scoring | Unit Tested |
+| build_extended_features(): helper to construct complete 10-feature dicts | Unit Tested |
+| scorer.py FEATURE_NAMES expanded from 6 to 10, DEFAULT_WEIGHTS rebalanced | Unit Tested (121 total) |
+| Exported from tritium_lib.intelligence — available to tritium-sc learners | Consumer Tested |
+
+---
+
 ## 2026-03-15 — Wave 119: GeofenceEvent Model
 
 | Change | Verification |

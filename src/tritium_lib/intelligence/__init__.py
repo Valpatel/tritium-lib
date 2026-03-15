@@ -19,6 +19,15 @@ Exports:
     Anomaly            — Anomaly dataclass
 """
 
+from tritium_lib.intelligence.feature_engineering import (
+    EXTENDED_FEATURE_NAMES,
+    build_extended_features,
+    co_movement_score,
+    device_type_match,
+    source_diversity,
+    time_similarity,
+    wifi_probe_temporal_correlation,
+)
 from tritium_lib.intelligence.anomaly import (
     Anomaly,
     AnomalyDetector,
@@ -53,6 +62,13 @@ from tritium_lib.intelligence.threat_model import (
 )
 
 __all__ = [
+    "EXTENDED_FEATURE_NAMES",
+    "build_extended_features",
+    "co_movement_score",
+    "device_type_match",
+    "source_diversity",
+    "time_similarity",
+    "wifi_probe_temporal_correlation",
     "Anomaly",
     "AnomalyDetector",
     "AutoencoderDetector",

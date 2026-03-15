@@ -25,7 +25,8 @@ from typing import Any, Optional
 # Feature dict type alias
 CorrelationFeatures = dict[str, float]
 
-# Canonical feature names expected by scorers
+# Canonical feature names expected by scorers.
+# Wave 126: expanded from 6 to 10 features for richer correlation signals.
 FEATURE_NAMES = [
     "distance",
     "rssi_delta",
@@ -33,16 +34,26 @@ FEATURE_NAMES = [
     "device_type_match",
     "time_gap",
     "signal_pattern",
+    # New features (Wave 126)
+    "co_movement_duration",
+    "time_of_day_similarity",
+    "source_diversity_score",
+    "wifi_probe_correlation",
 ]
 
 # Default static weights — hand-tuned baseline
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "distance": -0.30,       # Closer = higher score (negative weight on distance)
-    "rssi_delta": -0.10,     # Smaller delta = higher score
-    "co_movement": 0.25,     # Co-movement is strong signal
-    "device_type_match": 0.15,  # Same type pair boost
-    "time_gap": -0.10,       # Smaller gap = higher score
-    "signal_pattern": 0.20,  # Signal appearance timing
+    "distance": -0.25,       # Closer = higher score (negative weight on distance)
+    "rssi_delta": -0.08,     # Smaller delta = higher score
+    "co_movement": 0.18,     # Co-movement is strong signal
+    "device_type_match": 0.12,  # Same type pair boost
+    "time_gap": -0.08,       # Smaller gap = higher score
+    "signal_pattern": 0.15,  # Signal appearance timing
+    # New features (Wave 126)
+    "co_movement_duration": 0.12,   # Duration of co-located movement
+    "time_of_day_similarity": 0.06, # Same time of day across sessions
+    "source_diversity_score": 0.08, # Multiple sensor types involved
+    "wifi_probe_correlation": 0.14, # WiFi probe + BLE temporal match
 }
 
 DEFAULT_BIAS = 0.5  # Baseline probability before features

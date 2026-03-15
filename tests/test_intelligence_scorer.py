@@ -145,3 +145,11 @@ class TestFeatureNames:
         assert "device_type_match" in FEATURE_NAMES
         assert "time_gap" in FEATURE_NAMES
         assert "signal_pattern" in FEATURE_NAMES
+
+    def test_extended_names_wave126(self):
+        """Wave 126: verify the 4 new features are in FEATURE_NAMES."""
+        assert "co_movement_duration" in FEATURE_NAMES
+        assert "time_of_day_similarity" in FEATURE_NAMES
+        assert "source_diversity_score" in FEATURE_NAMES
+        assert "wifi_probe_correlation" in FEATURE_NAMES
+        assert len(FEATURE_NAMES) == 10
