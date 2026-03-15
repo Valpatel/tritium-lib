@@ -602,6 +602,15 @@ from .intelligence_package import (
     create_intelligence_package,
     validate_package_import,
 )
+from .proximity import (
+    AlliancePair,
+    ProximityAlert,
+    ProximityAlertType,
+    ProximityRule,
+    ProximitySeverity,
+    classify_proximity_severity,
+    DEFAULT_PROXIMITY_RULES,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1072,6 +1081,14 @@ __all__ = [
     "PackageTarget",
     "create_intelligence_package",
     "validate_package_import",
+    # Proximity alerts
+    "AlliancePair",
+    "ProximityAlert",
+    "ProximityAlertType",
+    "ProximityRule",
+    "ProximitySeverity",
+    "classify_proximity_severity",
+    "DEFAULT_PROXIMITY_RULES",
     # Quick tactical actions
     "QuickAction",
     "QuickActionLog",
