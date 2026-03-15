@@ -12,6 +12,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 86: Correlation Evidence Models
+
+| Change | Verification |
+|--------|-------------|
+| `models/correlation_evidence.py` — CorrelationEvidence model with EvidenceType enum (spatial, temporal, signal, visual, handoff, behavioral, manual), make_pair_id(), compute_composite_confidence(), builder helpers for spatial/visual/handoff evidence | Unit tested (16 tests) |
+| Registered in `models/__init__.py` for clean import access | Consumer tested |
+
+---
+
 ## 2026-03-14 — Wave 82: EventStore for Tactical Event Persistence
 
 | Change | Verification |

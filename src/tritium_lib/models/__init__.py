@@ -505,6 +505,15 @@ from .tactical_situation import (
     TacticalSituation,
     ThreatLevel,
 )
+from .correlation_evidence import (
+    CorrelationEvidence,
+    EvidenceType,
+    build_handoff_evidence,
+    build_spatial_evidence,
+    build_visual_evidence,
+    compute_composite_confidence,
+    make_pair_id,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -957,6 +966,14 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Correlation evidence
+    "CorrelationEvidence",
+    "EvidenceType",
+    "build_handoff_evidence",
+    "build_spatial_evidence",
+    "build_visual_evidence",
+    "compute_composite_confidence",
+    "make_pair_id",
     # Tactical events
     "EventPosition",
     "TacticalEvent",
