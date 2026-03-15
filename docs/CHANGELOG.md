@@ -12,6 +12,19 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 144: DailyPattern Model
+
+| Change | Verification |
+|--------|-------------|
+| DailyPattern model — 24-bin hourly histogram with peak_hour, quiet_hours, regularity_score | 17 tests pass |
+| compute_regularity_score — normalized entropy (1.0 = single spike, 0.0 = uniform) | Unit Tested |
+| is_daytime_only / is_nighttime_only properties for activity classification | Unit Tested |
+| add_sighting(hour), recompute(), active_hours property | Unit Tested |
+| Registered in models/__init__.py __all__ | Consumer Tested |
+| Lib total: 2,411 tests passing (29 skipped) | Unit Tested |
+
+---
+
 ## 2026-03-15 — Wave 141: BehaviorCluster Model
 
 | Change | Verification |

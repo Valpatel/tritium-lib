@@ -686,6 +686,7 @@ from .clustering import (
     CommonPattern,
     FormationType,
 )
+from .daily_pattern import DailyPattern
 
 __all__ = [
     # Deployment
@@ -1287,4 +1288,6 @@ __all__ = [
     "ClusterSummary",
     "CommonPattern",
     "FormationType",
+    # Daily patterns
+    "DailyPattern",
 ]
