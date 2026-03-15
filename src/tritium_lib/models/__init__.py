@@ -693,6 +693,17 @@ from .convoy import (
     ConvoyStatus,
     ConvoySummary,
 )
+from .notification_template import (
+    BUILTIN_NOTIFICATION_TEMPLATES,
+    NotificationTemplate,
+    NotificationTemplateChannel,
+    NotificationTemplateSeverity,
+)
+from .convoy_visualization import (
+    ConvoyFormationType,
+    ConvoyVisualization,
+    LatLng,
+)
 
 __all__ = [
     # Deployment
@@ -1301,4 +1312,13 @@ __all__ = [
     "ConvoyFormation",
     "ConvoyStatus",
     "ConvoySummary",
+    # Notification templates
+    "BUILTIN_NOTIFICATION_TEMPLATES",
+    "NotificationTemplate",
+    "NotificationTemplateChannel",
+    "NotificationTemplateSeverity",
+    # Convoy visualization
+    "ConvoyFormationType",
+    "ConvoyVisualization",
+    "LatLng",
 ]
