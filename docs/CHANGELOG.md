@@ -12,6 +12,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 103: Intelligence Package Model
+
+| Change | Verification |
+|--------|-------------|
+| models/intelligence_package.py — IntelligencePackage, PackageTarget, PackageEvent, PackageDossier, PackageEvidence, ChainOfCustody for portable inter-site intelligence sharing | Unit Tested (32 tests) |
+| IntelClassification enum — unclassified, restricted, confidential, secret | Unit Tested |
+| PackageStatus enum — draft, finalized, transmitted, received, imported, rejected lifecycle | Unit Tested |
+| create_intelligence_package() factory with automatic chain of custody | Unit Tested |
+| validate_package_import() pre-validation (expiration, classification, integrity) | Unit Tested |
+| __init__.py updated to export all 12 new symbols | Unit Tested |
+
 ## 2026-03-14 — Wave 101: Quick Action Model
 
 | Change | Verification |

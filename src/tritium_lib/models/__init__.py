@@ -582,6 +582,20 @@ from .quick_action import (
     QuickActionLog,
     QuickActionType,
 )
+from .intelligence_package import (
+    ChainOfCustody,
+    EvidenceType as IntelEvidenceType,
+    IntelClassification,
+    IntelligencePackage,
+    PackageDossier,
+    PackageEvent,
+    PackageEvidence,
+    PackageImportResult,
+    PackageStatus,
+    PackageTarget,
+    create_intelligence_package,
+    validate_package_import,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1039,6 +1053,19 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Intelligence packages
+    "ChainOfCustody",
+    "IntelEvidenceType",
+    "IntelClassification",
+    "IntelligencePackage",
+    "PackageDossier",
+    "PackageEvent",
+    "PackageEvidence",
+    "PackageImportResult",
+    "PackageStatus",
+    "PackageTarget",
+    "create_intelligence_package",
+    "validate_package_import",
     # Quick tactical actions
     "QuickAction",
     "QuickActionLog",
