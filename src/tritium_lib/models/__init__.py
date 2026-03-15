@@ -483,6 +483,13 @@ from .fleet_ops import (
     FleetCommandType,
     SightingRateRecord,
 )
+from .tactical_event import (
+    EventPosition,
+    TacticalEvent,
+    TacticalEventType,
+    TacticalSeverity,
+    filter_events,
+)
 from .prediction import (
     PredictedPosition,
     TargetPrediction,
@@ -950,6 +957,12 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Tactical events
+    "EventPosition",
+    "TacticalEvent",
+    "TacticalEventType",
+    "TacticalSeverity",
+    "filter_events",
     # Target prediction
     "PredictedPosition",
     "TargetPrediction",
