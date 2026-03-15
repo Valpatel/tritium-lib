@@ -568,6 +568,15 @@ from .velocity import (
     VelocityProfile,
     compute_anomaly_score,
 )
+from .device_lifecycle import (
+    DeviceLifecycleEvent,
+    DeviceLifecycleStatus,
+    DeviceProvisioningConfig,
+    DeviceState,
+    FleetLifecycleSummary,
+    VALID_TRANSITIONS,
+    is_valid_transition,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1087,6 +1096,14 @@ __all__ = [
     "SensorCoverage",
     "TargetTimeline",
     "TimeRange",
+    # Device lifecycle management
+    "DeviceLifecycleEvent",
+    "DeviceLifecycleStatus",
+    "DeviceProvisioningConfig",
+    "DeviceState",
+    "FleetLifecycleSummary",
+    "VALID_TRANSITIONS",
+    "is_valid_transition",
     # Tactical situation
     "AmyStatus",
     "TacticalFleetHealth",
