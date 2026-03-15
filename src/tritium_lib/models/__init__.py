@@ -714,6 +714,9 @@ from .convoy_visualization import (
     ConvoyVisualization,
     LatLng,
 )
+from .acoustic_feature_vector import (
+    AcousticFeatureVector,
+)
 
 __all__ = [
     # Deployment
@@ -1339,4 +1342,6 @@ __all__ = [
     "ConvoyFormationType",
     "ConvoyVisualization",
     "LatLng",
+    # Acoustic feature vector (MFCC transport)
+    "AcousticFeatureVector",
 ]
