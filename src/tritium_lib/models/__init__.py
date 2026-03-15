@@ -344,6 +344,19 @@ from .report import (
     ReportRecommendation,
     ReportStatus,
 )
+from .forensics import (
+    EvidenceItem,
+    ForensicReconstruction,
+    GeoBounds,
+    IncidentClassification,
+    IncidentFinding,
+    IncidentRecommendation,
+    IncidentReport,
+    ReconstructionStatus,
+    SensorCoverage,
+    TargetTimeline,
+    TimeRange,
+)
 from .sensor_config import (
     MountingType,
     SensorArray,
@@ -1005,6 +1018,18 @@ __all__ = [
     "SharedWorkspace",
     "WorkspaceEvent",
     "WorkspaceEventType",
+    # Forensics
+    "EvidenceItem",
+    "ForensicReconstruction",
+    "GeoBounds",
+    "IncidentClassification",
+    "IncidentFinding",
+    "IncidentRecommendation",
+    "IncidentReport",
+    "ReconstructionStatus",
+    "SensorCoverage",
+    "TargetTimeline",
+    "TimeRange",
     # Tactical situation
     "AmyStatus",
     "TacticalFleetHealth",

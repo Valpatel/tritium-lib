@@ -12,6 +12,13 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 89: Forensic Reconstruction Models
+
+| Change | Verification |
+|--------|-------------|
+| models/forensics.py — ForensicReconstruction, IncidentReport, GeoBounds, TimeRange, EvidenceItem, TargetTimeline, SensorCoverage, IncidentFinding, IncidentRecommendation, IncidentClassification, ReconstructionStatus | Unit Tested (15 tests) |
+| Registered in models/__init__.py with __all__ exports | Consumer Tested |
+
 ## 2026-03-14 — Wave 88: Collaboration Models
 
 | Change | Verification |
