@@ -483,6 +483,13 @@ from .fleet_ops import (
     FleetCommandType,
     SightingRateRecord,
 )
+from .tactical_situation import (
+    AmyStatus,
+    FleetHealth as TacticalFleetHealth,
+    TargetCountsSummary,
+    TacticalSituation,
+    ThreatLevel,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -935,4 +942,10 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Tactical situation
+    "AmyStatus",
+    "TacticalFleetHealth",
+    "TargetCountsSummary",
+    "TacticalSituation",
+    "ThreatLevel",
 ]
