@@ -483,6 +483,10 @@ from .fleet_ops import (
     FleetCommandType,
     SightingRateRecord,
 )
+from .device_capability_matrix import (
+    CapabilityMatrix,
+    DeviceCapabilityEntry,
+)
 from .tactical_situation import (
     AmyStatus,
     FleetHealth as TacticalFleetHealth,
@@ -942,6 +946,9 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Device capability matrix
+    "CapabilityMatrix",
+    "DeviceCapabilityEntry",
     # Tactical situation
     "AmyStatus",
     "TacticalFleetHealth",
