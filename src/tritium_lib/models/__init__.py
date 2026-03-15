@@ -556,6 +556,18 @@ from .confidence import (
     DEFAULT_HALF_LIVES,
     SourceType,
 )
+from .sensor_health import (
+    SensorAlert,
+    SensorArrayHealth,
+    SensorBaseline,
+    SensorHealthMetrics,
+    SensorHealthStatus,
+    classify_sensor_health,
+)
+from .velocity import (
+    VelocityProfile,
+    compute_anomaly_score,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1013,10 +1025,20 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Velocity profiling
+    "VelocityProfile",
+    "compute_anomaly_score",
     # Confidence decay
     "ConfidenceModel",
     "DEFAULT_HALF_LIVES",
     "SourceType",
+    # Sensor health monitoring
+    "SensorAlert",
+    "SensorArrayHealth",
+    "SensorBaseline",
+    "SensorHealthMetrics",
+    "SensorHealthStatus",
+    "classify_sensor_health",
     # Autonomous edge decisions
     "AutonomousDecision",
     "AutonomousDecisionLog",
