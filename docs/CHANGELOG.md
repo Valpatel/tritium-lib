@@ -12,6 +12,24 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 152: Maintenance
+
+| Change | Verification |
+|--------|-------------|
+| Lib pytest: 2,527 passing (up from 2,516) | pytest verified |
+| 97 model files, 131 test files, 262+ Pydantic classes | Verified |
+
+---
+
+## 2026-03-15 — Wave 151: AcousticFeatureVector Model
+
+| Change | Verification |
+|--------|-------------|
+| AcousticFeatureVector model — compact MFCC feature transport for edge-to-SC serialization | 11 tests pass |
+| Lib total: 2,527 tests passing, 97 model files, 131 test files | Verified |
+
+---
+
 ## 2026-03-15 — Wave 147: KML Builder + TrailExport Models
 
 | Change | Verification |
