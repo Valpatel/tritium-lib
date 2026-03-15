@@ -577,6 +577,11 @@ from .device_lifecycle import (
     VALID_TRANSITIONS,
     is_valid_transition,
 )
+from .quick_action import (
+    QuickAction,
+    QuickActionLog,
+    QuickActionType,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1034,6 +1039,10 @@ __all__ = [
     "TimeSlot",
     "compute_temporal_correlation",
     "detect_time_regularity",
+    # Quick tactical actions
+    "QuickAction",
+    "QuickActionLog",
+    "QuickActionType",
     # Velocity profiling
     "VelocityProfile",
     "compute_anomaly_score",

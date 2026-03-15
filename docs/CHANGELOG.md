@@ -12,6 +12,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 101: Quick Action Model
+
+| Change | Verification |
+|--------|-------------|
+| models/quick_action.py — QuickAction, QuickActionLog, QuickActionType for logging tactical actions on targets | Unit Tested (10 tests) |
+| QuickActionType enum — investigate, watch, classify, track, dismiss, escalate, annotate | Unit Tested |
+| QuickActionLog — in-memory log with for_target(), by_type(), recent() queries | Unit Tested |
+| Exported in models/__init__.py and __all__ | Unit Tested |
+
 ## 2026-03-14 — Wave 97: Sensor Health Monitoring Models
 
 | Change | Verification |
