@@ -12,6 +12,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 119: GeofenceEvent Model
+
+| Change | Verification |
+|--------|-------------|
+| models/geofence_event.py — GeofenceEvent dataclass with target_id, zone_id, direction, timestamp, target_alliance, zone_type, zone_name, position | Unit Tested (7 tests passing) |
+| to_dict/from_dict serialization with optional field omission (empty zone_name, null position) | Unit Tested |
+| Roundtrip serialization test verified | Unit Tested |
+| Exported from tritium_lib.models — available to tritium-sc and tritium-edge | Consumer Tested |
+
+---
+
 ## 2026-03-14 — Wave 116: Commander Personality Model
 
 | Change | Verification |

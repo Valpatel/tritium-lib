@@ -632,6 +632,9 @@ from .personality import (
     STEALTH_PERSONALITY,
     OBSERVER_PERSONALITY,
 )
+from .geofence_event import (
+    GeofenceEvent,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1091,6 +1094,8 @@ __all__ = [
     "BATTLE_PERSONALITY",
     "STEALTH_PERSONALITY",
     "OBSERVER_PERSONALITY",
+    # Geofence crossing events
+    "GeofenceEvent",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",
