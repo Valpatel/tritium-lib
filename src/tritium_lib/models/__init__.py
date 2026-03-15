@@ -657,6 +657,11 @@ from .target_group import (
     TargetGroup,
     TargetGroupSummary,
 )
+from .transition import (
+    TransitionEvent,
+    TransitionHistory,
+    TransitionType,
+)
 from .pattern import (
     BehaviorPattern as LearnedBehaviorPattern,
     CoPresenceRelationship,
@@ -1130,6 +1135,10 @@ __all__ = [
     # Target groups
     "TargetGroup",
     "TargetGroupSummary",
+    # State transitions
+    "TransitionEvent",
+    "TransitionHistory",
+    "TransitionType",
     # Behavioral pattern learning
     "LearnedBehaviorPattern",
     "CoPresenceRelationship",

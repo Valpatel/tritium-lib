@@ -12,6 +12,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 132: Transition Event Model
+
+| Change | Verification |
+|--------|-------------|
+| models/transition.py — TransitionEvent, TransitionHistory, TransitionType for target state change tracking | 13 tests passing |
+| Supports indoor/outdoor, zone crossing, speed change, classification change, visibility transitions | Unit Tested |
+| Serialization: to_dict/from_dict with full roundtrip | Unit Tested |
+| TransitionHistory: bounded history with count_by_type, last_transition queries | Unit Tested |
+| Exported in models/__init__.py and __all__ | Consumer Tested |
+
+---
+
 ## 2026-03-15 — Wave 131: Target Group Model
 
 | Change | Verification |
