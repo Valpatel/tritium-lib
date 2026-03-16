@@ -653,6 +653,44 @@ except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.cyber not available: {_e}")
 
 # ---------------------------------------------------------------------------
+# Animation: Easing, keyframes, tracks, library, interpolation buffer
+# ---------------------------------------------------------------------------
+try:
+    from .animation import (
+        Keyframe,
+        AnimationTrack,
+        EntityAnimation,
+        AnimationLibrary,
+        InterpolationBuffer,
+        EASING_FUNCTIONS,
+        get_easing,
+        lerp,
+        linear,
+        ease_in,
+        ease_out,
+        ease_in_out,
+        bounce,
+        elastic,
+        back,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.animation not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Territory: Influence maps, control points, strategic value
+# ---------------------------------------------------------------------------
+try:
+    from .territory import (
+        InfluenceMap,
+        TerritoryControl,
+        ControlPoint,
+        CaptureState,
+        StrategicValue,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.territory not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # __all__ — comprehensive public API
 # ---------------------------------------------------------------------------
 __all__ = [
@@ -805,4 +843,13 @@ __all__ = [
     "CyberAttackType2", "CyberCapability", "CyberAsset",
     "CyberEffect", "CyberWarfareEngine", "CYBER_PRESETS",
     "create_asset_from_preset",
+    # --- Animation ---
+    "Keyframe", "AnimationTrack", "EntityAnimation",
+    "AnimationLibrary", "InterpolationBuffer",
+    "EASING_FUNCTIONS", "get_easing", "lerp",
+    "linear", "ease_in", "ease_out", "ease_in_out",
+    "bounce", "elastic", "back",
+    # --- Territory ---
+    "InfluenceMap", "TerritoryControl", "ControlPoint",
+    "CaptureState", "StrategicValue",
 ]

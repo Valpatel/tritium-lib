@@ -1095,6 +1095,15 @@ particleMesh.count = 0;
 particleMesh.renderOrder = 10; // render after opaque objects
 scene.add(particleMesh);
 
+// CRITICAL: Disable frustum culling on ALL InstancedMesh objects.
+// Three.js computes bounding sphere from base geometry (1x1x1 box at origin).
+// When camera zooms in, this tiny sphere gets culled and ALL instances vanish.
+[buildingBodyMesh, buildingRoofMesh, windowMesh, doorIMesh,
+ trunkMesh, leafMesh, lampPostMesh, lampHeadMesh,
+ personBodyMesh, personHeadMesh, ringMesh, shieldMesh,
+ carBodyMesh, carCabinMesh, carHLMesh, carTLMesh,
+ particleMesh].forEach(m => { m.frustumCulled = false; });
+
 // Particle pool tracking
 const particlePool = [];
 const activeParticles = [];
@@ -1826,28 +1835,53 @@ function createHelicopter() {
 // =========================================================================
 // Effects
 // =========================================================================
-function createTracer(from, to, color = 0xffff00, duration = 0.2) {
-  const points = [
-    new THREE.Vector3(from.x, 2, from.z),
-    new THREE.Vector3(to.x, 2, to.z),
-  ];
-  const geo = new THREE.BufferGeometry().setFromPoints(points);
-  const mat = new THREE.LineBasicMaterial({ color, linewidth: 3, transparent: true, opacity: 1 });
-  const line = new THREE.Line(geo, mat);
+// Tracer pool — reuse Line objects instead of creating new ones each shot
+const MAX_TRACERS = 20;
+const tracerPool = [];
+const tracerMat = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2, transparent: true, opacity: 1, depthWrite: false });
+for (let i = 0; i < MAX_TRACERS; i++) {
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(6); // 2 points * 3 coords
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const line = new THREE.Line(geo, tracerMat.clone());
+  line.visible = false;
+  line.frustumCulled = false;
   scene.add(line);
-  tracers.push({ line, life: duration, maxLife: duration });
+  tracerPool.push(line);
+}
 
-  const glowMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, transparent: true, opacity: 0.5 });
-  const glow = new THREE.Line(geo.clone(), glowMat);
-  glow.position.y = 0.1;
-  scene.add(glow);
-  tracers.push({ line: glow, life: duration * 0.8, maxLife: duration * 0.8 });
+function createTracer(from, to, color = 0xffff00, duration = 0.2) {
+  if (tracers.length >= MAX_TRACERS) return; // cap
+  // Find a hidden tracer from pool
+  const line = tracerPool.find(l => !l.visible);
+  if (!line) return;
+  const pos = line.geometry.attributes.position.array;
+  pos[0] = from.x; pos[1] = 2; pos[2] = from.z;
+  pos[3] = to.x; pos[4] = 2; pos[5] = to.z;
+  line.geometry.attributes.position.needsUpdate = true;
+  line.material.color.setHex(color);
+  line.material.opacity = 1;
+  line.visible = true;
+  tracers.push({ line, life: duration, maxLife: duration });
+}
+
+// Muzzle flash pool — reuse PointLights
+const MAX_FLASHES = 8;
+const flashPool = [];
+for (let i = 0; i < MAX_FLASHES; i++) {
+  const light = new THREE.PointLight(0xffaa00, 0, 20);
+  light.visible = false;
+  scene.add(light);
+  flashPool.push(light);
 }
 
 function createMuzzleFlash(pos) {
-  const light = new THREE.PointLight(0xffaa00, 5, 20);
+  if (muzzleFlashes.length >= MAX_FLASHES) return; // cap
+  const light = flashPool.find(l => !l.visible);
+  if (!light) return;
   light.position.set(pos.x, 2.5, pos.z);
-  scene.add(light);
+  light.intensity = 5;
+  light.visible = true;
   muzzleFlashes.push({ light, life: 0.05 });
 }
 
@@ -1864,11 +1898,16 @@ function createExplosion(pos) {
     );
   }
 
-  // Bright explosion core — temporary PointLight
-  const exLight = new THREE.PointLight(0xff6600, 8, 50);
-  exLight.position.set(pos.x, 4, pos.z);
-  scene.add(exLight);
-  muzzleFlashes.push({ light: exLight, life: 0.3 });
+  // Bright explosion core — reuse flash pool
+  const exLight = flashPool.find(l => !l.visible);
+  if (exLight) {
+    exLight.color.setHex(0xff6600);
+    exLight.intensity = 8;
+    exLight.distance = 50;
+    exLight.position.set(pos.x, 4, pos.z);
+    exLight.visible = true;
+    muzzleFlashes.push({ light: exLight, life: 0.3 });
+  }
 }
 
 function createTearGasCloud(pos) {
@@ -1884,6 +1923,8 @@ function createTearGasCloud(pos) {
 }
 
 function createFire(pos) {
+  // Cap fires at 6 to prevent light accumulation
+  if (fires.length >= 6) return;
   // Persistent fire — burns 20-30 seconds with bright PointLight
   const light = new THREE.PointLight(0xff6600, 5, 30);
   light.position.set(pos.x, 3, pos.z);
@@ -2753,27 +2794,33 @@ function update(dt) {
     }
 
     const dist = Math.abs(dx + dz); // one is always 0
-    if (dist < 2) {
-      // Arrived at intersection — snap to it
-      car.x = target.x + (car.horizontal ? 0 : -car.dir * LANE_OFFSET);
-      car.z = target.z + (car.horizontal ? car.dir * LANE_OFFSET : 0);
+    // Stop BEFORE the intersection (5 units back = one car length)
+    const STOP_DIST = 5;
+    if (dist < STOP_DIST) {
+      // Stop short of intersection center — stay one car length back
+      if (dist > 2) {
+        // Still approaching — snap to stop line, not the center
+        if (car.horizontal) {
+          car.x = target.x - car.dir * (STOP_DIST - 1);
+        } else {
+          car.z = target.z - car.dir * (STOP_DIST - 1);
+        }
+      }
 
-      // Pause briefly at intersection
+      // Pause at stop line
       car.pauseTimer = 0.3 + rng() * 0.8;
 
       // Decide: continue straight, or turn
       const turnRoll = rng();
       if (turnRoll < 0.35) {
-        // Turn: switch orientation
         car.horizontal = !car.horizontal;
         car.dir = rng() < 0.5 ? 1 : -1;
       } else if (turnRoll < 0.5) {
-        // U-turn
         car.dir = -car.dir;
       }
-      // else continue straight
 
-      car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
+      // After pause expires, car will proceed through intersection to next one
+      car.nextIntersection = findNextIntersection(target.x, target.z, car.horizontal, car.dir);
     } else {
       // Simple forward collision avoidance — slow down if car ahead
       let blocked = false;
@@ -3199,14 +3246,12 @@ function update(dt) {
     }
   }
 
-  // Update effects
+  // Update effects — pooled tracers (hide, don't remove)
   for (let i = tracers.length - 1; i >= 0; i--) {
     tracers[i].life -= dt;
     tracers[i].line.material.opacity = Math.max(0, tracers[i].life / tracers[i].maxLife);
     if (tracers[i].life <= 0) {
-      scene.remove(tracers[i].line);
-      tracers[i].line.geometry.dispose();
-      tracers[i].line.material.dispose();
+      tracers[i].line.visible = false;
       tracers.splice(i, 1);
     }
   }
@@ -3214,7 +3259,8 @@ function update(dt) {
   for (let i = muzzleFlashes.length - 1; i >= 0; i--) {
     muzzleFlashes[i].life -= dt;
     if (muzzleFlashes[i].life <= 0) {
-      scene.remove(muzzleFlashes[i].light);
+      muzzleFlashes[i].light.visible = false;
+      muzzleFlashes[i].light.intensity = 0;
       muzzleFlashes.splice(i, 1);
     }
   }
