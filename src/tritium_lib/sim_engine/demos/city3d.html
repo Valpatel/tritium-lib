@@ -3045,6 +3045,8 @@ for (let i = 0; i < NUM_PEDESTRIANS; i++) {
   const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
   const slot = allocPersonSlot();
 
+  const dest = randomSidewalkPos();
+  const wps = planPedPath(pos, dest);
   pedestrians.push({
     slot,
     x: pos.x, z: pos.z, y: 0, rotY: 0,
@@ -3052,7 +3054,8 @@ for (let i = 0; i < NUM_PEDESTRIANS; i++) {
     headColor,
     scale: 1.0,
     speed: 1.5 + rng() * 1.5,
-    target: randomSidewalkPos(),
+    target: wps[0],
+    waypoints: wps.slice(1),
     alive: true,
     fleeing: false,
   });
@@ -4842,8 +4845,13 @@ function update(dt) {
       if (ped.fleeing) {
         ped.alive = false;
         hidePersonInstance(ped.slot);
+      } else if (ped.waypoints && ped.waypoints.length > 0) {
+        ped.target = ped.waypoints.shift();
       } else {
-        ped.target = randomSidewalkPos();
+        const dest = randomSidewalkPos();
+        const wps = planPedPath({ x: ped.x, z: ped.z }, dest);
+        ped.target = wps[0];
+        ped.waypoints = wps.slice(1);
       }
     } else {
       const s = ped.speed * dt;
@@ -5080,9 +5088,10 @@ function update(dt) {
         if (dist < 5) {
           taxi.pauseTimer = 0.3 + rng() * 0.5;
           if (!isGreen(target, taxi.horizontal)) taxi.pauseTimer = Math.max(taxi.pauseTimer, 1.5 + rng() * 1.0);
-          const turnRoll = rng();
-          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
+          const prevH1 = taxi.horizontal; const turnRoll = rng();
+          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; taxi.turnSignal = taxi.dir > 0 ? 0 : 1; }
           else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
+          if (taxi.horizontal !== prevH1) taxi.turnTimer = 2.0;
           taxi.nextIntersection = findNextIntersection(target.x, target.z, taxi.horizontal, taxi.dir);
         } else {
           const collMult = checkVehicleCollision(taxi, taxi.x, taxi.z, taxi.horizontal, taxi.dir);
@@ -5095,9 +5104,10 @@ function update(dt) {
         if (dist < 5) {
           taxi.pauseTimer = 0.3 + rng() * 0.5;
           if (!isGreen(target, taxi.horizontal)) taxi.pauseTimer = Math.max(taxi.pauseTimer, 1.5 + rng() * 1.0);
-          const turnRoll = rng();
-          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
+          const prevH2 = taxi.horizontal; const turnRoll = rng();
+          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; taxi.turnSignal = taxi.dir > 0 ? 0 : 1; }
           else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
+          if (taxi.horizontal !== prevH2) taxi.turnTimer = 2.0;
           taxi.nextIntersection = findNextIntersection(target.x, target.z, taxi.horizontal, taxi.dir);
         } else {
           const collMult = checkVehicleCollision(taxi, taxi.x, taxi.z, taxi.horizontal, taxi.dir);

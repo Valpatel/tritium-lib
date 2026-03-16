@@ -6,6 +6,8 @@
 #   ./sim-demo.sh              # Start demo (default: urban_combat)
 #   ./sim-demo.sh open_field   # Start with a specific preset
 #   ./sim-demo.sh --list       # List available presets
+#   ./sim-demo.sh --perf       # Run performance test
+#   ./sim-demo.sh --coverage   # Run test coverage report
 #
 # Presets: urban_combat, open_field, riot_response, convoy_ambush, drone_strike
 #
@@ -16,6 +18,18 @@ cd "$(dirname "$0")"
 
 PRESET="${1:-urban_combat}"
 PORT="${SIM_PORT:-9090}"
+
+if [ "$1" = "--perf" ]; then
+    echo "=== Running Performance Test ==="
+    python3 -m tritium_lib.sim_engine.demos.perf_test "${@:2}"
+    exit $?
+fi
+
+if [ "$1" = "--coverage" ]; then
+    echo "=== Running Test Coverage Report ==="
+    python3 -m tritium_lib.sim_engine.demos.test_report "${@:2}"
+    exit $?
+fi
 
 if [ "$1" = "--list" ] || [ "$1" = "-l" ]; then
     echo "Available presets:"
