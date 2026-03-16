@@ -250,6 +250,23 @@ canvas { display: block; }
 .supply-bar-fill.unlimited { background: #05ffa1; }
 .supply-count { color: #fcee0a; font-size: 10px; width: 36px; text-align: right; }
 
+/* AI Decision Panel */
+#ai-panel {
+  position: absolute; top: 80px; right: 16px; width: 260px;
+  background: rgba(10,10,15,0.92); border: 1px solid #00f0ff66;
+  border-radius: 4px; padding: 10px 14px;
+  font-family: 'Courier New', monospace; font-size: 12px;
+  color: #ccc; line-height: 1.7; display: none; z-index: 15;
+}
+#ai-panel.visible { display: block; }
+#ai-panel h3 { color: #00f0ff; font-size: 15px; margin: 0 0 6px; }
+#ai-panel .ai-label { color: #fcee0a99; }
+#ai-panel .ai-val { color: #fcee0a; font-weight: bold; }
+#ai-panel .ai-action { color: #05ffa1; font-weight: bold; font-size: 13px; }
+#ai-panel .ai-reason { color: #00f0ff; font-style: italic; margin-top: 4px; }
+.ai-bar { height: 8px; background: #1a1a2e; border-radius: 2px; border: 1px solid #ffffff22; overflow: hidden; margin: 2px 0 4px; }
+.ai-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+
 @keyframes supply-low-flash {
   0%, 100% { background: inherit; }
   50% { background: #fcee0a; }
@@ -320,7 +337,8 @@ canvas { display: block; }
         Score: <span class="score-val" id="score-count">0</span><br>
         Police Morale: <span class="police-val" id="police-morale">100%</span><br>
         Protest Morale: <span class="protestor-val" id="protestor-morale">80%</span><br>
-        Police Budget: <span class="budget-val budget-positive" id="budget-display">$10,000</span>
+        Police Budget: <span class="budget-val budget-positive" id="budget-display">$10,000</span><br>
+        Comms: <span class="police-val" id="comms-status">ACTIVE</span>
       </div>
     </div>
   </div>
@@ -362,11 +380,28 @@ canvas { display: block; }
     <span>R</span> Rain &nbsp;|&nbsp;
     <span>F</span> Fog &nbsp;|&nbsp;
     <span>I</span> Intel &nbsp;|&nbsp;
-    <span>M</span> Minimap
+    <span>M</span> Minimap &nbsp;|&nbsp;
+    <span>K</span> Rec &nbsp;|&nbsp;
+    <span>L</span> Play &nbsp;|&nbsp;
+    <span>Click</span> Inspect &nbsp;|&nbsp;
+    <span>ESC</span> Deselect
+    <span id="rec-btn" onclick="toggleRecording()"><span class="rec-dot"></span>REC</span>
+    <span id="rec-timer">00:00</span>
+  </div>
+  <div id="playback-bar">
+    <button id="pb-play" onclick="togglePlayback()">PLAY</button>
+    <div id="playback-scrubber" onclick="seekPlayback(event)"><div id="playback-progress"></div></div>
+    <span id="playback-frame">0/0</span>
+    <button onclick="setPlaybackSpeed(0.5)">0.5x</button>
+    <button class="active" onclick="setPlaybackSpeed(1)">1x</button>
+    <button onclick="setPlaybackSpeed(2)">2x</button>
+    <button onclick="setPlaybackSpeed(4)">4x</button>
+    <button onclick="stopPlayback()" style="color:#ff2a6d;border-color:#ff2a6d44">STOP</button>
   </div>
   <canvas id="minimap-canvas" width="180" height="120"></canvas>
   <div id="compass-hud"></div>
   <div id="combat-banner">RIOT IN PROGRESS</div>
+  <div id="ai-panel"></div>
   <canvas id="fps-graph" width="200" height="60"></canvas>
   <div id="debug-overlay"></div>
   <canvas id="debug-canvas"></canvas>
@@ -504,6 +539,12 @@ let propertyDamage = 0;
 const activeEffects = [];
 let effectsCount = 0; // for debug overlay
 
+// Comms network state (demonstrates comms.py)
+let commsStatus = 'ACTIVE'; // ACTIVE, DEGRADED, JAMMED
+let commsDegradedTimer = 0;
+let commsLinkCount = 0;
+const COMMS_RANGE = 40; // meters — radio range between officers
+
 const pedestrians = [];
 const cars = [];
 const protestors = [];
@@ -536,6 +577,17 @@ let robotTotalHits = 0; // total lidar hits this frame (for debug)
 // Weather state
 let rainActive = false;
 let fogOverride = false;
+
+// Artillery strike state (demonstrates artillery.py / air_combat.py)
+let artilleryPhase = 'IDLE'; // IDLE | WARNING | IMPACT | SMOKE
+let artilleryTimer = 0;
+let artilleryTriggered = false; // prevent double-trigger per riot
+const artilleryTargets = []; // 3 impact positions
+const artilleryCraters = []; // pre-allocated crater meshes
+const artilleryMarkers = []; // warning ring meshes
+let cameraShakeTimer = 0;
+let cameraShakeOx = 0, cameraShakeOz = 0;
+let artillerySmokeTimer = 0;
 
 // Minimap & Compass state (demonstrates hud.py)
 let minimapVisible = true;
@@ -628,6 +680,14 @@ const narrationTemplates = {
   fire_extinguished: [
     '<span class="callsign">ENGINE-1:</span> <span class="info">Fire knocked down</span> at grid {grid}. Overhaul in progress.',
     '<span class="callsign">FIRE CONTROL:</span> <span class="info">Fire contained</span> at {grid}. All clear.',
+  ],
+  artillery_warning: [
+    '<span class="callsign">COMMAND:</span> <span class="alert">FIRE MISSION INBOUND</span> grid {grid}. All units clear the area!',
+    '<span class="callsign">FDC:</span> <span class="alert">SHOT OUT</span> — 3 rounds HE, grid {grid}. Splash in 3 seconds.',
+  ],
+  artillery_complete: [
+    '<span class="callsign">COMMAND:</span> Fire mission complete. Grid {grid}. Assess damage.',
+    '<span class="callsign">FDC:</span> Rounds complete grid {grid}. BDA requested.',
   ],
 };
 
@@ -1615,6 +1675,70 @@ const detectionLines = new THREE.LineSegments(detectionLineGeo, detectionLineMat
 detectionLines.visible = false;
 detectionLines.renderOrder = 101;
 scene.add(detectionLines);
+
+// Comms network lines — radio links between police officers (comms.py demo)
+const MAX_COMMS_LINKS = 50; // NUM_POLICE*(NUM_POLICE-1)/2 = 45 max pairs
+const commsLineGeo = new THREE.BufferGeometry();
+const commsLinePositions = new Float32Array(MAX_COMMS_LINKS * 6);
+const commsLineColors = new Float32Array(MAX_COMMS_LINKS * 6);
+commsLineGeo.setAttribute('position', new THREE.BufferAttribute(commsLinePositions, 3));
+commsLineGeo.setAttribute('color', new THREE.BufferAttribute(commsLineColors, 3));
+const commsLineMat = new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, opacity: 0.6, depthWrite: false,
+});
+const commsLines = new THREE.LineSegments(commsLineGeo, commsLineMat);
+commsLines.visible = false;
+commsLines.renderOrder = 102;
+scene.add(commsLines);
+
+function updateCommsNetwork(dt) {
+  // Check for fire proximity — degrades comms
+  commsDegradedTimer = Math.max(0, commsDegradedTimer - dt);
+  let nearFire = false;
+  for (const cop of police) {
+    if (!cop.alive) continue;
+    for (const f of fires) {
+      const fd = Math.sqrt((cop.x - f.x) ** 2 + (cop.z - f.z) ** 2);
+      if (fd < 15) { nearFire = true; break; }
+    }
+    if (nearFire) break;
+  }
+  if (nearFire) commsDegradedTimer = 5;
+  commsStatus = commsDegradedTimer > 0 ? 'DEGRADED' : 'ACTIVE';
+
+  // Update HUD indicator
+  const el = document.getElementById('comms-status');
+  if (el) {
+    el.textContent = commsStatus;
+    el.style.color = commsStatus === 'ACTIVE' ? '#05ffa1' : '#fcee0a';
+  }
+
+  // Update comms lines (only visible in debug mode)
+  commsLines.visible = debugMode;
+  if (!debugMode) return;
+
+  let idx = 0;
+  commsLinkCount = 0;
+  const aliveCops = police.filter(p => p.alive);
+  for (let i = 0; i < aliveCops.length && idx < MAX_COMMS_LINKS; i++) {
+    for (let j = i + 1; j < aliveCops.length && idx < MAX_COMMS_LINKS; j++) {
+      const a = aliveCops[i], b = aliveCops[j];
+      const dist = Math.sqrt((a.x - b.x) ** 2 + (a.z - b.z) ** 2);
+      if (dist > COMMS_RANGE) continue;
+      const bright = 1 - dist / COMMS_RANGE; // 1=close, 0=far
+      const base = idx * 6;
+      commsLinePositions[base] = a.x; commsLinePositions[base+1] = 3; commsLinePositions[base+2] = a.z;
+      commsLinePositions[base+3] = b.x; commsLinePositions[base+4] = 3; commsLinePositions[base+5] = b.z;
+      commsLineColors[base] = 0; commsLineColors[base+1] = bright * 0.94; commsLineColors[base+2] = bright;
+      commsLineColors[base+3] = 0; commsLineColors[base+4] = bright * 0.94; commsLineColors[base+5] = bright;
+      idx++;
+      commsLinkCount++;
+    }
+  }
+  commsLineGeo.setDrawRange(0, idx * 2);
+  commsLineGeo.attributes.position.needsUpdate = true;
+  commsLineGeo.attributes.color.needsUpdate = true;
+}
 
 function updateFogOfWar(dt) {
   fogTimer += dt;
@@ -3974,6 +4098,9 @@ document.addEventListener('keydown', (e) => {
     minimapVisible = !minimapVisible;
     document.getElementById('minimap-canvas').style.display = minimapVisible ? 'block' : 'none';
   }
+  if (e.code === 'Escape') {
+    deselectUnit();
+  }
 });
 
 // Resize
@@ -4805,7 +4932,7 @@ function update(dt) {
           pr.alive = false;
           hidePersonInstance(pr.slot);
         }
-        if (pr.alive) updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, pr.bodyColor, pr.headColor, pr.scale);
+        if (pr.alive) updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
         continue;
       }
 
@@ -4825,7 +4952,7 @@ function update(dt) {
         pr.rotY = Math.atan2(dx, dz);
       }
 
-      updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, pr.bodyColor, pr.headColor, pr.scale);
+      updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
 
       // Throw rocks and molotovs during RIOT phase
       if (riotPhase === 'RIOT') {
@@ -4869,6 +4996,8 @@ function update(dt) {
                 if (rng() < 0.3) addKillFeedEntry('Protestor threw rock');
                 if (rng() < 0.1) {
                   nearest.health -= 0.1;
+                  nearest.morale = Math.max(0, (nearest.morale || 1) - 0.05); // rock hit drops morale
+                  pr.morale = Math.min(1, pr.morale + 0.03); // successful rock throw boosts morale
                   injuryCount++;
                   if (rng() < 0.3) addKillFeedEntry('Police officer hit by rock');
                   // Knock down injured police
@@ -4890,6 +5019,10 @@ function update(dt) {
     }
 
     // Update police
+      // Police morale tick
+      pol.morale = Math.min(1.0, (pol.morale || 1) + 0.01 * dt);
+      for (const f of fires) { if (dist2d(pol, f) < 15) pol.morale = Math.max(0, pol.morale - 0.02 * dt); }
+      const polDisplayColor = moraleColor(pol.bodyColor, pol.morale);
     for (const pol of police) {
       if (!pol.alive) continue;
 
@@ -4966,6 +5099,9 @@ function update(dt) {
               for (const pr of protestors) {
                 if (!pr.alive || pr.arrested || pr.fleeing) continue;
                 const dd = dist2d(pr, { x: impactX, z: impactZ });
+                if (dd < 20) {
+                  pr.morale = Math.max(0, pr.morale - 0.1); // tear gas drops morale
+                }
                 if (dd < 20 && rng() < 0.4) {
                   pr.fleeing = true;
                   pr.speed = 3 + rng() * 2;
@@ -5003,6 +5139,7 @@ function update(dt) {
                   nearest.arrested = true;
                   nearest.y = -0.5;
                   arrestCount++;
+                  pol.morale = Math.min(1.0, (pol.morale || 1) + 0.05); // arrest boosts police morale
                   policeBudget += REWARD_ARREST; // grant from city
                   addKillFeedEntry('Protestor arrested');
                   addNarration('arrest', { n: arrestCount });
@@ -5580,6 +5717,141 @@ function drawFPSGraph() {
   }
 }
 
+
+// =========================================================================
+// Minimap — bird's-eye 2D canvas (demonstrates hud.py minimap)
+// =========================================================================
+const minimapCanvas = document.getElementById('minimap-canvas');
+const minimapCtx = minimapCanvas ? minimapCanvas.getContext('2d') : null;
+const MINIMAP_W = 180, MINIMAP_H = 120;
+
+function drawMinimap() {
+  if (!minimapCtx || !minimapVisible) return;
+  const ctx = minimapCtx;
+  const sx = MINIMAP_W / CITY_W;
+  const sz = MINIMAP_H / CITY_H;
+
+  // Clear
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, MINIMAP_W, MINIMAP_H);
+
+  // Road grid (#333333)
+  ctx.strokeStyle = '#333333';
+  ctx.lineWidth = 1;
+  for (let r = 0; r <= GRID_ROWS; r++) {
+    const y = r * (BLOCK_H + ROAD_W) * sz;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(MINIMAP_W, y); ctx.stroke();
+  }
+  for (let c = 0; c <= GRID_COLS; c++) {
+    const mx = c * (BLOCK_W + ROAD_W) * sx;
+    ctx.beginPath(); ctx.moveTo(mx, 0); ctx.lineTo(mx, MINIMAP_H); ctx.stroke();
+  }
+
+  // Building blocks
+  ctx.fillStyle = '#1a1a2e';
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      const bx = ROAD_W + c * (BLOCK_W + ROAD_W);
+      const bz = ROAD_W + r * (BLOCK_H + ROAD_W);
+      ctx.fillRect(bx * sx, bz * sz, BLOCK_W * sx, BLOCK_H * sz);
+    }
+  }
+
+  // Entity dot helper
+  function drawDot(ex, ez, color, size) {
+    ctx.fillStyle = color;
+    ctx.fillRect(ex * sx - size / 2, ez * sz - size / 2, size, size);
+  }
+
+  // Vehicles
+  for (const car of cars) {
+    if (car.alive === false) continue;
+    drawDot(car.x, car.z, car.isRobot ? '#00f0ff' : '#888888', 3);
+  }
+  for (const taxi of taxis) {
+    if (taxi.alive === false) continue;
+    drawDot(taxi.x, taxi.z, '#fcee0a', 3);
+  }
+  for (const amb of ambulances) {
+    if (amb.alive === false) continue;
+    drawDot(amb.x, amb.z, '#ffffff', 3);
+  }
+  for (const ft of fireTrucks) {
+    if (ft.alive === false) continue;
+    drawDot(ft.x, ft.z, '#ff4400', 3);
+  }
+  for (const pv of policeVans) {
+    if (pv.alive === false) continue;
+    drawDot(pv.x, pv.z, '#4466ff', 3);
+  }
+
+  // Pedestrians — gray
+  for (const ped of pedestrians) {
+    if (ped.alive === false) continue;
+    drawDot(ped.x, ped.z, '#666666', 2);
+  }
+
+  // Police — cyan
+  for (const pol of police) {
+    if (pol.alive === false) continue;
+    drawDot(pol.x, pol.z, '#00f0ff', 2);
+  }
+
+  // Protestors — green peaceful, red riot
+  for (const pr of protestors) {
+    if (pr.alive === false) continue;
+    drawDot(pr.x, pr.z, riotMode ? '#ff2a6d' : '#05ffa1', 2);
+  }
+
+  // Camera viewport rectangle (white border)
+  const tgt = controls.target;
+  const dist = camera.position.distanceTo(tgt);
+  const vFov = camera.fov * Math.PI / 180;
+  const viewH = 2 * Math.tan(vFov / 2) * dist;
+  const viewW = viewH * camera.aspect;
+  const vpL = Math.max(0, (tgt.x - viewW / 2) * sx);
+  const vpT = Math.max(0, (tgt.z - viewH / 2) * sz);
+  const vpW = Math.min(MINIMAP_W - vpL, viewW * sx);
+  const vpH = Math.min(MINIMAP_H - vpT, viewH * sz);
+  ctx.strokeStyle = '#ffffff88';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(vpL, vpT, vpW, vpH);
+
+  // Border
+  ctx.strokeStyle = '#00f0ff33';
+  ctx.strokeRect(0, 0, MINIMAP_W, MINIMAP_H);
+}
+
+// =========================================================================
+// Compass — cardinal direction from camera azimuth (demonstrates hud.py compass)
+// =========================================================================
+const compassEl = document.getElementById('compass-hud');
+
+function updateCompass() {
+  if (!compassEl) return;
+  const azimuth = controls.getAzimuthalAngle();
+  const deg = ((azimuth * 180 / Math.PI) + 360) % 360;
+
+  // Three.js OrbitControls: azimuth 0 = looking along +Z
+  // Map: +Z=S, -Z=N, +X=E, -X=W
+  let primary;
+  if (deg >= 315 || deg < 45) primary = 'S';
+  else if (deg >= 45 && deg < 135) primary = 'W';
+  else if (deg >= 135 && deg < 225) primary = 'N';
+  else primary = 'E';
+
+  const directions = ['N', 'E', 'S', 'W'];
+  let html = '';
+  for (const d of directions) {
+    if (d === primary) {
+      html += '<span class="compass-active">' + d + '</span> ';
+    } else {
+      html += d + ' ';
+    }
+  }
+  compassEl.innerHTML = html.trim();
+}
+
 function animate() {
   requestAnimationFrame(animate);
 
@@ -5640,7 +5912,15 @@ function animate() {
     updateSupplyHUD();
     updateStatusEffects(0.25);
     applyStatusEffectVisuals();
+    drawMinimap();
     hudTimer = 0;
+  }
+
+  // Compass updates at 10fps
+  compassTimer += dt;
+  if (compassTimer >= COMPASS_UPDATE_INTERVAL) {
+    updateCompass();
+    compassTimer = 0;
   }
 
   renderer.render(scene, camera);
