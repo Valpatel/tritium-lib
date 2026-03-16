@@ -524,6 +524,18 @@ let simTime = 8.0;
 let riotPhase = 'PEACEFUL';
 let riotTimer = 0;
 
+// Campaign Progression (demonstrates campaign.py + scenario.py)
+let campaignPhase = 0;
+let campaignTimer = 0;
+let campaignComplete = false;
+const CAMPAIGN_PHASES = [
+  null,
+  { name: 'Morning Protest', objective: 'Monitor situation', duration: 60, color: 'phase1' },
+  { name: 'Riot Response', objective: 'Contain riot', color: 'phase2' },
+  { name: 'Aftermath', objective: 'Secure area', color: 'phase3' },
+];
+const CAMPAIGN_TITLE = 'City Crisis';
+
 let molotovCount = 0;
 let teargasCount = 0;
 let rockCount = 0;
@@ -4037,6 +4049,7 @@ document.addEventListener('keydown', (e) => {
     if (riotMode) {
       ensureAudio();
       riotPhase = 'TENSION';
+      artilleryTriggered = false; artilleryPhase = 'IDLE';
       riotTimer = 0;
       molotovCount = 0;
       teargasCount = 0;
@@ -5553,6 +5566,8 @@ function update(dt) {
   } else {
     controls.update();
   }
+  // Artillery camera shake offset
+  if (cameraShakeOx || cameraShakeOz) { camera.position.x += cameraShakeOx; camera.position.z += cameraShakeOz; }
 }
 
 // =========================================================================
