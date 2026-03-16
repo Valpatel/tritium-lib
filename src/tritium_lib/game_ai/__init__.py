@@ -65,6 +65,31 @@ from .city_sim import (
     state_visible_on_map,
 )
 
+from .combat_ai import (
+    # Cover
+    find_cover,
+    is_in_cover,
+    rate_cover_position,
+    # Flanking
+    compute_flank_position,
+    is_flanking,
+    # Engagement
+    optimal_engagement_range,
+    should_engage,
+    should_retreat,
+    # Squad coordination
+    formation_positions,
+    assign_targets,
+    # Suppression
+    suppression_cone,
+    is_suppressed,
+    # Pre-built combat trees
+    make_assault_tree,
+    make_defender_tree,
+    make_sniper_tree,
+    make_squad_leader_tree,
+)
+
 from .rf_signatures import (
     BuildingRFProfile,
     PersonRFProfile,
@@ -128,4 +153,21 @@ __all__ = [
     "state_movement_type",
     "state_rf_emission",
     "state_visible_on_map",
+    # Combat AI
+    "find_cover",
+    "is_in_cover",
+    "rate_cover_position",
+    "compute_flank_position",
+    "is_flanking",
+    "optimal_engagement_range",
+    "should_engage",
+    "should_retreat",
+    "formation_positions",
+    "assign_targets",
+    "suppression_cone",
+    "is_suppressed",
+    "make_assault_tree",
+    "make_defender_tree",
+    "make_sniper_tree",
+    "make_squad_leader_tree",
 ]
