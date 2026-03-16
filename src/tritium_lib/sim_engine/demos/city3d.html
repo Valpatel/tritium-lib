@@ -237,6 +237,16 @@ canvas { display: block; }
 </script>
 
 <script type="module">
+// Runtime error handler — surface fatal errors in the HUD instead of silently dying
+window.addEventListener('error', (e) => {
+  console.error('[CITY3D FATAL]', e.message, e.filename, e.lineno);
+  const fpsEl = document.getElementById('fps');
+  if (fpsEl) {
+    fpsEl.textContent = 'ERROR: ' + e.message;
+    fpsEl.style.color = '#ff2a6d';
+  }
+});
+
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
@@ -3503,8 +3513,11 @@ function update(dt) {
         cd.roadIdx = 0;
       } else {
         const s = cd.speed * dt;
-        cd.x += (dx / d) * s;
-        cd.z += (dz / d) * s;
+        let newX = cd.x + (dx / d) * s;
+        let newZ = cd.z + (dz / d) * s;
+        const resolved = resolveCollision(cd.x, cd.z, newX, newZ);
+        cd.x = resolved.x;
+        cd.z = resolved.z;
         cd.rotY = Math.atan2(dx, dz);
       }
     } else if (cd.state === 'driving') {
@@ -3551,8 +3564,11 @@ function update(dt) {
         hidePersonInstance(cd.personSlot);
       } else {
         const s = cd.speed * dt;
-        cd.x += (dx / d) * s;
-        cd.z += (dz / d) * s;
+        let newX = cd.x + (dx / d) * s;
+        let newZ = cd.z + (dz / d) * s;
+        const resolved = resolveCollision(cd.x, cd.z, newX, newZ);
+        cd.x = resolved.x;
+        cd.z = resolved.z;
         cd.rotY = Math.atan2(dx, dz);
       }
     } else if (cd.state === 'at_dest' && cd.stateTimer <= 0) {
@@ -3574,8 +3590,11 @@ function update(dt) {
         cd.roadIdx = 0;
       } else {
         const s = cd.speed * dt;
-        cd.x += (dx / d) * s;
-        cd.z += (dz / d) * s;
+        let newX = cd.x + (dx / d) * s;
+        let newZ = cd.z + (dz / d) * s;
+        const resolved = resolveCollision(cd.x, cd.z, newX, newZ);
+        cd.x = resolved.x;
+        cd.z = resolved.z;
         cd.rotY = Math.atan2(dx, dz);
       }
     } else if (cd.state === 'driving_home') {
@@ -3627,8 +3646,11 @@ function update(dt) {
         }
       } else {
         const s = cd.speed * dt;
-        cd.x += (dx / d) * s;
-        cd.z += (dz / d) * s;
+        let newX = cd.x + (dx / d) * s;
+        let newZ = cd.z + (dz / d) * s;
+        const resolved = resolveCollision(cd.x, cd.z, newX, newZ);
+        cd.x = resolved.x;
+        cd.z = resolved.z;
         cd.rotY = Math.atan2(dx, dz);
       }
     }
@@ -3844,8 +3866,11 @@ function update(dt) {
         car.dir = -car.dir;
       }
 
-      // After pause expires, car will proceed through intersection to next one
-      car.nextIntersection = findNextIntersection(target.x, target.z, car.horizontal, car.dir);
+      // Nudge car past the intersection center so it won't re-find the same one.
+      // Move the search origin 3 units past the intersection in the new direction.
+      const pastX = target.x + (car.horizontal ? car.dir * 3 : 0);
+      const pastZ = target.z + (car.horizontal ? 0 : car.dir * 3);
+      car.nextIntersection = findNextIntersection(pastX, pastZ, car.horizontal, car.dir);
     } else {
       // Collision avoidance — check all vehicle types on this road/lane
       const collMult = checkVehicleCollision(car, car.x, car.z, car.horizontal, car.dir);
@@ -4113,8 +4138,11 @@ function update(dt) {
         const dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 1) {
           const s = pr.speed * 1.5 * dt;
-          pr.x += (dx / dist) * s;
-          pr.z += (dz / dist) * s;
+          let newX = pr.x + (dx / dist) * s;
+          let newZ = pr.z + (dz / dist) * s;
+          const resolved = resolveCollision(pr.x, pr.z, newX, newZ);
+          pr.x = resolved.x;
+          pr.z = resolved.z;
           pr.rotY = Math.atan2(dx, dz);
         }
         if (pr.x < -10 || pr.x > CITY_W + 10 || pr.z < -10 || pr.z > CITY_H + 10) {
@@ -4133,8 +4161,11 @@ function update(dt) {
         pr.target = { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 };
       } else {
         const s = pr.speed * dt;
-        pr.x += (dx / dist) * s;
-        pr.z += (dz / dist) * s;
+        let newX = pr.x + (dx / dist) * s;
+        let newZ = pr.z + (dz / dist) * s;
+        const resolved = resolveCollision(pr.x, pr.z, newX, newZ);
+        pr.x = resolved.x;
+        pr.z = resolved.z;
         pr.rotY = Math.atan2(dx, dz);
       }
 
@@ -4213,8 +4244,11 @@ function update(dt) {
         const dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 1) {
           const s = pol.speed * dt;
-          pol.x += (dx / dist) * s;
-          pol.z += (dz / dist) * s;
+          let newX = pol.x + (dx / dist) * s;
+          let newZ = pol.z + (dz / dist) * s;
+          const resolved = resolveCollision(pol.x, pol.z, newX, newZ);
+          pol.x = resolved.x;
+          pol.z = resolved.z;
         }
         pol.rotY = Math.atan2(PLAZA_X - pol.x, PLAZA_Z - pol.z);
       }
