@@ -22,6 +22,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 # ---------------------------------------------------------------------------
+# CitySim backend — real sim_engine city simulation
+# ---------------------------------------------------------------------------
+
+from tritium_lib.sim_engine.demos.city_sim_backend import CitySim
+
+# ---------------------------------------------------------------------------
 # Import EVERY sim_engine module
 # ---------------------------------------------------------------------------
 
@@ -535,6 +541,13 @@ _game: GameState = GameState()
 _ws_clients: list[WebSocket] = []
 _game_task: asyncio.Task | None = None
 
+# ---------------------------------------------------------------------------
+# CitySim state — separate from the tactical GameState
+# ---------------------------------------------------------------------------
+_city_sim: CitySim | None = None
+_city_task: asyncio.Task | None = None
+_city_mode: bool = False  # When True, WS streams city frames instead of game frames
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
@@ -544,35 +557,61 @@ async def index() -> HTMLResponse:
 
 @app.get("/city", response_class=HTMLResponse)
 async def city_view() -> HTMLResponse:
-    """Serve the city3d.html demo with WebSocket bridge injected."""
+    """Serve the city3d.html demo with WebSocket bridge injected.
+
+    Auto-starts the CitySim backend so the frontend receives real sim frames
+    instead of running its own JS-side simulation.
+    """
+    global _city_sim, _city_task, _city_mode
+
+    # Auto-start CitySim when someone visits /city
+    if _city_sim is None:
+        _city_sim = CitySim(seed=42)
+        _city_sim.setup()
+        _city_mode = True
+        if _city_task is not None and not _city_task.done():
+            _city_task.cancel()
+        _city_task = asyncio.create_task(_city_loop())
+
     import pathlib
     city_path = pathlib.Path(__file__).parent / "city3d.html"
     if not city_path.exists():
         return HTMLResponse("<h1>city3d.html not found</h1>", status_code=404)
     html = city_path.read_text()
     # Inject WebSocket bridge before closing </body>
+    # This bridge receives city_frame data and exposes it to city3d for rendering
     ws_bridge = """
 <script>
-// WebSocket bridge — lightweight, throttled to avoid freezing city3d
+// WebSocket bridge — receives CitySim frames from Python backend
 (function() {
-  let frameCount = 0;
   let ws;
   function connect() {
     ws = new WebSocket('ws://' + location.host + '/ws');
-    ws.onopen = function() { console.log('[SIM] Connected'); };
+    ws.onopen = function() { console.log('[CitySim] Connected to backend'); };
     ws.onmessage = function(e) {
-      frameCount++;
-      if (frameCount % 10 !== 0) return; // Only process every 10th frame (1fps)
       try {
         var f = JSON.parse(e.data);
-        window.__simFrame = { tick: f.tick, time: f.time, phase: f.phase,
-          unit_count: (f.units||[]).length, score: (f.ui||{}).score || 0 };
+        if (f.type === 'city_frame') {
+          // Expose full frame for city3d renderer to consume
+          window.__cityFrame = f;
+          window.__simFrame = {
+            tick: f.tick, time: f.sim_time,
+            civilians: f.civilians, vehicles: f.vehicles,
+            police: f.police, crowd: f.crowd,
+            buildings: f.buildings, trees: f.trees,
+            environment: f.environment, events: f.events,
+            stats: f.stats
+          };
+        } else {
+          window.__simFrame = { tick: f.tick, time: f.time, phase: f.phase,
+            unit_count: (f.units||[]).length, score: (f.ui||{}).score || 0 };
+        }
       } catch(err) {}
     };
-    ws.onerror = function() { console.log('[SIM] Standalone mode'); };
+    ws.onerror = function() { console.log('[CitySim] Standalone mode'); };
     ws.onclose = function() { setTimeout(connect, 5000); };
   }
-  setTimeout(connect, 2000); // Delay connect so city3d initializes first
+  setTimeout(connect, 1000);
 })();
 </script>
 """
@@ -688,6 +727,101 @@ async def api_aar() -> dict:
     aar = _game.scoring.generate_aar(winner_alliance=winner)
     # Sanitize for JSON serialization (remove surrogate chars)
     return json.loads(json.dumps(aar, default=str, ensure_ascii=True))
+
+
+# ---------------------------------------------------------------------------
+# CitySim API endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/city/start")
+async def api_city_start(body: dict | None = None) -> dict:
+    """Start the CitySim backend simulation."""
+    global _city_sim, _city_task, _city_mode
+    if body is None:
+        body = {}
+    seed = body.get("seed", None)
+    width = body.get("width", 500.0)
+    height = body.get("height", 400.0)
+    hour = body.get("hour", 10.0)
+
+    _city_sim = CitySim(width=width, height=height, seed=seed, hour=hour)
+    _city_sim.setup()
+    _city_mode = True
+
+    # Start the city loop
+    if _city_task is not None and not _city_task.done():
+        _city_task.cancel()
+    _city_task = asyncio.create_task(_city_loop())
+
+    return {
+        "status": "started",
+        "seed": _city_sim.seed,
+        "width": _city_sim.width,
+        "height": _city_sim.height,
+        "civilians": len(_city_sim.civilians),
+        "vehicles": len(_city_sim.city_vehicles),
+        "police": len(_city_sim.police_units),
+        "buildings": len(_city_sim.buildings),
+    }
+
+
+@app.post("/api/city/stop")
+async def api_city_stop() -> dict:
+    """Stop the CitySim backend simulation."""
+    global _city_sim, _city_task, _city_mode
+    if _city_sim is None:
+        return {"error": "no_city_sim"}
+    _city_mode = False
+    if _city_task is not None and not _city_task.done():
+        _city_task.cancel()
+        _city_task = None
+    _city_sim = None
+    return {"status": "stopped"}
+
+
+@app.get("/api/city/status")
+async def api_city_status() -> dict:
+    """Current CitySim state summary."""
+    if _city_sim is None:
+        return {"running": False, "tick_count": 0}
+    return {
+        "running": _city_mode,
+        "tick_count": _city_sim.tick_count,
+        "sim_time": round(_city_sim.sim_time, 2),
+        "stats": _city_sim.stats(),
+    }
+
+
+@app.post("/api/city/event")
+async def api_city_event(body: dict) -> dict:
+    """Inject an event into the running CitySim.
+
+    Body fields:
+        event_type: str — e.g. "riot_start", "teargas", "gunshot", "chant"
+        x: float — x position
+        z: float — z/y position
+        radius: float (optional, default 20.0)
+        intensity: float (optional, default 0.5)
+    """
+    if _city_sim is None:
+        return {"error": "no_city_sim"}
+    event_type = body.get("event_type", "")
+    if not event_type:
+        return {"error": "missing_event_type"}
+    x = body.get("x", _city_sim.width / 2)
+    z = body.get("z", _city_sim.height / 2)
+    radius = body.get("radius", 20.0)
+    intensity = body.get("intensity", 0.5)
+
+    _city_sim.inject_crowd_event(event_type, (x, z), radius=radius, intensity=intensity)
+    return {
+        "status": "injected",
+        "event_type": event_type,
+        "position": {"x": x, "z": z},
+        "radius": radius,
+        "intensity": intensity,
+    }
 
 
 @app.websocket("/ws")

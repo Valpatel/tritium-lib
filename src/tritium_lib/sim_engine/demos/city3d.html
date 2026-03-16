@@ -246,6 +246,8 @@ canvas { display: block; }
         Injuries: <span class="hostile-val" id="injury-count">0</span><br>
         Barricades: <span class="police-val" id="barricade-count">0</span><br>
         Score: <span class="score-val" id="score-count">0</span><br>
+        Police Morale: <span class="police-val" id="police-morale">100%</span><br>
+        Protest Morale: <span class="protestor-val" id="protestor-morale">80%</span><br>
         Police Budget: <span class="budget-val budget-positive" id="budget-display">$10,000</span>
       </div>
     </div>
@@ -703,6 +705,136 @@ function updateSoundtrackState() {
   const info = stateMap[soundtrackState] || stateMap.PEACEFUL;
   el.textContent = info.text;
   el.className = info.cls;
+}
+
+// =========================================================================
+// Status Effects System (demonstrates status_effects.py)
+// =========================================================================
+function addStatusEffect(target, type, duration) {
+  for (const eff of activeEffects) {
+    if (eff.target === target && eff.type === type) {
+      eff.timer = Math.max(eff.timer, duration);
+      return;
+    }
+  }
+  activeEffects.push({ target, type, timer: duration });
+}
+
+function updateStatusEffects(dt) {
+  effectsCount = 0;
+  for (let i = activeEffects.length - 1; i >= 0; i--) {
+    const eff = activeEffects[i];
+    eff.timer -= dt;
+    if (eff.timer <= 0) {
+      if (eff.type === 'GAS' && eff.target) eff.target.gasAffected = false;
+      if (eff.type === 'STUNNED' && eff.target) eff.target.stunnedTimer = 0;
+      activeEffects.splice(i, 1);
+    } else {
+      effectsCount++;
+    }
+  }
+  // Tick stunned timers on protestors
+  for (const pr of protestors) {
+    if (!pr.alive) continue;
+    if (pr.stunnedTimer > 0) {
+      pr.stunnedTimer -= dt;
+      if (pr.stunnedTimer <= 0) pr.stunnedTimer = 0;
+    }
+  }
+  // Officers near tear gas particles: gasAffected = true, accuracy reduced
+  const gasClouds = activeParticles.filter(p => p.isTearGas);
+  for (const pol of police) {
+    if (!pol.alive) continue;
+    let inGas = false;
+    for (const gas of gasClouds) {
+      const dx = pol.x - gas.x;
+      const dz = pol.z - gas.z;
+      if (dx * dx + dz * dz < 100) { inGas = true; break; }
+    }
+    if (inGas && !pol.gasAffected) {
+      pol.gasAffected = true;
+      addStatusEffect(pol, 'GAS', 4.0);
+    }
+  }
+  // Injured people: BLEEDING effect
+  for (const entry of injuredOnGround) {
+    if (entry.person && entry.person.alive && entry.person.injured) {
+      let has = false;
+      for (const eff of activeEffects) {
+        if (eff.target === entry.person && eff.type === 'BLEEDING') { has = true; break; }
+      }
+      if (!has) addStatusEffect(entry.person, 'BLEEDING', entry.timer);
+    }
+  }
+}
+
+function applyStatusEffectVisuals() {
+  // Officers in gas: yellow tint
+  for (const pol of police) {
+    if (!pol.alive) continue;
+    if (pol.gasAffected) {
+      updatePersonInstance(pol.slot, pol.x, 0, pol.z, pol.rotY, 0xaaaa22, pol.headColor, pol.scale);
+    }
+  }
+  // Stunned protestors: orange tint
+  for (const pr of protestors) {
+    if (!pr.alive || pr.arrested) continue;
+    if (pr.stunnedTimer > 0) {
+      updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, 0xff8800, pr.headColor, pr.scale);
+    }
+  }
+}
+
+// =========================================================================
+// Supply HUD Update (demonstrates logistics.py)
+// =========================================================================
+function updateSupplyHUD() {
+  const panel = document.getElementById('supply-panel');
+  if (!panel) return;
+  panel.style.display = riotMode ? 'block' : 'none';
+  if (!riotMode) return;
+
+  const tgPct = (supplyTearGas / SUPPLY_TEAR_GAS_MAX) * 100;
+  const tgBar = document.getElementById('supply-teargas');
+  if (tgBar) {
+    tgBar.style.width = tgPct + '%';
+    tgBar.className = 'supply-bar-fill police' + (tgPct < 20 ? ' supply-low' : '');
+  }
+  const tgCount = document.getElementById('supply-teargas-count');
+  if (tgCount) tgCount.textContent = supplyTearGas;
+
+  const rbPct = (supplyRubberBullets / SUPPLY_RUBBER_BULLETS_MAX) * 100;
+  const rbBar = document.getElementById('supply-rubber');
+  if (rbBar) {
+    rbBar.style.width = rbPct + '%';
+    rbBar.className = 'supply-bar-fill police' + (rbPct < 20 ? ' supply-low' : '');
+  }
+  const rbCount = document.getElementById('supply-rubber-count');
+  if (rbCount) rbCount.textContent = supplyRubberBullets;
+
+  const mlPct = (supplyMolotovs / SUPPLY_MOLOTOVS_MAX) * 100;
+  const mlBar = document.getElementById('supply-molotov');
+  if (mlBar) {
+    mlBar.style.width = mlPct + '%';
+    mlBar.className = 'supply-bar-fill protestor' + (mlPct < 20 ? ' supply-low' : '');
+  }
+  const mlCount = document.getElementById('supply-molotov-count');
+  if (mlCount) mlCount.textContent = supplyMolotovs;
+
+  const rkBar = document.getElementById('supply-rock');
+  if (rkBar) {
+    rkBar.style.width = '100%';
+    rkBar.className = 'supply-bar-fill unlimited';
+  }
+
+  // Update economy display (Police Budget)
+  const budgetEl = document.getElementById('budget-display');
+  if (budgetEl) {
+    const sign = policeBudget >= 0 ? '' : '-';
+    const abs = Math.abs(policeBudget);
+    budgetEl.textContent = sign + '$' + abs.toLocaleString();
+    budgetEl.className = 'budget-val ' + (policeBudget >= 0 ? 'budget-positive' : 'budget-negative');
+  }
 }
 
 // Skin tones for heads
@@ -1317,6 +1449,140 @@ lampPostMesh.instanceMatrix.needsUpdate = true;
 lampHeadMesh.instanceMatrix.needsUpdate = true;
 
 // =========================================================================
+// Fog of War — single CanvasTexture on one PlaneGeometry (intel.py demo)
+// =========================================================================
+const fogCanvas = document.createElement('canvas');
+fogCanvas.width = FOG_COLS;
+fogCanvas.height = FOG_ROWS;
+const fogCtx = fogCanvas.getContext('2d');
+fogCtx.fillStyle = 'rgba(5, 5, 10, 0.7)';
+fogCtx.fillRect(0, 0, FOG_COLS, FOG_ROWS);
+
+const fogTexture = new THREE.CanvasTexture(fogCanvas);
+fogTexture.magFilter = THREE.NearestFilter;
+fogTexture.minFilter = THREE.NearestFilter;
+
+const fogMat = new THREE.MeshBasicMaterial({
+  map: fogTexture,
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+const fogGeo = new THREE.PlaneGeometry(CITY_W, CITY_H);
+const fogMesh = new THREE.Mesh(fogGeo, fogMat);
+fogMesh.rotation.x = -Math.PI / 2;
+fogMesh.position.set(CITY_W / 2, 0.5, CITY_H / 2);
+fogMesh.renderOrder = 100;
+fogMesh.visible = false;
+scene.add(fogMesh);
+
+// Detection lines — reused LineSegments for police sight lines (detection.py demo)
+const MAX_DETECTION_LINES = 200;
+const detectionLineGeo = new THREE.BufferGeometry();
+const detectionLinePositions = new Float32Array(MAX_DETECTION_LINES * 6);
+detectionLineGeo.setAttribute('position', new THREE.BufferAttribute(detectionLinePositions, 3));
+const detectionLineMat = new THREE.LineBasicMaterial({
+  color: 0x05ffa1,
+  transparent: true,
+  opacity: 0.2,
+  depthWrite: false,
+});
+const detectionLines = new THREE.LineSegments(detectionLineGeo, detectionLineMat);
+detectionLines.visible = false;
+detectionLines.renderOrder = 101;
+scene.add(detectionLines);
+
+function updateFogOfWar(dt) {
+  fogTimer += dt;
+  if (fogTimer < FOG_UPDATE_INTERVAL) return;
+  fogTimer = 0;
+
+  if (!fogOfWarEnabled) {
+    fogMesh.visible = false;
+    detectionLines.visible = false;
+    return;
+  }
+  fogMesh.visible = true;
+
+  // Demote visible cells to explored
+  for (let i = 0; i < fogGrid.length; i++) {
+    if (fogGrid[i] === 2) fogGrid[i] = 1;
+  }
+
+  // Reveal cells near police officers
+  const revealCells = Math.ceil(DETECTION_RANGE / FOG_CELL_SIZE);
+  for (const cop of police) {
+    if (!cop.alive) continue;
+    const cx = Math.floor(cop.x / FOG_CELL_SIZE);
+    const cz = Math.floor(cop.z / FOG_CELL_SIZE);
+    for (let dz = -revealCells; dz <= revealCells; dz++) {
+      for (let dx = -revealCells; dx <= revealCells; dx++) {
+        const gx = cx + dx;
+        const gz = cz + dz;
+        if (gx < 0 || gx >= FOG_COLS || gz < 0 || gz >= FOG_ROWS) continue;
+        const worldX = (gx + 0.5) * FOG_CELL_SIZE;
+        const worldZ = (gz + 0.5) * FOG_CELL_SIZE;
+        const dist = Math.sqrt((worldX - cop.x) ** 2 + (worldZ - cop.z) ** 2);
+        if (dist <= DETECTION_RANGE) {
+          fogGrid[gz * FOG_COLS + gx] = 2;
+        }
+      }
+    }
+  }
+
+  // Paint fog canvas from grid state
+  const imgData = fogCtx.createImageData(FOG_COLS, FOG_ROWS);
+  for (let i = 0; i < fogGrid.length; i++) {
+    const base = i * 4;
+    const state = fogGrid[i];
+    if (state === 0) {
+      // Unexplored: dark, opacity 0.7
+      imgData.data[base] = 5; imgData.data[base+1] = 5;
+      imgData.data[base+2] = 10; imgData.data[base+3] = Math.round(0.7 * 255);
+    } else if (state === 1) {
+      // Explored: partial, opacity 0.3
+      imgData.data[base] = 5; imgData.data[base+1] = 5;
+      imgData.data[base+2] = 15; imgData.data[base+3] = Math.round(0.3 * 255);
+    } else {
+      // Visible: clear
+      imgData.data[base] = 0; imgData.data[base+1] = 0;
+      imgData.data[base+2] = 0; imgData.data[base+3] = 0;
+    }
+  }
+  fogCtx.putImageData(imgData, 0, 0);
+  fogTexture.needsUpdate = true;
+
+  // Update detection lines (police -> protestors within DETECTION_RANGE)
+  detectedCount = 0;
+  let lineIdx = 0;
+  if (debugMode && fogOfWarEnabled) {
+    for (const cop of police) {
+      if (!cop.alive) continue;
+      for (const prot of protestors) {
+        if (!prot.alive || prot.arrested) continue;
+        const ddx = prot.x - cop.x;
+        const ddz = prot.z - cop.z;
+        const dist = Math.sqrt(ddx * ddx + ddz * ddz);
+        if (dist <= DETECTION_RANGE && lineIdx < MAX_DETECTION_LINES) {
+          const lb = lineIdx * 6;
+          detectionLinePositions[lb]   = cop.x;
+          detectionLinePositions[lb+1] = 1.5;
+          detectionLinePositions[lb+2] = cop.z;
+          detectionLinePositions[lb+3] = prot.x;
+          detectionLinePositions[lb+4] = 1.5;
+          detectionLinePositions[lb+5] = prot.z;
+          lineIdx++;
+          detectedCount++;
+        }
+      }
+    }
+  }
+  detectionLineGeo.setDrawRange(0, lineIdx * 2);
+  detectionLineGeo.attributes.position.needsUpdate = true;
+  detectionLines.visible = debugMode && fogOfWarEnabled && lineIdx > 0;
+}
+
+// =========================================================================
 // People InstancedMesh — bodies and heads (bigger Minecraft-style)
 // =========================================================================
 const MAX_PEOPLE = 180; // pedestrians + protestors + police + emergency crews
@@ -1595,7 +1861,7 @@ function hideInjuredMarker(marker) {
 const MAX_PARTICLES = 500;
 const particleGeo = new THREE.BoxGeometry(1, 1, 1);
 const particleMat = new THREE.MeshBasicMaterial({
-  transparent: true, opacity: 0.55, depthWrite: false,
+  transparent: true, opacity: 0.3, depthWrite: false,
   blending: THREE.NormalBlending,
 });
 const particleMesh = new THREE.InstancedMesh(particleGeo, particleMat, MAX_PARTICLES);
@@ -2450,6 +2716,7 @@ function spawnProtestors() {
       speed: 1.5 + rng() * 2,
       alive: true,
       health: 1.0,
+      morale: 0.8,
       fleeing: false,
       throwTimer: 3 + rng() * 8,
       arrested: false,
@@ -2492,6 +2759,7 @@ function spawnPolice() {
       speed: 2 + rng() * 1.5,
       alive: true,
       health: 1.0,
+      morale: 1.0,
       fireTimer: 2 + rng() * 4,
       target: null,
       holdLine: true,
@@ -2842,6 +3110,9 @@ function createTearGasCloud(pos) {
 function createFire(pos) {
   // Cap fires at 6 to prevent light accumulation
   if (fires.length >= 6) return;
+  // Economy: fire causes property damage
+  policeBudget -= COST_FIRE;
+  propertyDamage += COST_FIRE;
   // Persistent fire — burns 20-30 seconds with bright PointLight
   const light = new THREE.PointLight(0xff6600, 5, 30);
   light.position.set(pos.x, 3, pos.z);
@@ -3113,7 +3384,7 @@ function updateEmergencyVehicles(dt) {
             x: pv.x + (rng() - 0.5) * 4, z: pv.z + (rng() - 0.5) * 4, y: 0, rotY: 0,
             bodyColor: COLOR_POLICE, headColor, ringColor: CYAN,
             scale: 1.15, speed: 2 + rng() * 1.5,
-            alive: true, health: 1.0, fireTimer: 2 + rng() * 4,
+            alive: true, health: 1.0, morale: 1.0, fireTimer: 2 + rng() * 4,
             target: null, holdLine: true,
             lineX: PLAZA_X + (rng() - 0.5) * 30, lineZ: PLAZA_Z - 30 - rng() * 10,
             injured: false,
@@ -3392,6 +3663,16 @@ document.addEventListener('keydown', (e) => {
       arrestCount = 0;
       injuryCount = 0;
       holdGroundTimer = 0;
+      // Reset supply logistics
+      supplyTearGas = SUPPLY_TEAR_GAS_MAX;
+      supplyRubberBullets = SUPPLY_RUBBER_BULLETS_MAX;
+      supplyMolotovs = SUPPLY_MOLOTOVS_MAX;
+      // Reset economy
+      policeBudget = 10000;
+      propertyDamage = 0;
+      // Reset status effects
+      activeEffects.length = 0;
+      effectsCount = 0;
       spawnProtestors();
       spawnPolice();
       spawnBarricades();
@@ -3503,6 +3784,13 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyF') {
     fogOverride = !fogOverride;
+  }
+  if (e.code === 'KeyI') {
+    fogOfWarEnabled = !fogOfWarEnabled;
+    // Reset fog grid when toggling off
+    if (!fogOfWarEnabled) {
+      fogGrid.fill(0);
+    }
   }
 });
 
@@ -4822,6 +5110,7 @@ function updateHUD() {
   let weatherText = '';
   if (rainActive) weatherText += '<span style="color:#aaccff">RAIN</span> ';
   if (fogOverride) weatherText += '<span style="color:#999999">FOG</span> ';
+  if (fogOfWarEnabled) weatherText += '<span style="color:#00f0ff">Intel FOW</span> ';
   let weatherEl = document.getElementById('weather-hud');
   if (weatherEl) weatherEl.innerHTML = weatherText;
 
@@ -4887,6 +5176,7 @@ function updateDebugOverlay(dt) {
   html += `Injured on ground: <span class="dbg-val">${injuredOnGround.length}</span><br>`;
   html += `Ambulances: <span class="dbg-val">${ambulances.filter(a => a.alive).length}</span><br>`;
   html += `Barricades: <span class="dbg-val">${barricades.filter(b => b.active).length}/${barricades.length}</span><br>`;
+  html += `Detected: <span class="dbg-val">${detectedCount}</span><br>`;
   html += `Active particles: <span class="dbg-val">${activeParticles.length}/${MAX_PARTICLES}</span><br>`;
   // Robot cars debug info
   html += '<h3>ROS2 ROBOTS</h3>';
@@ -5104,6 +5394,8 @@ function animate() {
     updateHUD();
     updateNarrationPanel(0.25);
     checkAchievements(0.25);
+    updateFogOfWar(0.25);
+    updateDebugOverlay(0.25);
     hudTimer = 0;
   }
 
