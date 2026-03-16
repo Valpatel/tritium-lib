@@ -1256,7 +1256,11 @@ const roadMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.8
 const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.8 });
 
 // Roads — horizontal (using shared geometries, still individual since each road has different dimensions)
+const CANAL_ROW = 2;
+const CANAL_Z = CANAL_ROW * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+const CANAL_W = 12;
 for (let row = 0; row <= GRID_ROWS; row++) {
+  if (row === CANAL_ROW) continue; // replaced by canal
   const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
   const geo = new THREE.PlaneGeometry(CITY_W, ROAD_W);
   const road = new THREE.Mesh(geo, roadMat);
@@ -1264,15 +1268,42 @@ for (let row = 0; row <= GRID_ROWS; row++) {
   road.position.set(CITY_W / 2, 0.01, z);
   road.receiveShadow = true;
   scene.add(road);
-
-  // Center line
   const lineGeo = new THREE.PlaneGeometry(CITY_W, 0.4);
-  const lineMat = new THREE.MeshStandardMaterial({ color: 0x999922, roughness: 0.9 }); // dims with scene lighting at night
+  const lineMat = new THREE.MeshStandardMaterial({ color: 0x999922, roughness: 0.9 });
   const line = new THREE.Mesh(lineGeo, lineMat);
   line.rotation.x = -Math.PI / 2;
   line.position.set(CITY_W / 2, 0.02, z);
   scene.add(line);
 }
+// Canal water strip (demonstrates naval.py + mapgen.py water features)
+const canalMesh = new THREE.Mesh(new THREE.PlaneGeometry(CITY_W, CANAL_W),
+  new THREE.MeshStandardMaterial({ color: 0x1a3344, roughness: 0.3, metalness: 0.4, transparent: true, opacity: 0.85 }));
+canalMesh.rotation.x = -Math.PI / 2; canalMesh.position.set(CITY_W / 2, -0.02, CANAL_Z); scene.add(canalMesh);
+for (const side of [-1, 1]) {
+  const e = new THREE.Mesh(new THREE.PlaneGeometry(CITY_W, 0.6), new THREE.MeshStandardMaterial({ color: 0x0d1a22 }));
+  e.rotation.x = -Math.PI / 2; e.position.set(CITY_W / 2, 0.03, CANAL_Z + side * CANAL_W / 2); scene.add(e);
+}
+for (let col = 0; col <= GRID_COLS; col++) { // bridges where vertical roads cross canal
+  const bx = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+  const br = new THREE.Mesh(new THREE.BoxGeometry(ROAD_W + 4, 0.8, CANAL_W + 2),
+    new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.85 }));
+  br.position.set(bx, 0.3, CANAL_Z); br.castShadow = true; br.receiveShadow = true; scene.add(br);
+}
+// Patrol boat hull + rotating light + searchlight (demonstrates naval.py)
+const boatGroup = new THREE.Group();
+boatGroup.add(new THREE.Mesh(new THREE.BoxGeometry(2.5, 1, 6), new THREE.MeshStandardMaterial({ color: 0x223366, roughness: 0.6 })));
+const boatLight = new THREE.PointLight(0x00f0ff, 2, 20);
+boatLight.position.set(0, 1.5, 0); boatGroup.add(boatLight);
+const boatSearchlight = new THREE.SpotLight(0xffffcc, 0, 40, Math.PI / 8, 0.5);
+boatSearchlight.position.set(0, 1.2, 2.5);
+boatSearchlight.target.position.set(0, 0, 12);
+boatGroup.add(boatSearchlight); boatGroup.add(boatSearchlight.target);
+boatGroup.position.set(30, 0.3, CANAL_Z); scene.add(boatGroup);
+const boatState = { x: 30, dir: 1, speed: 3, flashTimer: 0 };
+const wakeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 });
+const wake1 = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.2, 0.8), wakeMat);
+const wake2 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.15, 0.6), wakeMat.clone());
+scene.add(wake1); scene.add(wake2);
 
 // Roads — vertical
 for (let col = 0; col <= GRID_COLS; col++) {
@@ -4446,6 +4477,7 @@ document.addEventListener('keydown', (e) => {
     triggerArtilleryStrike();
   }
   if (e.code === 'KeyP') { advanceCampaignPhase(); }
+  if (e.code === 'Digit2') { splitViewMode = !splitViewMode; document.getElementById('split-view').classList.toggle('active', splitViewMode); }
 });
 
 function advanceCampaignPhase() {
@@ -5395,6 +5427,11 @@ function update(dt) {
 
     // Phase progression
     if (riotPhase === 'TENSION' && riotTimer > 8) {
+    // Supply convoy timer — spawn every 60s during RIOT phase
+    if (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') {
+      supplyConvoyTimer += dt;
+      if (supplyConvoyTimer >= 60) { supplyConvoyTimer = 0; spawnSupplyConvoy(); }
+    }
       riotPhase = 'RIOT';
       addKillFeedEntry('*** RIOT ERUPTED ***');
       if (campaignPhase === 1) { advanceCampaignPhase(); } // escalation triggers phase 2
