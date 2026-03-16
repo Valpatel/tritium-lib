@@ -23,6 +23,14 @@ from .particles import (
     sparks,
     tracer,
 )
+from .weapons import (
+    WEAPONS,
+    FireMode,
+    FiredRound,
+    WeaponFirer,
+    WeaponProfile,
+    create_firer,
+)
 
 __all__ = [
     "EffectsManager",
@@ -36,4 +44,11 @@ __all__ = [
     "smoke",
     "sparks",
     "tracer",
+    # Weapons
+    "WEAPONS",
+    "FireMode",
+    "FiredRound",
+    "WeaponFirer",
+    "WeaponProfile",
+    "create_firer",
 ]
