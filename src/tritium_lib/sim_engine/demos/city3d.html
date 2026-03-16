@@ -624,6 +624,12 @@ let cameraShakeTimer = 0;
 let cameraShakeOx = 0, cameraShakeOz = 0;
 let artillerySmokeTimer = 0;
 
+// IED / Guerrilla cell state (demonstrates asymmetric.py)
+const MAX_IEDS = 6;
+const ieds = []; // { x, z, armed, detected, idx }
+let iedPlaceTimer = 0;
+let iedPlanted = 0, iedDetected = 0, iedDetonated = 0;
+
 // Minimap & Compass state (demonstrates hud.py)
 let minimapVisible = true;
 let compassTimer = 0;
@@ -4803,6 +4809,8 @@ function update(dt) {
   // ---- Update cars — road following ----
   for (const car of cars) {
     if (!car.alive) continue;
+    // Cap pause timer to prevent pause-lock from multiple collision events
+    if (car.pauseTimer > 2.0) car.pauseTimer = 2.0;
     if (car.pauseTimer > 0) { car.pauseTimer -= dt; continue; }
 
     if (!car.nextIntersection) {
@@ -4814,18 +4822,19 @@ function update(dt) {
       car.dir = start.dir;
       car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
       car.pauseTimer = 0.5;
+      car.stuckTimer = 0;
       continue;
     }
 
     // Move toward next intersection
     const target = car.nextIntersection;
-    // Enforce lane: LERP to target lane (smooth transition when turning at intersections)
+    // Enforce lane: LERP to target lane (fast snap after turning at intersections)
     if (car.horizontal) {
       const targetZ = target.z + car.dir * LANE_OFFSET;
-      car.z += (targetZ - car.z) * Math.min(1, 4 * dt);
+      car.z += (targetZ - car.z) * Math.min(1, 8 * dt);
     } else {
       const targetX = target.x - car.dir * LANE_OFFSET;
-      car.x += (targetX - car.x) * Math.min(1, 4 * dt);
+      car.x += (targetX - car.x) * Math.min(1, 8 * dt);
     }
 
     const dist = car.horizontal ? Math.abs(target.x - car.x) : Math.abs(target.z - car.z);
@@ -4843,6 +4852,20 @@ function update(dt) {
 
       // Pause at stop line
       car.pauseTimer = 0.3 + rng() * 0.8;
+
+      // Intersection right-of-way: horizontal cars yield to vertical cars
+      if (car.horizontal) {
+        for (const other of _allRoadVehicles) {
+          if (other.ref === car) continue;
+          if (other.horizontal) continue; // only yield to vertical traffic
+          const dx = Math.abs(other.x - target.x);
+          const dz = Math.abs(other.z - target.z);
+          if (dx < 10 && dz < 10) {
+            car.pauseTimer += 1.0;
+            break;
+          }
+        }
+      }
 
       // Decide: continue straight, or turn
       const turnRoll = rng();
