@@ -254,6 +254,29 @@ canvas { display: block; }
   <div id="objectives-hud" style="position:absolute;top:45px;left:50%;transform:translateX(-50%);text-align:center;font-size:14px;font-weight:bold;line-height:1.8;"></div>
   <div id="fps">-- FPS</div>
   <div id="kill-feed"></div>
+  <div id="supply-panel">
+    <h4>SUPPLY LOGISTICS</h4>
+    <div class="supply-row">
+      <span class="supply-label" style="color:#00f0ff99">Tear Gas</span>
+      <div class="supply-bar-bg"><div class="supply-bar-fill police" id="supply-teargas" style="width:100%"></div></div>
+      <span class="supply-count" id="supply-teargas-count">20</span>
+    </div>
+    <div class="supply-row">
+      <span class="supply-label" style="color:#00f0ff99">Rubber Blt</span>
+      <div class="supply-bar-bg"><div class="supply-bar-fill police" id="supply-rubber" style="width:100%"></div></div>
+      <span class="supply-count" id="supply-rubber-count">100</span>
+    </div>
+    <div class="supply-row">
+      <span class="supply-label" style="color:#ff2a6d99">Molotovs</span>
+      <div class="supply-bar-bg"><div class="supply-bar-fill protestor" id="supply-molotov" style="width:100%"></div></div>
+      <span class="supply-count" id="supply-molotov-count">15</span>
+    </div>
+    <div class="supply-row">
+      <span class="supply-label" style="color:#ff2a6d99">Rocks</span>
+      <div class="supply-bar-bg"><div class="supply-bar-fill unlimited" id="supply-rock" style="width:100%"></div></div>
+      <span class="supply-count" id="supply-rock-count">INF</span>
+    </div>
+  </div>
   <div id="controls">
     <span>SPACE</span> Start Riot &nbsp;|&nbsp;
     <span>LMB Drag</span> Rotate &nbsp;|&nbsp;
@@ -374,6 +397,35 @@ let teargasCount = 0;
 let rockCount = 0;
 let arrestCount = 0;
 let injuryCount = 0;
+
+// =========================================================================
+// Supply Logistics (demonstrates logistics.py)
+// =========================================================================
+const SUPPLY_TEAR_GAS_MAX = 20;
+const SUPPLY_RUBBER_BULLETS_MAX = 100;
+const SUPPLY_MOLOTOVS_MAX = 15;
+// Rocks are unlimited (always available)
+let supplyTearGas = SUPPLY_TEAR_GAS_MAX;
+let supplyRubberBullets = SUPPLY_RUBBER_BULLETS_MAX;
+let supplyMolotovs = SUPPLY_MOLOTOVS_MAX;
+
+// =========================================================================
+// Economy Score (demonstrates economy.py)
+// =========================================================================
+let policeBudget = 10000; // starts at $10,000
+const COST_TEAR_GAS = 500;     // each tear gas deployment costs $500
+const COST_RUBBER_BULLET = 50; // each rubber bullet burst costs $50
+const REWARD_ARREST = 200;     // each arrest earns $200
+const COST_FIRE = 1000;        // each fire costs $1,000 property damage
+const COST_INJURY = 2000;      // each civilian injury costs $2,000 liability
+let propertyDamage = 0;
+
+// =========================================================================
+// Status Effects (demonstrates status_effects.py)
+// =========================================================================
+// Track active status effects: { target, type, timer }
+const activeEffects = [];
+let effectsCount = 0; // for debug overlay
 
 const pedestrians = [];
 const cars = [];
@@ -4274,33 +4326,41 @@ function update(dt) {
           }
 
           if (nearest) {
-            const isMolotov = rng() < 0.2;
-            if (isMolotov) {
-              launchProjectile(
-                { x: pr.x, z: pr.z },
-                { x: nearest.x + (rng() - 0.5) * 10, z: nearest.z + (rng() - 0.5) * 10 },
-                'molotov'
-              );
-              molotovCount++;
-              addKillFeedEntry('Protestor threw molotov!');
-              addNarration('molotov');
-              if (molotovCount >= 5) awardAchievement('under_fire');
+            // Skip action if protestor is stunned
+            if (pr.stunnedTimer > 0) {
+              // STUNNED: cannot throw, just stand still
             } else {
-              launchProjectile(
-                { x: pr.x, z: pr.z },
-                { x: nearest.x + (rng() - 0.5) * 8, z: nearest.z + (rng() - 0.5) * 8 },
-                'rock'
-              );
-              rockCount++;
-              if (rng() < 0.3) addKillFeedEntry('Protestor threw rock');
-              if (rng() < 0.1) {
-                nearest.health -= 0.1;
-                injuryCount++;
-                if (rng() < 0.3) addKillFeedEntry('Police officer hit by rock');
-                // Knock down injured police
-                if (nearest.health < 0.5 && !nearest.injured) {
-                  knockDownPerson(nearest);
-                  addNarration('officer_down', { grid: formatGrid(nearest.x, nearest.z) });
+              const wantMolotov = rng() < 0.2;
+              // Supply check: only throw molotov if supply > 0
+              if (wantMolotov && supplyMolotovs > 0) {
+                supplyMolotovs--;
+                launchProjectile(
+                  { x: pr.x, z: pr.z },
+                  { x: nearest.x + (rng() - 0.5) * 10, z: nearest.z + (rng() - 0.5) * 10 },
+                  'molotov'
+                );
+                molotovCount++;
+                addKillFeedEntry('Protestor threw molotov!');
+                addNarration('molotov');
+                if (molotovCount >= 5) awardAchievement('under_fire');
+              } else {
+                // Rocks are unlimited (always available)
+                launchProjectile(
+                  { x: pr.x, z: pr.z },
+                  { x: nearest.x + (rng() - 0.5) * 8, z: nearest.z + (rng() - 0.5) * 8 },
+                  'rock'
+                );
+                rockCount++;
+                if (rng() < 0.3) addKillFeedEntry('Protestor threw rock');
+                if (rng() < 0.1) {
+                  nearest.health -= 0.1;
+                  injuryCount++;
+                  if (rng() < 0.3) addKillFeedEntry('Police officer hit by rock');
+                  // Knock down injured police
+                  if (nearest.health < 0.5 && !nearest.injured) {
+                    knockDownPerson(nearest);
+                    addNarration('officer_down', { grid: formatGrid(nearest.x, nearest.z) });
+                  }
                 }
               }
             }
@@ -4371,8 +4431,15 @@ function update(dt) {
           }
 
           if (nearest) {
-            const isTearGas = rng() < 0.25;
-            if (isTearGas) {
+            const wantTearGas = rng() < 0.25;
+            // Supply check: only use tear gas if supply > 0
+            const canTearGas = wantTearGas && supplyTearGas > 0;
+            // Supply check: only fire rubber bullets if supply > 0
+            const canRubber = supplyRubberBullets > 0;
+
+            if (canTearGas) {
+              supplyTearGas--;
+              policeBudget -= COST_TEAR_GAS;
               const impactX = nearest.x + (rng() - 0.5) * 15;
               const impactZ = nearest.z + (rng() - 0.5) * 15;
               createTearGasCloud({ x: impactX, z: impactZ });
@@ -4392,7 +4459,11 @@ function update(dt) {
               }
               tearGasDispersedTotal += dispersedThisGas;
               if (tearGasDispersedTotal >= 10) awardAchievement('crowd_control');
-            } else {
+            } else if (canRubber) {
+              supplyRubberBullets--;
+              policeBudget -= COST_RUBBER_BULLET;
+              // Accuracy reduced if officer is gasAffected
+              const accuracyMod = pol.gasAffected ? 0.07 : 0.15;
               createTracer(
                 { x: pol.x, z: pol.z },
                 { x: nearest.x, z: nearest.z },
@@ -4401,15 +4472,23 @@ function update(dt) {
               createMuzzleFlash({ x: pol.x, z: pol.z });
               playGunshot(pol.x, pol.z);
 
-              if (rng() < 0.15) {
+              if (rng() < accuracyMod) {
                 nearest.health -= 0.3;
                 createHitEffect({ x: nearest.x, z: nearest.z });
                 injuryCount++;
+                policeBudget -= COST_INJURY; // liability for civilian injury
+
+                // Apply STUNNED status effect for 3 seconds
+                if (nearest.alive && !nearest.arrested) {
+                  nearest.stunnedTimer = 3.0;
+                  addStatusEffect(nearest, 'STUNNED', 3.0);
+                }
 
                 if (nearest.health <= 0) {
                   nearest.arrested = true;
                   nearest.y = -0.5;
                   arrestCount++;
+                  policeBudget += REWARD_ARREST; // grant from city
                   addKillFeedEntry('Protestor arrested');
                   addNarration('arrest', { n: arrestCount });
                 } else {
