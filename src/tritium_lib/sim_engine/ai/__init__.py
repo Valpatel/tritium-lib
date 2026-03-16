@@ -131,6 +131,14 @@ from .formations import (
     get_formation_positions,
 )
 
+from .strategy import (
+    STRATEGY_PROFILES,
+    StrategicAI,
+    StrategicGoal,
+    StrategicPlan,
+    StrategyProfile,
+)
+
 # NumPy-vectorized variants (optional — graceful fallback if numpy missing)
 try:
     from .steering_np import SteeringSystem, SpatialHash
@@ -230,4 +238,10 @@ __all__ = [
     "FormationType",
     "PathPlanner",
     "get_formation_positions",
+    # Strategy planner
+    "STRATEGY_PROFILES",
+    "StrategicAI",
+    "StrategicGoal",
+    "StrategicPlan",
+    "StrategyProfile",
 ]

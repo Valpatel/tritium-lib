@@ -691,6 +691,24 @@ except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.territory not available: {_e}")
 
 # ---------------------------------------------------------------------------
+# Spawner: Wave design, spawn patterns, spawn engine
+# ---------------------------------------------------------------------------
+try:
+    from .spawner import (
+        SpawnPattern,
+        EnemyComposition,
+        SpawnPoint,
+        UnitTemplate,
+        WaveDesigner,
+        SpawnerEngine,
+        DIFFICULTY_CURVES,
+        WAVE_PRESETS,
+        run_preset,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.spawner not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # __all__ — comprehensive public API
 # ---------------------------------------------------------------------------
 __all__ = [
@@ -852,4 +870,8 @@ __all__ = [
     # --- Territory ---
     "InfluenceMap", "TerritoryControl", "ControlPoint",
     "CaptureState", "StrategicValue",
+    # --- Spawner ---
+    "SpawnPattern", "EnemyComposition", "SpawnPoint", "UnitTemplate",
+    "WaveDesigner", "SpawnerEngine",
+    "DIFFICULTY_CURVES", "WAVE_PRESETS", "run_preset",
 ]

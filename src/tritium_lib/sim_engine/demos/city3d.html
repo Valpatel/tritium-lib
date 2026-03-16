@@ -77,6 +77,12 @@ canvas { display: block; }
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
   font-size: 11px; color: #05ffa188;
 }
+#fps-graph {
+  position: absolute; bottom: 40px; right: 12px;
+  width: 200px; height: 60px;
+  background: rgba(10,10,15,0.7); border: 1px solid #05ffa133;
+  border-radius: 3px;
+}
 
 #combat-banner {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -140,6 +146,7 @@ canvas { display: block; }
     <span>D</span> Debug
   </div>
   <div id="combat-banner">RIOT IN PROGRESS</div>
+  <canvas id="fps-graph" width="200" height="60"></canvas>
   <div id="debug-overlay"></div>
   <canvas id="debug-canvas"></canvas>
 </div>
@@ -857,7 +864,7 @@ let ringIdx = 0;
 
 // Shield instances for police
 const MAX_SHIELDS = 15;
-const shieldGeo = new THREE.BoxGeometry(0.3, 2.5, 1.8);
+const shieldGeo = new THREE.BoxGeometry(1.8, 2.5, 0.3); // wide face perpendicular to officer's forward
 const shieldMat = new THREE.MeshStandardMaterial({ color: 0x3355BB, metalness: 0.5, roughness: 0.3 });
 const shieldMesh = new THREE.InstancedMesh(shieldGeo, shieldMat, MAX_SHIELDS);
 shieldMesh.castShadow = true;
@@ -1962,35 +1969,43 @@ function createHitEffect(pos) {
   muzzleFlashes.push({ light, life: 0.1 });
 }
 
-// Arcing projectile (rock or molotov)
-function launchProjectile(from, to, type) {
-  const geo = new THREE.BoxGeometry(
-    type === 'molotov' ? 0.5 : 0.4,
-    type === 'molotov' ? 0.8 : 0.4,
-    type === 'molotov' ? 0.5 : 0.4
-  );
-  const color = type === 'molotov' ? 0xff6600 : 0x888888;
-  const mat = new THREE.MeshBasicMaterial({ color });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(from.x, 2, from.z);
+// Arcing projectile pool — reuse meshes
+const MAX_PROJECTILES = 12;
+const projGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+const projMats = {
+  molotov: new THREE.MeshBasicMaterial({ color: 0xff6600 }),
+  rock: new THREE.MeshBasicMaterial({ color: 0x888888 }),
+};
+const projPool = [];
+for (let i = 0; i < MAX_PROJECTILES; i++) {
+  const mesh = new THREE.Mesh(projGeo, projMats.rock);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
   scene.add(mesh);
+  projPool.push(mesh);
+}
+
+function launchProjectile(from, to, type) {
+  if (projectiles.length >= MAX_PROJECTILES) return; // cap
+  const mesh = projPool.find(m => !m.visible);
+  if (!mesh) return;
+  mesh.material = projMats[type] || projMats.rock;
+  mesh.scale.set(type === 'molotov' ? 1.2 : 0.8, type === 'molotov' ? 1.6 : 0.8, type === 'molotov' ? 1.2 : 0.8);
+  mesh.position.set(from.x, 2, from.z);
+  mesh.visible = true;
 
   const dx = to.x - from.x;
   const dz = to.z - from.z;
   const dist = Math.sqrt(dx * dx + dz * dz);
-  const flightTime = dist / 30;
+  const flightTime = Math.max(0.3, dist / 30);
   const vy = dist * 0.15 + 5;
 
   projectiles.push({
     mesh, type,
     startX: from.x, startZ: from.z,
-    endX: to.x, endZ: to.z,
-    vx: dx / flightTime,
-    vz: dz / flightTime,
-    vy: vy,
-    gravity: vy * 2 / flightTime,
-    age: 0,
-    flightTime,
+    vx: dx / flightTime, vz: dz / flightTime,
+    vy, gravity: vy * 2 / flightTime,
+    age: 0, flightTime,
   });
 }
 
@@ -2941,7 +2956,7 @@ function update(dt) {
       if (riotPhase === 'RIOT') {
         pr.throwTimer -= dt;
         if (pr.throwTimer <= 0) {
-          pr.throwTimer = 2 + rng() * 6;
+          pr.throwTimer = 4 + rng() * 10; // slower throw rate to prevent projectile flood
 
           let nearest = null, nearDist = Infinity;
           for (const pol of police) {
@@ -3228,18 +3243,17 @@ function update(dt) {
     // Impact
     if (proj.mesh.position.y <= 0 || proj.age > proj.flightTime * 1.5) {
       const impactPos = { x: proj.mesh.position.x, z: proj.mesh.position.z };
-      scene.remove(proj.mesh);
+      proj.mesh.visible = false; // return to pool
 
       if (proj.type === 'molotov') {
-        createExplosion(impactPos);
-        createFire(impactPos);
-        createSmoke(impactPos);
-        playExplosion(impactPos.x, impactPos.z);
-        // Dispatch fire truck to this fire (with delay, max 3 active)
-        if (fireTrucks.filter(ft => ft.alive).length < 3) {
-          const fireRef = fires[fires.length - 1];
-          setTimeout(() => { if (fireRef && fireRef.life > 0) spawnFireTruck(fireRef); }, 3000 + rng() * 5000);
+        createFire(impactPos); // fire already capped at 6
+        // Reduced explosion: fewer particles than before
+        for (let ep = 0; ep < 6; ep++) {
+          spawnParticle(impactPos.x, 1, impactPos.z,
+            (rng()-0.5)*15, 3+rng()*10, (rng()-0.5)*15,
+            0.3+rng()*0.4, [0xff4400,0xff8800,0xffaa00][Math.floor(rng()*3)], 0.6+rng()*0.3);
         }
+        playExplosion(impactPos.x, impactPos.z);
       }
 
       projectiles.splice(i, 1);
@@ -3512,6 +3526,48 @@ let simAccum = 0;
 const SIM_STEP = 1 / 20; // 20 sim ticks per second
 let hudTimer = 0;
 
+// FPS graph — rolling history for performance monitoring
+const fpsHistory = new Float32Array(200);
+let fpsHistIdx = 0;
+const fpsGraphCanvas = document.getElementById('fps-graph');
+const fpsGraphCtx = fpsGraphCanvas ? fpsGraphCanvas.getContext('2d') : null;
+
+function drawFPSGraph() {
+  if (!fpsGraphCtx) return;
+  const w = 200, h = 60;
+  fpsGraphCtx.clearRect(0, 0, w, h);
+  // Background grid
+  fpsGraphCtx.strokeStyle = '#05ffa122';
+  fpsGraphCtx.beginPath();
+  for (let y of [15, 30, 45]) { fpsGraphCtx.moveTo(0, y); fpsGraphCtx.lineTo(w, y); }
+  fpsGraphCtx.stroke();
+  // Labels
+  fpsGraphCtx.fillStyle = '#05ffa166';
+  fpsGraphCtx.font = '8px monospace';
+  fpsGraphCtx.fillText('60', 1, 13);
+  fpsGraphCtx.fillText('30', 1, 33);
+  fpsGraphCtx.fillText('0', 1, 58);
+  // Line
+  fpsGraphCtx.strokeStyle = '#05ffa1';
+  fpsGraphCtx.lineWidth = 1;
+  fpsGraphCtx.beginPath();
+  for (let i = 0; i < 200; i++) {
+    const idx = (fpsHistIdx + i) % 200;
+    const fps = fpsHistory[idx];
+    const x = i;
+    const y = h - (fps / 60) * h;
+    if (i === 0) fpsGraphCtx.moveTo(x, y);
+    else fpsGraphCtx.lineTo(x, y);
+  }
+  fpsGraphCtx.stroke();
+  // Warning zone (below 30fps)
+  const curFps = fpsHistory[(fpsHistIdx + 199) % 200];
+  if (curFps > 0 && curFps < 30) {
+    fpsGraphCtx.fillStyle = '#ff2a6d44';
+    fpsGraphCtx.fillRect(0, 0, w, h);
+  }
+}
+
 function animate() {
   requestAnimationFrame(animate);
 
@@ -3519,7 +3575,7 @@ function animate() {
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
 
-  // FPS counter
+  // FPS counter + history
   frameCount++;
   fpsTimer += dt;
   if (fpsTimer >= 0.5) {
@@ -3527,6 +3583,9 @@ function animate() {
     frameCount = 0;
     fpsTimer = 0;
     document.getElementById('fps').textContent = `${fpsDisplay} FPS`;
+    fpsHistory[fpsHistIdx % 200] = fpsDisplay;
+    fpsHistIdx++;
+    drawFPSGraph();
   }
 
   // Sim runs at fixed 20fps
