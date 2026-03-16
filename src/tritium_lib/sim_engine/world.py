@@ -334,6 +334,10 @@ class World:
         # 5. Advance projectiles
         impacts = self.projectile_sim.tick(dt)
 
+        # 5b. In-flight hit detection: check active projectiles against units
+        hit_impacts = self._check_projectile_hits()
+        impacts.extend(hit_impacts)
+
         # 6. Resolve impacts -> damage
         self._resolve_impacts(impacts)
 
@@ -470,6 +474,61 @@ class World:
                 # In range: fire
                 if unit.can_attack(self.sim_time):
                     self.fire_weapon(uid, nearest["pos"])
+
+    def _check_projectile_hits(self) -> list[dict]:
+        """Check active projectiles for hits using ray-segment vs circle test.
+
+        Because projectiles travel fast (hundreds of m/s) and ticks are 0.1s,
+        a simple proximity check misses.  Instead we check whether the line
+        segment from prev_pos → current_pos passes within *hit_radius* of any
+        enemy unit.
+        """
+        hits: list[dict] = []
+        hit_radius = 3.0  # metres
+        alive = {uid: u for uid, u in self.units.items() if u.is_alive()}
+        if not alive:
+            return hits
+
+        for proj in list(self.projectile_sim.projectiles):
+            if not proj.is_active:
+                continue
+
+            # Compute previous position from velocity
+            vx, vy = proj.velocity
+            px, py = proj.position
+            prev_x = px - vx * 0.1  # dt assumed 0.1
+            prev_y = py - vy * 0.1
+
+            # Skip first 3m of travel (avoid hitting shooter)
+            if proj.distance_traveled() < 5.0:
+                continue
+
+            for uid, unit in alive.items():
+                ux, uy = unit.position
+                # Point-to-segment distance
+                seg_dx = px - prev_x
+                seg_dy = py - prev_y
+                seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy
+                if seg_len_sq < 0.001:
+                    continue
+                t = max(0.0, min(1.0,
+                    ((ux - prev_x) * seg_dx + (uy - prev_y) * seg_dy) / seg_len_sq
+                ))
+                closest_x = prev_x + t * seg_dx
+                closest_y = prev_y + t * seg_dy
+                d = math.sqrt((ux - closest_x) ** 2 + (uy - closest_y) ** 2)
+                if d <= hit_radius:
+                    proj.is_active = False
+                    hits.append({
+                        "x": closest_x,
+                        "y": closest_y,
+                        "type": proj.projectile_type.value if hasattr(proj.projectile_type, 'value') else str(proj.projectile_type),
+                        "damage": proj.damage,
+                        "effect": "hit",
+                        "weapon_id": proj.weapon_id,
+                    })
+                    break
+        return hits
 
     def _resolve_impacts(self, impacts: list[dict]) -> None:
         """Resolve projectile impacts against units and structures."""

@@ -122,6 +122,15 @@ from .behavior_profiles import (
     PROFILES as BEHAVIOR_PROFILES,
 )
 
+from .formations import (
+    CoverMovement,
+    FormationConfig,
+    FormationMover,
+    FormationType,
+    PathPlanner,
+    get_formation_positions,
+)
+
 # NumPy-vectorized variants (optional — graceful fallback if numpy missing)
 try:
     from .steering_np import SteeringSystem, SpatialHash
@@ -214,4 +223,11 @@ __all__ = [
     "BehaviorProfile",
     "BehaviorTrait",
     "BEHAVIOR_PROFILES",
+    # Formations
+    "CoverMovement",
+    "FormationConfig",
+    "FormationMover",
+    "FormationType",
+    "PathPlanner",
+    "get_formation_positions",
 ]

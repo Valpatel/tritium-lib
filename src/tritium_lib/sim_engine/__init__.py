@@ -637,6 +637,22 @@ except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.abilities not available: {_e}")
 
 # ---------------------------------------------------------------------------
+# Cyber Warfare: Cyber assets, capabilities, effects engine
+# ---------------------------------------------------------------------------
+try:
+    from .cyber import (
+        CyberAttackType as CyberAttackType2,  # avoid clash with electronic_warfare
+        CyberCapability,
+        CyberAsset,
+        CyberEffect,
+        CyberWarfareEngine,
+        CYBER_PRESETS,
+        create_asset_from_preset,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.cyber not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # __all__ — comprehensive public API
 # ---------------------------------------------------------------------------
 __all__ = [
@@ -785,4 +801,8 @@ __all__ = [
     "SimEventType", "SimBusEvent", "SimEventBus", "EventFilter", "EventListener",
     # --- Abilities ---
     "AbilityType", "TargetType", "Ability", "AbilityEngine", "ABILITIES",
+    # --- Cyber Warfare ---
+    "CyberAttackType2", "CyberCapability", "CyberAsset",
+    "CyberEffect", "CyberWarfareEngine", "CYBER_PRESETS",
+    "create_asset_from_preset",
 ]

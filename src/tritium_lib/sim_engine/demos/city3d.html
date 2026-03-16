@@ -195,8 +195,8 @@ const BLDG_ROOF    = 0x333333;
 // Person dimensions (Minecraft-style, visible from 200m)
 const BODY_W = 1.0, BODY_H = 1.5, BODY_D = 0.6;
 const HEAD_SIZE = 0.7;
-// Scale multiplier so people are visible from default camera height
-const PERSON_SCALE = 2.5;
+// Scale multiplier — 0.9 makes people ~1.35 units tall (car body is 1.5 tall = roof height)
+const PERSON_SCALE = 0.9;
 
 // Role colors
 const COLOR_CIVILIAN  = 0x33AA55;  // green shirts
@@ -552,12 +552,36 @@ function addInstancedBuilding(x, z, w, d, h, type) {
   buildingBodyMesh.count = buildingIdx;
   buildingRoofMesh.count = buildingIdx;
 
-  // Door
+  // Door — place on the building face closest to the nearest road
   if (doorIdx < MAX_DOORS) {
     const doorW = Math.min(2, w * 0.3);
     const doorH = Math.min(3, h * 0.5);
-    _pos.set(x, doorH / 2, z + d / 2 + 0.05);
-    _quat.identity();
+    // Find which face is closest to a road
+    let bestFaceDist = Infinity;
+    let doorX = x, doorZ = z + d / 2 + 0.05, doorRotY = 0;
+    // +Z face
+    for (const hz of hRoads) {
+      const fd = Math.abs((z + d / 2) - hz);
+      if (fd < bestFaceDist) { bestFaceDist = fd; doorX = x; doorZ = z + d / 2 + 0.05; doorRotY = 0; }
+    }
+    // -Z face
+    for (const hz of hRoads) {
+      const fd = Math.abs((z - d / 2) - hz);
+      if (fd < bestFaceDist) { bestFaceDist = fd; doorX = x; doorZ = z - d / 2 - 0.05; doorRotY = Math.PI; }
+    }
+    // +X face
+    for (const vx of vRoads) {
+      const fd = Math.abs((x + w / 2) - vx);
+      if (fd < bestFaceDist) { bestFaceDist = fd; doorX = x + w / 2 + 0.05; doorZ = z; doorRotY = Math.PI / 2; }
+    }
+    // -X face
+    for (const vx of vRoads) {
+      const fd = Math.abs((x - w / 2) - vx);
+      if (fd < bestFaceDist) { bestFaceDist = fd; doorX = x - w / 2 - 0.05; doorZ = z; doorRotY = -Math.PI / 2; }
+    }
+    _pos.set(doorX, doorH / 2, doorZ);
+    _euler.set(0, doorRotY, 0);
+    _quat.setFromEuler(_euler);
     _scale.set(doorW, doorH, 1);
     _mat4.compose(_pos, _quat, _scale);
     doorIMesh.setMatrixAt(doorIdx, _mat4);
@@ -924,7 +948,8 @@ function allocCarSlot() {
   return s;
 }
 
-function updateCarInstance(idx, x, y, z, rotY, bodyColor, cabinColor) {
+function updateCarInstance(idx, x, y, z, rotY, bodyColor, cabinColor, vehScale) {
+  const sc = vehScale || 1;
   const cosR = Math.cos(rotY);
   const sinR = Math.sin(rotY);
 
@@ -932,39 +957,40 @@ function updateCarInstance(idx, x, y, z, rotY, bodyColor, cabinColor) {
   _quat.setFromEuler(_euler);
 
   // Body
-  _pos.set(x, 0.75, z);
-  _scale.set(1, 1, 1);
+  _pos.set(x, 0.75 * sc, z);
+  _scale.set(sc, sc, sc);
   _mat4.compose(_pos, _quat, _scale);
   carBodyMesh.setMatrixAt(idx, _mat4);
   carBodyMesh.setColorAt(idx, _color.set(bodyColor));
 
   // Cabin — offset (0, 0.95, -0.3) in local space (forward = +Z)
-  const cLocalZ = -0.3;
+  const cLocalZ = -0.3 * sc;
   const cWorldX = x + cLocalZ * sinR;
   const cWorldZ = z + cLocalZ * cosR;
-  _pos.set(cWorldX, 1.7, cWorldZ);
+  _pos.set(cWorldX, 1.7 * sc, cWorldZ);
   _mat4.compose(_pos, _quat, _scale);
   carCabinMesh.setMatrixAt(idx, _mat4);
   carCabinMesh.setColorAt(idx, _color.set(cabinColor));
 
   // Headlights — offset (±0.7, -0.15, 2) from body center (front = +Z)
-  const hlLocalZ = 2;
+  const hlLocalZ = 2 * sc;
+  _scale.set(sc, sc, sc);
   for (let s = 0; s < 2; s++) {
-    const hlLocalX = s === 0 ? 0.7 : -0.7;
+    const hlLocalX = (s === 0 ? 0.7 : -0.7) * sc;
     const hlX = x + hlLocalX * cosR + hlLocalZ * sinR;
     const hlZ = z + hlLocalX * (-sinR) + hlLocalZ * cosR;
-    _pos.set(hlX, 0.6, hlZ);
+    _pos.set(hlX, 0.6 * sc, hlZ);
     _mat4.compose(_pos, _quat, _scale);
     carHLMesh.setMatrixAt(idx * 2 + s, _mat4);
   }
 
   // Tail lights — offset (±0.7, -0.15, -2) (rear = -Z)
-  const tlLocalZ = -2;
+  const tlLocalZ = -2 * sc;
   for (let s = 0; s < 2; s++) {
-    const tlLocalX = s === 0 ? 0.7 : -0.7;
+    const tlLocalX = (s === 0 ? 0.7 : -0.7) * sc;
     const tlX = x + tlLocalX * cosR + tlLocalZ * sinR;
     const tlZ = z + tlLocalX * (-sinR) + tlLocalZ * cosR;
-    _pos.set(tlX, 0.6, tlZ);
+    _pos.set(tlX, 0.6 * sc, tlZ);
     _mat4.compose(_pos, _quat, _scale);
     carTLMesh.setMatrixAt(idx * 2 + s, _mat4);
   }
@@ -1060,9 +1086,13 @@ function hideInjuredMarker(marker) {
 // =========================================================================
 const MAX_PARTICLES = 500;
 const particleGeo = new THREE.BoxGeometry(1, 1, 1);
-const particleMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 1 });
+const particleMat = new THREE.MeshBasicMaterial({
+  transparent: true, opacity: 0.55, depthWrite: false,
+  blending: THREE.NormalBlending,
+});
 const particleMesh = new THREE.InstancedMesh(particleGeo, particleMat, MAX_PARTICLES);
 particleMesh.count = 0;
+particleMesh.renderOrder = 10; // render after opaque objects
 scene.add(particleMesh);
 
 // Particle pool tracking
@@ -1130,19 +1160,21 @@ function updateParticles(dt) {
     }
 
     const alpha = Math.max(0, p.life / p.maxLife);
+    // Fade: scale shrinks as particle dies (simulates opacity fade)
+    const fadeScale = p.isTearGas ? Math.sqrt(alpha) : alpha;
 
     _euler.set(p.rotX, 0, p.rotZ);
     _quat.setFromEuler(_euler);
     _pos.set(p.x, p.y, p.z);
-    _scale.set(p.size, p.size, p.size);
+    const sz = p.size * fadeScale;
+    _scale.set(sz, sz, sz);
     _mat4.compose(_pos, _quat, _scale);
     particleMesh.setMatrixAt(p.slot, _mat4);
     particleMesh.setColorAt(p.slot, _color.set(p.color));
     needsUpdate = true;
   }
 
-  particleMesh.count = Math.max(particleMesh.count, activeParticles.length);
-  // Keep count at max allocated so hidden slots stay hidden
+  // Keep count at max allocated slot + 1 so all active slots render
   let maxSlot = 0;
   for (const p of activeParticles) {
     if (p.slot >= maxSlot) maxSlot = p.slot + 1;
@@ -1215,9 +1247,26 @@ function curbNearBuilding(bldg) {
   return bestPos || { x: bldg.x, z: bldg.z + (bldg.d || 10) / 2 + 3 };
 }
 
-// Get door position of a building
+// Get door position of a building — nearest road-facing side
 function doorPos(bldg) {
-  return { x: bldg.x, z: bldg.z + (bldg.d || 10) / 2 + 0.5 };
+  const hw = (bldg.w || 10) / 2;
+  const hd = (bldg.d || 10) / 2;
+  let bestDist = Infinity, bestPos = { x: bldg.x, z: bldg.z + hd + 0.5 };
+  // Check horizontal roads for +Z/-Z faces
+  for (const hz of hRoads) {
+    const dPlus = Math.abs((bldg.z + hd) - hz);
+    if (dPlus < bestDist) { bestDist = dPlus; bestPos = { x: bldg.x, z: bldg.z + hd + 0.5 }; }
+    const dMinus = Math.abs((bldg.z - hd) - hz);
+    if (dMinus < bestDist) { bestDist = dMinus; bestPos = { x: bldg.x, z: bldg.z - hd - 0.5 }; }
+  }
+  // Check vertical roads for +X/-X faces
+  for (const vx of vRoads) {
+    const dPlus = Math.abs((bldg.x + hw) - vx);
+    if (dPlus < bestDist) { bestDist = dPlus; bestPos = { x: bldg.x + hw + 0.5, z: bldg.z }; }
+    const dMinus = Math.abs((bldg.x - hw) - vx);
+    if (dMinus < bestDist) { bestDist = dMinus; bestPos = { x: bldg.x - hw - 0.5, z: bldg.z }; }
+  }
+  return bestPos;
 }
 
 function addKillFeedEntry(text) {
@@ -1319,8 +1368,10 @@ for (let i = 0; i < 10 && houseBuildings.length >= 2; i++) {
   const homeDoor = doorPos(home);
   const homeCurb = curbNearBuilding(home);
 
-  // Park car at home curb initially
-  updateCarInstance(carSlot, homeCurb.x, 0, homeCurb.z, 0, bodyColor, cabinColor);
+  // Park car at home curb initially — face along nearest road
+  const initRoad = snapToNearestRoad(homeCurb.x, homeCurb.z);
+  const initParkRotY = (initRoad && initRoad.horizontal) ? Math.PI / 2 : 0;
+  updateCarInstance(carSlot, homeCurb.x, 0, homeCurb.z, initParkRotY, bodyColor, cabinColor);
 
   carDrivers.push({
     personSlot, carSlot,
@@ -1656,8 +1707,8 @@ function updateAmbulances(dt) {
       rotY = Math.atan2(wp.x - amb.x, wp.z - amb.z);
     }
 
-    // Ambulance uses longer body (scale X wider via a wider color)
-    updateCarInstance(amb.idx, amb.x, 0, amb.z, rotY, amb.bodyColor, 0xDD0000);
+    // Ambulance is larger than regular cars (scale 1.4)
+    updateCarInstance(amb.idx, amb.x, 0, amb.z, rotY, amb.bodyColor, 0xDD0000, 1.4);
     needsCarUpdate = true;
   }
 
@@ -1821,12 +1872,12 @@ function createExplosion(pos) {
 }
 
 function createTearGasCloud(pos) {
-  for (let i = 0; i < 12; i++) {
-    const size = 2 + rng() * 2;
+  for (let i = 0; i < 6; i++) {
+    const size = 1.2 + rng() * 1.5;
     spawnParticle(
-      pos.x + (rng() - 0.5) * 5, 1 + rng() * 3, pos.z + (rng() - 0.5) * 5,
-      (rng() - 0.5) * 0.5, 0.3 + rng() * 0.8, (rng() - 0.5) * 0.5,
-      size, 0xdddddd, 6 + rng() * 4, true
+      pos.x + (rng() - 0.5) * 6, 0.5 + rng() * 2, pos.z + (rng() - 0.5) * 6,
+      (rng() - 0.5) * 0.8, 0.2 + rng() * 0.5, (rng() - 0.5) * 0.8,
+      size, 0xcccccc, 5 + rng() * 3, true
     );
   }
   playHiss(pos.x, pos.z);
@@ -1854,11 +1905,11 @@ function createFire(pos) {
 }
 
 function createSmoke(pos) {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 3; i++) {
     spawnParticle(
-      pos.x + (rng() - 0.5) * 3, 1 + rng() * 2, pos.z + (rng() - 0.5) * 3,
-      (rng() - 0.5) * 0.5, 1 + rng() * 2, (rng() - 0.5) * 0.5,
-      1.5 + rng(), 0x333333, 3 + rng() * 2
+      pos.x + (rng() - 0.5) * 2, 4 + rng() * 3, pos.z + (rng() - 0.5) * 2,
+      (rng() - 0.5) * 0.3, 0.5 + rng() * 1.5, (rng() - 0.5) * 0.3,
+      0.8 + rng() * 0.5, 0x555555, 2 + rng() * 2
     );
   }
 }
@@ -2023,7 +2074,8 @@ function updateEmergencyVehicles(dt) {
         const wp = ft.waypoints[ft.waypointIdx];
         rotY = Math.atan2(wp.x - ft.x, wp.z - ft.z);
       }
-      updateCarInstance(ft.idx, ft.x, 0, ft.z, rotY, ft.bodyColor, ft.cabinColor);
+      // Fire truck is larger than regular cars (scale 1.5)
+      updateCarInstance(ft.idx, ft.x, 0, ft.z, rotY, ft.bodyColor, ft.cabinColor, 1.5);
       updateCarHeadlights(ft.idx, ft.x, ft.z, rotY, isNight);
     }
   }
@@ -2089,7 +2141,8 @@ function updateEmergencyVehicles(dt) {
         const wp = pv.waypoints[pv.waypointIdx];
         rotY = Math.atan2(wp.x - pv.x, wp.z - pv.z);
       }
-      updateCarInstance(pv.idx, pv.x, 0, pv.z, rotY, pv.bodyColor, pv.cabinColor);
+      // Police van is larger than regular cars (scale 1.3)
+      updateCarInstance(pv.idx, pv.x, 0, pv.z, rotY, pv.bodyColor, pv.cabinColor, 1.3);
       updateCarHeadlights(pv.idx, pv.x, pv.z, rotY, isNight);
     }
   }
@@ -2319,10 +2372,19 @@ function update(dt) {
       if (distToPlaza < 80 && riotPhase !== 'PEACEFUL') {
         ped.fleeing = true;
         ped.speed = 3 + rng() * 2;
+        // Pick a building FAR from the plaza to flee to (away from danger)
         if (buildings.length > 0) {
-          const bldg = buildings[Math.floor(rng() * buildings.length)];
-          // Walk to building door position
-          ped.target = { x: bldg.x, z: bldg.z + bldg.d / 2 };
+          let bestBldg = null, bestDist = 0;
+          for (let bi = 0; bi < Math.min(buildings.length, 20); bi++) {
+            const candidate = buildings[Math.floor(rng() * buildings.length)];
+            const bd = dist2d(candidate, { x: PLAZA_X, z: PLAZA_Z });
+            if (bd > bestDist) { bestDist = bd; bestBldg = candidate; }
+          }
+          if (bestBldg) {
+            ped.target = { x: bestBldg.x, z: bestBldg.z + bestBldg.d / 2 };
+          } else {
+            ped.target = edgeSpawnPos();
+          }
         } else {
           ped.target = edgeSpawnPos();
         }
@@ -2506,11 +2568,19 @@ function update(dt) {
       updatePersonInstance(cd.personSlot, cd.x, 0, cd.z, cd.rotY, cd.bodyColor, cd.headColor, cd.scale);
       needsPersonUpdate = true;
     }
-    // Park car when not moving
+    // Park car when not moving — face along the nearest road
     if (!cd.carMoving) {
       const parkPos = (cd.state.includes('home') || cd.state === 'at_home' || cd.state === 'walk_to_car') ? cd.homeCurb : cd.destCurb;
-      updateCarInstance(cd.carSlot, parkPos.x, 0, parkPos.z, 0, cd.carBodyColor, cd.carCabinColor);
-      updateCarHeadlights(cd.carSlot, parkPos.x, parkPos.z, 0, false);
+      // Determine parked rotation: face along nearest road direction
+      const parkRoad = snapToNearestRoad(parkPos.x, parkPos.z);
+      let parkRotY = 0;
+      if (parkRoad && parkRoad.horizontal) {
+        // Parked along horizontal road — face along X axis
+        parkRotY = Math.PI / 2;
+      }
+      // else vertical road — face along Z axis, rotY = 0
+      updateCarInstance(cd.carSlot, parkPos.x, 0, parkPos.z, parkRotY, cd.carBodyColor, cd.carCabinColor);
+      updateCarHeadlights(cd.carSlot, parkPos.x, parkPos.z, parkRotY, false);
     }
   }
 
@@ -2667,8 +2737,8 @@ function update(dt) {
 
     // Move toward next intersection
     const target = car.nextIntersection;
-    // Lane offset: drive on the RIGHT side of the road (offset ~2.5 units)
-    const LANE_OFFSET = 2.5;
+    // Lane offset: road=10 wide, sidewalk=3 each side, 2 lanes of 2. Offset from center = 1.5
+    const LANE_OFFSET = 1.5;
     let dx, dz;
     if (car.horizontal) {
       dx = target.x - car.x;
@@ -2705,7 +2775,18 @@ function update(dt) {
 
       car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
     } else {
-      const s = car.speed * dt;
+      // Simple forward collision avoidance — slow down if car ahead
+      let blocked = false;
+      for (const other of cars) {
+        if (other === car || !other.alive) continue;
+        const odx = other.x - car.x, odz = other.z - car.z;
+        const oDist = Math.sqrt(odx * odx + odz * odz);
+        if (oDist > 12 || oDist < 0.5) continue;
+        if (car.horizontal && Math.abs(odz) < 4 && odx * car.dir > 0 && Math.abs(odx) < 8) { blocked = true; break; }
+        if (!car.horizontal && Math.abs(odx) < 4 && odz * car.dir > 0 && Math.abs(odz) < 8) { blocked = true; break; }
+      }
+      const speedMult = blocked ? 0.15 : 1.0;
+      const s = car.speed * speedMult * dt;
       if (car.horizontal) {
         car.x += car.dir * s;
       } else {
@@ -2714,13 +2795,13 @@ function update(dt) {
     }
 
     // Calculate rotation: car's long axis is +Z in local space
-    // horizontal dir>0 = moving +X → rotate -PI/2 (face right)
-    // horizontal dir<0 = moving -X → rotate +PI/2 (face left)
-    // vertical dir>0 = moving +Z → rotate 0 (face forward)
-    // vertical dir<0 = moving -Z → rotate PI (face backward)
+    // horizontal dir>0 = moving +X → rotY = -PI/2 so +Z faces +X
+    // horizontal dir<0 = moving -X → rotY = +PI/2 so +Z faces -X
+    // vertical dir>0 = moving +Z → rotY = 0 (default forward)
+    // vertical dir<0 = moving -Z → rotY = PI (face backward)
     let targetRotY;
     if (car.horizontal) {
-      targetRotY = car.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+      targetRotY = car.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
     } else {
       targetRotY = car.dir > 0 ? 0 : Math.PI;
     }
@@ -2766,8 +2847,17 @@ function update(dt) {
       if (!pr.alive || pr.arrested) continue;
 
       if (pr.fleeing) {
-        const fleeDir = rng() < 0.5 ? 1 : -1;
-        const target = { x: pr.x + fleeDir * 50, z: pr.z + (rng() - 0.5) * 80 };
+        // Compute persistent flee direction away from plaza (once)
+        if (!pr.fleeTarget) {
+          const awayX = pr.x - PLAZA_X;
+          const awayZ = pr.z - PLAZA_Z;
+          const awayLen = Math.sqrt(awayX * awayX + awayZ * awayZ) || 1;
+          pr.fleeTarget = {
+            x: pr.x + (awayX / awayLen) * 80 + (rng() - 0.5) * 30,
+            z: pr.z + (awayZ / awayLen) * 80 + (rng() - 0.5) * 30,
+          };
+        }
+        const target = pr.fleeTarget;
         const dx = target.x - pr.x;
         const dz = target.z - pr.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
@@ -2856,11 +2946,20 @@ function update(dt) {
       if (!pol.alive) continue;
 
       if (pol.holdLine) {
+        // During riot/dispersal, police advance toward the plaza
+        if (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') {
+          // Push line forward gradually (0.5 units/sec toward plaza)
+          const advanceDist = 0.5 * dt;
+          const toPlazaZ = PLAZA_Z - pol.lineZ;
+          if (Math.abs(toPlazaZ) > 8) {
+            pol.lineZ += Math.sign(toPlazaZ) * advanceDist;
+          }
+        }
         const dx = pol.lineX - pol.x;
         const dz = pol.lineZ - pol.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist > 2) {
-          const s = pol.speed * 0.5 * dt;
+        if (dist > 1) {
+          const s = pol.speed * dt;
           pol.x += (dx / dist) * s;
           pol.z += (dz / dist) * s;
         }
@@ -3166,10 +3265,12 @@ function update(dt) {
     }
   }
 
-  // Camera
+  // Camera — reuse temp vectors to avoid GC pressure
   if (chaseCam && chaseTarget) {
-    camera.position.lerp(new THREE.Vector3(chaseTarget.x - 15, 20, chaseTarget.z + 15), 0.05);
-    camera.lookAt(new THREE.Vector3(chaseTarget.x, 1, chaseTarget.z));
+    _pos.set(chaseTarget.x - 15, 20, chaseTarget.z + 15);
+    camera.position.lerp(_pos, 0.05);
+    _pos.set(chaseTarget.x, 1, chaseTarget.z);
+    camera.lookAt(_pos);
   } else {
     controls.update();
   }
@@ -3266,6 +3367,22 @@ function updateDebugOverlay(dt) {
   html += `Fire trucks: <span class="dbg-val">${fireTrucks.filter(ft => ft.alive).length}</span><br>`;
   html += `Police vans: <span class="dbg-val">${policeVans.filter(pv => pv.alive).length}</span><br>`;
   html += `Injured on ground: <span class="dbg-val">${injuredOnGround.length}</span><br>`;
+  html += `Ambulances: <span class="dbg-val">${ambulances.filter(a => a.alive).length}</span><br>`;
+  html += `Active particles: <span class="dbg-val">${activeParticles.length}/${MAX_PARTICLES}</span><br>`;
+  html += '<h3>RIOT STATE</h3>';
+  html += `Phase: <span class="dbg-val">${riotPhase}</span><br>`;
+  html += `Riot mode: <span class="dbg-val">${riotMode}</span><br>`;
+  if (police.length > 0) {
+    const pol0 = police[0];
+    html += `Police[0] pos: <span class="dbg-val">(${pol0.x.toFixed(1)}, ${pol0.z.toFixed(1)})</span><br>`;
+    html += `Police[0] line: <span class="dbg-val">(${pol0.lineX.toFixed(1)}, ${pol0.lineZ.toFixed(1)})</span><br>`;
+    html += `Police[0] holdLine: <span class="dbg-val">${pol0.holdLine}</span><br>`;
+    html += `Police[0] speed: <span class="dbg-val">${pol0.speed}</span><br>`;
+  }
+  if (protestors.length > 0) {
+    const pr0 = protestors.filter(p => p.alive)[0];
+    if (pr0) html += `Protestor[0] pos: <span class="dbg-val">(${pr0.x.toFixed(1)}, ${pr0.z.toFixed(1)})</span><br>`;
+  }
   html += '<h3>SCENE</h3>';
   html += `Objects: <span class="dbg-val">${scene.children.length}</span><br>`;
   html += `Geometries: <span class="dbg-val">${renderer.info.memory.geometries}</span><br>`;
@@ -3277,8 +3394,9 @@ function updateDebugOverlay(dt) {
   // Project 3D positions to screen for car paths and person waypoints
   const projVec = new THREE.Vector3();
 
-  function toScreen(x, y, z) {
-    projVec.set(x, z || 0.5, -y); // world coords: x=east, y=north, z=up -> three.js
+  function toScreen(worldX, worldZ, worldY) {
+    // Three.js scene: x=right, y=up, z=depth. Entities store x,z as ground plane.
+    projVec.set(worldX, worldY || 0.5, worldZ);
     projVec.project(camera);
     return {
       x: (projVec.x * 0.5 + 0.5) * dbgCanvas.width,
@@ -3292,7 +3410,7 @@ function updateDebugOverlay(dt) {
   ctx2d.lineWidth = 1;
   for (const c of cars) {
     if (c.active === false) continue;
-    const s = toScreen(c.x, c.y, 0.5);
+    const s = toScreen(c.x, c.z, 0.5);
     if (s.behind) continue;
     ctx2d.beginPath();
     ctx2d.arc(s.x, s.y, 8, 0, Math.PI * 2);
@@ -3304,7 +3422,7 @@ function updateDebugOverlay(dt) {
   ctx2d.setLineDash([3, 3]);
   for (const p of pedestrians) {
     if (!p.alive) continue;
-    const s = toScreen(p.x, p.y, 1.0);
+    const s = toScreen(p.x, p.z, 1.0);
     if (s.behind) continue;
     ctx2d.beginPath();
     ctx2d.arc(s.x, s.y, 5, 0, Math.PI * 2);
@@ -3315,14 +3433,14 @@ function updateDebugOverlay(dt) {
   ctx2d.setLineDash([]);
   for (const p of protestors) {
     if (!p.alive) continue;
-    const s = toScreen(p.x, p.y, 1.0);
+    const s = toScreen(p.x, p.z, 1.0);
     if (s.behind) continue;
     ctx2d.fillStyle = '#05ffa166';
     ctx2d.fillRect(s.x - 3, s.y - 3, 6, 6);
   }
   for (const p of police) {
     if (!p.alive) continue;
-    const s = toScreen(p.x, p.y, 1.0);
+    const s = toScreen(p.x, p.z, 1.0);
     if (s.behind) continue;
     ctx2d.fillStyle = '#00f0ff66';
     ctx2d.fillRect(s.x - 3, s.y - 3, 6, 6);
@@ -3331,7 +3449,7 @@ function updateDebugOverlay(dt) {
   // Fire positions
   ctx2d.setLineDash([]);
   for (const f of fires) {
-    const s = toScreen(f.x, f.y, 0.5);
+    const s = toScreen(f.x, f.z, 0.5);
     if (s.behind) continue;
     ctx2d.fillStyle = '#ff2a6d66';
     ctx2d.beginPath();
