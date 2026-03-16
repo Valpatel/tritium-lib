@@ -730,6 +730,14 @@ const narrationTemplates = {
     '<span class="callsign">COMMAND:</span> Fire mission complete. Grid {grid}. Assess damage.',
     '<span class="callsign">FDC:</span> Rounds complete grid {grid}. BDA requested.',
   ],
+  ied_detonate: [
+    '<span class="callsign">ALPHA-1:</span> <span class="alert">CONTACT IED</span> Grid {grid}! Casualties reported!',
+    '<span class="callsign">DISPATCH:</span> <span class="alert">IED DETONATION</span> grid {grid}. All units hold position!',
+  ],
+  ied_detected: [
+    '<span class="callsign">ROS2-{n}:</span> <span class="info">Suspicious device detected</span> grid {grid}. EOD requested.',
+    '<span class="callsign">DISPATCH:</span> <span class="info">IED located</span> by robot at grid {grid}. Marking area.',
+  ],
 };
 
 function formatGrid(x, z) {
@@ -2192,6 +2200,17 @@ function hideInjuredMarker(marker) {
   marker.crossH.visible = false;
   marker.crossV.visible = false;
 }
+
+// =========================================================================
+// IED InstancedMesh — 6 small brown boxes (demonstrates asymmetric.py)
+// =========================================================================
+const iedGeo = new THREE.BoxGeometry(0.5, 0.2, 0.5);
+const iedMat = new THREE.MeshStandardMaterial({ color: 0x6b3410, roughness: 0.9 });
+const iedMesh = new THREE.InstancedMesh(iedGeo, iedMat, MAX_IEDS);
+iedMesh.count = 0;
+scene.add(iedMesh);
+const _iedDummy = new THREE.Object3D();
+const _iedColor = new THREE.Color();
 
 // =========================================================================
 // Instanced Particle Pool — 500 slots for fire/smoke/debris
@@ -4881,12 +4900,32 @@ function update(dt) {
       const pastX = target.x + (car.horizontal ? car.dir * 3 : 0);
       const pastZ = target.z + (car.horizontal ? 0 : car.dir * 3);
       car.nextIntersection = findNextIntersection(pastX, pastZ, car.horizontal, car.dir);
+      car.stuckTimer = 0;
     } else {
       // Collision avoidance — check all vehicle types on this road/lane
       const collMult = checkVehicleCollision(car, car.x, car.z, car.horizontal, car.dir);
       // Barricade blocking
       const barMult = isBlockedByBarricade(car.x, car.z, 5) ? 0 : 1.0;
       const speedMult = Math.min(collMult, barMult);
+
+      // Stuck detection: if hard-stopped (speedMult === 0) for > 3s, teleport
+      if (speedMult === 0) {
+        car.stuckTimer = (car.stuckTimer || 0) + dt;
+        if (car.stuckTimer > 3.0) {
+          const start = pickRandomRoadStart();
+          car.x = start.x;
+          car.z = start.z;
+          car.horizontal = start.horizontal;
+          car.dir = start.dir;
+          car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
+          car.stuckTimer = 0;
+          car.pauseTimer = 0.5;
+          continue;
+        }
+      } else {
+        car.stuckTimer = 0;
+      }
+
       const s = car.speed * speedMult * dt;
       if (car.horizontal) {
         car.x += car.dir * s;
