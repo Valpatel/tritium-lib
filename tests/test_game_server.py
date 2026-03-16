@@ -303,3 +303,193 @@ class TestGameTick:
         # Some units should still be alive
         stats = frame["stats"]
         assert stats["total_units"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Additional endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestStartVariants:
+    """Extended start/restart API tests."""
+
+    def test_start_with_no_body(self, client: TestClient) -> None:
+        """POST /api/start with no JSON body defaults to urban_combat."""
+        resp = client.post("/api/start")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preset"] == "urban_combat"
+
+    def test_start_twice_replaces_game(self, client: TestClient) -> None:
+        """Starting a new game replaces the old one."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.get("/api/status")
+        assert resp.json()["running"] is True
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.get("/api/status")
+        assert resp.json()["running"] is True
+
+    def test_start_sets_modules_to_14(self, client: TestClient) -> None:
+        resp = client.post("/api/start", json={"preset": "urban_combat"})
+        assert resp.json()["modules"] == 14
+
+
+class TestCommandExtended:
+    """Extended command tests."""
+
+    def test_command_fire_with_valid_unit(self, client: TestClient) -> None:
+        client.post("/api/start", json={"preset": "urban_combat"})
+        from tritium_lib.sim_engine.demos.game_server import _game
+        unit_id = next(iter(_game.world.units.keys()))
+        resp = client.post("/api/command", json={
+            "type": "fire", "unit_id": unit_id, "target": [300, 300]
+        })
+        data = resp.json()
+        assert data["status"] in ("fired", "failed")
+
+    def test_command_move_updates_position(self, client: TestClient) -> None:
+        client.post("/api/start", json={"preset": "urban_combat"})
+        from tritium_lib.sim_engine.demos.game_server import _game
+        unit_id = next(iter(_game.world.units.keys()))
+        resp = client.post("/api/command", json={
+            "type": "move", "unit_id": unit_id, "target": [250.0, 250.0]
+        })
+        assert resp.json()["status"] == "moved"
+        # Verify the unit actually moved
+        unit = _game.world.units[unit_id]
+        assert unit.position == (250.0, 250.0)
+
+    def test_command_no_game_returns_error(self, client: TestClient) -> None:
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        gs_mod._game = GameState()
+        resp = client.post("/api/command", json={"type": "move", "unit_id": "x", "target": [0, 0]})
+        assert resp.json()["error"] == "no_game"
+
+    def test_command_move_nonexistent_unit(self, client: TestClient) -> None:
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/command", json={
+            "type": "move", "unit_id": "no_such_unit_999", "target": [50, 50]
+        })
+        data = resp.json()
+        # Should not crash; returns some status
+        assert isinstance(data, dict)
+
+
+class TestStatusFields:
+    """Verify status response has all expected fields."""
+
+    def test_status_after_start_has_all_fields(self, client: TestClient) -> None:
+        client.post("/api/start", json={"preset": "urban_combat"})
+        data = client.get("/api/status").json()
+        assert "running" in data
+        assert "paused" in data
+        assert "preset" in data
+        assert "tick_count" in data
+        assert "sim_time" in data
+        assert "stats" in data
+        assert "factions" in data
+        assert "modules_active" in data
+
+    def test_status_stats_has_unit_counts(self, client: TestClient) -> None:
+        client.post("/api/start", json={"preset": "urban_combat"})
+        stats = client.get("/api/status").json()["stats"]
+        assert "alive_friendly" in stats
+        assert "alive_hostile" in stats
+        assert "dead" in stats
+        assert "total_units" in stats
+
+    def test_status_factions_list(self, client: TestClient) -> None:
+        client.post("/api/start", json={"preset": "urban_combat"})
+        factions = client.get("/api/status").json()["factions"]
+        assert "gov" in factions
+        assert "reb" in factions
+        assert "civ" in factions
+
+
+class TestAARExtended:
+    """Extended AAR tests."""
+
+    def test_aar_no_game_returns_error(self, client: TestClient) -> None:
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        gs_mod._game = GameState()
+        resp = client.get("/api/aar")
+        assert resp.json()["error"] == "no_game"
+
+    def test_aar_json_serializable(self, client: TestClient) -> None:
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.get("/api/aar")
+        data = resp.json()
+        # Must round-trip through JSON without error
+        serialized = json.dumps(data, ensure_ascii=True)
+        parsed = json.loads(serialized)
+        assert isinstance(parsed, dict)
+
+    def test_stats_no_game_returns_error(self, client: TestClient) -> None:
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        gs_mod._game = GameState()
+        resp = client.get("/api/stats")
+        assert resp.json()["error"] == "no_game"
+
+
+class TestPresetsExtended:
+    """Extended presets tests."""
+
+    def test_presets_has_all_expected_keys(self, client: TestClient) -> None:
+        data = client.get("/api/presets").json()
+        assert isinstance(data["world_presets"], list)
+        assert isinstance(data["scenario_presets"], list)
+        assert isinstance(data["campaign_presets"], list)
+        assert isinstance(data["vehicle_templates"], list)
+        assert isinstance(data["aircraft_templates"], list)
+        assert isinstance(data["weapon_count"], int)
+
+    def test_presets_world_has_all_five(self, client: TestClient) -> None:
+        presets = client.get("/api/presets").json()["world_presets"]
+        for name in ["urban_combat", "open_field", "riot_response", "convoy_ambush", "drone_strike"]:
+            assert name in presets, f"Missing world preset: {name}"
+
+
+class TestBuildFullGameExtended:
+    """Extended build_full_game tests."""
+
+    def test_build_has_fortifications(self) -> None:
+        gs = build_full_game()
+        assert gs.engineering is not None
+        assert len(gs.engineering.fortifications) >= 2
+
+    def test_build_has_mines(self) -> None:
+        gs = build_full_game()
+        assert len(gs.engineering.minefields) >= 8
+
+    def test_build_has_asymmetric_traps(self) -> None:
+        gs = build_full_game()
+        assert gs.asymmetric is not None
+        assert len(gs.asymmetric.traps) >= 1
+
+    def test_build_has_civilians(self) -> None:
+        gs = build_full_game()
+        assert gs.civilians is not None
+        assert len(gs.civilians.civilians) >= 40
+
+    def test_build_has_intel(self) -> None:
+        gs = build_full_game()
+        assert gs.intel is not None
+
+    def test_build_has_diplomacy_with_war(self) -> None:
+        gs = build_full_game()
+        assert gs.diplomacy is not None
+        assert gs.diplomacy.are_hostile("gov", "reb")
+
+    def test_build_has_campaign(self) -> None:
+        gs = build_full_game()
+        assert gs.campaign is not None
+
+    def test_tick_frame_detection_has_sensors(self) -> None:
+        gs = build_full_game()
+        frame = game_tick(gs, dt=0.1)
+        assert "sensors" in frame["detection"]
+
+    def test_tick_frame_air_combat(self) -> None:
+        gs = build_full_game()
+        frame = game_tick(gs, dt=0.1)
+        assert "air_combat" in frame

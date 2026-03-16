@@ -615,154 +615,1059 @@ def _count_active_modules(gs: GameState) -> int:
 # Inline game.html
 # ---------------------------------------------------------------------------
 
-GAME_HTML = """<!DOCTYPE html>
+GAME_HTML = r"""<!DOCTYPE html>
+<!--
+  Tritium Sim Engine — Three.js 3D Tactical Viewer
+  Receives frame data via WebSocket from the Python game server.
+  Copyright 2026 Valpatel Software LLC — AGPL-3.0
+-->
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Tritium Sim Engine Demo</title>
+<meta charset="utf-8">
+<title>Tritium Sim Engine — 3D Tactical</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0a0a0f; color: #00f0ff; font-family: 'Courier New', monospace; }
-  #hud { position: fixed; top: 10px; left: 10px; z-index: 10; }
-  #hud button { background: #1a1a2e; color: #00f0ff; border: 1px solid #00f0ff;
-    padding: 6px 14px; margin: 2px; cursor: pointer; font-family: inherit; }
-  #hud button:hover { background: #00f0ff; color: #0a0a0f; }
-  #stats { position: fixed; top: 10px; right: 10px; z-index: 10;
-    background: rgba(10,10,15,0.85); padding: 10px; border: 1px solid #00f0ff;
-    max-width: 300px; font-size: 12px; white-space: pre-wrap; }
-  #canvas-container { width: 100vw; height: 100vh; }
-  canvas { width: 100%; height: 100%; display: block; }
-  #log { position: fixed; bottom: 10px; left: 10px; z-index: 10;
-    background: rgba(10,10,15,0.85); padding: 8px; border: 1px solid #1a1a2e;
-    max-height: 150px; overflow-y: auto; font-size: 11px; width: 400px; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
+canvas { display: block; }
+
+/* ---- HUD overlay ---- */
+#hud {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none; color: #00f0ff; font-size: 13px;
+}
+#hud > div { pointer-events: auto; }
+
+/* Top-left status panel */
+#status-panel {
+  position: absolute; top: 12px; left: 12px;
+  background: rgba(10,10,15,0.88); padding: 12px 16px;
+  border: 1px solid #00f0ff44; border-radius: 4px;
+  min-width: 240px; line-height: 1.7;
+}
+#status-panel .title {
+  font-size: 16px; font-weight: bold; color: #00f0ff;
+  text-shadow: 0 0 8px #00f0ff66; margin-bottom: 6px;
+}
+#status-panel .row { display: flex; justify-content: space-between; }
+#status-panel .label { color: #00f0ff99; }
+#status-panel .val { font-weight: bold; }
+#status-panel .val-friendly { color: #05ffa1; }
+#status-panel .val-hostile { color: #ff2a6d; }
+#status-panel .val-neutral { color: #fcee0a; }
+#status-panel .val-cyan { color: #00f0ff; }
+
+/* Controls bar */
+#controls-bar {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 4px; align-items: center;
+}
+#controls-bar button {
+  background: #1a1a2e; color: #00f0ff; border: 1px solid #00f0ff66;
+  padding: 6px 16px; cursor: pointer; font-family: inherit; font-size: 13px;
+  border-radius: 3px; transition: all 0.15s;
+}
+#controls-bar button:hover { background: #00f0ff; color: #0a0a0f; }
+#controls-bar select {
+  background: #1a1a2e; color: #00f0ff; border: 1px solid #00f0ff66;
+  padding: 6px 10px; font-family: inherit; font-size: 12px;
+  border-radius: 3px; cursor: pointer;
+}
+
+/* Kill feed — top right */
+#kill-feed {
+  position: absolute; top: 12px; right: 12px;
+  background: rgba(10,10,15,0.85); padding: 10px 14px;
+  border: 1px solid #ff2a6d44; border-radius: 4px;
+  max-height: 300px; overflow: hidden; min-width: 220px;
+  font-size: 12px; line-height: 1.6;
+}
+#kill-feed .kf-title {
+  color: #ff2a6d; font-weight: bold; font-size: 13px;
+  margin-bottom: 4px; text-shadow: 0 0 6px #ff2a6d66;
+}
+.kf-entry { opacity: 0.9; }
+.kf-entry.fade { opacity: 0.35; }
+
+/* Unit roster — bottom left */
+#roster {
+  position: absolute; bottom: 50px; left: 12px;
+  background: rgba(10,10,15,0.85); padding: 10px 14px;
+  border: 1px solid #05ffa144; border-radius: 4px;
+  max-height: 280px; overflow-y: auto; min-width: 260px;
+  font-size: 11px; line-height: 1.5;
+}
+#roster .ros-title {
+  color: #05ffa1; font-weight: bold; font-size: 13px;
+  margin-bottom: 4px; text-shadow: 0 0 6px #05ffa166;
+}
+.ros-unit { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.ros-hp-bar {
+  width: 60px; height: 6px; background: #1a1a2e; border-radius: 2px;
+  overflow: hidden; flex-shrink: 0;
+}
+.ros-hp-fill { height: 100%; border-radius: 2px; transition: width 0.2s; }
+.ros-label { min-width: 90px; }
+.ros-dead { color: #555; text-decoration: line-through; }
+
+/* Camera help — bottom center */
+#camera-help {
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  text-align: center; font-size: 11px; color: #00f0ff66;
+  background: #0a0a0f88; padding: 5px 14px; border-radius: 3px;
+  border: 1px solid #00f0ff22;
+}
+#camera-help span { color: #00f0ff; }
+
+/* FPS counter */
+#fps-counter {
+  position: absolute; bottom: 10px; right: 12px;
+  font-size: 11px; color: #05ffa188;
+}
+
+/* AAR overlay */
+#aar-overlay {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: rgba(10,10,15,0.95); padding: 20px 28px;
+  border: 1px solid #00f0ff; border-radius: 6px;
+  max-width: 600px; max-height: 80vh; overflow-y: auto;
+  font-size: 12px; white-space: pre-wrap; display: none; z-index: 20;
+}
+#aar-overlay .close-btn {
+  position: absolute; top: 8px; right: 12px; cursor: pointer;
+  color: #ff2a6d; font-size: 16px;
+}
+
+/* Waiting splash */
+#splash {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  text-align: center; color: #00f0ff;
+}
+#splash .big { font-size: 32px; font-weight: bold; text-shadow: 0 0 16px #00f0ff66; }
+#splash .sub { font-size: 14px; color: #00f0ff88; margin-top: 8px; }
 </style>
 </head>
 <body>
+
 <div id="hud">
-  <button onclick="startGame()">START</button>
-  <button onclick="pauseGame()">PAUSE</button>
-  <button onclick="getAAR()">AAR</button>
+  <!-- Status panel top-left -->
+  <div id="status-panel">
+    <div class="title">TRITIUM SIM ENGINE</div>
+    <div class="row"><span class="label">Tick</span><span class="val val-cyan" id="hud-tick">0</span></div>
+    <div class="row"><span class="label">Sim Time</span><span class="val val-cyan" id="hud-time">0.0s</span></div>
+    <div class="row"><span class="label">Friendly</span><span class="val val-friendly" id="hud-friendly">0</span></div>
+    <div class="row"><span class="label">Hostile</span><span class="val val-hostile" id="hud-hostile">0</span></div>
+    <div class="row"><span class="label">Dead</span><span class="val" style="color:#555" id="hud-dead">0</span></div>
+    <div class="row"><span class="label">Vehicles</span><span class="val val-cyan" id="hud-vehicles">0</span></div>
+    <div class="row"><span class="label">Crowd</span><span class="val val-neutral" id="hud-crowd">0</span></div>
+    <div class="row"><span class="label">Fires</span><span class="val val-hostile" id="hud-fires">0</span></div>
+    <div class="row"><span class="label">Weather</span><span class="val val-cyan" id="hud-weather">-</span></div>
+    <div class="row"><span class="label">Time of Day</span><span class="val val-neutral" id="hud-tod">-</span></div>
+    <div class="row"><span class="label">Preset</span><span class="val val-cyan" id="hud-preset">-</span></div>
+  </div>
+
+  <!-- Controls bar top center -->
+  <div id="controls-bar">
+    <select id="preset-select">
+      <option value="urban_combat">Urban Combat</option>
+    </select>
+    <button onclick="startGame()">START</button>
+    <button onclick="pauseGame()">PAUSE</button>
+    <button onclick="getAAR()">AAR</button>
+  </div>
+
+  <!-- Kill feed top-right -->
+  <div id="kill-feed">
+    <div class="kf-title">KILL FEED</div>
+    <div id="kf-entries"></div>
+  </div>
+
+  <!-- Unit roster bottom-left -->
+  <div id="roster">
+    <div class="ros-title">UNIT ROSTER</div>
+    <div id="roster-entries"></div>
+  </div>
+
+  <!-- Camera help bottom -->
+  <div id="camera-help">
+    <span>LMB</span> Rotate &nbsp;|&nbsp;
+    <span>RMB</span> Pan &nbsp;|&nbsp;
+    <span>Scroll</span> Zoom &nbsp;|&nbsp;
+    <span>R</span> Reset Camera
+  </div>
+
+  <!-- FPS counter -->
+  <div id="fps-counter">-- FPS</div>
+
+  <!-- AAR overlay -->
+  <div id="aar-overlay">
+    <span class="close-btn" onclick="document.getElementById('aar-overlay').style.display='none'">&times;</span>
+    <pre id="aar-content"></pre>
+  </div>
+
+  <!-- Splash -->
+  <div id="splash">
+    <div class="big">TRITIUM SIM ENGINE</div>
+    <div class="sub">Select a preset and click START</div>
+  </div>
 </div>
-<div id="stats">Waiting for game...</div>
-<div id="canvas-container"><canvas id="c"></canvas></div>
-<div id="log"></div>
-<script>
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const statsEl = document.getElementById('stats');
-const logEl = document.getElementById('log');
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// =========================================================================
+// Constants
+// =========================================================================
+const CYAN    = 0x00f0ff;
+const MAGENTA = 0xff2a6d;
+const GREEN   = 0x05ffa1;
+const YELLOW  = 0xfcee0a;
+const VOID_BG = 0x0a0a0f;
+
+const MAP_SIZE = 500;
+
+// =========================================================================
+// State
+// =========================================================================
 let ws = null;
 let lastFrame = null;
+let frameCount = 0, fpsTimer = 0, fpsDisplay = 0;
+let lastTime = performance.now();
 
-function resize() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+// Kill feed entries: {text, age, color}
+const killFeed = [];
+
+// Object pools — keyed by id so we can reuse meshes across frames
+const unitMeshes = {};    // id -> { cone, ring, label }
+const vehicleMeshes = {}; // id -> { body, cabin }
+const projectileMeshes = []; // array of line objects
+const effectMeshes = [];     // array of sphere objects
+const crowdPoints = null;    // single Points object
+const buildingMeshes = {};   // id/index -> mesh
+
+// Reusable helpers
+const _v3 = new THREE.Vector3();
+const _color = new THREE.Color();
+const _mat4 = new THREE.Matrix4();
+
+// =========================================================================
+// Scene setup
+// =========================================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(VOID_BG);
+scene.fog = new THREE.FogExp2(VOID_BG, 0.0015);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 2000);
+camera.position.set(MAP_SIZE * 0.5 + 80, 180, MAP_SIZE * 0.5 + 160);
+camera.lookAt(MAP_SIZE / 2, 0, MAP_SIZE / 2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.prepend(renderer.domElement);
+
+// OrbitControls
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(MAP_SIZE / 2, 0, MAP_SIZE / 2);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 30;
+controls.maxDistance = 900;
+controls.maxPolarAngle = Math.PI / 2.1;
+controls.update();
+
+// =========================================================================
+// Lights
+// =========================================================================
+scene.add(new THREE.AmbientLight(0x8899bb, 0.45));
+
+const sunLight = new THREE.DirectionalLight(0xffeedd, 1.0);
+sunLight.position.set(200, 400, 100);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.left = -MAP_SIZE;
+sunLight.shadow.camera.right = MAP_SIZE;
+sunLight.shadow.camera.top = MAP_SIZE;
+sunLight.shadow.camera.bottom = -MAP_SIZE;
+scene.add(sunLight);
+
+scene.add(new THREE.HemisphereLight(0x00f0ff, 0x112244, 0.4));
+
+// Cyan accent lights at corners
+for (const [cx, cz] of [[50, 50], [450, 50], [50, 450], [450, 450]]) {
+  const pl = new THREE.PointLight(0x00f0ff, 0.3, 150);
+  pl.position.set(cx, 30, cz);
+  scene.add(pl);
 }
-window.addEventListener('resize', resize);
-resize();
 
-function log(msg) {
-  const d = document.createElement('div');
-  d.textContent = msg;
-  logEl.appendChild(d);
-  logEl.scrollTop = logEl.scrollHeight;
+// =========================================================================
+// Ground plane + grid
+// =========================================================================
+const groundGeo = new THREE.PlaneGeometry(MAP_SIZE + 100, MAP_SIZE + 100);
+const groundMat = new THREE.MeshStandardMaterial({
+  color: 0x111118, roughness: 0.9, metalness: 0.1
+});
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(MAP_SIZE / 2, -0.05, MAP_SIZE / 2);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Grid lines
+const gridHelper = new THREE.GridHelper(MAP_SIZE, 10, 0x1a1a2e, 0x12121a);
+gridHelper.position.set(MAP_SIZE / 2, 0.01, MAP_SIZE / 2);
+scene.add(gridHelper);
+
+// Fine grid
+const fineGrid = new THREE.GridHelper(MAP_SIZE, 50, 0x0e0e14, 0x0e0e14);
+fineGrid.position.set(MAP_SIZE / 2, 0.005, MAP_SIZE / 2);
+scene.add(fineGrid);
+
+// =========================================================================
+// Shared geometries & materials
+// =========================================================================
+// Units — cone body + ring marker
+const unitConeGeo = new THREE.ConeGeometry(1.5, 4, 8);
+const unitRingGeo = new THREE.RingGeometry(2.0, 2.6, 16);
+const unitDeadGeo = new THREE.BoxGeometry(2, 0.3, 2);
+
+// Vehicles — box body + smaller box cabin
+const vehBodyGeo = new THREE.BoxGeometry(5, 2, 3);
+const vehCabinGeo = new THREE.BoxGeometry(2.5, 1.2, 2.6);
+
+// Projectile — small sphere
+const projGeo = new THREE.SphereGeometry(0.3, 6, 6);
+
+// Effect — wireframe sphere
+const effectGeo = new THREE.SphereGeometry(1, 12, 12);
+
+// Building — box (scaled per building)
+const buildingGeo = new THREE.BoxGeometry(1, 1, 1);
+const buildingRoofGeo = new THREE.BoxGeometry(1, 1, 1);
+
+// Materials
+const matFriendly = new THREE.MeshStandardMaterial({ color: GREEN, roughness: 0.5, metalness: 0.2 });
+const matHostile = new THREE.MeshStandardMaterial({ color: MAGENTA, roughness: 0.5, metalness: 0.2 });
+const matDead = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
+const matFriendlyEmit = new THREE.MeshStandardMaterial({ color: GREEN, emissive: GREEN, emissiveIntensity: 0.3 });
+const matHostileEmit = new THREE.MeshStandardMaterial({ color: MAGENTA, emissive: MAGENTA, emissiveIntensity: 0.3 });
+const matVehFriendly = new THREE.MeshStandardMaterial({ color: 0x048a6a, roughness: 0.6, metalness: 0.4 });
+const matVehHostile = new THREE.MeshStandardMaterial({ color: 0xa01848, roughness: 0.6, metalness: 0.4 });
+const matVehDestroyed = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
+const matVehCabin = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.7, metalness: 0.3 });
+const matProjectile = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+const matBuilding = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05 });
+const matBuildingRoof = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9 });
+const matBuildingDestroyed = new THREE.MeshStandardMaterial({ color: 0x3a1010, roughness: 0.9 });
+const matRing = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.5 });
+const matCrowd = new THREE.PointsMaterial({ color: YELLOW, size: 1.2, sizeAttenuation: true });
+
+// Building colors (cyberpunk palette)
+const BLDG_COLORS = [0x2a2a3e, 0x1e2d3e, 0x2e1e3e, 0x1a2e2e, 0x2e2a1e, 0x3e2e2e];
+
+// =========================================================================
+// Projectile trail system
+// =========================================================================
+const trailLines = [];
+const MAX_TRAILS = 50;
+
+function getOrCreateTrail(idx) {
+  if (trailLines[idx]) return trailLines[idx];
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)
+  ]);
+  const mat = new THREE.LineBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0.7 });
+  const line = new THREE.Line(geo, mat);
+  scene.add(line);
+  trailLines[idx] = line;
+  return line;
 }
 
-function startGame() {
-  fetch('/api/start', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({preset:'urban_combat'})})
-    .then(r => r.json()).then(d => { log('Game started: ' + JSON.stringify(d)); connectWS(); });
+// =========================================================================
+// Explosion effect pool
+// =========================================================================
+const explosionPool = [];
+const MAX_EXPLOSIONS = 20;
+
+for (let i = 0; i < MAX_EXPLOSIONS; i++) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xff4400, wireframe: true, transparent: true, opacity: 0.6
+  });
+  const mesh = new THREE.Mesh(effectGeo, mat);
+  mesh.visible = false;
+  scene.add(mesh);
+  explosionPool.push({ mesh, active: false, age: 0, maxAge: 0.5, targetRadius: 5 });
 }
 
-function pauseGame() {
-  fetch('/api/pause', {method:'POST'}).then(r=>r.json()).then(d=>log('Pause: '+JSON.stringify(d)));
+// =========================================================================
+// Crowd particle system
+// =========================================================================
+const crowdMaxCount = 200;
+const crowdPositions = new Float32Array(crowdMaxCount * 3);
+const crowdGeo = new THREE.BufferGeometry();
+crowdGeo.setAttribute('position', new THREE.BufferAttribute(crowdPositions, 3));
+const crowdMesh = new THREE.Points(crowdGeo, matCrowd);
+scene.add(crowdMesh);
+
+// =========================================================================
+// Building management
+// =========================================================================
+let buildingsCreated = false;
+
+function ensureBuildings(structures) {
+  if (!structures || structures.length === 0) return;
+
+  for (let i = 0; i < structures.length; i++) {
+    const s = structures[i];
+    const key = s.id || ('bldg_' + i);
+
+    if (!buildingMeshes[key]) {
+      // Create building body
+      const w = (s.width || 20);
+      const d = (s.depth || 15);
+      const h = (s.height || 10);
+
+      const bodyMat = s.destroyed ? matBuildingDestroyed.clone() :
+        matBuilding.clone();
+      if (!s.destroyed) {
+        bodyMat.color.set(BLDG_COLORS[i % BLDG_COLORS.length]);
+      }
+
+      const body = new THREE.Mesh(buildingGeo, bodyMat);
+      body.scale.set(w, h, d);
+      body.position.set(s.x, h / 2, s.y);
+      body.castShadow = true;
+      body.receiveShadow = true;
+      scene.add(body);
+
+      // Roof
+      const roof = new THREE.Mesh(buildingRoofGeo, matBuildingRoof.clone());
+      roof.scale.set(w + 0.5, 0.5, d + 0.5);
+      roof.position.set(s.x, h + 0.25, s.y);
+      roof.castShadow = true;
+      scene.add(roof);
+
+      // Emissive window strips on sides
+      const windowMat = new THREE.MeshBasicMaterial({
+        color: 0xffdd66, transparent: true, opacity: 0.6
+      });
+      const floors = Math.floor(h / 4);
+      for (let f = 1; f <= floors; f++) {
+        const wy = f * 3.5;
+        if (wy > h - 1) break;
+        // Front face windows
+        const numWins = Math.floor(w / 5);
+        for (let wi = 0; wi < numWins; wi++) {
+          if (Math.random() < 0.35) continue;
+          const winGeo = new THREE.PlaneGeometry(1.5, 1.2);
+          const win = new THREE.Mesh(winGeo, windowMat);
+          win.position.set(
+            s.x - w / 2 + 2.5 + wi * 5,
+            wy,
+            s.y + d / 2 + 0.05
+          );
+          scene.add(win);
+        }
+      }
+
+      buildingMeshes[key] = { body, roof, destroyed: !!s.destroyed };
+    } else {
+      // Update destroyed state
+      const bm = buildingMeshes[key];
+      if (s.destroyed && !bm.destroyed) {
+        bm.body.material = matBuildingDestroyed.clone();
+        bm.destroyed = true;
+        // Shrink building to show destruction
+        const h = bm.body.scale.y;
+        bm.body.scale.y = h * 0.3;
+        bm.body.position.y = (h * 0.3) / 2;
+      }
+    }
+  }
+  buildingsCreated = true;
 }
 
-function getAAR() {
-  fetch('/api/aar').then(r=>r.json()).then(d=>{ statsEl.textContent = JSON.stringify(d, null, 1); });
+// =========================================================================
+// Unit mesh management
+// =========================================================================
+function getUnitMesh(id) {
+  if (unitMeshes[id]) return unitMeshes[id];
+
+  // Cone for the unit
+  const cone = new THREE.Mesh(unitConeGeo, matFriendly.clone());
+  cone.castShadow = true;
+  scene.add(cone);
+
+  // Ring marker on ground
+  const ring = new THREE.Mesh(unitRingGeo, matRing.clone());
+  ring.rotation.x = -Math.PI / 2;
+  scene.add(ring);
+
+  // Health bar — thin box above unit
+  const hpBgGeo = new THREE.BoxGeometry(3, 0.25, 0.3);
+  const hpBgMat = new THREE.MeshBasicMaterial({ color: 0x1a1a2e });
+  const hpBg = new THREE.Mesh(hpBgGeo, hpBgMat);
+  scene.add(hpBg);
+
+  const hpFillGeo = new THREE.BoxGeometry(3, 0.25, 0.3);
+  const hpFillMat = new THREE.MeshBasicMaterial({ color: GREEN });
+  const hpFill = new THREE.Mesh(hpFillGeo, hpFillMat);
+  scene.add(hpFill);
+
+  unitMeshes[id] = { cone, ring, hpBg, hpFill, lastAlliance: null };
+  return unitMeshes[id];
 }
 
+function updateUnit(u) {
+  const m = getUnitMesh(u.id);
+  const isDead = u.status === 'dead';
+  const isFriendly = u.alliance === 'friendly';
+
+  // Update material color
+  if (isDead) {
+    m.cone.material.color.set(0x333333);
+    m.cone.material.emissive.set(0x000000);
+    m.ring.material.color.set(0x333333);
+  } else if (isFriendly) {
+    m.cone.material.color.set(GREEN);
+    m.cone.material.emissive.set(GREEN);
+    m.cone.material.emissiveIntensity = 0.15;
+    m.ring.material.color.set(GREEN);
+  } else {
+    m.cone.material.color.set(MAGENTA);
+    m.cone.material.emissive.set(MAGENTA);
+    m.cone.material.emissiveIntensity = 0.15;
+    m.ring.material.color.set(MAGENTA);
+  }
+
+  // Position — game uses x,y as ground plane; Three.js uses x,z
+  if (isDead) {
+    m.cone.position.set(u.x, 0.15, u.y);
+    m.cone.rotation.set(0, 0, Math.PI / 2); // Fallen over
+    m.cone.scale.set(0.6, 0.6, 0.6);
+    m.ring.visible = false;
+  } else {
+    m.cone.position.set(u.x, 2, u.y);
+    m.cone.rotation.set(0, (u.heading || 0), 0);
+    m.cone.scale.set(1, 1, 1);
+    m.ring.position.set(u.x, 0.05, u.y);
+    m.ring.visible = true;
+  }
+
+  // Health bar
+  const hp = u.hp || 0;
+  const maxHp = u.max_hp || 100;
+  const ratio = Math.max(0, Math.min(1, hp / maxHp));
+  m.hpBg.position.set(u.x, isDead ? 1 : 5.5, u.y);
+  m.hpFill.position.set(u.x - 1.5 * (1 - ratio), isDead ? 1.05 : 5.55, u.y);
+  m.hpFill.scale.set(ratio, 1, 1);
+  m.hpBg.visible = !isDead;
+  m.hpFill.visible = !isDead && ratio > 0;
+
+  // HP bar color
+  if (ratio > 0.6) m.hpFill.material.color.set(GREEN);
+  else if (ratio > 0.3) m.hpFill.material.color.set(YELLOW);
+  else m.hpFill.material.color.set(MAGENTA);
+}
+
+// =========================================================================
+// Vehicle mesh management
+// =========================================================================
+function getVehicleMesh(id) {
+  if (vehicleMeshes[id]) return vehicleMeshes[id];
+
+  const body = new THREE.Mesh(vehBodyGeo, matVehFriendly.clone());
+  body.castShadow = true;
+  scene.add(body);
+
+  const cabin = new THREE.Mesh(vehCabinGeo, matVehCabin.clone());
+  cabin.castShadow = true;
+  scene.add(cabin);
+
+  // Headlights
+  const hlGeo = new THREE.BoxGeometry(0.3, 0.4, 0.5);
+  const hlMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
+  const hl1 = new THREE.Mesh(hlGeo, hlMat);
+  const hl2 = new THREE.Mesh(hlGeo, hlMat);
+  scene.add(hl1);
+  scene.add(hl2);
+
+  vehicleMeshes[id] = { body, cabin, hl1, hl2 };
+  return vehicleMeshes[id];
+}
+
+function updateVehicle(v) {
+  const m = getVehicleMesh(v.id);
+  const isFriendly = v.alliance === 'friendly';
+  const heading = v.heading || 0;
+
+  if (v.destroyed) {
+    m.body.material.color.set(0x222222);
+    m.body.material.emissive.set(0x110000);
+    m.body.material.emissiveIntensity = 0.2;
+  } else if (isFriendly) {
+    m.body.material.color.set(0x048a6a);
+    m.body.material.emissive.set(0x000000);
+  } else {
+    m.body.material.color.set(0xa01848);
+    m.body.material.emissive.set(0x000000);
+  }
+
+  // Scale by vehicle class
+  const isLarge = (v.vehicle_class === 'humvee' || v.vehicle_class === 'apc' ||
+                   v.vehicle_class === 'tank');
+  const sc = isLarge ? 1.3 : 1.0;
+
+  m.body.position.set(v.x, 1.0 * sc, v.y);
+  m.body.rotation.set(0, heading, 0);
+  m.body.scale.set(sc, sc, sc);
+
+  // Cabin offset
+  const cosH = Math.cos(heading);
+  const sinH = Math.sin(heading);
+  const cabOffX = -0.5 * sinH * sc;
+  const cabOffZ = -0.5 * cosH * sc;
+  m.cabin.position.set(v.x + cabOffX, 2.2 * sc, v.y + cabOffZ);
+  m.cabin.rotation.set(0, heading, 0);
+  m.cabin.scale.set(sc, sc, sc);
+
+  // Headlights
+  const hlFwd = 2.5 * sc;
+  const hlSide = 1.0 * sc;
+  m.hl1.position.set(
+    v.x + hlFwd * sinH + hlSide * cosH,
+    0.7 * sc,
+    v.y + hlFwd * cosH - hlSide * sinH
+  );
+  m.hl2.position.set(
+    v.x + hlFwd * sinH - hlSide * cosH,
+    0.7 * sc,
+    v.y + hlFwd * cosH + hlSide * sinH
+  );
+  m.hl1.rotation.set(0, heading, 0);
+  m.hl2.rotation.set(0, heading, 0);
+
+  m.hl1.visible = !v.destroyed;
+  m.hl2.visible = !v.destroyed;
+}
+
+// =========================================================================
+// Projectile rendering
+// =========================================================================
+let activeProjectileCount = 0;
+const projPool = [];
+const MAX_PROJ = 50;
+
+for (let i = 0; i < MAX_PROJ; i++) {
+  const m = new THREE.Mesh(projGeo, matProjectile.clone());
+  m.visible = false;
+  scene.add(m);
+  projPool.push(m);
+}
+
+// Trail lines for projectiles
+const projTrailPool = [];
+for (let i = 0; i < MAX_PROJ; i++) {
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(6); // 2 points
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: 0xffaa00, transparent: true, opacity: 0.5
+  });
+  const line = new THREE.Line(geo, mat);
+  line.visible = false;
+  scene.add(line);
+  projTrailPool.push(line);
+}
+
+function updateProjectiles(projectiles) {
+  const count = Math.min(projectiles.length, MAX_PROJ);
+
+  for (let i = 0; i < MAX_PROJ; i++) {
+    if (i < count) {
+      const p = projectiles[i];
+      projPool[i].position.set(p.x, 1.5, p.y);
+      projPool[i].visible = true;
+
+      // Color from data
+      if (p.color) {
+        const c = p.color.startsWith('#') ? p.color : ('#' + p.color);
+        projPool[i].material.color.set(c);
+      }
+
+      // Trail line
+      const trail = projTrailPool[i];
+      const posAttr = trail.geometry.attributes.position;
+      // Current position
+      posAttr.array[0] = p.x;
+      posAttr.array[1] = 1.5;
+      posAttr.array[2] = p.y;
+      // Origin (if available) or slightly behind
+      const ox = p.origin_x !== undefined ? p.origin_x : p.x - 2;
+      const oy = p.origin_y !== undefined ? p.origin_y : p.y - 2;
+      posAttr.array[3] = ox;
+      posAttr.array[4] = 1.5;
+      posAttr.array[5] = oy;
+      posAttr.needsUpdate = true;
+      trail.visible = true;
+      if (p.color) {
+        trail.material.color.set(p.color.startsWith('#') ? p.color : ('#' + p.color));
+      }
+    } else {
+      projPool[i].visible = false;
+      projTrailPool[i].visible = false;
+    }
+  }
+}
+
+// =========================================================================
+// Effect rendering (explosions, smoke, fire)
+// =========================================================================
+function updateEffects(effects) {
+  if (!effects) return;
+
+  for (const e of effects) {
+    // Find inactive explosion slot
+    for (const exp of explosionPool) {
+      if (!exp.active) {
+        exp.active = true;
+        exp.age = 0;
+        exp.maxAge = 0.5;
+        exp.targetRadius = (e.radius || 5);
+        exp.mesh.position.set(e.x, 1, e.y);
+        exp.mesh.visible = true;
+        exp.mesh.scale.set(0.1, 0.1, 0.1);
+
+        // Color
+        const colorStr = e.color || '#ff4400';
+        exp.mesh.material.color.set(
+          colorStr.startsWith('#') ? colorStr : ('#' + colorStr)
+        );
+        break;
+      }
+    }
+  }
+}
+
+function tickExplosions(dt) {
+  for (const exp of explosionPool) {
+    if (!exp.active) continue;
+    exp.age += dt;
+    const t = exp.age / exp.maxAge;
+    if (t >= 1) {
+      exp.active = false;
+      exp.mesh.visible = false;
+      continue;
+    }
+    // Expand then fade
+    const r = exp.targetRadius * Math.sin(t * Math.PI);
+    exp.mesh.scale.set(r, r, r);
+    exp.mesh.material.opacity = 0.6 * (1 - t);
+  }
+}
+
+// =========================================================================
+// Crowd update
+// =========================================================================
+function updateCrowd(crowdData) {
+  if (!crowdData) {
+    crowdGeo.setDrawRange(0, 0);
+    return;
+  }
+  const count = Math.min(crowdData.length, crowdMaxCount);
+  for (let i = 0; i < count; i++) {
+    crowdPositions[i * 3] = crowdData[i].x;
+    crowdPositions[i * 3 + 1] = 0.8;
+    crowdPositions[i * 3 + 2] = crowdData[i].y;
+  }
+  crowdGeo.attributes.position.needsUpdate = true;
+  crowdGeo.setDrawRange(0, count);
+}
+
+// =========================================================================
+// Process a frame from the server
+// =========================================================================
+const seenUnits = new Set();
+const seenVehicles = new Set();
+
+function processFrame(f) {
+  lastFrame = f;
+
+  // Buildings (only need to create once, then update destruction)
+  if (f.destruction && f.destruction.structures) {
+    ensureBuildings(f.destruction.structures);
+  }
+
+  // Units
+  seenUnits.clear();
+  for (const u of (f.units || [])) {
+    seenUnits.add(u.id);
+    updateUnit(u);
+  }
+  // Hide units no longer in frame
+  for (const id in unitMeshes) {
+    if (!seenUnits.has(id)) {
+      const m = unitMeshes[id];
+      m.cone.visible = false;
+      m.ring.visible = false;
+      m.hpBg.visible = false;
+      m.hpFill.visible = false;
+    } else {
+      const m = unitMeshes[id];
+      m.cone.visible = true;
+    }
+  }
+
+  // Vehicles
+  seenVehicles.clear();
+  for (const v of (f.vehicles || [])) {
+    seenVehicles.add(v.id);
+    updateVehicle(v);
+  }
+  for (const id in vehicleMeshes) {
+    if (!seenVehicles.has(id)) {
+      const m = vehicleMeshes[id];
+      m.body.visible = false;
+      m.cabin.visible = false;
+      m.hl1.visible = false;
+      m.hl2.visible = false;
+    } else {
+      const m = vehicleMeshes[id];
+      m.body.visible = true;
+      m.cabin.visible = true;
+    }
+  }
+
+  // Projectiles
+  updateProjectiles(f.projectiles || []);
+
+  // Effects — only pass NEW effects each frame
+  if (f.effects && f.effects.length > 0) {
+    updateEffects(f.effects);
+  }
+
+  // Crowd
+  updateCrowd(f.crowd);
+
+  // Kill feed from events
+  for (const ev of (f.events || [])) {
+    if (ev.type === 'unit_killed') {
+      const src = ev.source_label || ev.source_id || '?';
+      const tgt = ev.target_label || ev.target_id || '?';
+      const alliance = ev.target_alliance || '';
+      const color = alliance === 'friendly' ? '#05ffa1' : '#ff2a6d';
+      killFeed.unshift({ text: src + ' killed ' + tgt, age: 0, color });
+      if (killFeed.length > 12) killFeed.pop();
+    } else if (ev.type === 'explosion') {
+      killFeed.unshift({ text: 'Explosion at (' + Math.round(ev.x || 0) + ',' + Math.round(ev.y || 0) + ')', age: 0, color: '#ff4400' });
+      if (killFeed.length > 12) killFeed.pop();
+    }
+  }
+
+  // Update HUD
+  updateHUD(f);
+}
+
+// =========================================================================
+// HUD updates
+// =========================================================================
+function updateHUD(f) {
+  const st = f.stats || {};
+  const env = st.environment || {};
+
+  document.getElementById('hud-tick').textContent = f.tick || 0;
+  document.getElementById('hud-time').textContent = (f.sim_time || 0) + 's';
+  document.getElementById('hud-friendly').textContent = st.alive_friendly || 0;
+  document.getElementById('hud-hostile').textContent = st.alive_hostile || 0;
+  document.getElementById('hud-dead').textContent = st.dead || 0;
+  document.getElementById('hud-vehicles').textContent = st.total_vehicles || 0;
+  document.getElementById('hud-crowd').textContent = st.crowd_count || 0;
+  document.getElementById('hud-fires').textContent = st.active_fires || 0;
+  document.getElementById('hud-weather').textContent = env.weather || '-';
+  document.getElementById('hud-tod').textContent = env.time_of_day || (env.hour !== undefined ? env.hour.toFixed(1) + 'h' : '-');
+  document.getElementById('hud-preset').textContent = f.preset || '-';
+
+  // Kill feed
+  const kfEl = document.getElementById('kf-entries');
+  kfEl.innerHTML = killFeed.map(k => {
+    k.age += 0.1; // ~10fps
+    const cls = k.age > 5 ? 'kf-entry fade' : 'kf-entry';
+    return '<div class="' + cls + '" style="color:' + (k.color || '#fcee0a') + '">' + k.text + '</div>';
+  }).join('');
+  // Prune old
+  while (killFeed.length > 0 && killFeed[killFeed.length - 1].age > 15) killFeed.pop();
+
+  // Unit roster
+  const rosterEl = document.getElementById('roster-entries');
+  const units = f.units || [];
+  // Sort: alive first, then by alliance
+  const sorted = [...units].sort((a, b) => {
+    if (a.status === 'dead' && b.status !== 'dead') return 1;
+    if (a.status !== 'dead' && b.status === 'dead') return -1;
+    if (a.alliance < b.alliance) return -1;
+    if (a.alliance > b.alliance) return 1;
+    return 0;
+  });
+
+  let rosterHTML = '';
+  for (const u of sorted) {
+    const hp = u.hp || 0;
+    const maxHp = u.max_hp || 100;
+    const ratio = Math.max(0, Math.min(1, hp / maxHp));
+    const pct = Math.round(ratio * 100);
+    const isDead = u.status === 'dead';
+    const color = isDead ? '#555' : (u.alliance === 'friendly' ? '#05ffa1' : '#ff2a6d');
+    const hpColor = ratio > 0.6 ? '#05ffa1' : (ratio > 0.3 ? '#fcee0a' : '#ff2a6d');
+    const labelCls = isDead ? 'ros-label ros-dead' : 'ros-label';
+    rosterHTML += '<div class="ros-unit">' +
+      '<span class="' + labelCls + '" style="color:' + color + '">' + (u.label || u.id) + '</span>' +
+      '<div class="ros-hp-bar"><div class="ros-hp-fill" style="width:' + pct + '%;background:' + hpColor + '"></div></div>' +
+      '<span style="color:' + hpColor + ';font-size:10px">' + (isDead ? 'KIA' : pct + '%') + '</span>' +
+      '</div>';
+  }
+  rosterEl.innerHTML = rosterHTML;
+
+  // Hide splash once we have data
+  const splash = document.getElementById('splash');
+  if (splash && f.tick > 0) splash.style.display = 'none';
+}
+
+// =========================================================================
+// API functions (exposed to global scope via window)
+// =========================================================================
+window.startGame = function() {
+  const preset = document.getElementById('preset-select').value;
+  fetch('/api/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ preset })
+  }).then(r => r.json()).then(d => {
+    console.log('Game started:', d);
+    connectWS();
+    const splash = document.getElementById('splash');
+    if (splash) splash.style.display = 'none';
+  });
+};
+
+window.pauseGame = function() {
+  fetch('/api/pause', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => console.log('Pause:', d));
+};
+
+window.getAAR = function() {
+  fetch('/api/aar')
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('aar-content').textContent = JSON.stringify(d, null, 2);
+      document.getElementById('aar-overlay').style.display = 'block';
+    });
+};
+
+// =========================================================================
+// WebSocket connection
+// =========================================================================
 function connectWS() {
   if (ws) ws.close();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(proto + '://' + location.host + '/ws');
   ws.onmessage = (ev) => {
-    try { lastFrame = JSON.parse(ev.data); renderFrame(lastFrame); } catch(e) {}
+    try {
+      const frame = JSON.parse(ev.data);
+      processFrame(frame);
+    } catch (e) {
+      console.error('Frame parse error:', e);
+    }
   };
-  ws.onclose = () => { log('WS disconnected'); };
+  ws.onclose = () => console.log('WS disconnected');
+  ws.onerror = (e) => console.error('WS error:', e);
 }
 
-function renderFrame(f) {
-  const W = canvas.width, H = canvas.height;
-  const mapW = 500, mapH = 500;
-  const sx = W / mapW, sy = H / mapH;
-  ctx.fillStyle = '#0a0a0f';
-  ctx.fillRect(0, 0, W, H);
+// =========================================================================
+// Fetch presets on load
+// =========================================================================
+fetch('/api/presets').then(r => r.json()).then(d => {
+  const sel = document.getElementById('preset-select');
+  sel.innerHTML = '';
+  for (const p of (d.world_presets || ['urban_combat'])) {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    sel.appendChild(opt);
+  }
+}).catch(() => {});
 
-  // Grid
-  ctx.strokeStyle = '#1a1a2e';
-  ctx.lineWidth = 0.5;
-  for (let x = 0; x < mapW; x += 50) { ctx.beginPath(); ctx.moveTo(x*sx,0); ctx.lineTo(x*sx,H); ctx.stroke(); }
-  for (let y = 0; y < mapH; y += 50) { ctx.beginPath(); ctx.moveTo(0,y*sy); ctx.lineTo(W,y*sy); ctx.stroke(); }
+// =========================================================================
+// Keyboard controls
+// =========================================================================
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'r' || e.key === 'R') {
+    // Reset camera
+    camera.position.set(MAP_SIZE * 0.5 + 80, 180, MAP_SIZE * 0.5 + 160);
+    controls.target.set(MAP_SIZE / 2, 0, MAP_SIZE / 2);
+    controls.update();
+  }
+});
 
-  // Buildings
-  if (f.destruction) {
-    (f.destruction.structures || []).forEach(s => {
-      ctx.fillStyle = s.destroyed ? '#3a1010' : '#2a2a3e';
-      ctx.fillRect(s.x*sx-10, s.y*sy-10, 20, 20);
-    });
+// =========================================================================
+// Resize handler
+// =========================================================================
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// =========================================================================
+// Animation loop
+// =========================================================================
+function animate() {
+  requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  // FPS
+  frameCount++;
+  fpsTimer += dt;
+  if (fpsTimer >= 0.5) {
+    fpsDisplay = Math.round(frameCount / fpsTimer);
+    frameCount = 0;
+    fpsTimer = 0;
+    document.getElementById('fps-counter').textContent = fpsDisplay + ' FPS';
   }
 
-  // Units
-  (f.units || []).forEach(u => {
-    ctx.fillStyle = u.alliance === 'friendly' ? '#05ffa1' : '#ff2a6d';
-    if (u.status === 'dead') ctx.fillStyle = '#333';
-    ctx.beginPath();
-    ctx.arc(u.x*sx, u.y*sy, 4, 0, Math.PI*2);
-    ctx.fill();
-    ctx.fillStyle = '#00f0ff';
-    ctx.font = '9px monospace';
-    ctx.fillText(u.label || u.id, u.x*sx+6, u.y*sy-4);
-  });
+  // Tick explosion animations
+  tickExplosions(dt);
 
-  // Vehicles
-  (f.vehicles || []).forEach(v => {
-    ctx.fillStyle = v.alliance === 'friendly' ? '#05ffa1' : '#ff2a6d';
-    if (v.destroyed) ctx.fillStyle = '#333';
-    ctx.fillRect(v.x*sx-5, v.y*sy-3, 10, 6);
-  });
+  // Make unit cones gently bob
+  const bobTime = now * 0.002;
+  for (const id in unitMeshes) {
+    const m = unitMeshes[id];
+    if (m.cone.visible && m.cone.scale.x > 0.5) {
+      m.cone.position.y = 2 + Math.sin(bobTime + m.cone.position.x * 0.1) * 0.15;
+    }
+  }
 
-  // Projectiles
-  (f.projectiles || []).forEach(p => {
-    ctx.fillStyle = p.color || '#ffaa00';
-    ctx.fillRect(p.x*sx-1, p.y*sy-1, 2, 2);
-  });
-
-  // Effects
-  (f.effects || []).forEach(e => {
-    ctx.strokeStyle = e.color || '#ff4400';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(e.x*sx, e.y*sy, e.radius*Math.max(sx,sy)*0.5, 0, Math.PI*2);
-    ctx.stroke();
-  });
-
-  // Crowd
-  (f.crowd || []).forEach(c => {
-    ctx.fillStyle = '#fcee0a';
-    ctx.fillRect(c.x*sx-1, c.y*sy-1, 2, 2);
-  });
-
-  // HUD
-  const st = f.stats || {};
-  statsEl.textContent = [
-    'Tick: ' + (f.tick||0) + '  Time: ' + (f.sim_time||0) + 's',
-    'Friendly: ' + (st.alive_friendly||0) + '  Hostile: ' + (st.alive_hostile||0),
-    'Dead: ' + (st.dead||0) + '  Vehicles: ' + (st.total_vehicles||0),
-    'Crowd: ' + (st.crowd_count||0) + '  Fires: ' + (st.active_fires||0),
-    'Env: ' + JSON.stringify(st.environment||{}),
-  ].join('\\n');
+  controls.update();
+  renderer.render(scene, camera);
 }
+
+animate();
 </script>
 </body>
 </html>"""

@@ -460,6 +460,20 @@ except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.audio not available: {_e}")
 
 # ---------------------------------------------------------------------------
+# Soundtrack: Game audio event system for frontend
+# ---------------------------------------------------------------------------
+try:
+    from .soundtrack import (
+        AudioCategory,
+        AudioCue,
+        MusicState,
+        SoundtrackEngine,
+        SOUND_MAP,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.soundtrack not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # Physics: Collision, rigid bodies, vehicle dynamics
 # ---------------------------------------------------------------------------
 try:
@@ -493,6 +507,21 @@ try:
     )
 except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.replay not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Commander: Battle narration, tactical advisor
+# ---------------------------------------------------------------------------
+try:
+    from .commander import (
+        NarrationEvent,
+        CommanderPersonality,
+        BattleNarrator,
+        TacticalAdvisor,
+        NarrationLog,
+        PERSONALITIES,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.commander not available: {_e}")
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +638,9 @@ __all__ = [
     "SoundEvent", "distance_attenuation", "doppler_factor",
     "explosion_parameters", "gunshot_layers", "occlusion_factor",
     "propagation_delay", "reverb_level", "stereo_pan",
+    # --- Soundtrack ---
+    "AudioCategory", "AudioCue", "MusicState",
+    "SoundtrackEngine", "SOUND_MAP",
     # --- Physics ---
     "CollisionEvent", "PhysicsWorld", "RigidBody", "VehiclePhysics",
     # --- Debug ---
@@ -616,4 +648,7 @@ __all__ = [
     # --- Replay ---
     "ReplayFrame", "ReplayRecorder", "ReplayPlayer",
     "ReplayAnalyzer", "ReplayExporter",
+    # --- Commander ---
+    "NarrationEvent", "CommanderPersonality", "BattleNarrator",
+    "TacticalAdvisor", "NarrationLog", "PERSONALITIES",
 ]

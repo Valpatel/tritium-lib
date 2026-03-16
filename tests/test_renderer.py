@@ -661,3 +661,208 @@ class TestCrowdRenderer:
         result = CrowdRenderer.render_crowd([{"id": "c1", "x": 0, "y": 0}])
         assert result[0]["mood"] == "calm"
         assert result[0]["color"] == "#05ffa1"
+
+    def test_crowd_heading_and_speed(self):
+        result = CrowdRenderer.render_crowd([
+            {"id": "c1", "x": 5, "y": 5, "heading": 1.57, "speed": 3.0}
+        ])
+        assert result[0]["heading"] == 1.57
+        assert result[0]["speed"] == 3.0
+
+    def test_crowd_scale_default(self):
+        result = CrowdRenderer.render_crowd([{"id": "c1", "x": 0, "y": 0}])
+        assert result[0]["scale"] == 0.8
+
+    def test_crowd_multiple_moods(self):
+        crowd = [
+            {"id": "c1", "x": 0, "y": 0, "mood": "calm"},
+            {"id": "c2", "x": 1, "y": 1, "mood": "panicked"},
+            {"id": "c3", "x": 2, "y": 2, "mood": "fleeing"},
+        ]
+        result = CrowdRenderer.render_crowd(crowd)
+        assert len(result) == 3
+        colors = {r["color"] for r in result}
+        assert len(colors) == 3  # all different colors
+
+
+# -----------------------------------------------------------------------
+# JSON serialization safety
+# -----------------------------------------------------------------------
+
+
+class TestJSONSafety:
+    """Verify all renderer outputs are JSON-serializable."""
+
+    def test_unit_render_json_safe(self):
+        import json
+        units = [
+            {"id": "u1", "x": 10, "y": 5, "type": "infantry", "alliance": "friendly"},
+            {"id": "u2", "x": 20, "y": 15, "type": "sniper", "alliance": "hostile",
+             "health": 75, "max_health": 100, "effects": ["smoke"]},
+        ]
+        result = UnitRenderer.render_units(units)
+        serialized = json.dumps(result)
+        parsed = json.loads(serialized)
+        assert len(parsed) == 2
+
+    def test_projectile_render_json_safe(self):
+        import json
+        projs = [
+            {"id": "p1", "x": 25, "y": 12, "type": "bullet", "vx": 300, "vy": 10},
+        ]
+        result = ProjectileRenderer.render_projectiles(projs)
+        serialized = json.dumps(result)
+        parsed = json.loads(serialized)
+        assert len(parsed) == 1
+
+    def test_effect_render_json_safe(self):
+        import json
+        effects = [
+            {"type": "explosion", "x": 30, "y": 20},
+            {"type": "smoke", "x": 10, "y": 15},
+            {"type": "fire", "x": 5, "y": 5},
+        ]
+        result = EffectRenderer.render_effects(effects)
+        serialized = json.dumps(result)
+        parsed = json.loads(serialized)
+        assert len(parsed) == 3
+
+    def test_weather_render_json_safe(self):
+        import json
+        result = WeatherRenderer.render_weather(
+            {"rain": 0.5, "fog": 0.02, "wind_speed": 5.0},
+            {"hour": 14.0},
+        )
+        serialized = json.dumps(result)
+        parsed = json.loads(serialized)
+        assert "sky_color" in parsed
+
+    def test_terrain_render_json_safe(self):
+        import json
+        hm = [[0.0, 1.0], [2.0, 3.0]]
+        result = TerrainRenderer.render_terrain(hm, 1.0)
+        serialized = json.dumps(result)
+        parsed = json.loads(serialized)
+        assert "vertices" in parsed
+
+    def test_full_frame_json_safe(self):
+        import json
+        renderer = SimRenderer()
+        state = {
+            "tick": 10,
+            "time": 1.0,
+            "units": [{"id": "u1", "x": 10, "y": 5, "type": "infantry", "alliance": "friendly"}],
+            "projectiles": [{"id": "p1", "x": 25, "y": 12, "type": "bullet"}],
+            "effects": [{"type": "explosion", "x": 30, "y": 20}],
+            "weather": {"rain": 0.3},
+            "time_of_day": {"hour": 14.0},
+            "crowd": [{"id": "c1", "x": 5, "y": 5, "mood": "calm"}],
+        }
+        frame = renderer.render_frame(state)
+        serialized = json.dumps(frame)
+        parsed = json.loads(serialized)
+        assert parsed["tick"] == 10
+
+    def test_diff_json_safe(self):
+        import json
+        prev = {
+            "tick": 1, "time": 0.1,
+            "units": [{"id": "u1", "x": 0, "y": 0}],
+        }
+        cur = {
+            "tick": 2, "time": 0.2,
+            "units": [{"id": "u1", "x": 5, "y": 3}],
+        }
+        diff = SimRenderer.render_diff(prev, cur)
+        serialized = json.dumps(diff)
+        parsed = json.loads(serialized)
+        assert parsed["is_diff"] is True
+
+
+# -----------------------------------------------------------------------
+# SimRenderer layer combinations
+# -----------------------------------------------------------------------
+
+
+class TestSimRendererLayers:
+    """Test various layer combinations for SimRenderer."""
+
+    def test_units_only(self):
+        renderer = SimRenderer(layers={RenderLayer.UNITS})
+        frame = renderer.render_frame({
+            "tick": 1, "time": 0.1,
+            "units": [{"id": "u1", "x": 0, "y": 0, "type": "infantry", "alliance": "friendly"}],
+            "projectiles": [{"id": "p1", "x": 5, "y": 5, "type": "bullet"}],
+        })
+        assert "units" in frame
+        assert "projectiles" not in frame
+
+    def test_weather_only(self):
+        renderer = SimRenderer(layers={RenderLayer.WEATHER})
+        frame = renderer.render_frame({
+            "tick": 1, "time": 0.1,
+            "weather": {"rain": 0.5},
+            "time_of_day": {"hour": 12.0},
+        })
+        assert "weather" in frame
+        assert "units" not in frame
+
+    def test_debug_layer(self):
+        renderer = SimRenderer(layers={RenderLayer.DEBUG})
+        frame = renderer.render_frame({
+            "tick": 1, "time": 0.1,
+            "debug": {"pathfinding": True, "los_rays": 42},
+        })
+        assert frame["debug"]["pathfinding"] is True
+        assert frame["debug"]["los_rays"] == 42
+
+    def test_multiple_layers(self):
+        renderer = SimRenderer(layers={RenderLayer.UNITS, RenderLayer.EFFECTS, RenderLayer.CROWD})
+        frame = renderer.render_frame({
+            "tick": 1, "time": 0.1,
+            "units": [{"id": "u1", "x": 0, "y": 0, "type": "infantry", "alliance": "friendly"}],
+            "effects": [{"type": "smoke", "x": 10, "y": 10}],
+            "crowd": [{"id": "c1", "x": 5, "y": 5, "mood": "calm"}],
+            "weather": {"rain": 0.3},
+            "time_of_day": {"hour": 12.0},
+        })
+        assert "units" in frame
+        assert "effects" in frame
+        assert "crowd" in frame
+        assert "weather" not in frame
+
+    def test_all_layers_is_default(self):
+        renderer = SimRenderer()
+        assert renderer.layers == set(RenderLayer)
+
+    def test_terrain_with_no_heightmap(self):
+        renderer = SimRenderer(layers={RenderLayer.TERRAIN})
+        frame = renderer.render_frame({"tick": 1, "time": 0.1})
+        assert frame["terrain"] == {}
+
+
+# -----------------------------------------------------------------------
+# Weather edge cases
+# -----------------------------------------------------------------------
+
+
+class TestWeatherEdgeCases:
+    def test_dawn_transition(self):
+        """Hour 5.5 should produce a twilight sky."""
+        r = WeatherRenderer.render_weather({}, {"hour": 5.5})
+        assert 0.1 <= r["ambient_light"] <= 0.5
+
+    def test_dusk_transition(self):
+        """Hour 19.0 should produce dimming light."""
+        r = WeatherRenderer.render_weather({}, {"hour": 19.0})
+        assert r["ambient_light"] < 0.8
+
+    def test_overcast_changes_sky(self):
+        clear = WeatherRenderer.render_weather({}, {"hour": 12.0})
+        overcast = WeatherRenderer.render_weather({"overcast": 1.0}, {"hour": 12.0})
+        assert clear["sky_color"] != overcast["sky_color"]
+
+    def test_sun_intensity_reduced_by_overcast(self):
+        clear = WeatherRenderer.render_weather({}, {"hour": 12.0})
+        overcast = WeatherRenderer.render_weather({"overcast": 0.9}, {"hour": 12.0})
+        assert overcast["sun"]["intensity"] < clear["sun"]["intensity"]
