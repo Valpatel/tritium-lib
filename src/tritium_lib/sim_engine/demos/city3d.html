@@ -2985,6 +2985,43 @@ for (let r = 0; r < NUM_ROBOT_CARS; r++) {
   robotLabels.push(sprite);
 }
 
+// Forward projection: planned path lines (cyan, one Line per robot, 2 verts)
+const robotPathLines = [];
+for (let r = 0; r < NUM_ROBOT_CARS; r++) {
+  const positions = new Float32Array(2 * 3); // 2 verts x 3 floats
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.7, linewidth: 1 });
+  const line = new THREE.Line(geo, mat);
+  line.frustumCulled = false;
+  scene.add(line);
+  robotPathLines.push({ line, positions, geo });
+}
+
+// Stopping distance bars (short perpendicular line per robot, 2 verts each)
+const robotStopBars = [];
+for (let r = 0; r < NUM_ROBOT_CARS; r++) {
+  const positions = new Float32Array(2 * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0x05ffa1, linewidth: 2 });
+  const line = new THREE.Line(geo, mat);
+  line.frustumCulled = false;
+  scene.add(line);
+  robotStopBars.push({ line, positions, geo, mat });
+}
+
+// Obstacle markers — yellow diamonds at lidar hit points (InstancedMesh, 12 slots for 3 robots x 4 hits)
+const obstacleMarkerGeo = new THREE.OctahedronGeometry(0.4, 0);
+const obstacleMarkerMat = new THREE.MeshBasicMaterial({ color: 0xfcee0a, transparent: true, opacity: 0.8 });
+const obstacleMarkerMesh = new THREE.InstancedMesh(obstacleMarkerGeo, obstacleMarkerMat, 12);
+obstacleMarkerMesh.frustumCulled = false;
+obstacleMarkerMesh.count = 0; // updated per frame
+scene.add(obstacleMarkerMesh);
+
+// Intent state tracking per robot
+const robotIntentStates = ['MOVING', 'MOVING', 'MOVING'];
+
 // =========================================================================
 // Taxis — yellow cars cruising roads
 // =========================================================================
@@ -5012,15 +5049,22 @@ function update(dt) {
   // ---- RIOT ----
   if (riotMode) {
     riotTimer += dt;
+    campaignTimer += dt;
+
+    // Campaign phase auto-transitions
+    if (campaignPhase === 1 && campaignTimer >= 60) { advanceCampaignPhase(); }
+    if (campaignPhase === 3 && protestors.filter(p => p.alive && !p.arrested).length === 0) { showCampaignOverlay(); }
 
     // Phase progression
     if (riotPhase === 'TENSION' && riotTimer > 8) {
       riotPhase = 'RIOT';
       addKillFeedEntry('*** RIOT ERUPTED ***');
+      if (campaignPhase === 1) { advanceCampaignPhase(); } // escalation triggers phase 2
     }
     if (riotPhase === 'RIOT' && protestors.filter(p => p.alive && !p.arrested).length < 5) {
       riotPhase = 'DISPERSAL';
       addKillFeedEntry('Crowd dispersing');
+      if (campaignPhase === 2) { advanceCampaignPhase(); } // dispersal triggers phase 3
       if (!artilleryTriggered) { ensureAudio(); triggerArtilleryStrike(); }
     }
 
@@ -5650,6 +5694,15 @@ function updateHUD() {
   phaseEl.className = riotPhase === 'RIOT' ? 'riot' :
                       riotPhase === 'TENSION' ? 'tension' :
                       riotPhase === 'DISPERSAL' ? 'dispersal' : '';
+
+  // Campaign phase HUD
+  const cpEl = document.getElementById('campaign-phase');
+  if (campaignPhase > 0 && campaignPhase <= 3) {
+    const cp = CAMPAIGN_PHASES[campaignPhase];
+    cpEl.textContent = 'PHASE ' + campaignPhase + ': ' + cp.name.toUpperCase();
+    cpEl.className = cp.color;
+    cpEl.style.display = 'inline-block';
+  } else { cpEl.style.display = 'none'; }
 
   // Kill feed
   const feed = document.getElementById('kill-feed');
