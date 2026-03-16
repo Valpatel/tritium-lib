@@ -239,7 +239,8 @@ class TestCircleCircle:
 
 class TestCircleAABB:
     def test_circle_hits_box_side(self):
-        circle = _circle("c", 5, 0, r=2)
+        # Circle at x=3 with r=2 -> left edge at x=1.  Box extends to x=2.
+        circle = _circle("c", 3, 0, r=2)
         box = _box("b", 0, 0, hw=2, hd=2, static=True)
         r = _circle_aabb(circle, box)
         assert r is not None
@@ -511,21 +512,22 @@ class TestResolveStop:
 class TestResolveDamageKill:
     def test_low_speed_damage(self):
         w = CollisionWorld()
+        # Car r=2, ped r=0.5, distance=2 < 2.5 -> overlap.
         car = _circle("car1", 0, 0, r=2, vx=3, layer="car")
-        ped = _circle("ped1", 3, 0, r=0.5, layer="pedestrian")
+        ped = _circle("ped1", 2, 0, r=0.5, layer="pedestrian")
         w.add(car)
         w.add(ped)
         results = w.check_all()
         assert len(results) == 1
         assert results[0].impact_speed < KILL_SPEED_THRESHOLD
         w.resolve(results)
-        # Ped still has some velocity (pushed), not killed.
-        # Just check resolve didn't crash.
+        # Ped still exists — just check resolve didn't crash.
 
     def test_high_speed_kill(self):
         w = CollisionWorld()
+        # Car r=2, ped r=0.5, distance=2 < 2.5 -> overlap. vx=15 > threshold.
         car = _circle("car1", 0, 0, r=2, vx=15, layer="car")
-        ped = _circle("ped1", 2.5, 0, r=0.5, layer="pedestrian")
+        ped = _circle("ped1", 2, 0, r=0.5, layer="pedestrian")
         w.add(car)
         w.add(ped)
         results = w.check_all()
@@ -626,8 +628,9 @@ class TestCityScenarios:
     def test_car_fender_bender(self):
         """Two cars collide head-on at moderate speed."""
         w = create_city_world()
+        # r=2 each, distance=3 < 4 -> overlap of 1.
         w.add(_circle("car_a", 0, 0, r=2, vx=5, mass=1000, layer="car"))
-        w.add(_circle("car_b", 5, 0, r=2, vx=-5, mass=1000, layer="car"))
+        w.add(_circle("car_b", 3, 0, r=2, vx=-5, mass=1000, layer="car"))
         results = w.check_all()
         assert len(results) == 1
         w.resolve(results)
@@ -646,27 +649,31 @@ class TestCityScenarios:
     def test_pedestrian_bounces_off_building(self):
         """Pedestrian walking into a building wall."""
         w = create_city_world()
-        w.add(_circle("ped", 4, 0, r=0.5, vx=-2, layer="pedestrian"))
+        # Box hw=3 extends to x=3. Ped at x=3.3, r=0.5 -> left edge at 2.8 < 3 -> overlap.
+        w.add(_circle("ped", 3.3, 0, r=0.5, vx=-2, layer="pedestrian"))
         w.add(_box("bld", 0, 0, hw=3, hd=10, layer="building", static=True))
         results = w.check_all()
         assert len(results) == 1
         w.resolve(results)
-        # Ped should have bounced (vx direction changed or reduced).
-        assert w.colliders["bld"].position == (0, 0)  # Building didn't move
+        # Ped should have bounced. Building didn't move.
+        assert w.colliders["bld"].position == (0, 0)
 
     def test_car_into_building_stops(self):
         """Car drives into a building and stops."""
         w = create_city_world()
-        w.add(_circle("car", 4, 0, r=1.5, vx=-10, layer="car"))
+        # Box hw=2 extends to x=2. Car at x=3, r=1.5 -> left edge at 1.5 < 2 -> overlap.
+        w.add(_circle("car", 3, 0, r=1.5, vx=-10, layer="car"))
         w.add(_box("bld", 0, 0, hw=2, hd=5, layer="building", static=True))
         results = w.check_all()
+        assert len(results) == 1
         w.resolve(results)
         assert w.colliders["car"].velocity == (0.0, 0.0)
 
     def test_projectile_hits_building(self):
         """Projectile impacts a building (damage rule)."""
         w = create_city_world()
-        w.add(_circle("bullet", 4, 0, r=0.1, vx=-20, layer="projectile"))
+        # Box hw=3 extends to x=3. Bullet at x=3.05, r=0.1 -> edge at 2.95 < 3 -> overlap.
+        w.add(_circle("bullet", 3.05, 0, r=0.1, vx=-20, layer="projectile"))
         w.add(_box("bld", 0, 0, hw=3, hd=3, layer="building", static=True))
         results = w.check_all()
         assert len(results) == 1

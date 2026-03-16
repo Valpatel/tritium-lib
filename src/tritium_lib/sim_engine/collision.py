@@ -401,16 +401,19 @@ class CollisionWorld:
 
     # -- Detection -----------------------------------------------------------
 
+    def _rebuild_grid(self) -> None:
+        """Rebuild the spatial hash from current collider positions."""
+        self._grid.clear()
+        for col in self.colliders.values():
+            self._grid.insert(col)
+
     def check_all(self) -> list[CollisionResult]:
         """Run broad + narrow phase and return all collisions this tick.
 
         Broad phase uses a spatial hash grid rebuilt each call.
         Narrow phase dispatches to circle-circle, circle-AABB, or AABB-AABB.
         """
-        # Rebuild spatial hash.
-        self._grid.clear()
-        for col in self.colliders.values():
-            self._grid.insert(col)
+        self._rebuild_grid()
 
         # Broad phase: candidate pairs.
         candidates = self._grid.candidate_pairs()
@@ -574,6 +577,8 @@ class CollisionWorld:
         if d == (0.0, 0.0):
             return None
 
+        self._rebuild_grid()
+
         # Gather candidates from cells along the ray.
         step = self._grid.cell_size * 0.5
         candidates: set[str] = set()
@@ -668,6 +673,7 @@ class CollisionWorld:
         Uses the spatial hash for a fast candidate set, then does an exact
         distance check using each collider's bounding radius.
         """
+        self._rebuild_grid()
         candidate_ids = self._grid.query_radius(center, radius)
         result: list[Collider] = []
         for eid in candidate_ids:

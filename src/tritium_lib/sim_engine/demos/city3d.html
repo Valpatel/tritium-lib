@@ -110,6 +110,72 @@ canvas { display: block; }
   pointer-events: none; display: none;
 }
 #debug-canvas.visible { display: block; }
+
+/* Commander Narration Panel */
+#narration-panel {
+  position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%);
+  width: 560px; max-width: 90vw;
+  background: rgba(10, 10, 15, 0.85); border: 1px solid #00f0ff66;
+  border-radius: 4px; padding: 8px 12px;
+  font-family: 'Courier New', monospace; font-size: 12px;
+  pointer-events: none; z-index: 10;
+}
+.narration-msg {
+  color: #00f0ff; line-height: 1.5; opacity: 1;
+  transition: opacity 1.5s ease-out;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.narration-msg.fading { opacity: 0; }
+.narration-msg .callsign { color: #fcee0a; font-weight: bold; }
+.narration-msg .alert { color: #ff2a6d; font-weight: bold; }
+.narration-msg .info { color: #05ffa1; }
+
+/* Achievement Toasts */
+#achievement-container {
+  position: absolute; top: 80px; right: 16px;
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: none; z-index: 20;
+}
+.achievement-toast {
+  background: rgba(10, 10, 15, 0.9); border: 2px solid #fcee0a;
+  border-radius: 6px; padding: 10px 16px;
+  font-family: 'Courier New', monospace; font-size: 13px;
+  color: #fcee0a; white-space: nowrap;
+  transform: translateX(120%);
+  transition: transform 0.4s ease-out, opacity 0.4s ease-out;
+  text-shadow: 0 0 8px #fcee0a66;
+  box-shadow: 0 0 12px #fcee0a22;
+}
+.achievement-toast.show { transform: translateX(0); }
+.achievement-toast.hide { transform: translateX(120%); opacity: 0; }
+.achievement-toast .ach-icon {
+  display: inline-block; width: 18px; height: 18px;
+  background: #fcee0a; border-radius: 50%; text-align: center;
+  line-height: 18px; font-size: 11px; color: #0a0a0f;
+  margin-right: 8px; vertical-align: middle; font-weight: bold;
+}
+.achievement-toast .ach-name { font-weight: bold; font-size: 14px; }
+.achievement-toast .ach-desc { color: #fcee0a99; font-size: 11px; display: block; margin-top: 2px; }
+.achievement-toast .ach-score { color: #05ffa1; font-size: 11px; float: right; margin-top: -18px; }
+
+/* Soundtrack State Indicator */
+#soundtrack-indicator {
+  position: absolute; top: 12px; right: 16px;
+  font-family: 'Courier New', monospace; font-size: 13px;
+  pointer-events: none; z-index: 10;
+}
+#soundtrack-indicator.peaceful { color: #05ffa1; text-shadow: 0 0 6px #05ffa144; }
+#soundtrack-indicator.tension { color: #fcee0a; text-shadow: 0 0 8px #fcee0a66; animation: pulse-tension 1.5s ease-in-out infinite; }
+#soundtrack-indicator.combat { color: #ff2a6d; text-shadow: 0 0 10px #ff2a6d88; font-weight: bold; }
+#soundtrack-indicator.aftermath { color: #00f0ff; text-shadow: 0 0 6px #00f0ff44; }
+
+@keyframes pulse-tension {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1.0; }
+}
+
+/* Score display in stats panel */
+.score-val { color: #fcee0a; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -130,10 +196,14 @@ canvas { display: block; }
         Molotovs: <span class="hostile-val" id="molotov-count">0</span><br>
         Tear Gas: <span class="police-val" id="teargas-count">0</span><br>
         Rocks Thrown: <span class="stat-val" id="rock-count">0</span><br>
-        Injuries: <span class="hostile-val" id="injury-count">0</span>
+        Injuries: <span class="hostile-val" id="injury-count">0</span><br>
+        Barricades: <span class="police-val" id="barricade-count">0</span><br>
+        Score: <span class="score-val" id="score-count">0</span>
       </div>
     </div>
   </div>
+  <div id="weather-hud" style="position:absolute;top:12px;right:16px;font-size:16px;font-weight:bold;"></div>
+  <div id="objectives-hud" style="position:absolute;top:45px;left:50%;transform:translateX(-50%);text-align:center;font-size:14px;font-weight:bold;line-height:1.8;"></div>
   <div id="fps">-- FPS</div>
   <div id="kill-feed"></div>
   <div id="controls">
@@ -143,12 +213,17 @@ canvas { display: block; }
     <span>Scroll</span> Zoom &nbsp;|&nbsp;
     <span>N</span> Night &nbsp;|&nbsp;
     <span>C</span> Chase Cam &nbsp;|&nbsp;
-    <span>D</span> Debug
+    <span>D</span> Debug &nbsp;|&nbsp;
+    <span>R</span> Rain &nbsp;|&nbsp;
+    <span>F</span> Fog
   </div>
   <div id="combat-banner">RIOT IN PROGRESS</div>
   <canvas id="fps-graph" width="200" height="60"></canvas>
   <div id="debug-overlay"></div>
   <canvas id="debug-canvas"></canvas>
+  <div id="narration-panel"></div>
+  <div id="achievement-container"></div>
+  <div id="soundtrack-indicator" class="peaceful">&#9835; PEACEFUL</div>
 </div>
 
 <script type="importmap">
@@ -246,6 +321,20 @@ const fireTrucks = [];
 const policeVans = [];
 const injuredOnGround = []; // people lying on ground waiting for ambulance
 const carDrivers = []; // civilians who own cars and drive between buildings
+
+// Weather state
+let rainActive = false;
+let fogOverride = false;
+
+// Territory control state
+const TERRITORY_COLS = 4;
+const TERRITORY_ROWS = 3;
+const territoryZones = [];
+let territoryTimer = 0;
+const TERRITORY_UPDATE_INTERVAL = 2.0; // update every 2 seconds
+
+// Objectives state
+const objectives = [];
 
 const rng = () => Math.random();
 
@@ -444,7 +533,7 @@ for (let row = 0; row <= GRID_ROWS; row++) {
 
   // Center line
   const lineGeo = new THREE.PlaneGeometry(CITY_W, 0.4);
-  const lineMat = new THREE.MeshBasicMaterial({ color: 0xaaaa33 });
+  const lineMat = new THREE.MeshStandardMaterial({ color: 0x999922, roughness: 0.9 }); // dims with scene lighting at night
   const line = new THREE.Mesh(lineGeo, lineMat);
   line.rotation.x = -Math.PI / 2;
   line.position.set(CITY_W / 2, 0.02, z);
@@ -508,7 +597,11 @@ scene.add(buildingRoofMesh);
 // Windows — InstancedMesh for all window quads
 const MAX_WINDOWS = 3000;
 const windowGeo = new THREE.PlaneGeometry(1.5, 1.2);
-const windowMat = new THREE.MeshBasicMaterial({ color: 0xffdd66, transparent: true, opacity: 0.8 });
+// Windows glow at night via emissive. Intensity is updated per-frame based on time-of-day.
+const windowMat = new THREE.MeshStandardMaterial({
+  color: 0xffdd66, emissive: 0xffdd44, emissiveIntensity: 0.15,
+  transparent: true, opacity: 0.7,
+});
 const windowMesh = new THREE.InstancedMesh(windowGeo, windowMat, MAX_WINDOWS);
 windowMesh.count = 0;
 scene.add(windowMesh);
@@ -774,14 +867,29 @@ for (let row = 0; row < GRID_ROWS; row++) {
       addInstancedBuilding(bx + ox, bz + oz, w, d, h, type);
     }
 
-    // Trees in gaps
+    // Trees in gaps — skip if too close to any building
     const numTrees = Math.floor(rng() * 3);
     for (let t = 0; t < numTrees; t++) {
       const tx = bx + (rng() - 0.5) * BLOCK_W * 0.8;
       const tz = bz + (rng() - 0.5) * BLOCK_H * 0.8;
+      // Check if tree overlaps any building (bounding box + 2m margin)
+      let insideBuilding = false;
+      for (const bldg of buildings) {
+        if (Math.abs(tx - bldg.x) < (bldg.w / 2 + 2) && Math.abs(tz - bldg.z) < (bldg.d / 2 + 2)) {
+          insideBuilding = true;
+          break;
+        }
+      }
+      if (insideBuilding) continue;
       addTree(tx, tz);
     }
   }
+}
+
+// Patch hospital position into objective
+if (hospitalBuilding) {
+  objectiveDefs[2].x = hospitalBuilding.x;
+  objectiveDefs[2].z = hospitalBuilding.z;
 }
 
 // If no hospital was placed, force one
@@ -789,6 +897,12 @@ if (!hospitalBuilding) {
   const hx = 2 * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
   const hz = 4 * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
   addInstancedBuilding(hx, hz, 14, 12, 10, 'hospital');
+}
+
+// Re-patch hospital objective position after possible force-placement
+if (hospitalBuilding) {
+  objectiveDefs[2].x = hospitalBuilding.x;
+  objectiveDefs[2].z = hospitalBuilding.z;
 }
 
 // Finalize instanced mesh instance matrices
@@ -1031,7 +1145,7 @@ for (let i = 0; i < MAX_CARS_INST; i++) {
 function updateCarHeadlights(idx, x, z, rotY, isNight) {
   const hl = carHeadlights[idx];
   if (!hl) return;
-  const intensity = isNight ? 2.0 : 0;
+  const intensity = isNight ? 6.0 : 0; // bright headlights at night
   hl.light1.intensity = intensity;
   hl.light2.intensity = intensity;
   if (isNight) {
@@ -1102,6 +1216,198 @@ particleMesh.count = 0;
 particleMesh.renderOrder = 10; // render after opaque objects
 scene.add(particleMesh);
 
+// =========================================================================
+// Police Barricades — InstancedMesh (spawned during riot)
+// =========================================================================
+const MAX_BARRICADES = 8;
+const barricadeGeo = new THREE.BoxGeometry(6, 1.5, 1);
+const barricadeMat = new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0.1 });
+const barricadeMesh = new THREE.InstancedMesh(barricadeGeo, barricadeMat, MAX_BARRICADES);
+barricadeMesh.castShadow = true;
+barricadeMesh.receiveShadow = true;
+barricadeMesh.count = 0;
+scene.add(barricadeMesh);
+
+const barricades = []; // { x, z, rotY, health, maxHealth, active }
+
+function spawnBarricades() {
+  // Place 4 barricades on roads leading to the plaza, between police line and protestors
+  const lineZ = PLAZA_Z - 35;
+  const positions = [
+    // Two barricades across horizontal road segments near plaza
+    { x: PLAZA_X - 15, z: lineZ + 5, rotY: 0 },
+    { x: PLAZA_X + 15, z: lineZ + 5, rotY: 0 },
+    // Two barricades on vertical road approaches
+    { x: PLAZA_X - 30, z: PLAZA_Z - 15, rotY: Math.PI / 2 },
+    { x: PLAZA_X + 30, z: PLAZA_Z - 15, rotY: Math.PI / 2 },
+  ];
+  for (const pos of positions) {
+    if (barricades.length >= MAX_BARRICADES) break;
+    barricades.push({
+      x: pos.x, z: pos.z, rotY: pos.rotY,
+      health: 1.0, maxHealth: 1.0, active: true,
+    });
+  }
+  updateBarricadeInstances();
+}
+
+function updateBarricadeInstances() {
+  let count = 0;
+  for (let i = 0; i < barricades.length; i++) {
+    const b = barricades[i];
+    if (!b.active) {
+      // Scale to 0 when destroyed
+      _pos.set(0, -100, 0);
+      _quat.identity();
+      _scale.set(0, 0, 0);
+      _mat4.compose(_pos, _quat, _scale);
+      barricadeMesh.setMatrixAt(i, _mat4);
+      barricadeMesh.setColorAt(i, _color.set(0x000000));
+    } else {
+      _pos.set(b.x, 0.75, b.z);
+      _euler.set(0, b.rotY, 0);
+      _quat.setFromEuler(_euler);
+      _scale.set(1, 1, 1);
+      _mat4.compose(_pos, _quat, _scale);
+      barricadeMesh.setMatrixAt(i, _mat4);
+      // Color shifts from dark blue to red as health decreases
+      const r = 0.1 + (1.0 - b.health) * 0.8;
+      const g = 0.1 * b.health;
+      const bl = 0.3 * b.health;
+      _color.setRGB(r, g, bl);
+      barricadeMesh.setColorAt(i, _color);
+    }
+    count = i + 1;
+  }
+  barricadeMesh.count = count;
+  barricadeMesh.instanceMatrix.needsUpdate = true;
+  if (barricadeMesh.instanceColor) barricadeMesh.instanceColor.needsUpdate = true;
+}
+
+function damageBarricade(barricade, amount) {
+  if (!barricade.active) return;
+  barricade.health -= amount;
+  if (barricade.health <= 0) {
+    barricade.health = 0;
+    barricade.active = false;
+    addKillFeedEntry('Barricade destroyed!');
+  }
+  updateBarricadeInstances();
+}
+
+// Check if a point is blocked by any active barricade (within dist threshold)
+function isBlockedByBarricade(px, pz, threshold) {
+  for (const b of barricades) {
+    if (!b.active) continue;
+    const dx = px - b.x;
+    const dz = pz - b.z;
+    if (Math.sqrt(dx * dx + dz * dz) < threshold) return true;
+  }
+  return false;
+}
+
+// =========================================================================
+// Rain Particles — InstancedMesh pool of 500 thin vertical lines
+// =========================================================================
+const RAIN_COUNT = 500;
+const rainGeo = new THREE.BoxGeometry(0.03, 0.8, 0.03);
+const rainMat = new THREE.MeshBasicMaterial({
+  color: 0xaaccff, transparent: true, opacity: 0.4, depthWrite: false,
+});
+const rainMesh = new THREE.InstancedMesh(rainGeo, rainMat, RAIN_COUNT);
+rainMesh.count = 0; // hidden until rain is toggled on
+rainMesh.renderOrder = 15;
+scene.add(rainMesh);
+
+// Pre-allocate rain drop positions and speeds
+const rainDrops = [];
+for (let i = 0; i < RAIN_COUNT; i++) {
+  rainDrops.push({
+    x: rng() * (CITY_W + 100) - 50,
+    y: rng() * 80,
+    z: rng() * (CITY_H + 100) - 50,
+    speed: 15 + rng() * 10, // 15-25 m/s
+  });
+}
+
+// =========================================================================
+// Territory Control Zones — 4x3 grid of colored ground planes
+// =========================================================================
+const territoryZoneW = CITY_W / TERRITORY_COLS;
+const territoryZoneH = CITY_H / TERRITORY_ROWS;
+
+for (let row = 0; row < TERRITORY_ROWS; row++) {
+  for (let col = 0; col < TERRITORY_COLS; col++) {
+    const cx = col * territoryZoneW + territoryZoneW / 2;
+    const cz = row * territoryZoneH + territoryZoneH / 2;
+
+    // Zone ground plane
+    const zoneGeo = new THREE.PlaneGeometry(territoryZoneW - 2, territoryZoneH - 2);
+    const zoneMat = new THREE.MeshBasicMaterial({
+      color: 0x888888, transparent: true, opacity: 0.2,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const zonePlane = new THREE.Mesh(zoneGeo, zoneMat);
+    zonePlane.rotation.x = -Math.PI / 2;
+    zonePlane.position.set(cx, 0.08, cz);
+    zonePlane.visible = false; // only visible during riot
+    scene.add(zonePlane);
+
+    // Zone border lines (4 edges)
+    const territoryBorderMat = new THREE.LineBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.3,
+    });
+    const hw = (territoryZoneW - 2) / 2;
+    const hh = (territoryZoneH - 2) / 2;
+    const borderPts = [
+      new THREE.Vector3(cx - hw, 0.09, cz - hh),
+      new THREE.Vector3(cx + hw, 0.09, cz - hh),
+      new THREE.Vector3(cx + hw, 0.09, cz + hh),
+      new THREE.Vector3(cx - hw, 0.09, cz + hh),
+      new THREE.Vector3(cx - hw, 0.09, cz - hh),
+    ];
+    const borderLineGeo = new THREE.BufferGeometry().setFromPoints(borderPts);
+    const zoneBorder = new THREE.Line(borderLineGeo, territoryBorderMat);
+    zoneBorder.visible = false;
+    scene.add(zoneBorder);
+
+    territoryZones.push({
+      col, row, cx, cz,
+      minX: cx - territoryZoneW / 2,
+      maxX: cx + territoryZoneW / 2,
+      minZ: cz - territoryZoneH / 2,
+      maxZ: cz + territoryZoneH / 2,
+      plane: zonePlane,
+      border: zoneBorder,
+      owner: 'neutral', // 'police', 'protestor', 'neutral'
+      policeInZone: 0,
+      protestorsInZone: 0,
+    });
+  }
+}
+
+// =========================================================================
+// Objective Markers — diamond shapes (OctahedronGeometry) floating above key locations
+// =========================================================================
+const diamondGeo = new THREE.OctahedronGeometry(1.5, 0);
+const objectiveMat = new THREE.MeshBasicMaterial({
+  color: 0xfcee0a, transparent: true, opacity: 0.8, depthWrite: false,
+});
+const MAX_OBJECTIVES = 3;
+const objectiveMesh = new THREE.InstancedMesh(diamondGeo, objectiveMat, MAX_OBJECTIVES);
+objectiveMesh.count = 0;
+objectiveMesh.renderOrder = 20;
+scene.add(objectiveMesh);
+
+// Objective definitions (created but hidden until riot starts)
+const objectiveDefs = [
+  { name: 'SECURE PLAZA', x: PLAZA_X, z: PLAZA_Z, faction: 'police', objectiveColor: 0xfcee0a, objectiveStatus: 'inactive' },
+  { name: 'HOLD GROUND', x: PLAZA_X + 20, z: PLAZA_Z + 20, faction: 'protestor', objectiveColor: 0xfcee0a, objectiveStatus: 'inactive' },
+  { name: 'PROTECT HOSPITAL', x: 0, z: 0, faction: 'police', objectiveColor: 0xfcee0a, objectiveStatus: 'inactive' }, // position set after hospital placed
+];
+let objectiveRotation = 0;
+let holdGroundTimer = 0; // tracks how long protestors hold plaza
+
 // CRITICAL: Disable frustum culling on ALL InstancedMesh objects.
 // Three.js computes bounding sphere from base geometry (1x1x1 box at origin).
 // When camera zooms in, this tiny sphere gets culled and ALL instances vanish.
@@ -1109,7 +1415,7 @@ scene.add(particleMesh);
  trunkMesh, leafMesh, lampPostMesh, lampHeadMesh,
  personBodyMesh, personHeadMesh, ringMesh, shieldMesh,
  carBodyMesh, carCabinMesh, carHLMesh, carTLMesh,
- particleMesh].forEach(m => { m.frustumCulled = false; });
+ particleMesh, barricadeMesh, rainMesh, objectiveMesh].forEach(m => { m.frustumCulled = false; });
 
 // Particle pool tracking
 const particlePool = [];
@@ -1227,6 +1533,60 @@ function dist2d(a, b) {
   const dx = a.x - b.x;
   const dz = a.z - b.z;
   return Math.sqrt(dx * dx + dz * dz);
+}
+
+// Check if point (px, pz) is inside any building's bounding box
+function isInsideBuilding(px, pz) {
+  for (const b of buildings) {
+    if (Math.abs(px - b.x) < b.w / 2 && Math.abs(pz - b.z) < b.d / 2) return b;
+  }
+  return null;
+}
+
+// Get buildings within radius of a point (for efficient collision checks)
+function nearbyBuildings(px, pz, radius) {
+  const result = [];
+  for (const b of buildings) {
+    if (Math.abs(px - b.x) < (b.w / 2 + radius) && Math.abs(pz - b.z) < (b.d / 2 + radius)) {
+      result.push(b);
+    }
+  }
+  return result;
+}
+
+// Snap a target position out of a building to its nearest edge
+function snapOutOfBuilding(px, pz, bldg) {
+  const hw = bldg.w / 2;
+  const hd = bldg.d / 2;
+  // Calculate penetration depth on each axis
+  const penX = hw - Math.abs(px - bldg.x);
+  const penZ = hd - Math.abs(pz - bldg.z);
+  // Push out along axis with smallest penetration
+  if (penX < penZ) {
+    return { x: bldg.x + Math.sign(px - bldg.x) * (hw + 0.5), z: pz };
+  } else {
+    return { x: px, z: bldg.z + Math.sign(pz - bldg.z) * (hd + 0.5) };
+  }
+}
+
+// Resolve building collision for a moving entity — slide along building edge
+function resolveCollision(oldX, oldZ, newX, newZ) {
+  const nearby = nearbyBuildings(newX, newZ, 30);
+  for (const b of nearby) {
+    const hw = b.w / 2;
+    const hd = b.d / 2;
+    if (Math.abs(newX - b.x) < hw && Math.abs(newZ - b.z) < hd) {
+      // Inside building — slide along the edge
+      const penX = hw - Math.abs(newX - b.x);
+      const penZ = hd - Math.abs(newZ - b.z);
+      if (penX < penZ) {
+        newX = b.x + Math.sign(newX - b.x) * (hw + 0.3);
+      } else {
+        newZ = b.z + Math.sign(newZ - b.z) * (hd + 0.3);
+      }
+    }
+  }
+  return { x: newX, z: newZ };
 }
 
 function edgeSpawnPos() {
@@ -2284,6 +2644,160 @@ function updateInjuredOnGround(dt) {
 }
 
 // =========================================================================
+// Weather: Rain update — move 500 drops downward, reset when they hit ground
+// =========================================================================
+function updateRain(dt) {
+  if (!rainActive) {
+    rainMesh.count = 0;
+    return;
+  }
+  rainMesh.count = RAIN_COUNT;
+  for (let i = 0; i < RAIN_COUNT; i++) {
+    const drop = rainDrops[i];
+    drop.y -= drop.speed * dt;
+    if (drop.y < 0) {
+      drop.y = 80;
+      drop.x = rng() * (CITY_W + 100) - 50;
+      drop.z = rng() * (CITY_H + 100) - 50;
+      drop.speed = 15 + rng() * 10;
+    }
+    _pos.set(drop.x, drop.y, drop.z);
+    _quat.identity();
+    _scale.set(1, 1, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    rainMesh.setMatrixAt(i, _mat4);
+  }
+  rainMesh.instanceMatrix.needsUpdate = true;
+}
+
+// =========================================================================
+// Territory Control update — count factions per zone, color accordingly
+// =========================================================================
+function updateTerritoryControl(dt) {
+  territoryTimer += dt;
+  if (territoryTimer < TERRITORY_UPDATE_INTERVAL) return;
+  territoryTimer = 0;
+
+  const showZones = riotMode;
+
+  for (const zone of territoryZones) {
+    zone.plane.visible = showZones;
+    zone.border.visible = showZones;
+    if (!showZones) continue;
+
+    // Count police and protestors in this zone
+    zone.policeInZone = 0;
+    zone.protestorsInZone = 0;
+
+    for (const pol of police) {
+      if (!pol.alive) continue;
+      if (pol.x >= zone.minX && pol.x <= zone.maxX && pol.z >= zone.minZ && pol.z <= zone.maxZ) {
+        zone.policeInZone++;
+      }
+    }
+    for (const pr of protestors) {
+      if (!pr.alive || pr.arrested || pr.fleeing) continue;
+      if (pr.x >= zone.minX && pr.x <= zone.maxX && pr.z >= zone.minZ && pr.z <= zone.maxZ) {
+        zone.protestorsInZone++;
+      }
+    }
+
+    // Determine owner
+    if (zone.policeInZone > zone.protestorsInZone && zone.policeInZone > 0) {
+      zone.owner = 'police';
+      zone.plane.material.color.setHex(0x05ffa1); // green
+      zone.plane.material.opacity = 0.2;
+    } else if (zone.protestorsInZone > zone.policeInZone && zone.protestorsInZone > 0) {
+      zone.owner = 'protestor';
+      zone.plane.material.color.setHex(0xff2a6d); // red
+      zone.plane.material.opacity = 0.2;
+    } else {
+      zone.owner = 'neutral';
+      zone.plane.material.color.setHex(0x888888); // gray
+      zone.plane.material.opacity = 0.15;
+    }
+  }
+}
+
+// =========================================================================
+// Objectives update — track status, rotate diamonds, update HUD
+// =========================================================================
+function updateObjectives(dt) {
+  if (!riotMode) {
+    objectiveMesh.count = 0;
+    return;
+  }
+
+  objectiveRotation += dt * 0.8; // slow rotation
+  objectiveMesh.count = objectiveDefs.length;
+
+  // Check SECURE PLAZA: any police within 20 units of plaza center?
+  const securePlaza = objectiveDefs[0];
+  if (securePlaza.objectiveStatus === 'active') {
+    let policeNearPlaza = false;
+    for (const pol of police) {
+      if (!pol.alive) continue;
+      if (dist2d(pol, { x: PLAZA_X, z: PLAZA_Z }) < 20) { policeNearPlaza = true; break; }
+    }
+    if (policeNearPlaza) {
+      securePlaza.objectiveStatus = 'complete';
+      securePlaza.objectiveColor = 0x05ffa1; // green
+      addKillFeedEntry('Objective complete: SECURE PLAZA');
+    }
+  }
+
+  // Check HOLD GROUND: protestors hold plaza zone for 60 seconds
+  const holdGround = objectiveDefs[1];
+  if (holdGround.objectiveStatus === 'active') {
+    // Find the territory zone containing the plaza
+    let plazaZone = null;
+    for (const zone of territoryZones) {
+      if (PLAZA_X >= zone.minX && PLAZA_X <= zone.maxX && PLAZA_Z >= zone.minZ && PLAZA_Z <= zone.maxZ) {
+        plazaZone = zone;
+        break;
+      }
+    }
+    if (plazaZone && plazaZone.owner === 'protestor') {
+      holdGroundTimer += dt;
+      if (holdGroundTimer >= 60) {
+        holdGround.objectiveStatus = 'complete';
+        holdGround.objectiveColor = 0x05ffa1;
+        addKillFeedEntry('Objective complete: HOLD GROUND');
+      }
+    } else {
+      holdGroundTimer = Math.max(0, holdGroundTimer - dt * 0.5); // decay if not holding
+    }
+  }
+
+  // PROTECT HOSPITAL stays active (turns red/failed if fire near hospital)
+  const protHosp = objectiveDefs[2];
+  if (protHosp.objectiveStatus === 'active' && hospitalBuilding) {
+    for (const f of fires) {
+      if (dist2d(f, hospitalBuilding) < 30) {
+        protHosp.objectiveStatus = 'failed';
+        protHosp.objectiveColor = 0xff2a6d; // red
+        addKillFeedEntry('Objective FAILED: PROTECT HOSPITAL');
+        break;
+      }
+    }
+  }
+
+  // Update diamond markers in InstancedMesh
+  for (let i = 0; i < objectiveDefs.length; i++) {
+    const obj = objectiveDefs[i];
+    _euler.set(0, objectiveRotation, 0);
+    _quat.setFromEuler(_euler);
+    _pos.set(obj.x, 15, obj.z);
+    _scale.set(1, 1, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    objectiveMesh.setMatrixAt(i, _mat4);
+    objectiveMesh.setColorAt(i, _color.set(obj.objectiveColor));
+  }
+  objectiveMesh.instanceMatrix.needsUpdate = true;
+  if (objectiveMesh.instanceColor) objectiveMesh.instanceColor.needsUpdate = true;
+}
+
+// =========================================================================
 // Keyboard
 // =========================================================================
 document.addEventListener('keydown', (e) => {
@@ -2304,10 +2818,18 @@ document.addEventListener('keydown', (e) => {
       rockCount = 0;
       arrestCount = 0;
       injuryCount = 0;
+      holdGroundTimer = 0;
       spawnProtestors();
       spawnPolice();
+      spawnBarricades();
       createHelicopter();
+      // Activate objectives
+      for (const obj of objectiveDefs) {
+        obj.objectiveStatus = 'active';
+        obj.objectiveColor = 0xfcee0a; // yellow = active
+      }
       addKillFeedEntry('Protest gathering in central plaza');
+      addKillFeedEntry('Police barricades deployed');
       addKillFeedEntry('Police helicopter deployed');
       // Spawn police vans
       for (let v = 0; v < 2; v++) {
@@ -2356,10 +2878,24 @@ document.addEventListener('keydown', (e) => {
         hideInjuredMarker(entry.marker);
       }
       injuredOnGround.length = 0;
-      // Reset rings and shields
+      // Reset rings, shields, and barricades
       ringMesh.count = 0;
       ringIdx = 0;
       shieldMesh.count = 0;
+      barricades.length = 0;
+      barricadeMesh.count = 0;
+      barricadeMesh.instanceMatrix.needsUpdate = true;
+      // Deactivate objectives and territory
+      objectiveMesh.count = 0;
+      for (const obj of objectiveDefs) {
+        obj.objectiveStatus = 'inactive';
+        obj.objectiveColor = 0xfcee0a;
+      }
+      for (const zone of territoryZones) {
+        zone.plane.visible = false;
+        zone.border.visible = false;
+        zone.owner = 'neutral';
+      }
     }
   }
   if (e.code === 'KeyC') {
@@ -2379,6 +2915,15 @@ document.addEventListener('keydown', (e) => {
     debugMode = !debugMode;
     document.getElementById('debug-overlay').classList.toggle('visible', debugMode);
     document.getElementById('debug-canvas').classList.toggle('visible', debugMode);
+  }
+  if (e.code === 'KeyR') {
+    rainActive = !rainActive;
+    if (!rainActive) {
+      rainMesh.count = 0;
+    }
+  }
+  if (e.code === 'KeyF') {
+    fogOverride = !fogOverride;
   }
 });
 
@@ -2404,17 +2949,41 @@ function update(dt) {
 
   const isNight = nightMode || simTime < 6 || simTime > 20;
 
-  // Day/night lighting
+  // Day/night lighting (modified by weather)
   const dayFactor = isNight ? 0.2 : 1.0;
-  ambientLight.intensity = 0.3 + dayFactor * 0.4;
-  sunLight.intensity = dayFactor * 1.2;
-  hemiLight.intensity = 0.3 + dayFactor * 0.3;
-  scene.fog.density = isNight ? 0.004 : 0.0015;
+  const rainDim = rainActive ? 0.7 : 1.0; // reduce light by 30% when raining
+  ambientLight.intensity = (0.3 + dayFactor * 0.4) * rainDim;
+  sunLight.intensity = dayFactor * 1.2 * rainDim;
+  hemiLight.intensity = (0.3 + dayFactor * 0.3) * rainDim;
+  // Fog: base density modified by rain and fog override
+  let baseFogDensity = isNight ? 0.004 : 0.0015;
+  if (rainActive) baseFogDensity = Math.max(baseFogDensity, 0.004);
+  if (fogOverride) baseFogDensity = 0.008;
+  scene.fog.density = baseFogDensity;
   renderer.toneMappingExposure = isNight ? 0.9 : 1.4;
 
-  // Street lamps
+  // Street lamps — much brighter at night, wider range
   for (const lamp of streetLamps) {
-    lamp.light.intensity = isNight ? 1.5 : 0.2;
+    lamp.light.intensity = isNight ? 4.0 : 0.2;
+    lamp.light.distance = isNight ? 50 : 30;
+  }
+
+  // Windows glow brighter at night (emissive intensity)
+  windowMat.emissiveIntensity = isNight ? 0.8 : 0.15;
+  // Randomly turn off ~30% of windows at night (simulate empty offices)
+  // Only update once per 10 seconds to avoid flicker
+  if (!window._lastWinFlicker) window._lastWinFlicker = 0;
+  window._lastWinFlicker += dt;
+  if (window._lastWinFlicker > 10 && isNight && windowMesh.instanceColor) {
+    window._lastWinFlicker = 0;
+    for (let wi = 0; wi < windowMesh.count; wi++) {
+      if (rng() < 0.3) {
+        windowMesh.setColorAt(wi, _color.set(0x111111)); // dark = off
+      } else {
+        windowMesh.setColorAt(wi, _color.set(0xffdd66)); // warm glow = on
+      }
+    }
+    windowMesh.instanceColor.needsUpdate = true;
   }
 
   // ---- Update pedestrians ----
@@ -2448,6 +3017,14 @@ function update(dt) {
       }
     }
 
+    // Snap target out of buildings if needed
+    const tBldg = isInsideBuilding(ped.target.x, ped.target.z);
+    if (tBldg) {
+      const snapped = snapOutOfBuilding(ped.target.x, ped.target.z, tBldg);
+      ped.target.x = snapped.x;
+      ped.target.z = snapped.z;
+    }
+
     const dx = ped.target.x - ped.x;
     const dz = ped.target.z - ped.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
@@ -2460,8 +3037,12 @@ function update(dt) {
       }
     } else {
       const s = ped.speed * dt;
-      ped.x += (dx / dist) * s;
-      ped.z += (dz / dist) * s;
+      let newX = ped.x + (dx / dist) * s;
+      let newZ = ped.z + (dz / dist) * s;
+      // Resolve building collisions — slide along edges
+      const resolved = resolveCollision(ped.x, ped.z, newX, newZ);
+      ped.x = resolved.x;
+      ped.z = resolved.z;
       ped.rotY = Math.atan2(dx, dz);
     }
 
@@ -2837,7 +3418,7 @@ function update(dt) {
       // After pause expires, car will proceed through intersection to next one
       car.nextIntersection = findNextIntersection(target.x, target.z, car.horizontal, car.dir);
     } else {
-      // Simple forward collision avoidance — slow down if car ahead
+      // Simple forward collision avoidance — slow down if car ahead or barricade
       let blocked = false;
       for (const other of cars) {
         if (other === car || !other.alive) continue;
@@ -2846,6 +3427,10 @@ function update(dt) {
         if (oDist > 12 || oDist < 0.5) continue;
         if (car.horizontal && Math.abs(odz) < 4 && odx * car.dir > 0 && Math.abs(odx) < 8) { blocked = true; break; }
         if (!car.horizontal && Math.abs(odx) < 4 && odz * car.dir > 0 && Math.abs(odz) < 8) { blocked = true; break; }
+      }
+      // Check barricade blocking — cars stop within 5m of active barricades
+      if (!blocked && isBlockedByBarricade(car.x, car.z, 5)) {
+        blocked = true;
       }
       const speedMult = blocked ? 0.15 : 1.0;
       const s = car.speed * speedMult * dt;
@@ -3254,6 +3839,14 @@ function update(dt) {
             0.3+rng()*0.4, [0xff4400,0xff8800,0xffaa00][Math.floor(rng()*3)], 0.6+rng()*0.3);
         }
         playExplosion(impactPos.x, impactPos.z);
+        // Damage nearby barricades
+        for (const b of barricades) {
+          if (!b.active) continue;
+          const bDist = Math.sqrt((impactPos.x - b.x) ** 2 + (impactPos.z - b.z) ** 2);
+          if (bDist < 8) {
+            damageBarricade(b, 0.35);
+          }
+        }
       }
 
       projectiles.splice(i, 1);
@@ -3325,6 +3918,15 @@ function update(dt) {
     }
   }
 
+  // Update weather (rain particles)
+  updateRain(dt);
+
+  // Update territory control zones (throttled to 0.5fps)
+  updateTerritoryControl(dt);
+
+  // Update objective markers
+  updateObjectives(dt);
+
   // Camera — reuse temp vectors to avoid GC pressure
   if (chaseCam && chaseTarget) {
     _pos.set(chaseTarget.x - 15, 20, chaseTarget.z + 15);
@@ -3356,6 +3958,8 @@ function updateHUD() {
   document.getElementById('teargas-count').textContent = teargasCount;
   document.getElementById('rock-count').textContent = rockCount;
   document.getElementById('injury-count').textContent = injuryCount;
+  document.getElementById('barricade-count').textContent =
+    `${barricades.filter(b => b.active).length}/${barricades.length}`;
 
   const phaseEl = document.getElementById('phase-indicator');
   phaseEl.textContent = riotPhase;
@@ -3383,6 +3987,30 @@ function updateHUD() {
   }).join('');
 
   while (killFeed.length > 0 && killFeed[killFeed.length - 1].age > 12) killFeed.pop();
+
+  // Weather HUD indicators
+  let weatherText = '';
+  if (rainActive) weatherText += '<span style="color:#aaccff">RAIN</span> ';
+  if (fogOverride) weatherText += '<span style="color:#999999">FOG</span> ';
+  let weatherEl = document.getElementById('weather-hud');
+  if (weatherEl) weatherEl.innerHTML = weatherText;
+
+  // Objectives HUD list (top center)
+  let objEl = document.getElementById('objectives-hud');
+  if (objEl && riotMode) {
+    let objHtml = '';
+    for (const obj of objectiveDefs) {
+      if (obj.objectiveStatus === 'inactive') continue;
+      let color = '#fcee0a'; // yellow active
+      if (obj.objectiveStatus === 'complete') color = '#05ffa1';
+      if (obj.objectiveStatus === 'failed') color = '#ff2a6d';
+      const statusIcon = obj.objectiveStatus === 'complete' ? '[DONE]' : obj.objectiveStatus === 'failed' ? '[FAIL]' : '[...]';
+      objHtml += '<div style="color:' + color + '">' + statusIcon + ' ' + obj.name + '</div>';
+    }
+    objEl.innerHTML = objHtml;
+  } else if (objEl) {
+    objEl.innerHTML = '';
+  }
 }
 
 // =========================================================================
@@ -3428,6 +4056,7 @@ function updateDebugOverlay(dt) {
   html += `Police vans: <span class="dbg-val">${policeVans.filter(pv => pv.alive).length}</span><br>`;
   html += `Injured on ground: <span class="dbg-val">${injuredOnGround.length}</span><br>`;
   html += `Ambulances: <span class="dbg-val">${ambulances.filter(a => a.alive).length}</span><br>`;
+  html += `Barricades: <span class="dbg-val">${barricades.filter(b => b.active).length}/${barricades.length}</span><br>`;
   html += `Active particles: <span class="dbg-val">${activeParticles.length}/${MAX_PARTICLES}</span><br>`;
   html += '<h3>RIOT STATE</h3>';
   html += `Phase: <span class="dbg-val">${riotPhase}</span><br>`;

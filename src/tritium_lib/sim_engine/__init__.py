@@ -474,6 +474,23 @@ except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.soundtrack not available: {_e}")
 
 # ---------------------------------------------------------------------------
+# Collision: 2D city-sim collision world with layers and rules
+# ---------------------------------------------------------------------------
+try:
+    from .collision import (
+        Collider,
+        ColliderType,
+        CollisionResult,
+        CollisionWorld,
+        ResponseType,
+        SpatialHashGrid,
+        KILL_SPEED_THRESHOLD,
+        create_city_world,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.collision not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # Physics: Collision, rigid bodies, vehicle dynamics
 # ---------------------------------------------------------------------------
 try:
@@ -825,6 +842,10 @@ __all__ = [
     # --- Soundtrack ---
     "AudioCategory", "AudioCue", "MusicState",
     "SoundtrackEngine", "SOUND_MAP",
+    # --- Collision (city sim) ---
+    "Collider", "ColliderType", "CollisionResult", "CollisionWorld",
+    "ResponseType", "SpatialHashGrid", "KILL_SPEED_THRESHOLD",
+    "create_city_world",
     # --- Physics ---
     "CollisionEvent", "PhysicsWorld", "RigidBody", "VehiclePhysics",
     # --- Debug ---
