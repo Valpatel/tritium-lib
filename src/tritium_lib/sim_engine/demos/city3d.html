@@ -617,6 +617,7 @@ const policeVans = [];
 let supplyConvoy = null;
 let supplyConvoyTimer = 0;
 const injuredOnGround = []; // people lying on ground waiting for ambulance
+const medics = []; // medic officers spawned in Phase 3
 const carDrivers = []; // civilians who own cars and drive between buildings
 
 // ROS2 Robot Car state
@@ -2404,11 +2405,11 @@ function updateCarHeadlights(idx, x, z, rotY, isNight) {
 const MAX_INJURED_MARKERS = 30;
 const crossHGeo = new THREE.PlaneGeometry(1.5, 0.5);
 const crossVGeo = new THREE.PlaneGeometry(0.5, 1.5);
-const crossMat = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false });
 const injuredMarkers = []; // { crossH, crossV, active }
 for (let i = 0; i < MAX_INJURED_MARKERS; i++) {
-  const h = new THREE.Mesh(crossHGeo, crossMat);
-  const v = new THREE.Mesh(crossVGeo, crossMat);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false });
+  const h = new THREE.Mesh(crossHGeo, mat);
+  const v = new THREE.Mesh(crossVGeo, mat);
   h.visible = false;
   v.visible = false;
   h.renderOrder = 999;
@@ -3681,6 +3682,8 @@ function updateAmbulances(dt) {
     if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
     carHLMesh.instanceMatrix.needsUpdate = true;
     carTLMesh.instanceMatrix.needsUpdate = true;
+    if (carHLMesh.instanceColor) carHLMesh.instanceColor.needsUpdate = true;
+    if (carTLMesh.instanceColor) carTLMesh.instanceColor.needsUpdate = true;
   }
 }
 
@@ -4302,6 +4305,8 @@ function updateEmergencyVehicles(dt) {
     if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
     carHLMesh.instanceMatrix.needsUpdate = true;
     carTLMesh.instanceMatrix.needsUpdate = true;
+    if (carHLMesh.instanceColor) carHLMesh.instanceColor.needsUpdate = true;
+    if (carTLMesh.instanceColor) carTLMesh.instanceColor.needsUpdate = true;
   }
 }
 
@@ -4332,6 +4337,11 @@ function updateInjuredOnGround(dt) {
       // Billboard: face camera
       entry.marker.crossH.lookAt(camera.position);
       entry.marker.crossV.lookAt(camera.position);
+      // Triage color: RED critical (<0.3), YELLOW moderate (0.3-0.6), GREEN minor (>0.6)
+      const h = entry.person.health || 0;
+      const tc = h > 0.6 ? 0x05ffa1 : h > 0.3 ? 0xfcee0a : 0xff2a6d;
+      entry.marker.crossH.material.color.setHex(tc);
+      entry.marker.crossV.material.color.setHex(tc);
     }
 
     // Render person lying down (rotated 90 degrees on side)
@@ -6427,8 +6437,9 @@ function update(dt) {
     }
   }
 
-  // Update weather (rain particles)
+  // Update weather (rain particles + ambient audio)
   updateRain(dt);
+  updateAmbientAudio(dt);
 
   // Update territory control zones (throttled to 0.5fps)
   updateTerritoryControl(dt);
