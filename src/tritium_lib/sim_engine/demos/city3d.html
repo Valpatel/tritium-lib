@@ -610,6 +610,8 @@ const buildings = [];
 const streetLamps = [];
 const killFeed = [];
 const fires = [];
+const rubbleZones = []; // collapsed building positions block car pathfinding
+let buildingDamageTimer = 0; // throttle visual damage updates to every 2s
 const projectiles = [];
 const ambulances = [];
 const injuredQueue = []; // people waiting for ambulance pickup
@@ -1583,7 +1585,7 @@ function addInstancedBuilding(x, z, w, d, h, type) {
   }
   windowMesh.count = windowIdx;
 
-  const bldgData = { h, type, x, z, w, d, idx: buildingIdx - 1, winStart: startWinIdx, winEnd: windowIdx, cleared: false };
+  const bldgData = { h, type, x, z, w, d, idx: buildingIdx - 1, winStart: startWinIdx, winEnd: windowIdx, cleared: false, damage: 0, origColor: color };
   buildings.push(bldgData);
 
   // Hospital H marker (red cross on roof)
@@ -5878,7 +5880,7 @@ function update(dt) {
       if (ied.armed === false) continue;
       let triggered = false;
       for (const pol of police) {
-        if (pol.alive && (pol.x - ied.x) ** 2 + (pol.z - ied.z) ** 2 < 9) { triggered = true; pol.health -= 0.6; if (pol.health < 0.5 && pol.alive) { knockDownPerson(pol); } break; }
+        if (pol.alive && (pol.x - ied.x) ** 2 + (pol.z - ied.z) ** 2 < 9) { triggered = true; pol.health -= 0.6; spawnBlood(pol.x, pol.z); if (pol.health < 0.5 && pol.alive) { knockDownPerson(pol); } break; }
       }
       if (!triggered) { for (const pv of policeVans) { if (pv.alive && (pv.x - ied.x) ** 2 + (pv.z - ied.z) ** 2 < 9) { triggered = true; break; } } }
       if (triggered) {
@@ -5946,7 +5948,7 @@ function update(dt) {
         const dz = target.z - pr.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 1) {
-          const s = pr.speed * 1.5 * dt;
+          const s = pr.speed * 1.5 * healthSpeedMul(pr.health) * dt;
           let newX = pr.x + (dx / dist) * s;
           let newZ = pr.z + (dz / dist) * s;
           const resolved = resolveCollision(pr.x, pr.z, newX, newZ);
@@ -6038,7 +6040,7 @@ function update(dt) {
                 rockCount++;
                 if (rng() < 0.3) addKillFeedEntry('Protestor threw rock');
                 if (rng() < 0.1) {
-                  nearest.health -= 0.1;
+                  nearest.health -= 0.1; spawnBlood(nearest.x, nearest.z);
                   nearest.morale = Math.max(0, (nearest.morale || 1) - 0.05); // rock hit drops morale
                   pr.morale = Math.min(1, pr.morale + 0.03); // successful rock throw boosts morale
                   injuryCount++;
@@ -6190,7 +6192,7 @@ function update(dt) {
               playGunshot(pol.x, pol.z);
 
               if (rng() < accuracyMod) {
-                nearest.health -= 0.3;
+                nearest.health -= 0.3; spawnBlood(nearest.x, nearest.z);
                 createHitEffect({ x: nearest.x, z: nearest.z });
                 injuryCount++;
                 policeBudget -= COST_INJURY; // liability for civilian injury
@@ -6603,6 +6605,23 @@ function updateHUD() {
   if (pmEl) pmEl.textContent = Math.round(policeMoraleAvg * 100) + '%';
   const prMEl = document.getElementById('protestor-morale');
   if (prMEl) prMEl.textContent = Math.round(protestorMoraleAvg * 100) + '%';
+  // Crowd dynamics debug: cluster count + panic level
+  const panicPct = aliveProtestors.length > 0 ? Math.round(aliveProtestors.filter(p => p.fleeing).length / aliveProtestors.length * 100) : 0;
+  const clEl = document.getElementById('crowd-clusters');
+  if (clEl) {
+    // Simple cluster count: union-find by 15-unit proximity
+    const visited = new Set();
+    let clusters = 0;
+    for (const p of aliveProtestors) {
+      if (visited.has(p)) continue;
+      clusters++;
+      const stack = [p]; visited.add(p);
+      while (stack.length) { const c = stack.pop(); for (const p2 of aliveProtestors) { if (!visited.has(p2) && dist2d(c, p2) < 15) { visited.add(p2); stack.push(p2); } } }
+    }
+    clEl.textContent = clusters + ' clusters';
+  }
+  const plEl = document.getElementById('panic-level');
+  if (plEl) plEl.textContent = panicPct + '%';
   // Update soundtrack state indicator
   updateSoundtrackState();
   updateArtilleryStrike(0.25); // HUD updates at 4fps = 0.25s intervals
