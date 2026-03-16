@@ -2316,6 +2316,15 @@ for (let i = 0; i < RAIN_COUNT; i++) {
   });
 }
 
+// Lightning bolt — pre-allocated LineSegments (8 vertices = 4 segments)
+const boltGeo = new THREE.BufferGeometry();
+boltGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(24), 3));
+const boltMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+const boltMesh = new THREE.LineSegments(boltGeo, boltMat);
+boltMesh.visible = false;
+boltMesh.renderOrder = 20;
+scene.add(boltMesh);
+
 // =========================================================================
 // Territory Control Zones — 4x3 grid of colored ground planes
 // =========================================================================
@@ -2896,10 +2905,11 @@ for (let i = 0; i < NUM_CARS; i++) {
     x: start.x, z: start.z,
     horizontal: start.horizontal,
     dir: start.dir,
-    speed: isRobot ? 6 : 5 + rng() * 8,
+    speed: isRobot ? 6 : 4 + rng() * 12,
     bodyColor, cabinColor,
     alive: true,
     pauseTimer: 0,
+    stuckTimer: 0,
     nextIntersection: nextInt,
     isRobot: isRobot,
   };
@@ -3039,10 +3049,11 @@ for (let i = 0; i < NUM_TAXIS; i++) {
     x: start.x, z: start.z,
     horizontal: start.horizontal,
     dir: start.dir,
-    speed: 6 + rng() * 4,
+    speed: 8 + rng() * 6,
     bodyColor: 0xFFCC00, cabinColor: 0xDDAA00,
     alive: true,
     pauseTimer: 0,
+    stuckTimer: 0,
     nextIntersection: nextInt,
     // Passenger state
     passenger: null, // ref to a pedestrian waiting for taxi
@@ -4272,13 +4283,10 @@ function showCampaignOverlay() {
   const passed = policeBudget > 0 && injuryCount < 15;
   const verdict = passed ? 'MISSION COMPLETE' : 'MISSION FAILED';
   const vc = passed ? '#05ffa1' : '#ff2a6d';
-  ov.innerHTML = '<h2 style="color:' + vc + '">' + verdict + '</h2>'
-    + '<p style="color:#888;margin-bottom:16px">' + CAMPAIGN_TITLE + '</p>'
-    + '<div class="stat-row"><span class="stat-label">Arrests</span><span class="stat-value">' + arrestCount + '</span></div>'
-    + '<div class="stat-row"><span class="stat-label">Injuries</span><span class="stat-value" style="color:#ff2a6d">' + injuryCount + '</span></div>'
-    + '<div class="stat-row"><span class="stat-label">Budget</span><span class="stat-value">$' + Math.abs(policeBudget).toLocaleString() + '</span></div>'
-    + '<div class="stat-row"><span class="stat-label">Damage</span><span class="stat-value" style="color:#fcee0a">$' + propertyDamage.toLocaleString() + '</span></div>'
-    + '<p style="margin-top:16px;color:#666;font-size:12px">Press SPACE to restart</p>';
+  const R=(l,v,c)=>'<div class="stat-row"><span class="stat-label">'+l+'</span><span class="stat-value"'+(c?' style="color:'+c+'"':'')+'>'+v+'</span></div>';
+  ov.innerHTML='<h2 style="color:'+vc+'">'+verdict+'</h2><p style="color:#888;margin-bottom:16px">'+CAMPAIGN_TITLE+'</p>'
+    +R('Arrests',arrestCount)+R('Injuries',injuryCount,'#ff2a6d')+R('Budget','$'+Math.abs(policeBudget).toLocaleString())
+    +R('Damage','$'+propertyDamage.toLocaleString(),'#fcee0a')+'<p style="margin-top:16px;color:#666;font-size:12px">Press SPACE to restart</p>';
   ov.style.display = 'block';
 }
 
@@ -4315,15 +4323,39 @@ function update(dt) {
   if (rainActive) baseFogDensity = Math.max(baseFogDensity, 0.004);
   if (fogOverride) baseFogDensity = 0.008;
   scene.fog.density = baseFogDensity;
-  // Fog color shifts toward blue when raining
-  if (rainActive) {
-    scene.fog.color.set(0x0a0e1a);
-    scene.background.set(0x0a0e1a);
+  // Dynamic sky color based on time-of-day (DayNightCycle from weather_fx.py)
+  const skyColor = rainActive ? 0x0a0e1a : getSkyColor(simTime);
+  scene.background.set(skyColor);
+  scene.fog.color.set(skyColor);
+
+  // Lightning during storms (LightningSystem from weather_fx.py)
+  if (lightningTimer > 0) {
+    lightningTimer--;
+    if (lightningTimer === 0) { boltMesh.visible = false; renderer.toneMappingExposure = isNight ? 0.9 : 1.4; }
+  } else if (rainActive && (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL' || riotPhase === 'COMBAT') && Math.random() < 0.02 * dt) {
+    lightningCount++;
+    lightningTimer = 3;
+    renderer.toneMappingExposure = 4.0;
+    const bx = rng() * CITY_W, bz = rng() * CITY_H, pos = boltGeo.attributes.position;
+    let cy = 80;
+    for (let s = 0; s < 4; s++) {
+      pos.setXYZ(s * 2, bx + (rng() - 0.5) * 8, cy, bz + (rng() - 0.5) * 8);
+      cy -= 15 + rng() * 10;
+      pos.setXYZ(s * 2 + 1, bx + (rng() - 0.5) * 12, Math.max(cy, 0), bz + (rng() - 0.5) * 12);
+    }
+    pos.needsUpdate = true;
+    boltMesh.visible = true;
+    try {
+      const ctx = ensureAudio(), sz = Math.floor(ctx.sampleRate * 0.6);
+      const buf = ctx.createBuffer(1, sz, ctx.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < sz; i++) { const t = i / ctx.sampleRate; d[i] = (Math.sin(6.28 * 30 * t) * 0.5 + (Math.random() * 2 - 1) * 0.5) * Math.exp(-t * 4) * 0.2; }
+      const src = ctx.createBufferSource(); src.buffer = buf;
+      const g = ctx.createGain(); g.gain.value = 0.08;
+      src.connect(g).connect(ctx.destination); src.start();
+    } catch(e) {}
   } else {
-    scene.fog.color.set(VOID_BG);
-    scene.background.set(VOID_BG);
+    renderer.toneMappingExposure = isNight ? 0.9 : 1.4;
   }
-  renderer.toneMappingExposure = isNight ? 0.9 : 1.4;
 
   // Street lamps — much brighter at night, wider range
   for (const lamp of streetLamps) {
@@ -5045,8 +5077,78 @@ function update(dt) {
     }
     trail.geo.attributes.position.needsUpdate = true;
 
+    // --- Forward projection: planned path line to next intersection ---
+    const pathL = robotPathLines[r];
+    const tgt = rcar.nextIntersection;
+    if (tgt) {
+      pathL.positions[0] = rx; pathL.positions[1] = 0.3; pathL.positions[2] = rz;
+      pathL.positions[3] = tgt.x; pathL.positions[4] = 0.3; pathL.positions[5] = tgt.z;
+      pathL.line.visible = true;
+    } else { pathL.line.visible = false; }
+    pathL.geo.attributes.position.needsUpdate = true;
+
+    // --- Stopping distance bar ---
+    const brakeDist = rcar.speed * 0.5;
+    const sb = robotStopBars[r];
+    const fwdX = rcar.horizontal ? rcar.dir : 0;
+    const fwdZ = rcar.horizontal ? 0 : rcar.dir;
+    const stopX = rx + fwdX * brakeDist;
+    const stopZ = rz + fwdZ * brakeDist;
+    const perpX = -fwdZ * 1.2, perpZ = fwdX * 1.2;
+    sb.positions[0] = stopX - perpX; sb.positions[1] = 0.35; sb.positions[2] = stopZ - perpZ;
+    sb.positions[3] = stopX + perpX; sb.positions[4] = 0.35; sb.positions[5] = stopZ + perpZ;
+    sb.geo.attributes.position.needsUpdate = true;
+    sb.mat.color.set(nearObstacle ? 0xff2a6d : 0x05ffa1);
+
+    // --- Intent indicator: determine and update label ---
+    let intent = 'MOVING';
+    if (rcar.pauseTimer > 0) intent = 'STOPPED';
+    else if (nearObstacle) intent = 'SLOWING';
+    else if (tgt && Math.abs(rcar.horizontal ? tgt.x - rx : tgt.z - rz) < 8) intent = 'TURNING';
+    if (robotIntentStates[r] !== intent) {
+      robotIntentStates[r] = intent;
+      const lbl = robotLabels[r];
+      const cv = document.createElement('canvas'); cv.width = 192; cv.height = 32;
+      const cx = cv.getContext('2d');
+      cx.fillStyle = intent === 'SLOWING' ? '#fcee0a' : intent === 'STOPPED' ? '#ff2a6d' : '#00f0ff';
+      cx.font = 'bold 16px Courier New'; cx.textAlign = 'center';
+      cx.fillText('ROS2-' + (r+1) + ' ' + intent, 96, 22);
+      lbl.material.map = new THREE.CanvasTexture(cv);
+      lbl.material.map.needsUpdate = true;
+      lbl.scale.set(6, 1, 1);
+    }
+
     // --- Label sprite: float above car ---
     robotLabels[r].position.set(rx, 4.5, rz);
+  }
+
+  // --- Obstacle markers: collect top hits from all robot lidar ---
+  {
+    let markerIdx = 0;
+    const _dm = new THREE.Matrix4();
+    for (let r = 0; r < robotCars.length && markerIdx < 12; r++) {
+      const ld = robotLidarLines[r];
+      const rcar = robotCars[r];
+      if (!rcar.alive) continue;
+      const hits = [];
+      for (let ray = 0; ray < LIDAR_RAYS; ray++) {
+        const vi = ray * 2 * 3;
+        if (ld.colors[vi + 3] > 0.5) {
+          hits.push({ x: ld.positions[vi + 3], z: ld.positions[vi + 5] });
+        }
+      }
+      hits.sort((a, b) => {
+        const da = (a.x - rcar.x) ** 2 + (a.z - rcar.z) ** 2;
+        const db = (b.x - rcar.x) ** 2 + (b.z - rcar.z) ** 2;
+        return da - db;
+      });
+      for (let h = 0; h < Math.min(4, hits.length) && markerIdx < 12; h++) {
+        _dm.makeTranslation(hits[h].x, 1.2, hits[h].z);
+        obstacleMarkerMesh.setMatrixAt(markerIdx++, _dm);
+      }
+    }
+    obstacleMarkerMesh.count = markerIdx;
+    obstacleMarkerMesh.instanceMatrix.needsUpdate = true;
   }
 
   // ---- RIOT ----
@@ -5843,6 +5945,9 @@ function updateDebugOverlay(dt) {
   html += `GAS: <span class="dbg-val">${gasCount}</span> `;
   html += `STUNNED: <span class="dbg-val">${stunnedCount}</span> `;
   html += `BLEEDING: <span class="dbg-val">${bleedingCount}</span><br>`;
+  html += '<h3>WEATHER</h3>';
+  html += `Sky: <span class="dbg-val">0x${getSkyColor(simTime).toString(16).padStart(6,'0')}</span><br>`;
+  html += `Lightning: <span class="dbg-val">${lightningCount}</span><br>`;
   html += '<h3>SCENE</h3>';
   html += `Objects: <span class="dbg-val">${scene.children.length}</span><br>`;
   html += `Geometries: <span class="dbg-val">${renderer.info.memory.geometries}</span><br>`;
