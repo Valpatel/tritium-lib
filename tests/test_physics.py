@@ -1,7 +1,7 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Tests for game_physics: collision detection, momentum, vehicle dynamics."""
+"""Tests for sim_engine.physics: collision detection, momentum, vehicle dynamics."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pytest
 
-from tritium_lib.game_physics import CollisionEvent, PhysicsWorld, RigidBody, VehiclePhysics
+from tritium_lib.sim_engine.physics import CollisionEvent, PhysicsWorld, RigidBody, VehiclePhysics
 
 
 # ---------------------------------------------------------------------------

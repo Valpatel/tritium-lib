@@ -5,7 +5,7 @@
 
 import pytest
 
-from tritium_lib.game_ai.city_sim import (
+from tritium_lib.sim_engine.ai.city_sim import (
     ActivityState,
     Building,
     BuildingType,
@@ -23,7 +23,7 @@ from tritium_lib.game_ai.city_sim import (
     state_rf_emission,
     state_visible_on_map,
 )
-from tritium_lib.game_ai.steering import distance
+from tritium_lib.sim_engine.ai.steering import distance
 
 
 # ---------------------------------------------------------------------------

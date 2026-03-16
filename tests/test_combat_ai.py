@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from tritium_lib.game_ai.combat_ai import (
+from tritium_lib.sim_engine.ai.combat_ai import (
     # Cover
     find_cover,
     is_in_cover,
@@ -33,8 +33,8 @@ from tritium_lib.game_ai.combat_ai import (
     make_sniper_tree,
     make_squad_leader_tree,
 )
-from tritium_lib.game_ai.behavior_tree import Status
-from tritium_lib.game_ai.steering import distance
+from tritium_lib.sim_engine.ai.behavior_tree import Status
+from tritium_lib.sim_engine.ai.steering import distance
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import random
 
 import pytest
 
-from tritium_lib.game_ai.ambient import (
+from tritium_lib.sim_engine.ai.ambient import (
     ActivityProfile,
     AmbientEntity,
     AmbientSimulator,

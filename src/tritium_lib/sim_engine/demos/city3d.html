@@ -1,0 +1,3354 @@
+<!DOCTYPE html>
+<!--
+  Created by Matthew Valancy
+  Copyright 2026 Valpatel Software LLC
+  Licensed under AGPL-3.0 — see LICENSE for details.
+
+  Three.js City Simulation — 3D Minecraft-style riot scenario.
+  Protestors vs Police with molotovs, tear gas, rubber bullets.
+  InstancedMesh rendering for 60fps performance.
+
+  Open directly in browser or serve:
+    python3 -m tritium_lib.sim_engine.demos.serve_city3d
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tritium City 3D — Riot Simulation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
+canvas { display: block; }
+
+#hud {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none; color: #fcee0a; font-size: 13px;
+}
+#hud > div { pointer-events: auto; }
+
+#top-bar {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  padding: 12px 16px;
+}
+#clock {
+  font-size: 42px; font-weight: bold; color: #00f0ff;
+  text-shadow: 0 0 10px #00f0ff88;
+}
+#time-label { font-size: 11px; color: #00f0ff99; }
+#phase-indicator {
+  font-size: 20px; font-weight: bold; color: #05ffa1;
+  text-shadow: 0 0 8px #05ffa188;
+  margin-top: 4px;
+}
+#phase-indicator.riot { color: #ff2a6d; text-shadow: 0 0 12px #ff2a6d88; }
+#phase-indicator.tension { color: #fcee0a; text-shadow: 0 0 8px #fcee0a88; }
+#phase-indicator.dispersal { color: #00f0ff; text-shadow: 0 0 8px #00f0ff88; }
+
+#stats {
+  text-align: right; line-height: 1.8; font-size: 14px;
+}
+.stat-val { color: #05ffa1; font-weight: bold; }
+.protestor-val { color: #05ffa1; }
+.police-val { color: #00f0ff; }
+.hostile-val { color: #ff2a6d; }
+
+#riot-stats {
+  text-align: right; margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid #fcee0a33; font-size: 13px; line-height: 1.6;
+}
+
+#kill-feed {
+  position: absolute; bottom: 60px; left: 16px;
+  max-height: 250px; overflow: hidden; font-size: 13px;
+  line-height: 1.6;
+}
+.kill-entry { opacity: 0.9; }
+.kill-entry.fade { opacity: 0.3; }
+
+#controls {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  text-align: center; font-size: 12px; color: #fcee0a88;
+  background: #0a0a0f88; padding: 6px 16px; border-radius: 4px;
+  border: 1px solid #fcee0a22;
+}
+#controls span { color: #00f0ff; }
+
+#fps {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: #05ffa188;
+}
+
+#combat-banner {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 42px; font-weight: bold; color: #ff2a6d;
+  text-shadow: 0 0 20px #ff2a6d88, 0 0 40px #ff2a6d44;
+  opacity: 0; transition: opacity 0.3s;
+  pointer-events: none;
+}
+#combat-banner.show { opacity: 1; }
+
+#debug-overlay {
+  position: absolute; top: 60px; left: 16px;
+  font-size: 12px; color: #05ffa1; line-height: 1.6;
+  background: #0a0a0fcc; padding: 10px 14px; border-radius: 4px;
+  border: 1px solid #05ffa133; max-height: 50vh; overflow-y: auto;
+  display: none; min-width: 260px;
+}
+#debug-overlay.visible { display: block; }
+#debug-overlay h3 { color: #00f0ff; margin: 6px 0 2px; font-size: 13px; }
+#debug-overlay .dbg-val { color: #fcee0a; }
+#debug-overlay .dbg-collision { color: #ff2a6d; }
+
+#debug-canvas {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none; display: none;
+}
+#debug-canvas.visible { display: block; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="top-bar">
+    <div>
+      <div id="clock">08:00</div>
+      <div id="time-label">SIMULATION TIME</div>
+      <div id="phase-indicator">PEACEFUL</div>
+    </div>
+    <div id="stats">
+      Civilians: <span class="stat-val" id="civ-count">0</span><br>
+      Protestors: <span class="protestor-val" id="protestor-count">0</span><br>
+      Police: <span class="police-val" id="police-count">0</span><br>
+      Arrests: <span class="hostile-val" id="arrest-count">0</span>
+      <div id="riot-stats">
+        Molotovs: <span class="hostile-val" id="molotov-count">0</span><br>
+        Tear Gas: <span class="police-val" id="teargas-count">0</span><br>
+        Rocks Thrown: <span class="stat-val" id="rock-count">0</span><br>
+        Injuries: <span class="hostile-val" id="injury-count">0</span>
+      </div>
+    </div>
+  </div>
+  <div id="fps">-- FPS</div>
+  <div id="kill-feed"></div>
+  <div id="controls">
+    <span>SPACE</span> Start Riot &nbsp;|&nbsp;
+    <span>LMB Drag</span> Rotate &nbsp;|&nbsp;
+    <span>RMB Drag</span> Pan &nbsp;|&nbsp;
+    <span>Scroll</span> Zoom &nbsp;|&nbsp;
+    <span>N</span> Night &nbsp;|&nbsp;
+    <span>C</span> Chase Cam &nbsp;|&nbsp;
+    <span>D</span> Debug
+  </div>
+  <div id="combat-banner">RIOT IN PROGRESS</div>
+  <div id="debug-overlay"></div>
+  <canvas id="debug-canvas"></canvas>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// =========================================================================
+// Constants
+// =========================================================================
+const CYAN    = 0x00f0ff;
+const MAGENTA = 0xff2a6d;
+const GREEN   = 0x05ffa1;
+const YELLOW  = 0xfcee0a;
+const VOID_BG = 0x0a0a0f;
+
+const BLOCK_W = 60, BLOCK_H = 50;
+const GRID_COLS = 8, GRID_ROWS = 6;
+const ROAD_W = 10, SIDEWALK_W = 3;
+const CITY_W = GRID_COLS * (BLOCK_W + ROAD_W) + ROAD_W;
+const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
+
+const NUM_PEDESTRIANS = 25;
+const NUM_CARS = 12;
+const NUM_TAXIS = 3;
+const NUM_PROTESTORS = 20;
+const NUM_POLICE = 10;
+const NUM_FIRE_TRUCKS = 0; // spawned during riot
+const NUM_POLICE_VANS = 0; // spawned during riot
+
+// Central plaza — center of the city
+const PLAZA_X = CITY_W / 2;
+const PLAZA_Z = CITY_H / 2;
+
+// Building type colors (Minecraft style)
+const BLDG_HOUSE   = 0x8B6914;
+const BLDG_OFFICE  = 0x888888;
+const BLDG_SHOP    = 0xD2B48C;
+const BLDG_POLICE  = 0x4466AA;
+const BLDG_HOSPITAL = 0xEEEEEE;
+const BLDG_ROOF    = 0x333333;
+
+// Person dimensions (Minecraft-style, visible from 200m)
+const BODY_W = 1.0, BODY_H = 1.5, BODY_D = 0.6;
+const HEAD_SIZE = 0.7;
+// Scale multiplier so people are visible from default camera height
+const PERSON_SCALE = 2.5;
+
+// Role colors
+const COLOR_CIVILIAN  = 0x33AA55;  // green shirts
+const COLOR_PROTESTOR = 0xCC2222;  // red shirts
+const COLOR_POLICE    = 0x2244CC;  // blue shirts
+
+// =========================================================================
+// State
+// =========================================================================
+let riotMode = false;
+let nightMode = false;
+let chaseCam = false;
+let chaseTarget = null;
+let simTime = 8.0;
+let riotPhase = 'PEACEFUL';
+let riotTimer = 0;
+
+let molotovCount = 0;
+let teargasCount = 0;
+let rockCount = 0;
+let arrestCount = 0;
+let injuryCount = 0;
+
+const pedestrians = [];
+const cars = [];
+const protestors = [];
+const police = [];
+const tracers = [];
+const explosions = [];
+const muzzleFlashes = [];
+const buildings = [];
+const streetLamps = [];
+const killFeed = [];
+const fires = [];
+const projectiles = [];
+const ambulances = [];
+const injuredQueue = []; // people waiting for ambulance pickup
+const taxis = [];
+const fireTrucks = [];
+const policeVans = [];
+const injuredOnGround = []; // people lying on ground waiting for ambulance
+const carDrivers = []; // civilians who own cars and drive between buildings
+
+const rng = () => Math.random();
+
+// Skin tones for heads
+const SKIN_TONES = [0xFFDBAC, 0xE5A073, 0xC68642, 0x8D5524, 0xF1C27D, 0xFFCD94];
+
+// =========================================================================
+// Road grid helpers — used for car navigation
+// =========================================================================
+// Horizontal road centerlines: z positions
+const hRoads = [];
+for (let row = 0; row <= GRID_ROWS; row++) {
+  hRoads.push(row * (BLOCK_H + ROAD_W) + ROAD_W / 2);
+}
+// Vertical road centerlines: x positions
+const vRoads = [];
+for (let col = 0; col <= GRID_COLS; col++) {
+  vRoads.push(col * (BLOCK_W + ROAD_W) + ROAD_W / 2);
+}
+
+// Intersection positions
+const intersections = [];
+for (const x of vRoads) {
+  for (const z of hRoads) {
+    intersections.push({ x, z });
+  }
+}
+
+// =========================================================================
+// Audio
+// =========================================================================
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playGunshot(x, z) {
+  const ctx = ensureAudio();
+  const bufSize = ctx.sampleRate * 0.08;
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const env = Math.exp(-i / (bufSize * 0.15));
+    data[i] = (Math.random() * 2 - 1) * env * 0.4;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.12;
+  src.connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+function playExplosion(x, z) {
+  const ctx = ensureAudio();
+  const dur = 0.5;
+  const bufSize = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const t = i / ctx.sampleRate;
+    const env = Math.exp(-t * 6);
+    const low = Math.sin(2 * Math.PI * 40 * t + Math.sin(2 * Math.PI * 15 * t) * 3);
+    data[i] = (low * 0.6 + (Math.random() * 2 - 1) * 0.4) * env * 0.3;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.15;
+  src.connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+function playHiss(x, z) {
+  const ctx = ensureAudio();
+  const dur = 0.8;
+  const bufSize = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const t = i / ctx.sampleRate;
+    const env = Math.exp(-t * 2);
+    data[i] = (Math.random() * 2 - 1) * env * 0.15;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.1;
+  src.connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+function playSiren() {
+  const ctx = ensureAudio();
+  const dur = 1.2;
+  const bufSize = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const t = i / ctx.sampleRate;
+    const freq = 600 + 400 * Math.sin(2 * Math.PI * 2 * t);
+    data[i] = Math.sin(2 * Math.PI * freq * t) * 0.08 * Math.exp(-t * 0.5);
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.06;
+  src.connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+// =========================================================================
+// Scene Setup
+// =========================================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(VOID_BG);
+scene.fog = new THREE.FogExp2(VOID_BG, 0.002);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 2000);
+camera.position.set(CITY_W / 2 + 80, 110, CITY_H / 2 + 120);
+camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.4;
+document.body.prepend(renderer.domElement);
+
+// OrbitControls
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(CITY_W / 2, 0, CITY_H / 2);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 30;
+controls.maxDistance = 800;
+controls.maxPolarAngle = Math.PI / 2.1;
+controls.update();
+
+// Lights — BRIGHT
+const ambientLight = new THREE.AmbientLight(0x8899bb, 0.5);
+scene.add(ambientLight);
+
+const sunLight = new THREE.DirectionalLight(0xffeedd, 1.2);
+sunLight.position.set(200, 400, 100);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.left = -CITY_W;
+sunLight.shadow.camera.right = CITY_W;
+sunLight.shadow.camera.top = CITY_H;
+sunLight.shadow.camera.bottom = -CITY_H;
+scene.add(sunLight);
+
+const hemiLight = new THREE.HemisphereLight(0x00f0ff, 0x112244, 0.5);
+scene.add(hemiLight);
+
+// =========================================================================
+// Shared reusable objects for matrix/color setting
+// =========================================================================
+const _mat4 = new THREE.Matrix4();
+const _pos = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+const _scale = new THREE.Vector3();
+const _color = new THREE.Color();
+const _euler = new THREE.Euler();
+
+// =========================================================================
+// City Generation — InstancedMesh approach
+// =========================================================================
+
+// Ground plane
+const groundGeo = new THREE.PlaneGeometry(CITY_W + 100, CITY_H + 100);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(CITY_W / 2, -0.05, CITY_H / 2);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Road material
+const roadMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.85 });
+const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.8 });
+
+// Roads — horizontal (using shared geometries, still individual since each road has different dimensions)
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+  const geo = new THREE.PlaneGeometry(CITY_W, ROAD_W);
+  const road = new THREE.Mesh(geo, roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(CITY_W / 2, 0.01, z);
+  road.receiveShadow = true;
+  scene.add(road);
+
+  // Center line
+  const lineGeo = new THREE.PlaneGeometry(CITY_W, 0.4);
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xaaaa33 });
+  const line = new THREE.Mesh(lineGeo, lineMat);
+  line.rotation.x = -Math.PI / 2;
+  line.position.set(CITY_W / 2, 0.02, z);
+  scene.add(line);
+}
+
+// Roads — vertical
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+  const geo = new THREE.PlaneGeometry(ROAD_W, CITY_H);
+  const road = new THREE.Mesh(geo, roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(x, 0.01, CITY_H / 2);
+  road.receiveShadow = true;
+  scene.add(road);
+}
+
+// Sidewalks
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+  for (const side of [-1, 1]) {
+    const sz = z + side * (ROAD_W / 2 + SIDEWALK_W / 2);
+    const geo = new THREE.PlaneGeometry(CITY_W, SIDEWALK_W);
+    const sw = new THREE.Mesh(geo, sidewalkMat);
+    sw.rotation.x = -Math.PI / 2;
+    sw.position.set(CITY_W / 2, 0.05, sz);
+    scene.add(sw);
+  }
+}
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+  for (const side of [-1, 1]) {
+    const sx = x + side * (ROAD_W / 2 + SIDEWALK_W / 2);
+    const geo = new THREE.PlaneGeometry(SIDEWALK_W, CITY_H);
+    const sw = new THREE.Mesh(geo, sidewalkMat);
+    sw.rotation.x = -Math.PI / 2;
+    sw.position.set(sx, 0.05, CITY_H / 2);
+    scene.add(sw);
+  }
+}
+
+// =========================================================================
+// Buildings — InstancedMesh (body + roof as two instanced meshes)
+// =========================================================================
+const MAX_BUILDINGS = 300;
+const buildingBodyGeo = new THREE.BoxGeometry(1, 1, 1);
+const buildingBodyMat = new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0.0 });
+const buildingBodyMesh = new THREE.InstancedMesh(buildingBodyGeo, buildingBodyMat, MAX_BUILDINGS);
+buildingBodyMesh.castShadow = true;
+buildingBodyMesh.receiveShadow = true;
+buildingBodyMesh.count = 0;
+scene.add(buildingBodyMesh);
+
+const buildingRoofGeo = new THREE.BoxGeometry(1, 1, 1);
+const buildingRoofMat = new THREE.MeshStandardMaterial({ color: BLDG_ROOF, roughness: 0.9 });
+const buildingRoofMesh = new THREE.InstancedMesh(buildingRoofGeo, buildingRoofMat, MAX_BUILDINGS);
+buildingRoofMesh.castShadow = true;
+buildingRoofMesh.count = 0;
+scene.add(buildingRoofMesh);
+
+// Windows — InstancedMesh for all window quads
+const MAX_WINDOWS = 3000;
+const windowGeo = new THREE.PlaneGeometry(1.5, 1.2);
+const windowMat = new THREE.MeshBasicMaterial({ color: 0xffdd66, transparent: true, opacity: 0.8 });
+const windowMesh = new THREE.InstancedMesh(windowGeo, windowMat, MAX_WINDOWS);
+windowMesh.count = 0;
+scene.add(windowMesh);
+
+// Doors — InstancedMesh
+const MAX_DOORS = 300;
+const doorGeo = new THREE.PlaneGeometry(1, 1);
+const doorMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+const doorIMesh = new THREE.InstancedMesh(doorGeo, doorMat, MAX_DOORS);
+doorIMesh.count = 0;
+scene.add(doorIMesh);
+
+let buildingIdx = 0;
+let windowIdx = 0;
+let doorIdx = 0;
+
+// Hospital building reference (set during city generation)
+let hospitalBuilding = null;
+
+function addInstancedBuilding(x, z, w, d, h, type) {
+  if (buildingIdx >= MAX_BUILDINGS) return;
+
+  let color;
+  switch (type) {
+    case 'house':    color = BLDG_HOUSE; break;
+    case 'office':   color = BLDG_OFFICE; break;
+    case 'shop':     color = BLDG_SHOP; break;
+    case 'police':   color = BLDG_POLICE; break;
+    case 'hospital': color = BLDG_HOSPITAL; break;
+    default:         color = BLDG_OFFICE;
+  }
+
+  // Body
+  _pos.set(x, h / 2, z);
+  _quat.identity();
+  _scale.set(w, h, d);
+  _mat4.compose(_pos, _quat, _scale);
+  buildingBodyMesh.setMatrixAt(buildingIdx, _mat4);
+  buildingBodyMesh.setColorAt(buildingIdx, _color.set(color));
+
+  // Roof
+  _pos.set(x, h + 0.25, z);
+  _scale.set(w + 0.2, 0.5, d + 0.2);
+  _mat4.compose(_pos, _quat, _scale);
+  buildingRoofMesh.setMatrixAt(buildingIdx, _mat4);
+
+  buildingIdx++;
+  buildingBodyMesh.count = buildingIdx;
+  buildingRoofMesh.count = buildingIdx;
+
+  // Door
+  if (doorIdx < MAX_DOORS) {
+    const doorW = Math.min(2, w * 0.3);
+    const doorH = Math.min(3, h * 0.5);
+    _pos.set(x, doorH / 2, z + d / 2 + 0.05);
+    _quat.identity();
+    _scale.set(doorW, doorH, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    doorIMesh.setMatrixAt(doorIdx, _mat4);
+    doorIdx++;
+    doorIMesh.count = doorIdx;
+  }
+
+  // Windows — front/back faces
+  const floors = Math.floor(h / 4);
+  for (let f = 1; f <= floors; f++) {
+    const wy = f * 3.5;
+    if (wy > h - 1) break;
+    for (const side of [1, -1]) {
+      const numWins = Math.floor(w / 4);
+      for (let wi = 0; wi < numWins; wi++) {
+        if (rng() < 0.3 || windowIdx >= MAX_WINDOWS) continue;
+        const wx = x - w / 2 + 2 + wi * 4;
+        _pos.set(wx, wy, z + side * (d / 2 + 0.05));
+        _euler.set(0, side < 0 ? Math.PI : 0, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        windowMesh.setMatrixAt(windowIdx, _mat4);
+        const winColor = rng() < 0.7 ? 0xffdd66 : 0x66ddff;
+        windowMesh.setColorAt(windowIdx, _color.set(winColor));
+        windowIdx++;
+      }
+    }
+    // Side faces
+    for (const side of [1, -1]) {
+      const numWins = Math.floor(d / 4);
+      for (let wi = 0; wi < numWins; wi++) {
+        if (rng() < 0.4 || windowIdx >= MAX_WINDOWS) continue;
+        const wz = z - d / 2 + 2 + wi * 4;
+        _pos.set(x + side * (w / 2 + 0.05), wy, wz);
+        _euler.set(0, side * Math.PI / 2, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        windowMesh.setMatrixAt(windowIdx, _mat4);
+        const winColor = rng() < 0.7 ? 0xffdd66 : 0x66ddff;
+        windowMesh.setColorAt(windowIdx, _color.set(winColor));
+        windowIdx++;
+      }
+    }
+  }
+  windowMesh.count = windowIdx;
+
+  const bldgData = { h, type, x, z, w, d };
+  buildings.push(bldgData);
+
+  // Hospital H marker (red cross on roof)
+  if (type === 'hospital') {
+    hospitalBuilding = bldgData;
+    // Add red cross marker on front face
+    const crossH = new THREE.Mesh(
+      new THREE.PlaneGeometry(3, 1),
+      new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    );
+    crossH.position.set(x, h * 0.7, z + d / 2 + 0.1);
+    scene.add(crossH);
+    const crossV = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 3),
+      new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    );
+    crossV.position.set(x, h * 0.7, z + d / 2 + 0.12);
+    scene.add(crossV);
+  }
+}
+
+// =========================================================================
+// Trees — InstancedMesh (trunks + foliage)
+// =========================================================================
+const MAX_TREES = 200;
+const trunkGeo = new THREE.BoxGeometry(1, 5, 1);
+const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5D3A1A });
+const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, MAX_TREES);
+trunkMesh.castShadow = true;
+trunkMesh.count = 0;
+scene.add(trunkMesh);
+
+const leafGeo = new THREE.BoxGeometry(4, 4, 4);
+const leafMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+const leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, MAX_TREES);
+leafMesh.castShadow = true;
+leafMesh.count = 0;
+scene.add(leafMesh);
+
+let treeIdx = 0;
+
+function addTree(tx, tz) {
+  if (treeIdx >= MAX_TREES) return;
+  _quat.identity();
+  _scale.set(1, 1, 1);
+
+  // Trunk
+  _pos.set(tx, 2.5, tz);
+  _mat4.compose(_pos, _quat, _scale);
+  trunkMesh.setMatrixAt(treeIdx, _mat4);
+
+  // Foliage
+  _pos.set(tx, 6, tz);
+  _mat4.compose(_pos, _quat, _scale);
+  leafMesh.setMatrixAt(treeIdx, _mat4);
+
+  treeIdx++;
+  trunkMesh.count = treeIdx;
+  leafMesh.count = treeIdx;
+}
+
+// =========================================================================
+// Street Lamps — InstancedMesh (posts + heads)
+// =========================================================================
+const MAX_LAMPS = 100;
+const lampPostGeo = new THREE.BoxGeometry(0.3, 7, 0.3);
+const lampPostMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+const lampPostMesh = new THREE.InstancedMesh(lampPostGeo, lampPostMat, MAX_LAMPS);
+lampPostMesh.count = 0;
+scene.add(lampPostMesh);
+
+const lampHeadGeo = new THREE.BoxGeometry(1.2, 0.5, 1.2);
+const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.8 });
+const lampHeadMesh = new THREE.InstancedMesh(lampHeadGeo, lampHeadMat, MAX_LAMPS);
+lampHeadMesh.count = 0;
+scene.add(lampHeadMesh);
+
+let lampIdx = 0;
+
+// =========================================================================
+// Place buildings, trees, lamps
+// =========================================================================
+const centerCol = Math.floor(GRID_COLS / 2);
+const centerRow = Math.floor(GRID_ROWS / 2);
+
+for (let row = 0; row < GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+    const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+
+    if (col === centerCol && row === centerRow) {
+      // Central plaza
+      const plazaGeo = new THREE.PlaneGeometry(BLOCK_W - 4, BLOCK_H - 4);
+      const plazaMat = new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.7 });
+      const plaza = new THREE.Mesh(plazaGeo, plazaMat);
+      plaza.rotation.x = -Math.PI / 2;
+      plaza.position.set(bx, 0.06, bz);
+      scene.add(plaza);
+
+      // Fountain
+      const fountGeo = new THREE.CylinderGeometry(3, 4, 1.5, 12);
+      const fountMat = new THREE.MeshStandardMaterial({ color: 0x555566 });
+      const fount = new THREE.Mesh(fountGeo, fountMat);
+      fount.position.set(bx, 0.75, bz);
+      fount.castShadow = true;
+      scene.add(fount);
+      continue;
+    }
+
+    // 2-4 buildings per block
+    const count = 2 + Math.floor(rng() * 3);
+    for (let b = 0; b < count; b++) {
+      const typeRoll = rng();
+      let type;
+      if (col === centerCol + 1 && row === centerRow && b === 0) {
+        type = 'police';
+      } else if (col === centerCol - 1 && row === centerRow + 1 && b === 0 && !hospitalBuilding) {
+        type = 'hospital';
+      } else if (typeRoll < 0.35) {
+        type = 'house';
+      } else if (typeRoll < 0.65) {
+        type = 'office';
+      } else {
+        type = 'shop';
+      }
+
+      const isOffice = type === 'office';
+      const h = isOffice ? 15 + rng() * 30 : 6 + rng() * 10;
+      const w = 8 + rng() * 12;
+      const d = 8 + rng() * 12;
+      const ox = (rng() - 0.5) * (BLOCK_W - w - 4);
+      const oz = (rng() - 0.5) * (BLOCK_H - d - 4);
+
+      addInstancedBuilding(bx + ox, bz + oz, w, d, h, type);
+    }
+
+    // Trees in gaps
+    const numTrees = Math.floor(rng() * 3);
+    for (let t = 0; t < numTrees; t++) {
+      const tx = bx + (rng() - 0.5) * BLOCK_W * 0.8;
+      const tz = bz + (rng() - 0.5) * BLOCK_H * 0.8;
+      addTree(tx, tz);
+    }
+  }
+}
+
+// If no hospital was placed, force one
+if (!hospitalBuilding) {
+  const hx = 2 * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+  const hz = 4 * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+  addInstancedBuilding(hx, hz, 14, 12, 10, 'hospital');
+}
+
+// Finalize instanced mesh instance matrices
+buildingBodyMesh.instanceMatrix.needsUpdate = true;
+if (buildingBodyMesh.instanceColor) buildingBodyMesh.instanceColor.needsUpdate = true;
+buildingRoofMesh.instanceMatrix.needsUpdate = true;
+windowMesh.instanceMatrix.needsUpdate = true;
+if (windowMesh.instanceColor) windowMesh.instanceColor.needsUpdate = true;
+doorIMesh.instanceMatrix.needsUpdate = true;
+trunkMesh.instanceMatrix.needsUpdate = true;
+leafMesh.instanceMatrix.needsUpdate = true;
+
+// Street lamps — keep PointLights for lighting effect but instanced geometry
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+    if (lampIdx >= MAX_LAMPS) break;
+
+    // Post instance
+    _pos.set(x + 4, 3.5, z + 4);
+    _quat.identity();
+    _scale.set(1, 1, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    lampPostMesh.setMatrixAt(lampIdx, _mat4);
+
+    // Head instance
+    _pos.set(x + 4, 7.2, z + 4);
+    _mat4.compose(_pos, _quat, _scale);
+    lampHeadMesh.setMatrixAt(lampIdx, _mat4);
+
+    lampIdx++;
+    lampPostMesh.count = lampIdx;
+    lampHeadMesh.count = lampIdx;
+
+    // Still need actual PointLight for illumination
+    const lampLight = new THREE.PointLight(0xffdd88, 0.4, 30);
+    lampLight.position.set(x + 4, 7, z + 4);
+    scene.add(lampLight);
+    streetLamps.push({ light: lampLight });
+  }
+}
+
+lampPostMesh.instanceMatrix.needsUpdate = true;
+lampHeadMesh.instanceMatrix.needsUpdate = true;
+
+// =========================================================================
+// People InstancedMesh — bodies and heads (bigger Minecraft-style)
+// =========================================================================
+const MAX_PEOPLE = 180; // pedestrians + protestors + police + emergency crews
+const personBodyGeo = new THREE.BoxGeometry(1, 1, 1);
+const personBodyMat = new THREE.MeshStandardMaterial({ roughness: 0.7 });
+const personBodyMesh = new THREE.InstancedMesh(personBodyGeo, personBodyMat, MAX_PEOPLE);
+personBodyMesh.castShadow = true;
+personBodyMesh.count = 0;
+scene.add(personBodyMesh);
+
+const personHeadGeo = new THREE.BoxGeometry(1, 1, 1);
+const personHeadMat = new THREE.MeshStandardMaterial({ roughness: 0.6 });
+const personHeadMesh = new THREE.InstancedMesh(personHeadGeo, personHeadMat, MAX_PEOPLE);
+personHeadMesh.castShadow = true;
+personHeadMesh.count = 0;
+scene.add(personHeadMesh);
+
+// Ring markers for protestors/police
+const MAX_RINGS = 40;
+const ringGeo = new THREE.RingGeometry(1.8, 2.2, 16);
+const ringMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+const ringMesh = new THREE.InstancedMesh(ringGeo, ringMat, MAX_RINGS);
+ringMesh.count = 0;
+scene.add(ringMesh);
+let ringIdx = 0;
+
+// Shield instances for police
+const MAX_SHIELDS = 15;
+const shieldGeo = new THREE.BoxGeometry(0.3, 2.5, 1.8);
+const shieldMat = new THREE.MeshStandardMaterial({ color: 0x3355BB, metalness: 0.5, roughness: 0.3 });
+const shieldMesh = new THREE.InstancedMesh(shieldGeo, shieldMat, MAX_SHIELDS);
+shieldMesh.castShadow = true;
+shieldMesh.count = 0;
+scene.add(shieldMesh);
+
+// Person slot tracking
+let personSlotCount = 0;
+
+function allocPersonSlot() {
+  if (personSlotCount >= MAX_PEOPLE) return -1;
+  return personSlotCount++;
+}
+
+function updatePersonInstance(slot, x, y, z, rotY, bodyColor, headColor, scale) {
+  if (slot < 0) return;
+  const s = scale * PERSON_SCALE;
+
+  // Body — center at y + BODY_H*s/2 (feet on ground when y=0)
+  _euler.set(0, rotY, 0);
+  _quat.setFromEuler(_euler);
+  const bodyY = y + (BODY_H * s) / 2;
+  _pos.set(x, bodyY, z);
+  _scale.set(BODY_W * s, BODY_H * s, BODY_D * s);
+  _mat4.compose(_pos, _quat, _scale);
+  personBodyMesh.setMatrixAt(slot, _mat4);
+  personBodyMesh.setColorAt(slot, _color.set(bodyColor));
+
+  // Head — sits on top of body
+  const headY = y + BODY_H * s + (HEAD_SIZE * s) / 2;
+  _pos.set(x, headY, z);
+  _scale.set(HEAD_SIZE * s, HEAD_SIZE * s, HEAD_SIZE * s);
+  _mat4.compose(_pos, _quat, _scale);
+  personHeadMesh.setMatrixAt(slot, _mat4);
+  personHeadMesh.setColorAt(slot, _color.set(headColor));
+}
+
+function hidePersonInstance(slot) {
+  if (slot < 0) return;
+  // Move off screen
+  _pos.set(0, -100, 0);
+  _quat.identity();
+  _scale.set(0, 0, 0);
+  _mat4.compose(_pos, _quat, _scale);
+  personBodyMesh.setMatrixAt(slot, _mat4);
+  personHeadMesh.setMatrixAt(slot, _mat4);
+}
+
+// =========================================================================
+// Cars InstancedMesh — body + cabin
+// =========================================================================
+const MAX_CARS_INST = 45; // extra slots for ambulances, taxis, fire trucks, police vans
+const carBodyGeo = new THREE.BoxGeometry(4, 1.5, 2);
+const carBodyMat = new THREE.MeshStandardMaterial({ metalness: 0.3, roughness: 0.6 });
+const carBodyMesh = new THREE.InstancedMesh(carBodyGeo, carBodyMat, MAX_CARS_INST);
+carBodyMesh.castShadow = true;
+carBodyMesh.count = 0;
+scene.add(carBodyMesh);
+
+const carCabinGeo = new THREE.BoxGeometry(2.2, 1.0, 1.8);
+const carCabinMat = new THREE.MeshStandardMaterial({ metalness: 0.2, roughness: 0.7 });
+const carCabinMesh = new THREE.InstancedMesh(carCabinGeo, carCabinMat, MAX_CARS_INST);
+carCabinMesh.castShadow = true;
+carCabinMesh.count = 0;
+scene.add(carCabinMesh);
+
+// Headlights and taillights as small instanced meshes
+const carLightGeo = new THREE.BoxGeometry(0.3, 0.3, 0.5);
+const carHLMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
+const carTLMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.7 });
+const carHLMesh = new THREE.InstancedMesh(carLightGeo, carHLMat, MAX_CARS_INST * 2);
+carHLMesh.count = 0;
+scene.add(carHLMesh);
+const carTLMesh = new THREE.InstancedMesh(carLightGeo, carTLMat, MAX_CARS_INST * 2);
+carTLMesh.count = 0;
+scene.add(carTLMesh);
+
+let nextCarSlot = 0;
+
+function allocCarSlot() {
+  if (nextCarSlot >= MAX_CARS_INST) return -1;
+  const s = nextCarSlot;
+  nextCarSlot++;
+  carBodyMesh.count = nextCarSlot;
+  carCabinMesh.count = nextCarSlot;
+  carHLMesh.count = nextCarSlot * 2;
+  carTLMesh.count = nextCarSlot * 2;
+  return s;
+}
+
+function updateCarInstance(idx, x, y, z, rotY, bodyColor, cabinColor) {
+  const cosR = Math.cos(rotY);
+  const sinR = Math.sin(rotY);
+
+  _euler.set(0, rotY, 0);
+  _quat.setFromEuler(_euler);
+
+  // Body
+  _pos.set(x, 0.75, z);
+  _scale.set(1, 1, 1);
+  _mat4.compose(_pos, _quat, _scale);
+  carBodyMesh.setMatrixAt(idx, _mat4);
+  carBodyMesh.setColorAt(idx, _color.set(bodyColor));
+
+  // Cabin — offset (-0.3, 0.95, 0) in local space
+  const cLocalX = -0.3;
+  const cWorldX = x + cLocalX * cosR;
+  const cWorldZ = z + cLocalX * (-sinR);
+  _pos.set(cWorldX, 1.7, cWorldZ);
+  _mat4.compose(_pos, _quat, _scale);
+  carCabinMesh.setMatrixAt(idx, _mat4);
+  carCabinMesh.setColorAt(idx, _color.set(cabinColor));
+
+  // Headlights — offset (2, -0.15, ±0.7) from body center
+  const hlLocalX = 2;
+  for (let s = 0; s < 2; s++) {
+    const hlLocalZ = s === 0 ? 0.7 : -0.7;
+    const hlX = x + hlLocalX * cosR - hlLocalZ * sinR;
+    const hlZ = z + hlLocalX * (-sinR) + hlLocalZ * (-cosR);
+    _pos.set(hlX, 0.6, hlZ);
+    _mat4.compose(_pos, _quat, _scale);
+    carHLMesh.setMatrixAt(idx * 2 + s, _mat4);
+  }
+
+  // Tail lights — offset (-2, -0.15, ±0.7)
+  const tlLocalX = -2;
+  for (let s = 0; s < 2; s++) {
+    const tlLocalZ = s === 0 ? 0.7 : -0.7;
+    const tlX = x + tlLocalX * cosR - tlLocalZ * sinR;
+    const tlZ = z + tlLocalX * (-sinR) + tlLocalZ * (-cosR);
+    _pos.set(tlX, 0.6, tlZ);
+    _mat4.compose(_pos, _quat, _scale);
+    carTLMesh.setMatrixAt(idx * 2 + s, _mat4);
+  }
+}
+
+function hideCarInstance(idx) {
+  _pos.set(0, -100, 0);
+  _quat.identity();
+  _scale.set(0, 0, 0);
+  _mat4.compose(_pos, _quat, _scale);
+  carBodyMesh.setMatrixAt(idx, _mat4);
+  carCabinMesh.setMatrixAt(idx, _mat4);
+  for (let s = 0; s < 2; s++) {
+    carHLMesh.setMatrixAt(idx * 2 + s, _mat4);
+    carTLMesh.setMatrixAt(idx * 2 + s, _mat4);
+  }
+}
+
+// =========================================================================
+// Car Headlight PointLights — only active at night
+// =========================================================================
+const carHeadlights = []; // array of { light1, light2, active }
+for (let i = 0; i < MAX_CARS_INST; i++) {
+  const l1 = new THREE.PointLight(0xffffee, 0, 20);
+  const l2 = new THREE.PointLight(0xffffee, 0, 20);
+  scene.add(l1);
+  scene.add(l2);
+  carHeadlights.push({ light1: l1, light2: l2 });
+}
+
+function updateCarHeadlights(idx, x, z, rotY, isNight) {
+  const hl = carHeadlights[idx];
+  if (!hl) return;
+  const intensity = isNight ? 2.0 : 0;
+  hl.light1.intensity = intensity;
+  hl.light2.intensity = intensity;
+  if (isNight) {
+    const cosR = Math.cos(rotY);
+    const sinR = Math.sin(rotY);
+    const hlLocalX = 2.5;
+    const hlX1 = x + hlLocalX * sinR + 0.7 * cosR;
+    const hlZ1 = z + hlLocalX * cosR - 0.7 * sinR;
+    const hlX2 = x + hlLocalX * sinR - 0.7 * cosR;
+    const hlZ2 = z + hlLocalX * cosR + 0.7 * sinR;
+    hl.light1.position.set(hlX1, 0.8, hlZ1);
+    hl.light2.position.set(hlX2, 0.8, hlZ2);
+  }
+}
+
+// =========================================================================
+// Injured Cross Markers — instanced red cross sprites above injured people
+// =========================================================================
+const MAX_INJURED_MARKERS = 30;
+const crossHGeo = new THREE.PlaneGeometry(1.5, 0.5);
+const crossVGeo = new THREE.PlaneGeometry(0.5, 1.5);
+const crossMat = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false });
+const injuredMarkers = []; // { crossH, crossV, active }
+for (let i = 0; i < MAX_INJURED_MARKERS; i++) {
+  const h = new THREE.Mesh(crossHGeo, crossMat);
+  const v = new THREE.Mesh(crossVGeo, crossMat);
+  h.visible = false;
+  v.visible = false;
+  h.renderOrder = 999;
+  v.renderOrder = 999;
+  scene.add(h);
+  scene.add(v);
+  injuredMarkers.push({ crossH: h, crossV: v, active: false });
+}
+
+function showInjuredMarker(x, y, z) {
+  for (const m of injuredMarkers) {
+    if (!m.active) {
+      m.active = true;
+      m.crossH.visible = true;
+      m.crossV.visible = true;
+      m.crossH.position.set(x, y + 5, z);
+      m.crossV.position.set(x, y + 5, z);
+      return m;
+    }
+  }
+  return null;
+}
+
+function hideInjuredMarker(marker) {
+  if (!marker) return;
+  marker.active = false;
+  marker.crossH.visible = false;
+  marker.crossV.visible = false;
+}
+
+// =========================================================================
+// Instanced Particle Pool — 500 slots for fire/smoke/debris
+// =========================================================================
+const MAX_PARTICLES = 500;
+const particleGeo = new THREE.BoxGeometry(1, 1, 1);
+const particleMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 1 });
+const particleMesh = new THREE.InstancedMesh(particleGeo, particleMat, MAX_PARTICLES);
+particleMesh.count = 0;
+scene.add(particleMesh);
+
+// Particle pool tracking
+const particlePool = [];
+const activeParticles = [];
+
+// Pre-allocate 500 particle slots
+for (let i = 0; i < MAX_PARTICLES; i++) {
+  particlePool.push(i);
+  // Hide all initially
+  _pos.set(0, -200, 0);
+  _quat.identity();
+  _scale.set(0, 0, 0);
+  _mat4.compose(_pos, _quat, _scale);
+  particleMesh.setMatrixAt(i, _mat4);
+  particleMesh.setColorAt(i, _color.set(0x000000));
+}
+particleMesh.instanceMatrix.needsUpdate = true;
+if (particleMesh.instanceColor) particleMesh.instanceColor.needsUpdate = true;
+
+function spawnParticle(x, y, z, vx, vy, vz, size, color, life, isTearGas = false) {
+  if (particlePool.length === 0) return null;
+  const slot = particlePool.pop();
+  const p = {
+    slot, x, y, z, vx, vy, vz, size, color, life, maxLife: life,
+    isTearGas, rotX: rng() * Math.PI, rotZ: rng() * Math.PI,
+    growRate: isTearGas ? 0.15 : 0.3,
+  };
+  activeParticles.push(p);
+  return p;
+}
+
+function updateParticles(dt) {
+  let needsUpdate = false;
+  for (let i = activeParticles.length - 1; i >= 0; i--) {
+    const p = activeParticles[i];
+    p.life -= dt;
+    if (p.life <= 0) {
+      // Return to pool, hide
+      _pos.set(0, -200, 0);
+      _quat.identity();
+      _scale.set(0, 0, 0);
+      _mat4.compose(_pos, _quat, _scale);
+      particleMesh.setMatrixAt(p.slot, _mat4);
+      particlePool.push(p.slot);
+      activeParticles.splice(i, 1);
+      needsUpdate = true;
+      continue;
+    }
+
+    // Move
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+    p.rotX += dt * 3;
+    p.rotZ += dt * 2;
+
+    // Tear gas expands and drifts
+    if (p.isTearGas) {
+      p.size *= (1 + p.growRate * dt);
+      p.vx += (rng() - 0.5) * dt * 2;
+      p.vz += (rng() - 0.5) * dt * 2;
+    } else {
+      p.size *= (1 + p.growRate * dt);
+    }
+
+    const alpha = Math.max(0, p.life / p.maxLife);
+
+    _euler.set(p.rotX, 0, p.rotZ);
+    _quat.setFromEuler(_euler);
+    _pos.set(p.x, p.y, p.z);
+    _scale.set(p.size, p.size, p.size);
+    _mat4.compose(_pos, _quat, _scale);
+    particleMesh.setMatrixAt(p.slot, _mat4);
+    particleMesh.setColorAt(p.slot, _color.set(p.color));
+    needsUpdate = true;
+  }
+
+  particleMesh.count = Math.max(particleMesh.count, activeParticles.length);
+  // Keep count at max allocated so hidden slots stay hidden
+  let maxSlot = 0;
+  for (const p of activeParticles) {
+    if (p.slot >= maxSlot) maxSlot = p.slot + 1;
+  }
+  particleMesh.count = maxSlot || 0;
+
+  if (needsUpdate) {
+    particleMesh.instanceMatrix.needsUpdate = true;
+    if (particleMesh.instanceColor) particleMesh.instanceColor.needsUpdate = true;
+  }
+}
+
+// =========================================================================
+// Helpers
+// =========================================================================
+function randomSidewalkPos() {
+  // Pick a sidewalk position — people walk on sidewalks alongside roads
+  if (rng() < 0.5) {
+    // Along horizontal road
+    const row = Math.floor(rng() * (GRID_ROWS + 1));
+    const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2 + (rng() < 0.5 ? 1 : -1) * (ROAD_W / 2 + 1.5);
+    const x = rng() * CITY_W;
+    return { x, z };
+  } else {
+    // Along vertical road
+    const col = Math.floor(rng() * (GRID_COLS + 1));
+    const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2 + (rng() < 0.5 ? 1 : -1) * (ROAD_W / 2 + 1.5);
+    const z = rng() * CITY_H;
+    return { x, z };
+  }
+}
+
+function dist2d(a, b) {
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dz * dz);
+}
+
+function edgeSpawnPos() {
+  const side = Math.floor(rng() * 4);
+  switch (side) {
+    case 0: return { x: -5, z: rng() * CITY_H };
+    case 1: return { x: CITY_W + 5, z: rng() * CITY_H };
+    case 2: return { x: rng() * CITY_W, z: -5 };
+    default: return { x: rng() * CITY_W, z: CITY_H + 5 };
+  }
+}
+
+// Find curb parking position near a building (on nearest road edge)
+function curbNearBuilding(bldg) {
+  let bestDist = Infinity, bestPos = null;
+  // Check vertical roads for nearest curb
+  for (const vx of vRoads) {
+    const d = Math.abs(bldg.x - vx);
+    if (d < bestDist) {
+      bestDist = d;
+      const side = bldg.x > vx ? 1 : -1;
+      bestPos = { x: vx + side * (ROAD_W / 2 - 1.5), z: bldg.z };
+    }
+  }
+  // Check horizontal roads
+  for (const hz of hRoads) {
+    const d = Math.abs(bldg.z - hz);
+    if (d < bestDist) {
+      bestDist = d;
+      const side = bldg.z > hz ? 1 : -1;
+      bestPos = { x: bldg.x, z: hz + side * (ROAD_W / 2 - 1.5) };
+    }
+  }
+  return bestPos || { x: bldg.x, z: bldg.z + (bldg.d || 10) / 2 + 3 };
+}
+
+// Get door position of a building
+function doorPos(bldg) {
+  return { x: bldg.x, z: bldg.z + (bldg.d || 10) / 2 + 0.5 };
+}
+
+function addKillFeedEntry(text) {
+  killFeed.unshift({ text, age: 0 });
+  if (killFeed.length > 10) killFeed.pop();
+}
+
+// Find nearest road point for navigation
+function snapToNearestRoad(px, pz) {
+  let best = null, bestDist = Infinity;
+  // Check horizontal roads
+  for (const z of hRoads) {
+    const d = Math.abs(pz - z);
+    if (d < bestDist) { bestDist = d; best = { x: px, z, horizontal: true }; }
+  }
+  // Check vertical roads
+  for (const x of vRoads) {
+    const d = Math.abs(px - x);
+    if (d < bestDist) { bestDist = d; best = { x, z: pz, horizontal: false }; }
+  }
+  return best;
+}
+
+// Simple road pathfinding — drive on roads to target
+function planRoadPath(fromX, fromZ, toX, toZ) {
+  // Find nearest road to start and end
+  const startRoad = snapToNearestRoad(fromX, fromZ);
+  const endRoad = snapToNearestRoad(toX, toZ);
+  // Build a simple waypoint path via nearest intersection
+  const waypoints = [];
+  waypoints.push({ x: startRoad.x, z: startRoad.z });
+
+  // Find nearest intersection to start
+  let bestIntStart = null, bestDistStart = Infinity;
+  for (const inter of intersections) {
+    const d = dist2d(startRoad, inter);
+    if (d < bestDistStart) { bestDistStart = d; bestIntStart = inter; }
+  }
+  if (bestIntStart) waypoints.push({ ...bestIntStart });
+
+  // Find nearest intersection to end
+  let bestIntEnd = null, bestDistEnd = Infinity;
+  for (const inter of intersections) {
+    const d = dist2d(endRoad, inter);
+    if (d < bestDistEnd) { bestDistEnd = d; bestIntEnd = inter; }
+  }
+  if (bestIntEnd && bestIntEnd !== bestIntStart) {
+    // Route via intermediate intersections (simple L-path)
+    waypoints.push({ x: bestIntEnd.x, z: bestIntStart.z });
+    waypoints.push({ ...bestIntEnd });
+  }
+  waypoints.push({ x: endRoad.x, z: endRoad.z });
+  waypoints.push({ x: toX, z: toZ });
+  return waypoints;
+}
+
+// =========================================================================
+// Pedestrians (civilians)
+// =========================================================================
+for (let i = 0; i < NUM_PEDESTRIANS; i++) {
+  const pos = randomSidewalkPos();
+  const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+  const slot = allocPersonSlot();
+
+  pedestrians.push({
+    slot,
+    x: pos.x, z: pos.z, y: 0, rotY: 0,
+    bodyColor: COLOR_CIVILIAN,
+    headColor,
+    scale: 1.0,
+    speed: 1.5 + rng() * 1.5,
+    target: randomSidewalkPos(),
+    alive: true,
+    fleeing: false,
+  });
+}
+
+// =========================================================================
+// Car-driving civilians — people who walk to car, drive, park, walk to dest
+// =========================================================================
+const houseBuildings = buildings.filter(b => b.type === 'house' || b.type === 'shop');
+
+for (let i = 0; i < 10 && houseBuildings.length >= 2; i++) {
+  const homeIdx = Math.floor(rng() * houseBuildings.length);
+  const home = houseBuildings[homeIdx];
+  let destIdx = Math.floor(rng() * houseBuildings.length);
+  while (destIdx === homeIdx && houseBuildings.length > 1) destIdx = Math.floor(rng() * houseBuildings.length);
+  const dest = houseBuildings[destIdx];
+
+  const personSlot = allocPersonSlot();
+  const carSlot = allocCarSlot();
+  if (personSlot < 0 || carSlot < 0) break;
+
+  const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+  const hue = rng();
+  const bodyColor = new THREE.Color().setHSL(hue, 0.6, 0.45).getHex();
+  const cabinColor = new THREE.Color().setHSL(hue, 0.5, 0.35).getHex();
+
+  const homeDoor = doorPos(home);
+  const homeCurb = curbNearBuilding(home);
+
+  // Park car at home curb initially
+  updateCarInstance(carSlot, homeCurb.x, 0, homeCurb.z, 0, bodyColor, cabinColor);
+
+  carDrivers.push({
+    personSlot, carSlot,
+    x: homeDoor.x, z: homeDoor.z, y: 0, rotY: 0,
+    bodyColor: COLOR_CIVILIAN, headColor,
+    carBodyColor: bodyColor, carCabinColor: cabinColor,
+    scale: 1.0, speed: 2.0 + rng() * 1.0,
+    home, dest,
+    homeDoor, homeCurb,
+    destDoor: doorPos(dest),
+    destCurb: curbNearBuilding(dest),
+    // State machine: walk_to_car, driving, walk_to_dest, at_dest, walk_to_car_return, driving_home, walk_home, at_home
+    state: 'at_home',
+    stateTimer: 3 + rng() * 15, // wait before first trip
+    roadPath: [],
+    roadIdx: 0,
+    alive: true, visible: true, carMoving: false,
+  });
+}
+
+// =========================================================================
+// Taxis — yellow cars cruising roads, picking up carless residents
+// =========================================================================
+// (spawned after cars section below)
+
+// =========================================================================
+// Cars — road-following with intersection turns
+// =========================================================================
+function pickRandomRoadStart() {
+  // Pick a random road segment
+  if (rng() < 0.5) {
+    // Horizontal road
+    const row = Math.floor(rng() * (GRID_ROWS + 1));
+    const z = hRoads[row];
+    const col = Math.floor(rng() * GRID_COLS);
+    const x = vRoads[col] + rng() * (BLOCK_W + ROAD_W);
+    return { x, z, horizontal: true, dir: rng() < 0.5 ? 1 : -1 };
+  } else {
+    // Vertical road
+    const col = Math.floor(rng() * (GRID_COLS + 1));
+    const x = vRoads[col];
+    const row = Math.floor(rng() * GRID_ROWS);
+    const z = hRoads[row] + rng() * (BLOCK_H + ROAD_W);
+    return { x, z, horizontal: false, dir: rng() < 0.5 ? 1 : -1 };
+  }
+}
+
+function findNextIntersection(x, z, horizontal, dir) {
+  if (horizontal) {
+    // Moving along x axis, find next vRoad crossing
+    if (dir > 0) {
+      for (const vx of vRoads) {
+        if (vx > x + 1) return { x: vx, z };
+      }
+      return null; // off edge
+    } else {
+      for (let i = vRoads.length - 1; i >= 0; i--) {
+        if (vRoads[i] < x - 1) return { x: vRoads[i], z };
+      }
+      return null;
+    }
+  } else {
+    // Moving along z axis, find next hRoad crossing
+    if (dir > 0) {
+      for (const hz of hRoads) {
+        if (hz > z + 1) return { x, z: hz };
+      }
+      return null;
+    } else {
+      for (let i = hRoads.length - 1; i >= 0; i--) {
+        if (hRoads[i] < z - 1) return { x, z: hRoads[i] };
+      }
+      return null;
+    }
+  }
+}
+
+for (let i = 0; i < NUM_CARS; i++) {
+  const start = pickRandomRoadStart();
+  const hue = rng();
+  const bodyColor = new THREE.Color().setHSL(hue, 0.6, 0.45).getHex();
+  const cabinColor = new THREE.Color().setHSL(hue, 0.5, 0.35).getHex();
+
+  const nextInt = findNextIntersection(start.x, start.z, start.horizontal, start.dir);
+  const slot = allocCarSlot();
+
+  cars.push({
+    idx: slot,
+    x: start.x, z: start.z,
+    horizontal: start.horizontal,
+    dir: start.dir,
+    speed: 5 + rng() * 8,
+    bodyColor, cabinColor,
+    alive: true,
+    pauseTimer: 0,
+    nextIntersection: nextInt,
+  });
+}
+
+// =========================================================================
+// Taxis — yellow cars cruising roads
+// =========================================================================
+for (let i = 0; i < NUM_TAXIS; i++) {
+  const start = pickRandomRoadStart();
+  const slot = allocCarSlot();
+  if (slot < 0) break;
+  const nextInt = findNextIntersection(start.x, start.z, start.horizontal, start.dir);
+
+  taxis.push({
+    idx: slot,
+    x: start.x, z: start.z,
+    horizontal: start.horizontal,
+    dir: start.dir,
+    speed: 6 + rng() * 4,
+    bodyColor: 0xFFCC00, cabinColor: 0xDDAA00,
+    alive: true,
+    pauseTimer: 0,
+    nextIntersection: nextInt,
+    // Passenger state
+    passenger: null, // ref to a pedestrian waiting for taxi
+    state: 'cruising', // cruising, picking_up, dropping_off
+    pickupTarget: null, // {x, z}
+    dropoffTarget: null,
+    roadPath: [],
+    roadIdx: 0,
+  });
+}
+
+// =========================================================================
+// Riot Units
+// =========================================================================
+function spawnProtestors() {
+  for (let i = 0; i < NUM_PROTESTORS; i++) {
+    const angle = rng() * Math.PI * 2;
+    const radius = rng() * 20;
+    const x = PLAZA_X + Math.cos(angle) * radius;
+    const z = PLAZA_Z + Math.sin(angle) * radius;
+    const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+    const slot = allocPersonSlot();
+
+    // Ring
+    let myRingIdx = -1;
+    if (ringIdx < MAX_RINGS) {
+      myRingIdx = ringIdx++;
+      ringMesh.count = ringIdx;
+    }
+
+    protestors.push({
+      slot, myRingIdx,
+      x, z, y: 0, rotY: 0,
+      bodyColor: COLOR_PROTESTOR,
+      headColor,
+      ringColor: MAGENTA,
+      scale: 1.1,
+      speed: 1.5 + rng() * 2,
+      alive: true,
+      health: 1.0,
+      fleeing: false,
+      throwTimer: 3 + rng() * 8,
+      arrested: false,
+      injured: false,
+      target: { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 },
+    });
+  }
+}
+
+function spawnPolice() {
+  const lineZ = PLAZA_Z - 35;
+  const lineStartX = PLAZA_X - 25;
+
+  for (let i = 0; i < NUM_POLICE; i++) {
+    const x = lineStartX + i * 5;
+    const z = lineZ + (rng() - 0.5) * 3;
+    const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+    const slot = allocPersonSlot();
+
+    // Ring
+    let myRingIdx = -1;
+    if (ringIdx < MAX_RINGS) {
+      myRingIdx = ringIdx++;
+      ringMesh.count = ringIdx;
+    }
+
+    // Shield
+    let myShieldIdx = -1;
+    if (shieldMesh.count < MAX_SHIELDS) {
+      myShieldIdx = shieldMesh.count++;
+    }
+
+    police.push({
+      slot, myRingIdx, myShieldIdx,
+      x, z, y: 0, rotY: 0,
+      bodyColor: COLOR_POLICE,
+      headColor,
+      ringColor: CYAN,
+      scale: 1.15,
+      speed: 2 + rng() * 1.5,
+      alive: true,
+      health: 1.0,
+      fireTimer: 2 + rng() * 4,
+      target: null,
+      holdLine: true,
+      lineX: x,
+      lineZ: lineZ,
+      injured: false,
+    });
+  }
+}
+
+// =========================================================================
+// Ambulance System
+// =========================================================================
+function spawnAmbulance(targetPerson) {
+  const slot = allocCarSlot();
+  if (slot < 0) return;
+
+  // Spawn at city edge on nearest road
+  const edgePos = edgeSpawnPos();
+  const road = snapToNearestRoad(edgePos.x, edgePos.z);
+  const startX = road ? road.x : edgePos.x;
+  const startZ = road ? road.z : edgePos.z;
+
+  // Plan path to injured person
+  const waypoints = planRoadPath(startX, startZ, targetPerson.x, targetPerson.z);
+
+  // Create flashing lights
+  const light1 = new THREE.PointLight(0xff0000, 3, 25);
+  light1.position.set(startX, 3, startZ);
+  scene.add(light1);
+  const light2 = new THREE.PointLight(0x0000ff, 3, 25);
+  light2.position.set(startX, 3, startZ);
+  scene.add(light2);
+
+  const ambulance = {
+    idx: slot,
+    x: startX, z: startZ,
+    speed: 12,
+    bodyColor: 0xFFFFFF,
+    cabinColor: 0xEEEEEE,
+    light1, light2,
+    flashTimer: 0,
+    waypoints,
+    waypointIdx: 0,
+    phase: 'driving_to', // driving_to, loading, driving_hospital, done
+    loadTimer: 0,
+    targetPerson,
+    alive: true,
+    sirenTimer: 0,
+  };
+  ambulances.push(ambulance);
+  addKillFeedEntry('Ambulance dispatched!');
+  playSiren();
+}
+
+function updateAmbulances(dt) {
+  let needsCarUpdate = false;
+  for (let i = ambulances.length - 1; i >= 0; i--) {
+    const amb = ambulances[i];
+    if (!amb.alive) continue;
+
+    amb.flashTimer += dt;
+    amb.sirenTimer += dt;
+
+    // Flash lights alternating red/blue
+    const flashPhase = Math.floor(amb.flashTimer * 4) % 2;
+    amb.light1.intensity = flashPhase === 0 ? 5 : 0.5;
+    amb.light2.intensity = flashPhase === 1 ? 5 : 0.5;
+    amb.light1.position.set(amb.x + 1, 3, amb.z);
+    amb.light2.position.set(amb.x - 1, 3, amb.z);
+
+    // Periodic siren
+    if (amb.sirenTimer > 3) {
+      amb.sirenTimer = 0;
+      playSiren();
+    }
+
+    if (amb.phase === 'driving_to' || amb.phase === 'driving_hospital') {
+      // Drive along waypoints
+      if (amb.waypointIdx < amb.waypoints.length) {
+        const wp = amb.waypoints[amb.waypointIdx];
+        const dx = wp.x - amb.x;
+        const dz = wp.z - amb.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 3) {
+          amb.waypointIdx++;
+        } else {
+          const s = amb.speed * dt;
+          amb.x += (dx / dist) * s;
+          amb.z += (dz / dist) * s;
+        }
+      } else {
+        // Arrived at destination
+        if (amb.phase === 'driving_to') {
+          amb.phase = 'loading';
+          amb.loadTimer = 5;
+          addKillFeedEntry('Ambulance loading patient');
+        } else {
+          // Arrived at hospital
+          amb.phase = 'done';
+          amb.alive = false;
+          scene.remove(amb.light1);
+          scene.remove(amb.light2);
+          hideCarInstance(amb.idx);
+          addKillFeedEntry('Patient delivered to hospital');
+        }
+      }
+    } else if (amb.phase === 'loading') {
+      amb.loadTimer -= dt;
+      if (amb.loadTimer <= 0) {
+        // Pick up injured person
+        if (amb.targetPerson && amb.targetPerson.alive) {
+          amb.targetPerson.alive = false;
+          hidePersonInstance(amb.targetPerson.slot);
+          addKillFeedEntry('Injured person loaded into ambulance');
+        }
+        // Drive to hospital
+        amb.phase = 'driving_hospital';
+        amb.waypointIdx = 0;
+        if (hospitalBuilding) {
+          amb.waypoints = planRoadPath(amb.x, amb.z, hospitalBuilding.x, hospitalBuilding.z + hospitalBuilding.d / 2 + 3);
+        } else {
+          // No hospital, drive to edge
+          const edge = edgeSpawnPos();
+          amb.waypoints = planRoadPath(amb.x, amb.z, edge.x, edge.z);
+        }
+      }
+    }
+
+    // Calculate rotation
+    let rotY = 0;
+    if (amb.waypointIdx < amb.waypoints.length) {
+      const wp = amb.waypoints[amb.waypointIdx];
+      rotY = Math.atan2(wp.x - amb.x, wp.z - amb.z);
+    }
+
+    // Ambulance uses longer body (scale X wider via a wider color)
+    updateCarInstance(amb.idx, amb.x, 0, amb.z, rotY, amb.bodyColor, 0xDD0000);
+    needsCarUpdate = true;
+  }
+
+  if (needsCarUpdate) {
+    carBodyMesh.instanceMatrix.needsUpdate = true;
+    if (carBodyMesh.instanceColor) carBodyMesh.instanceColor.needsUpdate = true;
+    carCabinMesh.instanceMatrix.needsUpdate = true;
+    if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
+    carHLMesh.instanceMatrix.needsUpdate = true;
+    carTLMesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// =========================================================================
+// Police Helicopter
+// =========================================================================
+let helicopter = null;
+
+function createHelicopter() {
+  const heliGroup = new THREE.Group();
+
+  // Body — dark box
+  const bodyGeo = new THREE.BoxGeometry(3, 1.5, 2);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.6, metalness: 0.4 });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  heliGroup.add(body);
+
+  // Tail boom
+  const tailGeo = new THREE.BoxGeometry(4, 0.5, 0.5);
+  const tail = new THREE.Mesh(tailGeo, bodyMat);
+  tail.position.set(-3, 0.2, 0);
+  heliGroup.add(tail);
+
+  // Tail fin
+  const finGeo = new THREE.BoxGeometry(0.3, 1.2, 0.8);
+  const fin = new THREE.Mesh(finGeo, bodyMat);
+  fin.position.set(-4.8, 0.8, 0);
+  heliGroup.add(fin);
+
+  // Main rotor — flat spinning box
+  const rotorGeo = new THREE.BoxGeometry(8, 0.08, 0.4);
+  const rotorMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.6 });
+  const rotor = new THREE.Mesh(rotorGeo, rotorMat);
+  rotor.position.y = 1.0;
+  heliGroup.add(rotor);
+
+  // Second rotor blade (perpendicular)
+  const rotor2 = new THREE.Mesh(rotorGeo, rotorMat);
+  rotor2.position.y = 1.0;
+  rotor2.rotation.y = Math.PI / 2;
+  heliGroup.add(rotor2);
+
+  // Tail rotor
+  const tailRotorGeo = new THREE.BoxGeometry(0.08, 1.5, 0.3);
+  const tailRotor = new THREE.Mesh(tailRotorGeo, rotorMat);
+  tailRotor.position.set(-4.8, 0.8, 0.5);
+  heliGroup.add(tailRotor);
+
+  // Searchlight — SpotLight pointing down, VERY bright
+  const searchlight = new THREE.SpotLight(0xffffff, 15, 300, Math.PI / 8, 0.3, 0.8);
+  searchlight.position.set(0, -0.5, 0);
+  searchlight.castShadow = false;
+  heliGroup.add(searchlight);
+
+  // Searchlight target
+  const slTarget = new THREE.Object3D();
+  slTarget.position.set(0, -80, 0);
+  heliGroup.add(slTarget);
+  searchlight.target = slTarget;
+
+  // Searchlight beam — thin cylinder from helicopter to ground
+  const beamHeight = 80;
+  const beamGeo = new THREE.CylinderGeometry(0.3, 4, beamHeight, 8, 1, true);
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0xffffcc, transparent: true, opacity: 0.08,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const beam = new THREE.Mesh(beamGeo, beamMat);
+  beam.position.y = -beamHeight / 2;
+  heliGroup.add(beam);
+
+  // Ground circle light splash
+  const splashGeo = new THREE.CircleGeometry(12, 24);
+  const splashMat = new THREE.MeshBasicMaterial({
+    color: 0xffffcc, transparent: true, opacity: 0.15,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const splash = new THREE.Mesh(splashGeo, splashMat);
+  splash.rotation.x = -Math.PI / 2;
+  // splash is positioned in world space, will update in animate
+  scene.add(splash);
+
+  // Small searchlight glow at source
+  const glowGeo = new THREE.SphereGeometry(0.3, 8, 6);
+  const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffcc, transparent: true, opacity: 0.9 });
+  const glow = new THREE.Mesh(glowGeo, glowMat);
+  glow.position.set(0, -0.5, 0);
+  heliGroup.add(glow);
+
+  heliGroup.position.set(PLAZA_X, 80, PLAZA_Z);
+  scene.add(heliGroup);
+
+  helicopter = {
+    group: heliGroup,
+    rotor, rotor2, tailRotor,
+    searchlight, slTarget, beam, splash,
+    angle: 0,
+    radius: 60,
+    centerX: PLAZA_X,
+    centerZ: PLAZA_Z,
+    rotorAngle: 0,
+  };
+}
+
+// =========================================================================
+// Effects
+// =========================================================================
+function createTracer(from, to, color = 0xffff00, duration = 0.2) {
+  const points = [
+    new THREE.Vector3(from.x, 2, from.z),
+    new THREE.Vector3(to.x, 2, to.z),
+  ];
+  const geo = new THREE.BufferGeometry().setFromPoints(points);
+  const mat = new THREE.LineBasicMaterial({ color, linewidth: 3, transparent: true, opacity: 1 });
+  const line = new THREE.Line(geo, mat);
+  scene.add(line);
+  tracers.push({ line, life: duration, maxLife: duration });
+
+  const glowMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, transparent: true, opacity: 0.5 });
+  const glow = new THREE.Line(geo.clone(), glowMat);
+  glow.position.y = 0.1;
+  scene.add(glow);
+  tracers.push({ line: glow, life: duration * 0.8, maxLife: duration * 0.8 });
+}
+
+function createMuzzleFlash(pos) {
+  const light = new THREE.PointLight(0xffaa00, 5, 20);
+  light.position.set(pos.x, 2.5, pos.z);
+  scene.add(light);
+  muzzleFlashes.push({ light, life: 0.05 });
+}
+
+function createExplosion(pos) {
+  // Use instanced particles for explosion debris
+  const fireColors = [0xff4400, 0xff8800, 0xffaa00, 0x666666];
+  for (let i = 0; i < 18; i++) {
+    const size = 0.3 + rng() * 0.6;
+    const color = fireColors[Math.floor(rng() * fireColors.length)];
+    spawnParticle(
+      pos.x, 2, pos.z,
+      (rng() - 0.5) * 25, 5 + rng() * 18, (rng() - 0.5) * 25,
+      size, color, 1.0 + rng() * 0.5
+    );
+  }
+
+  // Bright explosion core — temporary PointLight
+  const exLight = new THREE.PointLight(0xff6600, 8, 50);
+  exLight.position.set(pos.x, 4, pos.z);
+  scene.add(exLight);
+  muzzleFlashes.push({ light: exLight, life: 0.3 });
+}
+
+function createTearGasCloud(pos) {
+  for (let i = 0; i < 12; i++) {
+    const size = 2 + rng() * 2;
+    spawnParticle(
+      pos.x + (rng() - 0.5) * 5, 1 + rng() * 3, pos.z + (rng() - 0.5) * 5,
+      (rng() - 0.5) * 0.5, 0.3 + rng() * 0.8, (rng() - 0.5) * 0.5,
+      size, 0xdddddd, 6 + rng() * 4, true
+    );
+  }
+  playHiss(pos.x, pos.z);
+}
+
+function createFire(pos) {
+  // Persistent fire — burns 20-30 seconds with bright PointLight
+  const light = new THREE.PointLight(0xff6600, 5, 30);
+  light.position.set(pos.x, 3, pos.z);
+  scene.add(light);
+  const totalLife = 20 + rng() * 10; // 20-30 seconds
+  fires.push({ light, life: totalLife, age: 0, x: pos.x, z: pos.z, maxIntensity: 5 });
+
+  // Initial burst of fire particles using instanced pool
+  for (let i = 0; i < 12; i++) {
+    const fireColors = [0xff4400, 0xff8800, 0xffaa00, 0xff2200];
+    spawnParticle(
+      pos.x + (rng() - 0.5) * 3, 0.5 + rng() * 2, pos.z + (rng() - 0.5) * 3,
+      (rng() - 0.5) * 1, 0.5 + rng() * 2, (rng() - 0.5) * 1,
+      0.4 + rng() * 0.4,
+      fireColors[Math.floor(rng() * fireColors.length)],
+      2 + rng() * 3
+    );
+  }
+}
+
+function createSmoke(pos) {
+  for (let i = 0; i < 5; i++) {
+    spawnParticle(
+      pos.x + (rng() - 0.5) * 3, 1 + rng() * 2, pos.z + (rng() - 0.5) * 3,
+      (rng() - 0.5) * 0.5, 1 + rng() * 2, (rng() - 0.5) * 0.5,
+      1.5 + rng(), 0x333333, 3 + rng() * 2
+    );
+  }
+}
+
+function createHitEffect(pos) {
+  const light = new THREE.PointLight(0xff0000, 5, 12);
+  light.position.set(pos.x, 2, pos.z);
+  scene.add(light);
+  muzzleFlashes.push({ light, life: 0.1 });
+}
+
+// Arcing projectile (rock or molotov)
+function launchProjectile(from, to, type) {
+  const geo = new THREE.BoxGeometry(
+    type === 'molotov' ? 0.5 : 0.4,
+    type === 'molotov' ? 0.8 : 0.4,
+    type === 'molotov' ? 0.5 : 0.4
+  );
+  const color = type === 'molotov' ? 0xff6600 : 0x888888;
+  const mat = new THREE.MeshBasicMaterial({ color });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(from.x, 2, from.z);
+  scene.add(mesh);
+
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  const flightTime = dist / 30;
+  const vy = dist * 0.15 + 5;
+
+  projectiles.push({
+    mesh, type,
+    startX: from.x, startZ: from.z,
+    endX: to.x, endZ: to.z,
+    vx: dx / flightTime,
+    vz: dz / flightTime,
+    vy: vy,
+    gravity: vy * 2 / flightTime,
+    age: 0,
+    flightTime,
+  });
+}
+
+// =========================================================================
+// Emergency Vehicles — Fire Trucks and Police Vans
+// =========================================================================
+function spawnFireTruck(targetFire) {
+  const slot = allocCarSlot();
+  if (slot < 0) return;
+  const edgePos = edgeSpawnPos();
+  const road = snapToNearestRoad(edgePos.x, edgePos.z);
+  const startX = road ? road.x : edgePos.x;
+  const startZ = road ? road.z : edgePos.z;
+  const waypoints = planRoadPath(startX, startZ, targetFire.x, targetFire.z);
+
+  const light1 = new THREE.PointLight(0xff0000, 3, 30);
+  light1.position.set(startX, 3.5, startZ);
+  scene.add(light1);
+  const light2 = new THREE.PointLight(0xff4400, 3, 30);
+  light2.position.set(startX, 3.5, startZ);
+  scene.add(light2);
+
+  fireTrucks.push({
+    idx: slot, x: startX, z: startZ, speed: 10,
+    bodyColor: 0xCC0000, cabinColor: 0xAA0000,
+    light1, light2, flashTimer: 0,
+    waypoints, waypointIdx: 0,
+    phase: 'driving', // driving, fighting_fire, returning
+    targetFire, fightTimer: 0,
+    alive: true, sirenTimer: 0,
+  });
+  addKillFeedEntry('Fire truck dispatched!');
+  playSiren();
+}
+
+function spawnPoliceVan() {
+  const slot = allocCarSlot();
+  if (slot < 0) return;
+  const edgePos = edgeSpawnPos();
+  const road = snapToNearestRoad(edgePos.x, edgePos.z);
+  const startX = road ? road.x : edgePos.x;
+  const startZ = road ? road.z : edgePos.z;
+  const waypoints = planRoadPath(startX, startZ, PLAZA_X + (rng() - 0.5) * 30, PLAZA_Z - 40);
+
+  const light1 = new THREE.PointLight(0x0000ff, 3, 25);
+  light1.position.set(startX, 3.5, startZ);
+  scene.add(light1);
+  const light2 = new THREE.PointLight(0xff0000, 3, 25);
+  light2.position.set(startX, 3.5, startZ);
+  scene.add(light2);
+
+  policeVans.push({
+    idx: slot, x: startX, z: startZ, speed: 11,
+    bodyColor: 0x223366, cabinColor: 0x1a2244,
+    light1, light2, flashTimer: 0,
+    waypoints, waypointIdx: 0,
+    phase: 'driving', // driving, deploying, done
+    deployTimer: 0, deployed: false,
+    alive: true, sirenTimer: 0,
+  });
+  addKillFeedEntry('Police van dispatched!');
+  playSiren();
+}
+
+function updateEmergencyVehicles(dt) {
+  const isNight = nightMode || simTime < 6 || simTime > 20;
+
+  // Fire trucks
+  for (let i = fireTrucks.length - 1; i >= 0; i--) {
+    const ft = fireTrucks[i];
+    if (!ft.alive) continue;
+    ft.flashTimer += dt;
+    ft.sirenTimer += dt;
+    const flashPhase = Math.floor(ft.flashTimer * 4) % 2;
+    ft.light1.intensity = flashPhase === 0 ? 5 : 0.5;
+    ft.light2.intensity = flashPhase === 1 ? 5 : 0.5;
+    ft.light1.position.set(ft.x + 1, 3.5, ft.z);
+    ft.light2.position.set(ft.x - 1, 3.5, ft.z);
+    if (ft.sirenTimer > 4) { ft.sirenTimer = 0; playSiren(); }
+
+    if (ft.phase === 'driving') {
+      if (ft.waypointIdx < ft.waypoints.length) {
+        const wp = ft.waypoints[ft.waypointIdx];
+        const dx = wp.x - ft.x, dz = wp.z - ft.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { ft.waypointIdx++; }
+        else { const s = ft.speed * dt; ft.x += (dx / d) * s; ft.z += (dz / d) * s; }
+      } else {
+        ft.phase = 'fighting_fire';
+        ft.fightTimer = 15 + rng() * 10;
+        addKillFeedEntry('Fire truck fighting fire');
+      }
+    } else if (ft.phase === 'fighting_fire') {
+      ft.fightTimer -= dt;
+      // Accelerate fire death
+      if (ft.targetFire && ft.targetFire.life > 0) {
+        ft.targetFire.life -= dt * 2; // fire goes out 3x faster
+      }
+      if (ft.fightTimer <= 0 || !ft.targetFire || ft.targetFire.life <= 0) {
+        ft.phase = 'returning';
+        const edge = edgeSpawnPos();
+        ft.waypoints = planRoadPath(ft.x, ft.z, edge.x, edge.z);
+        ft.waypointIdx = 0;
+      }
+    } else if (ft.phase === 'returning') {
+      if (ft.waypointIdx < ft.waypoints.length) {
+        const wp = ft.waypoints[ft.waypointIdx];
+        const dx = wp.x - ft.x, dz = wp.z - ft.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { ft.waypointIdx++; }
+        else { const s = ft.speed * dt; ft.x += (dx / d) * s; ft.z += (dz / d) * s; }
+      } else {
+        ft.alive = false;
+        scene.remove(ft.light1); scene.remove(ft.light2);
+        hideCarInstance(ft.idx);
+      }
+    }
+
+    if (ft.alive) {
+      let rotY = 0;
+      if (ft.waypointIdx < ft.waypoints.length) {
+        const wp = ft.waypoints[ft.waypointIdx];
+        rotY = Math.atan2(wp.x - ft.x, wp.z - ft.z);
+      }
+      updateCarInstance(ft.idx, ft.x, 0, ft.z, rotY, ft.bodyColor, ft.cabinColor);
+      updateCarHeadlights(ft.idx, ft.x, ft.z, rotY, isNight);
+    }
+  }
+
+  // Police vans
+  for (let i = policeVans.length - 1; i >= 0; i--) {
+    const pv = policeVans[i];
+    if (!pv.alive) continue;
+    pv.flashTimer += dt;
+    pv.sirenTimer += dt;
+    const flashPhase = Math.floor(pv.flashTimer * 4) % 2;
+    pv.light1.intensity = flashPhase === 0 ? 5 : 0.5;
+    pv.light2.intensity = flashPhase === 1 ? 5 : 0.5;
+    pv.light1.position.set(pv.x + 1, 3.5, pv.z);
+    pv.light2.position.set(pv.x - 1, 3.5, pv.z);
+    if (pv.sirenTimer > 4) { pv.sirenTimer = 0; playSiren(); }
+
+    if (pv.phase === 'driving') {
+      if (pv.waypointIdx < pv.waypoints.length) {
+        const wp = pv.waypoints[pv.waypointIdx];
+        const dx = wp.x - pv.x, dz = wp.z - pv.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { pv.waypointIdx++; }
+        else { const s = pv.speed * dt; pv.x += (dx / d) * s; pv.z += (dz / d) * s; }
+      } else {
+        pv.phase = 'deploying';
+        pv.deployTimer = 3;
+        addKillFeedEntry('Police van deploying officers');
+      }
+    } else if (pv.phase === 'deploying') {
+      pv.deployTimer -= dt;
+      if (pv.deployTimer <= 0 && !pv.deployed) {
+        pv.deployed = true;
+        // Spawn 3-4 police from the van
+        const numCops = 3 + Math.floor(rng() * 2);
+        for (let c = 0; c < numCops; c++) {
+          const slot = allocPersonSlot();
+          if (slot < 0) break;
+          const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+          let myRingIdx = -1;
+          if (ringIdx < MAX_RINGS) { myRingIdx = ringIdx++; ringMesh.count = ringIdx; }
+          let myShieldIdx = -1;
+          if (shieldMesh.count < MAX_SHIELDS) { myShieldIdx = shieldMesh.count++; }
+          police.push({
+            slot, myRingIdx, myShieldIdx,
+            x: pv.x + (rng() - 0.5) * 4, z: pv.z + (rng() - 0.5) * 4, y: 0, rotY: 0,
+            bodyColor: COLOR_POLICE, headColor, ringColor: CYAN,
+            scale: 1.15, speed: 2 + rng() * 1.5,
+            alive: true, health: 1.0, fireTimer: 2 + rng() * 4,
+            target: null, holdLine: true,
+            lineX: PLAZA_X + (rng() - 0.5) * 30, lineZ: PLAZA_Z - 30 - rng() * 10,
+            injured: false,
+          });
+        }
+        addKillFeedEntry(`${numCops} officers deployed from van`);
+        pv.phase = 'done';
+      }
+    }
+
+    if (pv.alive) {
+      let rotY = 0;
+      if (pv.phase === 'driving' && pv.waypointIdx < pv.waypoints.length) {
+        const wp = pv.waypoints[pv.waypointIdx];
+        rotY = Math.atan2(wp.x - pv.x, wp.z - pv.z);
+      }
+      updateCarInstance(pv.idx, pv.x, 0, pv.z, rotY, pv.bodyColor, pv.cabinColor);
+      updateCarHeadlights(pv.idx, pv.x, pv.z, rotY, isNight);
+    }
+  }
+
+  // Update car instanced meshes
+  if (fireTrucks.length > 0 || policeVans.length > 0) {
+    carBodyMesh.instanceMatrix.needsUpdate = true;
+    if (carBodyMesh.instanceColor) carBodyMesh.instanceColor.needsUpdate = true;
+    carCabinMesh.instanceMatrix.needsUpdate = true;
+    if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
+    carHLMesh.instanceMatrix.needsUpdate = true;
+    carTLMesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// =========================================================================
+// Injured Person Ground Logic
+// =========================================================================
+function knockDownPerson(person) {
+  if (!person || !person.alive || person.onGround) return;
+  person.onGround = true;
+  person.injured = true;
+
+  // Add to injured on ground list
+  const marker = showInjuredMarker(person.x, 0, person.z);
+  injuredOnGround.push({ person, marker, timer: 15 + rng() * 10, ambulanceDispatched: false });
+
+  injuryCount++;
+}
+
+function updateInjuredOnGround(dt) {
+  for (let i = injuredOnGround.length - 1; i >= 0; i--) {
+    const entry = injuredOnGround[i];
+    entry.timer -= dt;
+
+    // Update marker position to follow person (they stay still but just in case)
+    if (entry.marker && entry.person.alive) {
+      entry.marker.crossH.position.set(entry.person.x, 5, entry.person.z);
+      entry.marker.crossV.position.set(entry.person.x, 5, entry.person.z);
+      // Billboard: face camera
+      entry.marker.crossH.lookAt(camera.position);
+      entry.marker.crossV.lookAt(camera.position);
+    }
+
+    // Render person lying down (rotated 90 degrees on side)
+    if (entry.person.alive && entry.person.onGround) {
+      const slot = entry.person.slot;
+      if (slot >= 0) {
+        const s = (entry.person.scale || 1.0) * PERSON_SCALE;
+        // Body lying on side
+        _euler.set(0, entry.person.rotY || 0, Math.PI / 2);
+        _quat.setFromEuler(_euler);
+        _pos.set(entry.person.x, BODY_W * s / 2, entry.person.z);
+        _scale.set(BODY_W * s, BODY_H * s, BODY_D * s);
+        _mat4.compose(_pos, _quat, _scale);
+        personBodyMesh.setMatrixAt(slot, _mat4);
+        personBodyMesh.setColorAt(slot, _color.set(entry.person.bodyColor));
+        // Head
+        _pos.set(entry.person.x + BODY_H * s * 0.6, BODY_W * s / 2, entry.person.z);
+        _scale.set(HEAD_SIZE * s, HEAD_SIZE * s, HEAD_SIZE * s);
+        _mat4.compose(_pos, _quat, _scale);
+        personHeadMesh.setMatrixAt(slot, _mat4);
+        personHeadMesh.setColorAt(slot, _color.set(entry.person.headColor));
+      }
+    }
+
+    // Dispatch ambulance after delay
+    if (!entry.ambulanceDispatched && entry.timer < 10) {
+      entry.ambulanceDispatched = true;
+      spawnAmbulance(entry.person);
+    }
+
+    // Remove when ambulance picks them up or timer expires
+    if (!entry.person.alive || entry.timer <= 0) {
+      hideInjuredMarker(entry.marker);
+      if (entry.person.alive) {
+        entry.person.alive = false;
+        hidePersonInstance(entry.person.slot);
+      }
+      injuredOnGround.splice(i, 1);
+    }
+  }
+}
+
+// =========================================================================
+// Keyboard
+// =========================================================================
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    riotMode = !riotMode;
+    const banner = document.getElementById('combat-banner');
+    banner.textContent = riotMode ? 'RIOT IN PROGRESS' : 'RIOT DISPERSED';
+    banner.classList.add('show');
+    setTimeout(() => banner.classList.remove('show'), 2000);
+
+    if (riotMode) {
+      ensureAudio();
+      riotPhase = 'TENSION';
+      riotTimer = 0;
+      molotovCount = 0;
+      teargasCount = 0;
+      rockCount = 0;
+      arrestCount = 0;
+      injuryCount = 0;
+      spawnProtestors();
+      spawnPolice();
+      createHelicopter();
+      addKillFeedEntry('Protest gathering in central plaza');
+      addKillFeedEntry('Police helicopter deployed');
+      // Spawn police vans
+      for (let v = 0; v < 2; v++) {
+        setTimeout(() => spawnPoliceVan(), (v + 1) * 5000);
+      }
+    } else {
+      // Remove riot units — hide their instanced slots
+      for (const p of protestors) hidePersonInstance(p.slot);
+      for (const p of police) hidePersonInstance(p.slot);
+      protestors.length = 0;
+      police.length = 0;
+      riotPhase = 'PEACEFUL';
+      // Clear fires
+      for (const f of fires) scene.remove(f.light);
+      fires.length = 0;
+      // Remove helicopter
+      if (helicopter) {
+        if (helicopter.splash) scene.remove(helicopter.splash);
+        scene.remove(helicopter.group);
+        helicopter = null;
+      }
+      // Clear ambulances
+      for (const amb of ambulances) {
+        if (amb.light1) scene.remove(amb.light1);
+        if (amb.light2) scene.remove(amb.light2);
+        hideCarInstance(amb.idx);
+      }
+      ambulances.length = 0;
+      injuredQueue.length = 0;
+      // Clear fire trucks
+      for (const ft of fireTrucks) {
+        if (ft.light1) scene.remove(ft.light1);
+        if (ft.light2) scene.remove(ft.light2);
+        hideCarInstance(ft.idx);
+      }
+      fireTrucks.length = 0;
+      // Clear police vans
+      for (const pv of policeVans) {
+        if (pv.light1) scene.remove(pv.light1);
+        if (pv.light2) scene.remove(pv.light2);
+        hideCarInstance(pv.idx);
+      }
+      policeVans.length = 0;
+      // Clear injured on ground
+      for (const entry of injuredOnGround) {
+        hideInjuredMarker(entry.marker);
+      }
+      injuredOnGround.length = 0;
+      // Reset rings and shields
+      ringMesh.count = 0;
+      ringIdx = 0;
+      shieldMesh.count = 0;
+    }
+  }
+  if (e.code === 'KeyC') {
+    chaseCam = !chaseCam;
+    if (chaseCam) {
+      controls.enabled = false;
+      const all = [...pedestrians.filter(p => p.alive), ...protestors.filter(p => p.alive), ...police.filter(p => p.alive)];
+      chaseTarget = all.length > 0 ? all[Math.floor(rng() * all.length)] : null;
+    } else {
+      controls.enabled = true;
+    }
+  }
+  if (e.code === 'KeyN') {
+    nightMode = !nightMode;
+  }
+  if (e.code === 'KeyD') {
+    debugMode = !debugMode;
+    document.getElementById('debug-overlay').classList.toggle('visible', debugMode);
+    document.getElementById('debug-canvas').classList.toggle('visible', debugMode);
+  }
+});
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// =========================================================================
+// Update Loop
+// =========================================================================
+let lastTime = performance.now();
+let frameCount = 0;
+let fpsDisplay = 0;
+let fpsTimer = 0;
+
+function update(dt) {
+  // Advance sim time (1 real second = 2 sim minutes)
+  simTime += dt * (2 / 60);
+  if (simTime >= 24) simTime -= 24;
+
+  const isNight = nightMode || simTime < 6 || simTime > 20;
+
+  // Day/night lighting
+  const dayFactor = isNight ? 0.2 : 1.0;
+  ambientLight.intensity = 0.3 + dayFactor * 0.4;
+  sunLight.intensity = dayFactor * 1.2;
+  hemiLight.intensity = 0.3 + dayFactor * 0.3;
+  scene.fog.density = isNight ? 0.004 : 0.0015;
+  renderer.toneMappingExposure = isNight ? 0.9 : 1.4;
+
+  // Street lamps
+  for (const lamp of streetLamps) {
+    lamp.light.intensity = isNight ? 1.5 : 0.2;
+  }
+
+  // ---- Update pedestrians ----
+  let needsPersonUpdate = false;
+  for (const ped of pedestrians) {
+    if (!ped.alive) continue;
+
+    // If riot, civilians near plaza flee
+    if (riotMode && !ped.fleeing) {
+      const distToPlaza = dist2d(ped, { x: PLAZA_X, z: PLAZA_Z });
+      if (distToPlaza < 80 && riotPhase !== 'PEACEFUL') {
+        ped.fleeing = true;
+        ped.speed = 3 + rng() * 2;
+        if (buildings.length > 0) {
+          const bldg = buildings[Math.floor(rng() * buildings.length)];
+          // Walk to building door position
+          ped.target = { x: bldg.x, z: bldg.z + bldg.d / 2 };
+        } else {
+          ped.target = edgeSpawnPos();
+        }
+        if (rng() < 0.15) addKillFeedEntry('Civilian fled to building');
+      }
+    }
+
+    const dx = ped.target.x - ped.x;
+    const dz = ped.target.z - ped.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < 2) {
+      if (ped.fleeing) {
+        ped.alive = false;
+        hidePersonInstance(ped.slot);
+      } else {
+        ped.target = randomSidewalkPos();
+      }
+    } else {
+      const s = ped.speed * dt;
+      ped.x += (dx / dist) * s;
+      ped.z += (dz / dist) * s;
+      ped.rotY = Math.atan2(dx, dz);
+    }
+
+    if (ped.alive) {
+      updatePersonInstance(ped.slot, ped.x, 0, ped.z, ped.rotY, ped.bodyColor, ped.headColor, ped.scale);
+      needsPersonUpdate = true;
+    }
+  }
+
+  let needsCarUpdate = false;
+
+  // ---- Update car-driving civilians ----
+  for (const cd of carDrivers) {
+    if (!cd.alive) continue;
+    cd.stateTimer -= dt;
+
+    if (cd.state === 'at_home' && cd.stateTimer <= 0) {
+      // Start walking to car
+      cd.state = 'walk_to_car';
+      cd.visible = true;
+    } else if (cd.state === 'walk_to_car') {
+      const dx = cd.homeCurb.x - cd.x;
+      const dz = cd.homeCurb.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        // Get in car
+        cd.state = 'driving';
+        cd.visible = false;
+        cd.carMoving = true;
+        hidePersonInstance(cd.personSlot);
+        cd.roadPath = planRoadPath(cd.homeCurb.x, cd.homeCurb.z, cd.destCurb.x, cd.destCurb.z);
+        cd.roadIdx = 0;
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    } else if (cd.state === 'driving') {
+      if (cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const dx = wp.x - cd.x;
+        const dz = wp.z - cd.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 2) {
+          cd.roadIdx++;
+        } else {
+          const s = 8 * dt;
+          cd.x += (dx / d) * s;
+          cd.z += (dz / d) * s;
+        }
+      } else {
+        // Arrived at dest curb — park and get out
+        cd.x = cd.destCurb.x;
+        cd.z = cd.destCurb.z;
+        cd.state = 'walk_to_dest';
+        cd.visible = true;
+        cd.carMoving = false;
+      }
+      // Update car position while driving
+      if (cd.carMoving && cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const rotY = Math.atan2(wp.x - cd.x, wp.z - cd.z);
+        updateCarInstance(cd.carSlot, cd.x, 0, cd.z, rotY, cd.carBodyColor, cd.carCabinColor);
+        updateCarHeadlights(cd.carSlot, cd.x, cd.z, rotY, isNight);
+        needsCarUpdate = true;
+      }
+    } else if (cd.state === 'walk_to_dest') {
+      const dx = cd.destDoor.x - cd.x;
+      const dz = cd.destDoor.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        cd.state = 'at_dest';
+        cd.stateTimer = 10 + rng() * 20;
+        cd.visible = false;
+        hidePersonInstance(cd.personSlot);
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    } else if (cd.state === 'at_dest' && cd.stateTimer <= 0) {
+      // Walk back to car for return trip
+      cd.state = 'walk_to_car_return';
+      cd.x = cd.destDoor.x;
+      cd.z = cd.destDoor.z;
+      cd.visible = true;
+    } else if (cd.state === 'walk_to_car_return') {
+      const dx = cd.destCurb.x - cd.x;
+      const dz = cd.destCurb.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        cd.state = 'driving_home';
+        cd.visible = false;
+        cd.carMoving = true;
+        hidePersonInstance(cd.personSlot);
+        cd.roadPath = planRoadPath(cd.destCurb.x, cd.destCurb.z, cd.homeCurb.x, cd.homeCurb.z);
+        cd.roadIdx = 0;
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    } else if (cd.state === 'driving_home') {
+      if (cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const dx = wp.x - cd.x;
+        const dz = wp.z - cd.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 2) {
+          cd.roadIdx++;
+        } else {
+          const s = 8 * dt;
+          cd.x += (dx / d) * s;
+          cd.z += (dz / d) * s;
+        }
+      } else {
+        cd.x = cd.homeCurb.x;
+        cd.z = cd.homeCurb.z;
+        cd.state = 'walk_home';
+        cd.visible = true;
+        cd.carMoving = false;
+      }
+      if (cd.carMoving && cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const rotY = Math.atan2(wp.x - cd.x, wp.z - cd.z);
+        updateCarInstance(cd.carSlot, cd.x, 0, cd.z, rotY, cd.carBodyColor, cd.carCabinColor);
+        updateCarHeadlights(cd.carSlot, cd.x, cd.z, rotY, isNight);
+        needsCarUpdate = true;
+      }
+    } else if (cd.state === 'walk_home') {
+      const dx = cd.homeDoor.x - cd.x;
+      const dz = cd.homeDoor.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        cd.state = 'at_home';
+        cd.stateTimer = 10 + rng() * 20;
+        cd.visible = false;
+        hidePersonInstance(cd.personSlot);
+        // Pick new destination for next trip
+        if (houseBuildings.length > 1) {
+          let ni;
+          do { ni = Math.floor(rng() * houseBuildings.length); } while (houseBuildings[ni] === cd.home);
+          cd.dest = houseBuildings[ni];
+          cd.destDoor = doorPos(cd.dest);
+          cd.destCurb = curbNearBuilding(cd.dest);
+        }
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    }
+
+    // Render person if visible
+    if (cd.visible && cd.alive) {
+      updatePersonInstance(cd.personSlot, cd.x, 0, cd.z, cd.rotY, cd.bodyColor, cd.headColor, cd.scale);
+      needsPersonUpdate = true;
+    }
+    // Park car when not moving
+    if (!cd.carMoving) {
+      const parkPos = (cd.state.includes('home') || cd.state === 'at_home' || cd.state === 'walk_to_car') ? cd.homeCurb : cd.destCurb;
+      updateCarInstance(cd.carSlot, parkPos.x, 0, parkPos.z, 0, cd.carBodyColor, cd.carCabinColor);
+      updateCarHeadlights(cd.carSlot, parkPos.x, parkPos.z, 0, false);
+    }
+  }
+
+  // ---- Update taxis ----
+  for (const taxi of taxis) {
+    if (!taxi.alive) continue;
+    if (taxi.pauseTimer > 0) { taxi.pauseTimer -= dt; continue; }
+
+    if (taxi.state === 'cruising') {
+      // Drive like normal cars on road grid
+      if (!taxi.nextIntersection) {
+        const start = pickRandomRoadStart();
+        taxi.x = start.x; taxi.z = start.z;
+        taxi.horizontal = start.horizontal; taxi.dir = start.dir;
+        taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+        taxi.pauseTimer = 0.5;
+        continue;
+      }
+      const target = taxi.nextIntersection;
+      if (taxi.horizontal) {
+        taxi.z = target.z;
+        const dist = Math.abs(target.x - taxi.x);
+        if (dist < 2) {
+          taxi.x = target.x; taxi.z = target.z;
+          taxi.pauseTimer = 0.3 + rng() * 0.5;
+          const turnRoll = rng();
+          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
+          else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
+          taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+        } else {
+          taxi.x += taxi.dir * taxi.speed * dt;
+        }
+      } else {
+        taxi.x = target.x;
+        const dist = Math.abs(target.z - taxi.z);
+        if (dist < 2) {
+          taxi.x = target.x; taxi.z = target.z;
+          taxi.pauseTimer = 0.3 + rng() * 0.5;
+          const turnRoll = rng();
+          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
+          else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
+          taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+        } else {
+          taxi.z += taxi.dir * taxi.speed * dt;
+        }
+      }
+
+      // Look for nearby pedestrians who need a ride (randomly assign some as needing taxi)
+      if (rng() < 0.002) {
+        for (const ped of pedestrians) {
+          if (!ped.alive || ped.fleeing || ped.inTaxi) continue;
+          if (ped.inTaxi) continue;
+          const d = dist2d(taxi, ped);
+          if (d < 15) {
+            taxi.passenger = ped;
+            taxi.state = 'picking_up';
+            taxi.pickupTarget = { x: ped.x, z: ped.z };
+            break;
+          }
+        }
+      }
+    } else if (taxi.state === 'picking_up') {
+      if (!taxi.passenger || !taxi.passenger.alive) {
+        taxi.state = 'cruising';
+        taxi.passenger = null;
+        continue;
+      }
+      const dx = taxi.pickupTarget.x - taxi.x;
+      const dz = taxi.pickupTarget.z - taxi.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 4) {
+        // Pick up passenger
+        taxi.passenger.inTaxi = true;
+        taxi.passenger.alive = false;
+        hidePersonInstance(taxi.passenger.slot);
+        taxi.state = 'dropping_off';
+        taxi.dropoffTarget = randomSidewalkPos();
+        taxi.roadPath = planRoadPath(taxi.x, taxi.z, taxi.dropoffTarget.x, taxi.dropoffTarget.z);
+        taxi.roadIdx = 0;
+        if (rng() < 0.3) addKillFeedEntry('Taxi picked up passenger');
+      } else {
+        const s = taxi.speed * 0.8 * dt;
+        taxi.x += (dx / d) * s;
+        taxi.z += (dz / d) * s;
+      }
+    } else if (taxi.state === 'dropping_off') {
+      if (taxi.roadIdx < taxi.roadPath.length) {
+        const wp = taxi.roadPath[taxi.roadIdx];
+        const dx = wp.x - taxi.x;
+        const dz = wp.z - taxi.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 2) { taxi.roadIdx++; }
+        else {
+          const s = taxi.speed * dt;
+          taxi.x += (dx / d) * s;
+          taxi.z += (dz / d) * s;
+        }
+      } else {
+        // Drop off passenger — respawn as new pedestrian
+        if (taxi.passenger) {
+          const newSlot = allocPersonSlot();
+          if (newSlot >= 0) {
+            const pos = taxi.dropoffTarget;
+            pedestrians.push({
+              slot: newSlot,
+              x: pos.x, z: pos.z, y: 0, rotY: 0,
+              bodyColor: COLOR_CIVILIAN,
+              headColor: taxi.passenger.headColor || SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)],
+              scale: 1.0,
+              speed: 1.5 + rng() * 1.5,
+              target: randomSidewalkPos(),
+              alive: true, fleeing: false,
+            });
+          }
+        }
+        taxi.passenger = null;
+        taxi.state = 'cruising';
+        taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, rng() < 0.5, rng() < 0.5 ? 1 : -1);
+        taxi.horizontal = rng() < 0.5;
+        taxi.dir = rng() < 0.5 ? 1 : -1;
+      }
+    }
+
+    let rotY;
+    if (taxi.state === 'dropping_off' && taxi.roadIdx < taxi.roadPath.length) {
+      const wp = taxi.roadPath[taxi.roadIdx];
+      rotY = Math.atan2(wp.x - taxi.x, wp.z - taxi.z);
+    } else if (taxi.horizontal) {
+      rotY = taxi.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+    } else {
+      rotY = taxi.dir > 0 ? 0 : Math.PI;
+    }
+    updateCarInstance(taxi.idx, taxi.x, 0, taxi.z, rotY, taxi.bodyColor, taxi.cabinColor);
+    updateCarHeadlights(taxi.idx, taxi.x, taxi.z, rotY, isNight);
+    needsCarUpdate = true;
+  }
+
+  // ---- Update cars — road following ----
+  for (const car of cars) {
+    if (!car.alive) continue;
+    if (car.pauseTimer > 0) { car.pauseTimer -= dt; continue; }
+
+    if (!car.nextIntersection) {
+      // Off the edge — pick a new road
+      const start = pickRandomRoadStart();
+      car.x = start.x;
+      car.z = start.z;
+      car.horizontal = start.horizontal;
+      car.dir = start.dir;
+      car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
+      car.pauseTimer = 0.5;
+      continue;
+    }
+
+    // Move toward next intersection
+    const target = car.nextIntersection;
+    let dx, dz;
+    if (car.horizontal) {
+      dx = target.x - car.x;
+      dz = 0;
+      // Snap to road centerline
+      car.z = target.z;
+    } else {
+      dx = 0;
+      dz = target.z - car.z;
+      // Snap to road centerline
+      car.x = target.x;
+    }
+
+    const dist = Math.abs(dx + dz); // one is always 0
+    if (dist < 2) {
+      // Arrived at intersection — snap to it
+      car.x = target.x;
+      car.z = target.z;
+
+      // Pause briefly at intersection
+      car.pauseTimer = 0.5 + rng() * 1.5;
+
+      // Decide: continue straight, or turn
+      const turnRoll = rng();
+      if (turnRoll < 0.35) {
+        // Turn: switch orientation
+        car.horizontal = !car.horizontal;
+        car.dir = rng() < 0.5 ? 1 : -1;
+      } else if (turnRoll < 0.5) {
+        // U-turn
+        car.dir = -car.dir;
+      }
+      // else continue straight
+
+      car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
+    } else {
+      const s = car.speed * dt;
+      if (car.horizontal) {
+        car.x += car.dir * s;
+      } else {
+        car.z += car.dir * s;
+      }
+    }
+
+    // Calculate rotation: car faces direction of travel
+    let rotY;
+    if (car.horizontal) {
+      rotY = car.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+    } else {
+      rotY = car.dir > 0 ? 0 : Math.PI;
+    }
+
+    updateCarInstance(car.idx, car.x, 0, car.z, rotY, car.bodyColor, car.cabinColor);
+    updateCarHeadlights(car.idx, car.x, car.z, rotY, isNight);
+    needsCarUpdate = true;
+  }
+
+  if (needsCarUpdate) {
+    carBodyMesh.instanceMatrix.needsUpdate = true;
+    if (carBodyMesh.instanceColor) carBodyMesh.instanceColor.needsUpdate = true;
+    carCabinMesh.instanceMatrix.needsUpdate = true;
+    if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
+    carHLMesh.instanceMatrix.needsUpdate = true;
+    carTLMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // ---- RIOT ----
+  if (riotMode) {
+    riotTimer += dt;
+
+    // Phase progression
+    if (riotPhase === 'TENSION' && riotTimer > 8) {
+      riotPhase = 'RIOT';
+      addKillFeedEntry('*** RIOT ERUPTED ***');
+    }
+    if (riotPhase === 'RIOT' && protestors.filter(p => p.alive && !p.arrested).length < 5) {
+      riotPhase = 'DISPERSAL';
+      addKillFeedEntry('Crowd dispersing');
+    }
+
+    // Update protestors
+    for (const pr of protestors) {
+      if (!pr.alive || pr.arrested) continue;
+
+      if (pr.fleeing) {
+        const fleeDir = rng() < 0.5 ? 1 : -1;
+        const target = { x: pr.x + fleeDir * 50, z: pr.z + (rng() - 0.5) * 80 };
+        const dx = target.x - pr.x;
+        const dz = target.z - pr.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist > 1) {
+          const s = pr.speed * 1.5 * dt;
+          pr.x += (dx / dist) * s;
+          pr.z += (dz / dist) * s;
+          pr.rotY = Math.atan2(dx, dz);
+        }
+        if (pr.x < -10 || pr.x > CITY_W + 10 || pr.z < -10 || pr.z > CITY_H + 10) {
+          pr.alive = false;
+          hidePersonInstance(pr.slot);
+        }
+        if (pr.alive) updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, pr.bodyColor, pr.headColor, pr.scale);
+        continue;
+      }
+
+      // Move toward target in plaza (grounded, y=0)
+      const dx = pr.target.x - pr.x;
+      const dz = pr.target.z - pr.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 3) {
+        pr.target = { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 };
+      } else {
+        const s = pr.speed * dt;
+        pr.x += (dx / dist) * s;
+        pr.z += (dz / dist) * s;
+        pr.rotY = Math.atan2(dx, dz);
+      }
+
+      updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, pr.bodyColor, pr.headColor, pr.scale);
+
+      // Throw rocks and molotovs during RIOT phase
+      if (riotPhase === 'RIOT') {
+        pr.throwTimer -= dt;
+        if (pr.throwTimer <= 0) {
+          pr.throwTimer = 2 + rng() * 6;
+
+          let nearest = null, nearDist = Infinity;
+          for (const pol of police) {
+            if (!pol.alive) continue;
+            const dd = dist2d(pr, pol);
+            if (dd < nearDist && dd < 60) { nearDist = dd; nearest = pol; }
+          }
+
+          if (nearest) {
+            const isMolotov = rng() < 0.2;
+            if (isMolotov) {
+              launchProjectile(
+                { x: pr.x, z: pr.z },
+                { x: nearest.x + (rng() - 0.5) * 10, z: nearest.z + (rng() - 0.5) * 10 },
+                'molotov'
+              );
+              molotovCount++;
+              addKillFeedEntry('Protestor threw molotov!');
+            } else {
+              launchProjectile(
+                { x: pr.x, z: pr.z },
+                { x: nearest.x + (rng() - 0.5) * 8, z: nearest.z + (rng() - 0.5) * 8 },
+                'rock'
+              );
+              rockCount++;
+              if (rng() < 0.3) addKillFeedEntry('Protestor threw rock');
+              if (rng() < 0.1) {
+                nearest.health -= 0.1;
+                injuryCount++;
+                if (rng() < 0.3) addKillFeedEntry('Police officer hit by rock');
+                // Knock down injured police
+                if (nearest.health < 0.5 && !nearest.injured) {
+                  knockDownPerson(nearest);
+                }
+              }
+            }
+          }
+        }
+
+        if (rng() < 0.003) {
+          pr.fleeing = true;
+          pr.speed = 3 + rng() * 2;
+        }
+      }
+    }
+
+    // Update police
+    for (const pol of police) {
+      if (!pol.alive) continue;
+
+      if (pol.holdLine) {
+        const dx = pol.lineX - pol.x;
+        const dz = pol.lineZ - pol.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist > 2) {
+          const s = pol.speed * 0.5 * dt;
+          pol.x += (dx / dist) * s;
+          pol.z += (dz / dist) * s;
+        }
+        pol.rotY = Math.atan2(PLAZA_X - pol.x, PLAZA_Z - pol.z);
+      }
+
+      updatePersonInstance(pol.slot, pol.x, 0, pol.z, pol.rotY, pol.bodyColor, pol.headColor, pol.scale);
+
+      // Update shield position
+      if (pol.myShieldIdx >= 0) {
+        const cosR = Math.cos(pol.rotY);
+        const sinR = Math.sin(pol.rotY);
+        const shieldScale = PERSON_SCALE * pol.scale;
+        _pos.set(pol.x + 1.2 * sinR * shieldScale, 1.2 * shieldScale, pol.z + 1.2 * cosR * shieldScale);
+        _euler.set(0, pol.rotY, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        shieldMesh.setMatrixAt(pol.myShieldIdx, _mat4);
+      }
+
+      // Fire tear gas and rubber bullets
+      if (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') {
+        pol.fireTimer -= dt;
+        if (pol.fireTimer <= 0) {
+          pol.fireTimer = 2 + rng() * 5;
+
+          let nearest = null, nearDist = Infinity;
+          for (const pr of protestors) {
+            if (!pr.alive || pr.arrested || pr.fleeing) continue;
+            const dd = dist2d(pol, pr);
+            if (dd < nearDist && dd < 80) { nearDist = dd; nearest = pr; }
+          }
+
+          if (nearest) {
+            const isTearGas = rng() < 0.25;
+            if (isTearGas) {
+              const impactX = nearest.x + (rng() - 0.5) * 15;
+              const impactZ = nearest.z + (rng() - 0.5) * 15;
+              createTearGasCloud({ x: impactX, z: impactZ });
+              teargasCount++;
+              addKillFeedEntry('Police fired tear gas');
+
+              for (const pr of protestors) {
+                if (!pr.alive || pr.arrested || pr.fleeing) continue;
+                const dd = dist2d(pr, { x: impactX, z: impactZ });
+                if (dd < 20 && rng() < 0.4) {
+                  pr.fleeing = true;
+                  pr.speed = 3 + rng() * 2;
+                }
+              }
+            } else {
+              createTracer(
+                { x: pol.x, z: pol.z },
+                { x: nearest.x, z: nearest.z },
+                CYAN, 0.25
+              );
+              createMuzzleFlash({ x: pol.x, z: pol.z });
+              playGunshot(pol.x, pol.z);
+
+              if (rng() < 0.15) {
+                nearest.health -= 0.3;
+                createHitEffect({ x: nearest.x, z: nearest.z });
+                injuryCount++;
+
+                if (nearest.health <= 0) {
+                  nearest.arrested = true;
+                  nearest.y = -0.5;
+                  arrestCount++;
+                  addKillFeedEntry('Protestor arrested');
+                } else {
+                  // Knock down injured protestor
+                  if (!nearest.injured && !nearest.onGround) {
+                    knockDownPerson(nearest);
+                    addKillFeedEntry('Protestor injured!');
+                  } else if (rng() < 0.5 && !nearest.onGround) {
+                    nearest.fleeing = true;
+                    nearest.speed = 3 + rng() * 2;
+                    addKillFeedEntry('Protestor hit, fleeing');
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Process injured queue — spawn ambulances after delay
+    for (let i = injuredQueue.length - 1; i >= 0; i--) {
+      const entry = injuredQueue[i];
+      entry.timer -= dt;
+      if (entry.timer <= 0) {
+        if (entry.person.alive && !entry.person.arrested) {
+          spawnAmbulance(entry.person);
+        }
+        injuredQueue.splice(i, 1);
+      }
+    }
+
+    // Update ring markers for protestors and police
+    for (const pr of protestors) {
+      if (pr.myRingIdx >= 0 && pr.alive && !pr.arrested) {
+        _pos.set(pr.x, 0.05, pr.z);
+        _euler.set(-Math.PI / 2, 0, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        ringMesh.setMatrixAt(pr.myRingIdx, _mat4);
+        ringMesh.setColorAt(pr.myRingIdx, _color.set(pr.ringColor));
+      } else if (pr.myRingIdx >= 0) {
+        _pos.set(0, -100, 0);
+        _quat.identity();
+        _scale.set(0, 0, 0);
+        _mat4.compose(_pos, _quat, _scale);
+        ringMesh.setMatrixAt(pr.myRingIdx, _mat4);
+      }
+    }
+    for (const pol of police) {
+      if (pol.myRingIdx >= 0 && pol.alive) {
+        _pos.set(pol.x, 0.05, pol.z);
+        _euler.set(-Math.PI / 2, 0, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        ringMesh.setMatrixAt(pol.myRingIdx, _mat4);
+        ringMesh.setColorAt(pol.myRingIdx, _color.set(pol.ringColor));
+      }
+    }
+    if (ringMesh.count > 0) {
+      ringMesh.instanceMatrix.needsUpdate = true;
+      if (ringMesh.instanceColor) ringMesh.instanceColor.needsUpdate = true;
+    }
+    if (shieldMesh.count > 0) {
+      shieldMesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  // Update ambulances
+  updateAmbulances(dt);
+
+  // Update emergency vehicles (fire trucks, police vans)
+  updateEmergencyVehicles(dt);
+
+  // Update injured people on ground
+  updateInjuredOnGround(dt);
+
+  // Update person instanced meshes
+  personBodyMesh.count = personSlotCount;
+  personHeadMesh.count = personSlotCount;
+  if (personSlotCount > 0) {
+    personBodyMesh.instanceMatrix.needsUpdate = true;
+    if (personBodyMesh.instanceColor) personBodyMesh.instanceColor.needsUpdate = true;
+    personHeadMesh.instanceMatrix.needsUpdate = true;
+    if (personHeadMesh.instanceColor) personHeadMesh.instanceColor.needsUpdate = true;
+  }
+
+  // ---- Helicopter ----
+  if (helicopter) {
+    const h = helicopter;
+    h.angle += dt * 0.3; // slow circle
+    h.group.position.x = h.centerX + Math.cos(h.angle) * h.radius;
+    h.group.position.z = h.centerZ + Math.sin(h.angle) * h.radius;
+    h.group.position.y = 80 + Math.sin(h.angle * 2) * 3; // slight bob
+
+    // Face direction of travel
+    h.group.rotation.y = -h.angle + Math.PI / 2;
+    // Slight bank into turn
+    h.group.rotation.z = Math.sin(h.angle * 0.3) * 0.1;
+
+    // Spin rotors fast
+    h.rotorAngle += dt * 25;
+    h.rotor.rotation.y = h.rotorAngle;
+    h.rotor2.rotation.y = h.rotorAngle + Math.PI / 2;
+    h.tailRotor.rotation.z = h.rotorAngle * 1.5;
+
+    // Searchlight intensity flicker — dramatic
+    h.searchlight.intensity = 12 + Math.sin(h.angle * 5) * 4;
+
+    // Update beam cylinder opacity based on night
+    const isNightNow = nightMode || simTime < 6 || simTime > 20;
+    h.beam.material.opacity = isNightNow ? 0.12 : 0.04;
+
+    // Update ground splash position
+    if (h.splash) {
+      h.splash.position.set(h.group.position.x, 0.1, h.group.position.z);
+      h.splash.material.opacity = isNightNow ? 0.25 : 0.08;
+    }
+  }
+
+  // Update projectiles (arcing rocks/molotovs)
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const proj = projectiles[i];
+    proj.age += dt;
+    const t = proj.age;
+
+    proj.mesh.position.x = proj.startX + proj.vx * t;
+    proj.mesh.position.z = proj.startZ + proj.vz * t;
+    proj.mesh.position.y = 2 + proj.vy * t - 0.5 * proj.gravity * t * t;
+
+    proj.mesh.rotation.x += dt * 5;
+    proj.mesh.rotation.z += dt * 3;
+
+    // Molotov trail — using instanced particles
+    if (proj.type === 'molotov') {
+      if (rng() < 0.3) {
+        spawnParticle(
+          proj.mesh.position.x, proj.mesh.position.y, proj.mesh.position.z,
+          (rng() - 0.5) * 1, 1, (rng() - 0.5) * 1,
+          0.15, 0xff6600, 0.5
+        );
+      }
+    }
+
+    // Impact
+    if (proj.mesh.position.y <= 0 || proj.age > proj.flightTime * 1.5) {
+      const impactPos = { x: proj.mesh.position.x, z: proj.mesh.position.z };
+      scene.remove(proj.mesh);
+
+      if (proj.type === 'molotov') {
+        createExplosion(impactPos);
+        createFire(impactPos);
+        createSmoke(impactPos);
+        playExplosion(impactPos.x, impactPos.z);
+        // Dispatch fire truck to this fire (with delay, max 3 active)
+        if (fireTrucks.filter(ft => ft.alive).length < 3) {
+          const fireRef = fires[fires.length - 1];
+          setTimeout(() => { if (fireRef && fireRef.life > 0) spawnFireTruck(fireRef); }, 3000 + rng() * 5000);
+        }
+      }
+
+      projectiles.splice(i, 1);
+    }
+  }
+
+  // Update effects
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    tracers[i].life -= dt;
+    tracers[i].line.material.opacity = Math.max(0, tracers[i].life / tracers[i].maxLife);
+    if (tracers[i].life <= 0) {
+      scene.remove(tracers[i].line);
+      tracers[i].line.geometry.dispose();
+      tracers[i].line.material.dispose();
+      tracers.splice(i, 1);
+    }
+  }
+
+  for (let i = muzzleFlashes.length - 1; i >= 0; i--) {
+    muzzleFlashes[i].life -= dt;
+    if (muzzleFlashes[i].life <= 0) {
+      scene.remove(muzzleFlashes[i].light);
+      muzzleFlashes.splice(i, 1);
+    }
+  }
+
+  // Update instanced particles (fire, smoke, tear gas, debris)
+  updateParticles(dt);
+
+  // Update persistent fires — longer burn with flickering and continuous particle spawning
+  for (let i = fires.length - 1; i >= 0; i--) {
+    const f = fires[i];
+    f.age += dt;
+    const lifeRatio = 1.0 - (f.age / f.life);
+    // Flickering intensity that gradually dims over lifetime
+    const baseIntensity = (f.maxIntensity || 5) * Math.max(0.1, lifeRatio);
+    f.light.intensity = baseIntensity + Math.sin(f.age * 12) * baseIntensity * 0.4
+                       + Math.sin(f.age * 7.3) * baseIntensity * 0.2
+                       + rng() * baseIntensity * 0.15;
+    f.light.color.setHex(rng() < 0.3 ? 0xff4400 : 0xff8800);
+
+    // Increase light range for dramatic night fires
+    f.light.distance = 30 + 15 * Math.min(1, lifeRatio * 2);
+
+    // Spawn fire particles more frequently in first half of life
+    const spawnRate = lifeRatio > 0.5 ? 0.12 : 0.05;
+    if (rng() < spawnRate) {
+      const fireColors = [0xff4400, 0xff8800, 0xffaa00];
+      spawnParticle(
+        f.x + (rng() - 0.5) * 3, 0.5, f.z + (rng() - 0.5) * 3,
+        (rng() - 0.5) * 1, 1 + rng() * 3, (rng() - 0.5) * 1,
+        0.3 + rng() * 0.4,
+        fireColors[Math.floor(rng() * fireColors.length)],
+        1 + rng() * 2
+      );
+    }
+
+    // Smoke wisps in second half of life (dying fire)
+    if (lifeRatio < 0.5 && rng() < 0.03) {
+      spawnParticle(
+        f.x + (rng() - 0.5) * 2, 2 + rng(), f.z + (rng() - 0.5) * 2,
+        (rng() - 0.5) * 0.5, 0.5 + rng(), (rng() - 0.5) * 0.5,
+        0.8 + rng(), 0x444444, 2 + rng() * 2
+      );
+    }
+
+    if (f.age >= f.life) {
+      scene.remove(f.light);
+      fires.splice(i, 1);
+    }
+  }
+
+  // Camera
+  if (chaseCam && chaseTarget) {
+    camera.position.lerp(new THREE.Vector3(chaseTarget.x - 15, 20, chaseTarget.z + 15), 0.05);
+    camera.lookAt(new THREE.Vector3(chaseTarget.x, 1, chaseTarget.z));
+  } else {
+    controls.update();
+  }
+}
+
+// =========================================================================
+// HUD
+// =========================================================================
+function updateHUD() {
+  const hours = Math.floor(simTime);
+  const mins = Math.floor((simTime - hours) * 60);
+  document.getElementById('clock').textContent =
+    `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+
+  document.getElementById('civ-count').textContent =
+    pedestrians.filter(p => p.alive).length + cars.filter(c => c.alive).length +
+    carDrivers.filter(cd => cd.alive).length + taxis.length;
+  document.getElementById('protestor-count').textContent = protestors.filter(p => p.alive && !p.arrested).length;
+  document.getElementById('police-count').textContent = police.filter(p => p.alive).length;
+  document.getElementById('arrest-count').textContent = arrestCount;
+
+  document.getElementById('molotov-count').textContent = molotovCount;
+  document.getElementById('teargas-count').textContent = teargasCount;
+  document.getElementById('rock-count').textContent = rockCount;
+  document.getElementById('injury-count').textContent = injuryCount;
+
+  const phaseEl = document.getElementById('phase-indicator');
+  phaseEl.textContent = riotPhase;
+  phaseEl.className = riotPhase === 'RIOT' ? 'riot' :
+                      riotPhase === 'TENSION' ? 'tension' :
+                      riotPhase === 'DISPERSAL' ? 'dispersal' : '';
+
+  // Kill feed
+  const feed = document.getElementById('kill-feed');
+  feed.innerHTML = killFeed.map((k) => {
+    k.age += 1 / 60;
+    const cls = k.age > 5 ? 'kill-entry fade' : 'kill-entry';
+    let color = '#fcee0a';
+    if (k.text.includes('Police')) color = '#00f0ff';
+    if (k.text.includes('Protestor')) color = '#05ffa1';
+    if (k.text.includes('molotov') || k.text.includes('RIOT')) color = '#ff2a6d';
+    if (k.text.includes('Civilian')) color = '#fcee0a';
+    if (k.text.includes('helicopter')) color = '#00f0ff';
+    if (k.text.includes('Ambulance') || k.text.includes('ambulance')) color = '#ffffff';
+    if (k.text.includes('hospital') || k.text.includes('Patient')) color = '#ff6666';
+    if (k.text.includes('Fire truck') || k.text.includes('fire')) color = '#ff4400';
+    if (k.text.includes('Taxi')) color = '#ffcc00';
+    if (k.text.includes('van') || k.text.includes('deployed')) color = '#4488ff';
+    return `<div class="${cls}" style="color:${color}">${k.text}</div>`;
+  }).join('');
+
+  while (killFeed.length > 0 && killFeed[killFeed.length - 1].age > 12) killFeed.pop();
+}
+
+// =========================================================================
+// Debug Overlay
+// =========================================================================
+let debugMode = false;
+
+function updateDebugOverlay(dt) {
+  if (!debugMode) return;
+
+  const overlay = document.getElementById('debug-overlay');
+  const dbgCanvas = document.getElementById('debug-canvas');
+  const ctx2d = dbgCanvas.getContext('2d');
+
+  // Resize debug canvas to match window
+  if (dbgCanvas.width !== innerWidth || dbgCanvas.height !== innerHeight) {
+    dbgCanvas.width = innerWidth;
+    dbgCanvas.height = innerHeight;
+  }
+  ctx2d.clearRect(0, 0, dbgCanvas.width, dbgCanvas.height);
+
+  // Count entities
+  const pedAlive = pedestrians.filter(p => p.alive).length;
+  const carsAlive = cars.filter(c => c.active !== false).length;
+  const protAlive = protestors.filter(p => p.alive).length;
+  const copAlive = police.filter(p => p.alive).length;
+  const totalParticles = fires.length;
+
+  // Build overlay text
+  let html = '<h3>DEBUG OVERLAY</h3>';
+  html += `FPS: <span class="dbg-val">${fpsDisplay}</span><br>`;
+  html += `Draw calls: <span class="dbg-val">${renderer.info.render.calls}</span><br>`;
+  html += `Triangles: <span class="dbg-val">${renderer.info.render.triangles}</span><br>`;
+  html += '<h3>ENTITIES</h3>';
+  html += `Pedestrians: <span class="dbg-val">${pedAlive}</span><br>`;
+  html += `Cars: <span class="dbg-val">${carsAlive}</span><br>`;
+  html += `Protestors: <span class="dbg-val">${protAlive}</span><br>`;
+  html += `Police: <span class="dbg-val">${copAlive}</span><br>`;
+  html += `Fire sources: <span class="dbg-val">${totalParticles}</span><br>`;
+  html += `Car drivers: <span class="dbg-val">${carDrivers.filter(cd => cd.alive).length}</span><br>`;
+  html += `Taxis: <span class="dbg-val">${taxis.length}</span><br>`;
+  html += `Fire trucks: <span class="dbg-val">${fireTrucks.filter(ft => ft.alive).length}</span><br>`;
+  html += `Police vans: <span class="dbg-val">${policeVans.filter(pv => pv.alive).length}</span><br>`;
+  html += `Injured on ground: <span class="dbg-val">${injuredOnGround.length}</span><br>`;
+  html += '<h3>SCENE</h3>';
+  html += `Objects: <span class="dbg-val">${scene.children.length}</span><br>`;
+  html += `Geometries: <span class="dbg-val">${renderer.info.memory.geometries}</span><br>`;
+  html += `Textures: <span class="dbg-val">${renderer.info.memory.textures}</span><br>`;
+
+  overlay.innerHTML = html;
+
+  // Draw debug lines on 2D canvas overlay
+  // Project 3D positions to screen for car paths and person waypoints
+  const projVec = new THREE.Vector3();
+
+  function toScreen(x, y, z) {
+    projVec.set(x, z || 0.5, -y); // world coords: x=east, y=north, z=up -> three.js
+    projVec.project(camera);
+    return {
+      x: (projVec.x * 0.5 + 0.5) * dbgCanvas.width,
+      y: (-projVec.y * 0.5 + 0.5) * dbgCanvas.height,
+      behind: projVec.z > 1
+    };
+  }
+
+  // Draw car bounding circles
+  ctx2d.strokeStyle = '#00f0ff44';
+  ctx2d.lineWidth = 1;
+  for (const c of cars) {
+    if (c.active === false) continue;
+    const s = toScreen(c.x, c.y, 0.5);
+    if (s.behind) continue;
+    ctx2d.beginPath();
+    ctx2d.arc(s.x, s.y, 8, 0, Math.PI * 2);
+    ctx2d.stroke();
+  }
+
+  // Draw pedestrian positions with dotted circles
+  ctx2d.strokeStyle = '#05ffa144';
+  ctx2d.setLineDash([3, 3]);
+  for (const p of pedestrians) {
+    if (!p.alive) continue;
+    const s = toScreen(p.x, p.y, 1.0);
+    if (s.behind) continue;
+    ctx2d.beginPath();
+    ctx2d.arc(s.x, s.y, 5, 0, Math.PI * 2);
+    ctx2d.stroke();
+  }
+
+  // Draw protestor/police positions with colored markers
+  ctx2d.setLineDash([]);
+  for (const p of protestors) {
+    if (!p.alive) continue;
+    const s = toScreen(p.x, p.y, 1.0);
+    if (s.behind) continue;
+    ctx2d.fillStyle = '#05ffa166';
+    ctx2d.fillRect(s.x - 3, s.y - 3, 6, 6);
+  }
+  for (const p of police) {
+    if (!p.alive) continue;
+    const s = toScreen(p.x, p.y, 1.0);
+    if (s.behind) continue;
+    ctx2d.fillStyle = '#00f0ff66';
+    ctx2d.fillRect(s.x - 3, s.y - 3, 6, 6);
+  }
+
+  // Fire positions
+  ctx2d.setLineDash([]);
+  for (const f of fires) {
+    const s = toScreen(f.x, f.y, 0.5);
+    if (s.behind) continue;
+    ctx2d.fillStyle = '#ff2a6d66';
+    ctx2d.beginPath();
+    ctx2d.arc(s.x, s.y, 6, 0, Math.PI * 2);
+    ctx2d.fill();
+  }
+}
+
+// =========================================================================
+// Main Loop
+// =========================================================================
+function animate() {
+  requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  // FPS
+  frameCount++;
+  fpsTimer += dt;
+  if (fpsTimer >= 0.5) {
+    fpsDisplay = Math.round(frameCount / fpsTimer);
+    frameCount = 0;
+    fpsTimer = 0;
+    document.getElementById('fps').textContent = `${fpsDisplay} FPS`;
+  }
+
+  update(dt);
+  updateHUD();
+  renderer.render(scene, camera);
+  updateDebugOverlay(dt);
+}
+
+animate();
+</script>
+</body>
+</html>

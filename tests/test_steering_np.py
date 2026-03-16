@@ -13,8 +13,8 @@ import time
 import numpy as np
 import pytest
 
-from tritium_lib.game_ai.steering_np import SpatialHash, SteeringSystem
-from tritium_lib.game_ai.ambient_np import (
+from tritium_lib.sim_engine.ai.steering_np import SpatialHash, SteeringSystem
+from tritium_lib.sim_engine.ai.ambient_np import (
     AmbientSimulatorNP,
     PEDESTRIAN,
     VEHICLE,

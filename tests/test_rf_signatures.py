@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from tritium_lib.game_ai.rf_signatures import (
+from tritium_lib.sim_engine.ai.rf_signatures import (
     APPLE_COMPANY_ID,
     GOOGLE_COMPANY_ID,
     MAC_ROTATION_INTERVAL_S,

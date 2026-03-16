@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from tritium_lib.game_debug.streams import DebugFrame, DebugStream, DebugOverlay
+from tritium_lib.sim_engine.debug.streams import DebugFrame, DebugStream, DebugOverlay
 
 
 class TestDebugStream:
@@ -213,7 +213,7 @@ class TestGameModuleDebugIntegration:
 
     def test_steering_system_debug(self):
         import numpy as np
-        from tritium_lib.game_ai.steering_np import SteeringSystem
+        from tritium_lib.sim_engine.ai.steering_np import SteeringSystem
 
         ss = SteeringSystem(max_agents=16)
         assert hasattr(ss, 'debug')
@@ -237,7 +237,7 @@ class TestGameModuleDebugIntegration:
         assert "speed" in agents[0]
 
     def test_physics_world_debug(self):
-        from tritium_lib.game_physics.collision import PhysicsWorld
+        from tritium_lib.sim_engine.physics.collision import PhysicsWorld
 
         pw = PhysicsWorld(max_bodies=16)
         assert hasattr(pw, 'debug')
@@ -265,7 +265,7 @@ class TestGameModuleDebugIntegration:
             assert "point" in c
 
     def test_effects_manager_debug(self):
-        from tritium_lib.game_effects.particles import EffectsManager, explosion
+        from tritium_lib.sim_engine.effects.particles import EffectsManager, explosion
 
         mgr = EffectsManager()
         assert hasattr(mgr, 'debug')
@@ -288,7 +288,7 @@ class TestGameModuleDebugIntegration:
         assert summary[0]["total_particles"] >= 0
 
     def test_weapon_firer_debug(self):
-        from tritium_lib.game_effects.weapons import WeaponFirer, WEAPONS
+        from tritium_lib.sim_engine.effects.weapons import WeaponFirer, WEAPONS
 
         firer = WeaponFirer(WEAPONS["pistol_9mm"], ammo=5)
         assert hasattr(firer, 'debug')
@@ -316,7 +316,7 @@ class TestGameModuleDebugIntegration:
             assert "ammo" in state[0]
 
     def test_sound_event_debug(self):
-        from tritium_lib.game_audio.spatial import SoundEvent
+        from tritium_lib.sim_engine.audio.spatial import SoundEvent
 
         assert hasattr(SoundEvent, 'debug')
         assert isinstance(SoundEvent.debug, DebugStream)
@@ -345,7 +345,7 @@ class TestGameModuleDebugIntegration:
         SoundEvent.debug.enabled = False
 
     def test_city_sim_debug(self):
-        from tritium_lib.game_ai.city_sim import NeighborhoodSim
+        from tritium_lib.sim_engine.ai.city_sim import NeighborhoodSim
 
         sim = NeighborhoodSim(num_residents=5, bounds=((0, 0), (200, 200)), seed=42)
         assert hasattr(sim, 'debug')

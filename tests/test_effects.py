@@ -1,7 +1,7 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Tests for game_effects particle system."""
+"""Tests for sim_engine.effects particle system."""
 
 import math
 import time
@@ -9,7 +9,7 @@ import time
 import numpy as np
 import pytest
 
-from tritium_lib.game_effects import (
+from tritium_lib.sim_engine.effects import (
     EffectsManager,
     Particle,
     ParticleEmitter,
@@ -22,7 +22,7 @@ from tritium_lib.game_effects import (
     sparks,
     tracer,
 )
-from tritium_lib.game_effects.particles import (
+from tritium_lib.sim_engine.effects.particles import (
     GRAVITY,
     _lerp_color,
     _multi_lerp_color,
@@ -498,7 +498,7 @@ class TestIntegration:
 
     def test_import_from_package(self):
         """Verify public API is accessible from package."""
-        from tritium_lib.game_effects import (
+        from tritium_lib.sim_engine.effects import (
             EffectsManager,
             Particle,
             ParticleEmitter,

@@ -1,8 +1,8 @@
-"""Tests for tritium_lib.game_audio.spatial — spatial audio math."""
+"""Tests for tritium_lib.sim_engine.audio.spatial — spatial audio math."""
 import math
 import pytest
 
-from tritium_lib.game_audio.spatial import (
+from tritium_lib.sim_engine.audio.spatial import (
     SoundEvent,
     distance_attenuation,
     doppler_factor,

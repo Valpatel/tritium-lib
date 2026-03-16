@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from tritium_lib.game_ai.pathfinding import (
+from tritium_lib.sim_engine.ai.pathfinding import (
     RoadNetwork,
     WalkableArea,
     plan_patrol_route,

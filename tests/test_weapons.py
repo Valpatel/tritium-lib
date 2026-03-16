@@ -7,7 +7,7 @@ import math
 
 import pytest
 
-from tritium_lib.game_effects.weapons import (
+from tritium_lib.sim_engine.effects.weapons import (
     WEAPONS,
     FireMode,
     FiredRound,

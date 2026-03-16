@@ -173,6 +173,53 @@ def camera_pixel_to_ground(
 # Distance utilities
 # ---------------------------------------------------------------------------
 
+def point_in_polygon(
+    px: float, py: float, polygon: list[tuple[float, float]]
+) -> bool:
+    """Ray-casting point-in-polygon test.
+
+    Args:
+        px: X coordinate of the point to test.
+        py: Y coordinate of the point to test.
+        polygon: List of (x, y) vertices defining a closed polygon.
+
+    Returns:
+        True if the point is inside the polygon.
+    """
+    n = len(polygon)
+    if n < 3:
+        return False
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if ((yi > py) != (yj > py)) and (
+            px < (xj - xi) * (py - yi) / (yj - yi) + xi
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
+def point_in_polygon_latlng(
+    lat: float, lng: float, polygon: list[tuple[float, float]]
+) -> bool:
+    """Point-in-polygon test using (lat, lng) coordinates.
+
+    Alias for point_in_polygon with lat/lng naming convention.
+
+    Args:
+        lat: Latitude of the point to test.
+        lng: Longitude of the point to test.
+        polygon: List of (lat, lng) vertices defining a closed polygon.
+
+    Returns:
+        True if the point is inside the polygon.
+    """
+    return point_in_polygon(lat, lng, polygon)
+
+
 def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """Great-circle distance in meters between two WGS84 points.
 

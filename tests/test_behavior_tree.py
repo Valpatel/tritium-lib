@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tritium_lib.game_ai.behavior_tree import (
+from tritium_lib.sim_engine.ai.behavior_tree import (
     Action,
     Condition,
     Cooldown,
