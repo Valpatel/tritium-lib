@@ -13,7 +13,7 @@ module (steering, pathfinding).
 
 Usage::
 
-    from tritium_lib.movement.ambient import AmbientSimulator, ActivityProfile
+    from tritium_lib.game_ai.ambient import AmbientSimulator, ActivityProfile
 
     sim = AmbientSimulator(
         bounds=((0.0, 0.0), (500.0, 500.0)),
@@ -32,7 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
-from tritium_lib.movement.steering import Vec2, distance, normalize, magnitude
+from tritium_lib.game_ai.steering import Vec2, distance, normalize, magnitude
 
 
 # ---------------------------------------------------------------------------

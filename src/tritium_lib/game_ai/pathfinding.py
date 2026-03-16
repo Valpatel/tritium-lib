@@ -22,7 +22,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Optional
 
-from tritium_lib.movement.steering import Vec2
+from tritium_lib.game_ai.steering import Vec2
 
 
 def _distance(a: Vec2, b: Vec2) -> float:

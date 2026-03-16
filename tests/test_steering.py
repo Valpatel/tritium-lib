@@ -6,7 +6,7 @@ Copyright 2026 Valpatel Software LLC — AGPL-3.0
 import math
 import pytest
 
-from tritium_lib.movement.steering import (
+from tritium_lib.game_ai.steering import (
     Vec2,
     distance,
     magnitude,

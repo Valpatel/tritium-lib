@@ -1,4 +1,4 @@
-# Movement Module Interface Specification
+# Game AI Module Interface Specification
 
 This module MUST interface with the existing tritium-sc simulation engine. Here's how:
 
