@@ -105,6 +105,56 @@ canvas { display: block; }
 #debug-overlay .dbg-val { color: #fcee0a; }
 #debug-overlay .dbg-collision { color: #ff2a6d; }
 
+/* Replay Recording & Playback */
+#rec-btn {
+  display: inline-block; cursor: pointer; margin-left: 12px;
+  color: #ff2a6d; font-weight: bold; user-select: none;
+  vertical-align: middle;
+}
+#rec-btn .rec-dot {
+  display: inline-block; width: 10px; height: 10px;
+  background: #ff2a6d; border-radius: 50%; margin-right: 4px;
+  vertical-align: middle;
+}
+#rec-btn.recording .rec-dot {
+  animation: rec-pulse 1s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px #ff2a6d; }
+  50% { opacity: 0.3; box-shadow: 0 0 12px #ff2a6d; }
+}
+#rec-timer {
+  display: none; margin-left: 6px; color: #ff2a6d; font-size: 12px;
+  vertical-align: middle;
+}
+#rec-btn.recording ~ #rec-timer { display: inline; }
+
+#playback-bar {
+  display: none; position: absolute; bottom: 36px; left: 50%;
+  transform: translateX(-50%); width: 80%; max-width: 700px;
+  background: #0a0a0fcc; border: 1px solid #00f0ff44;
+  border-radius: 4px; padding: 6px 12px;
+  font-size: 12px; color: #fcee0a; z-index: 15;
+  pointer-events: auto;
+}
+#playback-bar.visible { display: flex; align-items: center; gap: 8px; }
+#playback-bar button {
+  background: #12121a; border: 1px solid #00f0ff44; color: #00f0ff;
+  padding: 2px 8px; border-radius: 3px; cursor: pointer;
+  font-family: 'Courier New', monospace; font-size: 11px;
+}
+#playback-bar button:hover { background: #1a1a2e; border-color: #00f0ff88; }
+#playback-bar button.active { background: #00f0ff33; border-color: #00f0ff; }
+#playback-scrubber {
+  flex: 1; height: 6px; background: #1a1a2e; border-radius: 3px;
+  cursor: pointer; position: relative; min-width: 100px;
+}
+#playback-progress {
+  height: 100%; background: #00f0ff; border-radius: 3px;
+  width: 0%; pointer-events: none;
+}
+#playback-frame { color: #05ffa1; font-size: 11px; white-space: nowrap; }
+
 #debug-canvas {
   position: absolute; top: 0; left: 0; right: 0; bottom: 0;
   pointer-events: none; display: none;
@@ -1691,6 +1741,55 @@ const shieldMesh = new THREE.InstancedMesh(shieldGeo, shieldMat, MAX_SHIELDS);
 shieldMesh.castShadow = true;
 shieldMesh.count = 0;
 scene.add(shieldMesh);
+
+// =========================================================================
+// Squad Formation Line (demonstrates squad.py, formations.py)
+// =========================================================================
+const FORMATION_MAX_VERTS = NUM_POLICE * 2 + 40;
+const formationGeo = new THREE.BufferGeometry();
+const formationPositions = new Float32Array(FORMATION_MAX_VERTS * 3);
+formationGeo.setAttribute('position', new THREE.BufferAttribute(formationPositions, 3));
+const formationMat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.6 });
+const formationLine = new THREE.Line(formationGeo, formationMat);
+formationLine.frustumCulled = false;
+scene.add(formationLine);
+let formationStatus = 'LINE'; // 'LINE' or 'BROKEN'
+
+// =========================================================================
+// Fire Sector Arcs (demonstrates combat_ai.py, detection.py) — debug only
+// =========================================================================
+const ARC_ANGLE = Math.PI / 3; // 60 degrees
+const ARC_RANGE = 30;
+const ARC_SEGMENTS = 4;
+const ARC_MAX_POLICE = NUM_POLICE + 20;
+const sectorArcGeo = new THREE.BufferGeometry();
+const sectorArcPositions = new Float32Array(ARC_MAX_POLICE * ARC_SEGMENTS * 2 * 3);
+sectorArcGeo.setAttribute('position', new THREE.BufferAttribute(sectorArcPositions, 3));
+const sectorArcMat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.15 });
+const sectorArcLine = new THREE.LineSegments(sectorArcGeo, sectorArcMat);
+sectorArcLine.frustumCulled = false;
+sectorArcLine.visible = false;
+scene.add(sectorArcLine);
+
+// =========================================================================
+// Morale Color Blending
+// =========================================================================
+const _moraleColorA = new THREE.Color();
+const _moraleColorB = new THREE.Color();
+function moraleColor(baseColor, morale) {
+  _moraleColorA.set(baseColor);
+  if (morale >= 0.7) return baseColor;
+  if (morale >= 0.3) {
+    _moraleColorB.set(0xcccc00);
+    _moraleColorA.lerp(_moraleColorB, 1.0 - (morale - 0.3) / 0.4);
+    return _moraleColorA.getHex();
+  }
+  _moraleColorA.set(0xcccc00);
+  _moraleColorB.set(0xcc2222);
+  _moraleColorA.lerp(_moraleColorB, 1.0 - morale / 0.3);
+  return _moraleColorA.getHex();
+}
+function lerpMoraleColor(baseColor, morale) { return moraleColor(baseColor, morale); }
 
 // Person slot tracking
 let personSlotCount = 0;
@@ -3871,6 +3970,10 @@ document.addEventListener('keydown', (e) => {
       fogGrid.fill(0);
     }
   }
+  if (e.code === 'KeyM') {
+    minimapVisible = !minimapVisible;
+    document.getElementById('minimap-canvas').style.display = minimapVisible ? 'block' : 'none';
+  }
 });
 
 // Resize
@@ -4658,9 +4761,19 @@ function update(dt) {
     for (const pr of protestors) {
       if (!pr.alive || pr.arrested) continue;
 
+      // Morale update: rises with nearby protestors, drops near police
+      const nearbyProtestors = protestors.filter(p2 => p2.alive && p2 !== pr && dist2d(pr, p2) < 15).length;
+      pr.morale = Math.min(1.0, pr.morale + nearbyProtestors * 0.001 * dt);
+      for (const pol of police) {
+        if (pol.alive && dist2d(pr, pol) < 20) pr.morale = Math.max(0, pr.morale - 0.01 * dt);
+      }
+      pr.morale = Math.min(1.0, pr.morale + 0.002 * dt); // slow passive recovery
+      if (pr.morale < 0.3 && !pr.fleeing) { pr.fleeing = true; pr.speed = 3 + rng() * 2; }
+      const prDisplayColor = moraleColor(pr.bodyColor, pr.morale);
+
       // STUNNED status effect: cannot move for duration
       if (pr.stunnedTimer > 0) {
-        updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, pr.bodyColor, pr.headColor, pr.scale);
+        updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
         continue;
       }
 
