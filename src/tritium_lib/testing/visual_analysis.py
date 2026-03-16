@@ -3,19 +3,22 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """Visual analysis toolkit for UI testing.
 
-Three concerns, kept separate:
+NOT a screenshot diffing tool — Playwright's toHaveScreenshot() does that better.
+This module handles STRUCTURAL analysis that Playwright can't do:
 
-1. RENDERING MODES — tell the UI to render in analysis-friendly styles
-2. DETECTORS — find specific UI patterns in screenshots/video frames
-3. COMPARATORS — compare screenshots to detect changes
+1. STRUCTURAL DETECTORS — find UI elements by shape, color, position
+2. OVERLAP DETECTION — find elements that shouldn't be on top of each other
+3. LAYOUT VALIDATION — verify element positions match expected zones
+4. VIDEO ANALYSIS — analyze frame sequences for animation/performance issues
+5. VISION MODEL — semantic validation via llava (Ollama)
 
-All functions take file paths or numpy arrays as input. No browser interaction.
+Design principle: each function takes an image (path or numpy array) and returns
+structured data. No browser interaction. No side effects.
 """
 
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
-import json
 
 try:
     import cv2
@@ -36,7 +39,7 @@ except ImportError:
 # ============================================================
 
 @dataclass
-class BoundingBox:
+class Box:
     """A rectangle in pixel coordinates."""
     x: int
     y: int
@@ -46,487 +49,374 @@ class BoundingBox:
     @property
     def area(self): return self.w * self.h
     @property
-    def center(self): return (self.x + self.w // 2, self.y + self.h // 2)
-    def contains(self, px, py): return self.x <= px < self.x + self.w and self.y <= py < self.y + self.h
+    def cx(self): return self.x + self.w // 2
+    @property
+    def cy(self): return self.y + self.h // 2
+    @property
+    def right(self): return self.x + self.w
+    @property
+    def bottom(self): return self.y + self.h
+
+    def overlaps(self, other: 'Box') -> bool:
+        """Do two boxes overlap?"""
+        return not (self.right <= other.x or other.right <= self.x or
+                    self.bottom <= other.y or other.bottom <= self.y)
+
+    def overlap_area(self, other: 'Box') -> int:
+        """Area of overlap between two boxes. 0 if no overlap."""
+        dx = min(self.right, other.right) - max(self.x, other.x)
+        dy = min(self.bottom, other.bottom) - max(self.y, other.y)
+        if dx <= 0 or dy <= 0:
+            return 0
+        return dx * dy
+
+    def iou(self, other: 'Box') -> float:
+        """Intersection over Union."""
+        inter = self.overlap_area(other)
+        union = self.area + other.area - inter
+        return inter / union if union > 0 else 0
 
 
 @dataclass
-class DetectedElement:
-    """A UI element found by a detector."""
-    element_type: str          # panel, button, marker, overlay, text, etc.
-    bbox: BoundingBox
-    confidence: float = 1.0    # 0-1
-    label: str = ""            # detected text or classification
-    color: str = ""            # dominant color hex
-    properties: dict = field(default_factory=dict)
+class UIElement:
+    """A detected UI element."""
+    kind: str              # panel, button, marker, text, overlay, toast, menu
+    box: Box
+    color_hex: str = ""    # dominant color
+    confidence: float = 1.0
+    label: str = ""
+    meta: dict = field(default_factory=dict)
 
 
 @dataclass
-class FrameAnalysis:
-    """Complete analysis of a single frame/screenshot."""
-    path: str
-    elements: List[DetectedElement] = field(default_factory=list)
-    is_black_screen: bool = False
-    dominant_colors: List[str] = field(default_factory=list)
-    text_regions: List[DetectedElement] = field(default_factory=list)
-    pixel_stats: dict = field(default_factory=dict)
-
-    def elements_of_type(self, t): return [e for e in self.elements if e.element_type == t]
-    def count(self, t): return len(self.elements_of_type(t))
+class OverlapIssue:
+    """Two elements that shouldn't overlap but do."""
+    element_a: UIElement
+    element_b: UIElement
+    overlap_percent: float   # overlap area / smaller element area
+    severity: str = "warning"  # warning, error, critical
 
 
 @dataclass
-class VideoDiff:
-    """Result of analyzing a video sequence (multiple frames)."""
-    frame_count: int
-    fps_estimate: float
-    motion_frames: int             # frames with significant change from previous
-    static_frames: int
-    anomaly_frames: List[int] = field(default_factory=list)  # frame indices with issues
-    summary: str = ""
+class ScreenZone:
+    """A named region of the screen for layout validation."""
+    name: str
+    box: Box
+    max_elements: int = 3   # expected max elements in this zone
+    element_kinds: List[str] = field(default_factory=list)  # expected kinds
 
 
 # ============================================================
-# 1. RENDERING MODES — request specific render styles from UI
+# Image loading
 # ============================================================
 
-class RenderMode:
-    """Constants for analysis-friendly rendering modes.
-
-    These are passed to the UI via URL params or API calls.
-    The UI renders differently to make detection easier.
-    """
-    NORMAL = "normal"                # Default visual style
-    SOLID_BLOCKS = "solid_blocks"    # Each UI element as a solid colored rectangle
-    WIREFRAME = "wireframe"          # Just outlines, no fills
-    HEATMAP = "heatmap"              # Activity/interaction heatmap
-    DEPTH = "depth"                  # Z-index visualization (brighter = higher z)
-    SEMANTIC = "semantic"            # Each element type gets a unique color
-    HIGH_CONTRAST = "high_contrast"  # Black bg, bright elements only
-    ID_MAP = "id_map"               # Each element has unique RGB = element ID
-
-    # Color assignments for SEMANTIC mode (element_type → BGR)
-    SEMANTIC_COLORS = {
-        "panel":     (255, 240, 0),    # cyan
-        "button":    (0, 255, 161),    # green
-        "menu":      (10, 238, 252),   # yellow
-        "map":       (30, 30, 30),     # dark gray
-        "overlay":   (109, 42, 255),   # magenta
-        "text":      (255, 255, 255),  # white
-        "marker":    (0, 165, 255),    # orange
-        "toast":     (100, 200, 255),  # light orange
-    }
-
-    @classmethod
-    def url_param(cls, mode):
-        """Generate URL parameter for requesting a render mode."""
-        return f"?render_mode={mode}"
-
-    @classmethod
-    def api_body(cls, mode):
-        """Generate API request body for render mode."""
-        return {"render_mode": mode}
-
-
-# ============================================================
-# 2. DETECTORS — find UI patterns in images
-# ============================================================
-
-def load_image(path_or_array):
-    """Load an image from path or pass through numpy array."""
+def load(path_or_array):
+    """Load image from path or pass through numpy array. Returns None if failed."""
     if not HAS_OPENCV:
         return None
     if isinstance(path_or_array, np.ndarray):
         return path_or_array
-    return cv2.imread(str(path_or_array))
+    img = cv2.imread(str(path_or_array))
+    return img
 
 
-def detect_panels(img) -> List[DetectedElement]:
-    """Detect rectangular panel regions in a screenshot.
+# ============================================================
+# 1. STRUCTURAL DETECTORS
+# ============================================================
 
-    Panels are dark rectangles with bright borders (cyan/magenta).
+def detect_bright_rectangles(img, min_area_pct=0.5, max_area_pct=60.0) -> List[UIElement]:
+    """Find rectangular regions with bright borders on dark background.
+    Good for detecting panels, dialogs, tooltips.
     """
     if not HAS_OPENCV:
         return []
-    if isinstance(img, str):
-        img = cv2.imread(img)
+    img = load(img)
     if img is None:
         return []
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Detect edges (panel borders are strong edges)
-    edges = cv2.Canny(gray, 50, 150)
-    # Dilate to close gaps in edges
+    edges = cv2.Canny(gray, 40, 120)
     kernel = np.ones((3, 3), np.uint8)
     edges = cv2.dilate(edges, kernel, iterations=2)
-
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    panels = []
     h, w = img.shape[:2]
-    min_area = (w * h) * 0.005  # Panels are at least 0.5% of screen
-    max_area = (w * h) * 0.6    # Panels are at most 60% of screen
+    total = h * w
+    min_a = total * min_area_pct / 100
+    max_a = total * max_area_pct / 100
+    results = []
 
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        area = cw * ch
-        if area < min_area or area > max_area:
+    for c in contours:
+        x, y, cw, ch = cv2.boundingRect(c)
+        a = cw * ch
+        if a < min_a or a > max_a:
             continue
-        # Panels are roughly rectangular (aspect ratio 0.3 to 3.0)
         aspect = cw / ch if ch > 0 else 0
-        if aspect < 0.2 or aspect > 5.0:
+        if aspect < 0.15 or aspect > 7.0:
             continue
-
-        # Sample the border color
-        border_color = _dominant_edge_color(img, x, y, cw, ch)
-
-        panels.append(DetectedElement(
-            element_type="panel",
-            bbox=BoundingBox(x, y, cw, ch),
-            color=_bgr_to_hex(border_color),
+        color = _mean_border_color(img, x, y, cw, ch)
+        results.append(UIElement(
+            kind="panel", box=Box(x, y, cw, ch), color_hex=_bgr2hex(color),
         ))
 
-    return panels
+    return results
 
 
-def detect_markers(img, min_size=5, max_size=40) -> List[DetectedElement]:
-    """Detect small colored markers/dots on the map (targets, units, etc.)."""
+def detect_small_colored_dots(img, min_px=4, max_px=50) -> List[UIElement]:
+    """Find small bright colored regions (map markers, status dots, icons)."""
     if not HAS_OPENCV:
         return []
-    if isinstance(img, str):
-        img = cv2.imread(img)
+    img = load(img)
     if img is None:
         return []
 
-    # Convert to HSV for better color detection
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-    markers = []
-    # Look for bright, saturated small regions
-    # Saturation > 100, Value > 100 = colored, bright
-    mask = cv2.inRange(hsv, np.array([0, 80, 80]), np.array([180, 255, 255]))
-
+    # Saturated + bright = colored element (not gray/black/white)
+    mask = cv2.inRange(hsv, np.array([0, 60, 60]), np.array([180, 255, 255]))
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        if cw < min_size or ch < min_size or cw > max_size or ch > max_size:
+
+    results = []
+    for c in contours:
+        x, y, cw, ch = cv2.boundingRect(c)
+        if cw < min_px or ch < min_px or cw > max_px or ch > max_px:
             continue
-        color = _dominant_color(img, x, y, cw, ch)
-        markers.append(DetectedElement(
-            element_type="marker",
-            bbox=BoundingBox(x, y, cw, ch),
-            color=_bgr_to_hex(color),
+        color = _mean_color(img, x, y, cw, ch)
+        results.append(UIElement(
+            kind="marker", box=Box(x, y, cw, ch), color_hex=_bgr2hex(color),
         ))
+    return results
 
-    return markers
 
-
-def detect_text_regions(img) -> List[DetectedElement]:
-    """Detect regions likely containing text (bright, horizontal clusters)."""
+def detect_text_blocks(img) -> List[UIElement]:
+    """Find horizontal bright text regions using morphological analysis."""
     if not HAS_OPENCV:
         return []
-    if isinstance(img, str):
-        img = cv2.imread(img)
+    img = load(img)
     if img is None:
         return []
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Text is bright on dark background in cyberpunk UI
-    _, bright = cv2.threshold(gray, 140, 255, cv2.THRESH_BINARY)
-
-    # Horizontal dilation to connect characters into word regions
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    _, bright = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
+    # Connect characters horizontally
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 3))
     dilated = cv2.dilate(bright, kernel, iterations=1)
-
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    regions = []
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        # Text regions are wider than tall and small-ish
-        if cw < 20 or ch < 5 or ch > 40 or cw / ch < 2:
+    results = []
+    for c in contours:
+        x, y, cw, ch = cv2.boundingRect(c)
+        if cw < 15 or ch < 4 or ch > 50 or cw / max(ch, 1) < 1.5:
             continue
-        regions.append(DetectedElement(
-            element_type="text",
-            bbox=BoundingBox(x, y, cw, ch),
-        ))
-
-    return regions
-
-
-def detect_overlays(img) -> List[DetectedElement]:
-    """Detect semi-transparent overlay regions (fog of war, territory zones, etc.)."""
-    if not HAS_OPENCV:
-        return []
-    if isinstance(img, str):
-        img = cv2.imread(img)
-    if img is None:
-        return []
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Overlays are large, semi-transparent areas — medium brightness, low contrast
-    blurred = cv2.GaussianBlur(gray, (31, 31), 0)
-    # Areas where the blur and original are similar = uniform regions (overlays)
-    diff = cv2.absdiff(gray, blurred)
-    _, low_detail = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY_INV)
-
-    # Large connected regions of low detail
-    kernel = np.ones((20, 20), np.uint8)
-    closed = cv2.morphologyEx(low_detail, cv2.MORPH_CLOSE, kernel)
-
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    overlays = []
-    h, w = img.shape[:2]
-    min_area = (w * h) * 0.05  # At least 5% of screen
-
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        if cw * ch < min_area:
-            continue
-        color = _dominant_color(img, x, y, cw, ch)
-        overlays.append(DetectedElement(
-            element_type="overlay",
-            bbox=BoundingBox(x, y, cw, ch),
-            color=_bgr_to_hex(color),
-        ))
-
-    return overlays
+        results.append(UIElement(kind="text", box=Box(x, y, cw, ch)))
+    return results
 
 
 # ============================================================
-# 3. COMPARATORS — compare frames to detect changes
+# 2. OVERLAP DETECTION
 # ============================================================
 
-def compare_screenshots(path_a, path_b, threshold=30):
-    """Compare two screenshots pixel-by-pixel."""
-    if not HAS_OPENCV:
-        return None
-    img_a = load_image(path_a)
-    img_b = load_image(path_b)
-    if img_a is None or img_b is None:
-        return None
-    if img_a.shape != img_b.shape:
-        img_b = cv2.resize(img_b, (img_a.shape[1], img_a.shape[0]))
-
-    diff = cv2.absdiff(img_a, img_b)
-    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-
-    changed = int(np.count_nonzero(thresh))
-    total = thresh.shape[0] * thresh.shape[1]
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    return {
-        "changed_pixels": changed,
-        "total_pixels": total,
-        "change_percent": round(changed / total * 100, 2) if total > 0 else 0,
-        "regions_changed": len(contours),
-    }
+def find_overlaps(elements: List[UIElement], min_overlap_pct=20.0) -> List[OverlapIssue]:
+    """Find pairs of elements that overlap more than min_overlap_pct of the smaller one."""
+    issues = []
+    for i, a in enumerate(elements):
+        for b in elements[i + 1:]:
+            overlap = a.box.overlap_area(b.box)
+            if overlap == 0:
+                continue
+            smaller = min(a.box.area, b.box.area)
+            if smaller == 0:
+                continue
+            pct = (overlap / smaller) * 100
+            if pct >= min_overlap_pct:
+                severity = "critical" if pct > 80 else "error" if pct > 50 else "warning"
+                issues.append(OverlapIssue(a, b, round(pct, 1), severity))
+    return issues
 
 
-def is_mostly_black(path, threshold=90.0):
-    """Check if screenshot is mostly black (black screen detection)."""
+# ============================================================
+# 3. LAYOUT VALIDATION
+# ============================================================
+
+def make_screen_zones(width: int, height: int) -> List[ScreenZone]:
+    """Create standard screen zones for layout validation."""
+    hw, hh = width // 2, height // 2
+    qw, qh = width // 4, height // 4
+    return [
+        ScreenZone("top-left", Box(0, 0, hw, hh), max_elements=3, element_kinds=["panel", "menu"]),
+        ScreenZone("top-right", Box(hw, 0, hw, hh), max_elements=3, element_kinds=["panel", "toast"]),
+        ScreenZone("bottom-left", Box(0, hh, hw, hh), max_elements=3, element_kinds=["panel"]),
+        ScreenZone("bottom-right", Box(hw, hh, hw, hh), max_elements=3, element_kinds=["toast"]),
+        ScreenZone("top-center", Box(qw, 0, hw, qh), max_elements=2, element_kinds=["menu", "text"]),
+        ScreenZone("bottom-center", Box(qw, height - qh, hw, qh), max_elements=2, element_kinds=["text"]),
+    ]
+
+
+def validate_layout(elements: List[UIElement], zones: List[ScreenZone]) -> List[dict]:
+    """Check that elements are in their expected zones and zones aren't overcrowded."""
+    issues = []
+    for zone in zones:
+        in_zone = [e for e in elements if zone.box.overlaps(e.box)]
+        if len(in_zone) > zone.max_elements:
+            issues.append({
+                "zone": zone.name,
+                "issue": "overcrowded",
+                "count": len(in_zone),
+                "max": zone.max_elements,
+                "elements": [e.kind for e in in_zone],
+            })
+    return issues
+
+
+# ============================================================
+# 4. BLACK SCREEN / BASIC CHECKS
+# ============================================================
+
+def is_black_screen(img, threshold_pct=90.0) -> bool:
+    """Is the image mostly black? (rendering failure detection)"""
     if not HAS_OPENCV:
         return False
-    img = load_image(path)
+    img = load(img)
     if img is None:
         return False
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     dark = np.count_nonzero(gray < 20)
-    total = gray.shape[0] * gray.shape[1]
-    return (dark / total * 100) > threshold
+    return (dark / gray.size * 100) > threshold_pct
 
 
-def detect_changes(baseline, current, min_percent=0.5):
-    """Did something visually change between two frames?"""
-    diff = compare_screenshots(baseline, current)
-    if diff is None:
-        return True
-    return diff["change_percent"] > min_percent
-
-
-def save_diff_image(path_a, path_b, output_path, threshold=30):
-    """Save a visualization of differences between two images."""
+def brightness_stats(img) -> dict:
+    """Get brightness statistics for an image."""
     if not HAS_OPENCV:
-        return None
-    img_a = load_image(path_a)
-    img_b = load_image(path_b)
-    if img_a is None or img_b is None:
-        return None
-    if img_a.shape != img_b.shape:
-        img_b = cv2.resize(img_b, (img_a.shape[1], img_a.shape[0]))
-
-    diff = cv2.absdiff(img_a, img_b)
-    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-
-    result = img_b.copy()
-    result[mask > 0] = [255, 42, 109]  # Magenta highlight
-    cv2.imwrite(str(output_path), result)
-    return str(output_path)
-
-
-# ============================================================
-# 4. FULL FRAME ANALYSIS — combine all detectors
-# ============================================================
-
-def analyze_frame(path) -> FrameAnalysis:
-    """Run all detectors on a single screenshot."""
-    analysis = FrameAnalysis(path=str(path))
-
-    if not HAS_OPENCV:
-        return analysis
-
-    img = load_image(path)
+        return {}
+    img = load(img)
     if img is None:
-        return analysis
-
-    # Black screen check
-    analysis.is_black_screen = is_mostly_black(path)
-
-    # Pixel statistics
+        return {}
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    analysis.pixel_stats = {
-        "mean_brightness": float(np.mean(gray)),
-        "std_brightness": float(np.std(gray)),
-        "dark_percent": float(np.count_nonzero(gray < 30) / gray.size * 100),
-        "bright_percent": float(np.count_nonzero(gray > 200) / gray.size * 100),
+    return {
+        "mean": float(np.mean(gray)),
+        "std": float(np.std(gray)),
+        "dark_pct": float(np.count_nonzero(gray < 30) / gray.size * 100),
+        "bright_pct": float(np.count_nonzero(gray > 200) / gray.size * 100),
     }
 
-    # Dominant colors (top 5 by pixel count)
-    analysis.dominant_colors = _top_colors(img, n=5)
 
-    # Detect elements
-    analysis.elements.extend(detect_panels(img))
-    analysis.elements.extend(detect_markers(img))
-    analysis.text_regions = detect_text_regions(img)
-    analysis.elements.extend(detect_overlays(img))
+def dominant_colors(img, n=5) -> List[str]:
+    """Get top N colors as hex strings using k-means clustering."""
+    if not HAS_OPENCV:
+        return []
+    img = load(img)
+    if img is None:
+        return []
+    small = cv2.resize(img, (50, 50))
+    pixels = small.reshape(-1, 3).astype(np.float32)
+    k = min(n, len(pixels))
+    if k < 1:
+        return []
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+    counts = np.bincount(labels.flatten())
+    order = np.argsort(-counts)
+    return [_bgr2hex(centers[i]) for i in order[:n]]
 
-    return analysis
 
+# ============================================================
+# 5. VIDEO / FRAME SEQUENCE ANALYSIS
+# ============================================================
 
-def analyze_video(frame_paths: List[str], fps: float = 10.0) -> VideoDiff:
-    """Analyze a sequence of frames for motion, anomalies, and stability."""
-    if not HAS_OPENCV or len(frame_paths) < 2:
-        return VideoDiff(frame_count=len(frame_paths), fps_estimate=fps,
-                        motion_frames=0, static_frames=len(frame_paths))
+def analyze_frame_sequence(paths: List[str], change_threshold=1.0) -> dict:
+    """Analyze a sequence of screenshots for motion and anomalies.
 
-    motion = 0
-    static = 0
-    anomalies = []
+    Returns summary stats useful for performance and stability testing.
+    """
+    if not HAS_OPENCV or len(paths) < 2:
+        return {"frames": len(paths), "motion": 0, "static": 0, "anomalies": []}
+
+    motion, static, anomalies = 0, 0, []
     prev = None
 
-    for i, path in enumerate(frame_paths):
-        img = load_image(path)
+    for i, path in enumerate(paths):
+        img = load(path)
         if img is None:
-            anomalies.append(i)
+            anomalies.append({"frame": i, "issue": "load_failed"})
             continue
+        if is_black_screen(img):
+            anomalies.append({"frame": i, "issue": "black_screen"})
 
         if prev is not None:
-            diff = compare_screenshots(prev, img)
-            if diff and diff["change_percent"] > 0.5:
+            diff = cv2.absdiff(prev, img)
+            gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+            changed_pct = np.count_nonzero(gray > 25) / gray.size * 100
+            if changed_pct > change_threshold:
                 motion += 1
             else:
                 static += 1
-
-            # Anomaly: sudden large change (>30%) or black screen
-            if diff and diff["change_percent"] > 30:
-                anomalies.append(i)
-            if is_mostly_black(img):
-                anomalies.append(i)
+            # Sudden large change = possible crash/reload
+            if changed_pct > 40:
+                anomalies.append({"frame": i, "issue": "large_change", "pct": round(changed_pct, 1)})
 
         prev = img
 
-    return VideoDiff(
-        frame_count=len(frame_paths),
-        fps_estimate=fps,
-        motion_frames=motion,
-        static_frames=static,
-        anomaly_frames=anomalies,
-        summary=f"{motion} motion frames, {static} static, {len(anomalies)} anomalies",
-    )
+    return {
+        "frames": len(paths),
+        "motion": motion,
+        "static": static,
+        "anomalies": anomalies,
+    }
 
 
 # ============================================================
-# 5. VISION MODEL — semantic understanding via Ollama
+# 6. VISION MODEL (Ollama/llava)
 # ============================================================
 
-def describe_screenshot(path, prompt=None, model="llava:7b", ollama_url="http://localhost:11434"):
-    """Ask a vision model to describe a screenshot."""
+def ask_vision_model(path, prompt=None, model="llava:7b", url="http://localhost:11434") -> dict:
+    """Ask a vision LLM to evaluate a screenshot."""
     if not HAS_REQUESTS:
-        return {"success": False, "error": "requests not installed"}
+        return {"ok": False, "error": "requests not installed"}
     if prompt is None:
-        prompt = "Describe this UI screenshot. What panels are visible? What's on the map? Any issues?"
-
+        prompt = (
+            "You are a QA engineer reviewing a UI screenshot. "
+            "List any visual issues: overlapping elements, unreadable text, "
+            "empty panels, broken layouts, or anything that looks wrong. "
+            "If everything looks fine, say 'No issues found.'"
+        )
     import base64
     try:
         with open(path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
-        resp = _requests.post(f"{ollama_url}/api/generate", json={
-            "model": model, "prompt": prompt, "images": [img_b64], "stream": False,
-        }, timeout=60)
-        if resp.ok:
-            return {"success": True, "description": resp.json().get("response", ""), "model": model}
-        return {"success": False, "error": f"HTTP {resp.status_code}"}
+            b64 = base64.b64encode(f.read()).decode()
+        r = _requests.post(f"{url}/api/generate", json={
+            "model": model, "prompt": prompt, "images": [b64], "stream": False,
+        }, timeout=90)
+        if r.ok:
+            return {"ok": True, "response": r.json().get("response", ""), "model": model}
+        return {"ok": False, "error": f"HTTP {r.status_code}"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"ok": False, "error": str(e)}
 
 
 # ============================================================
 # Internal helpers
 # ============================================================
 
-def _bgr_to_hex(bgr):
+def _bgr2hex(bgr):
     if bgr is None or len(bgr) < 3:
         return "#000000"
     return f"#{int(bgr[2]):02x}{int(bgr[1]):02x}{int(bgr[0]):02x}"
 
-
-def _dominant_color(img, x, y, w, h):
-    """Get the most common color in a region."""
+def _mean_color(img, x, y, w, h):
     region = img[y:y+h, x:x+w]
     if region.size == 0:
         return (0, 0, 0)
-    pixels = region.reshape(-1, 3)
-    # Simple: take the mean
-    return tuple(int(c) for c in np.mean(pixels, axis=0))
+    return tuple(int(c) for c in np.mean(region.reshape(-1, 3), axis=0))
 
-
-def _dominant_edge_color(img, x, y, w, h, border_width=3):
-    """Get the dominant color along the edges of a rectangle."""
-    pixels = []
-    for edge in [
-        img[y:y+border_width, x:x+w],           # top
-        img[y+h-border_width:y+h, x:x+w],       # bottom
-        img[y:y+h, x:x+border_width],            # left
-        img[y:y+h, x+w-border_width:x+w],        # right
-    ]:
-        if edge.size > 0:
-            pixels.append(edge.reshape(-1, 3))
-    if not pixels:
+def _mean_border_color(img, x, y, w, h, bw=2):
+    strips = []
+    for s in [img[y:y+bw, x:x+w], img[y+h-bw:y+h, x:x+w],
+              img[y:y+h, x:x+bw], img[y:y+h, x+w-bw:x+w]]:
+        if s.size > 0:
+            strips.append(s.reshape(-1, 3))
+    if not strips:
         return (0, 0, 0)
-    all_pixels = np.vstack(pixels)
-    return tuple(int(c) for c in np.mean(all_pixels, axis=0))
-
-
-def _top_colors(img, n=5):
-    """Get top N dominant colors as hex strings."""
-    if img is None:
-        return []
-    # Downsample for speed
-    small = cv2.resize(img, (50, 50))
-    pixels = small.reshape(-1, 3).astype(np.float32)
-    # K-means clustering
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    k = min(n, len(pixels))
-    if k < 1:
-        return []
-    _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
-    # Sort by frequency
-    counts = np.bincount(labels.flatten())
-    order = np.argsort(-counts)
-    return [_bgr_to_hex(centers[i]) for i in order[:n]]
+    all_px = np.vstack(strips)
+    return tuple(int(c) for c in np.mean(all_px, axis=0))
 
 
 # ============================================================
@@ -534,9 +424,11 @@ def _top_colors(img, n=5):
 # ============================================================
 
 def file_exists(path):
+    """Check screenshot file exists and is a real image (>1KB)."""
     p = Path(path)
     return p.exists() and p.stat().st_size > 1000
 
 def file_size_kb(path):
+    """Get file size in KB."""
     p = Path(path)
     return p.stat().st_size / 1024 if p.exists() else 0
