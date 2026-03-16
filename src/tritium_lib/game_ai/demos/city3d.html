@@ -174,8 +174,11 @@ const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
 
 const NUM_PEDESTRIANS = 25;
 const NUM_CARS = 12;
+const NUM_TAXIS = 3;
 const NUM_PROTESTORS = 20;
 const NUM_POLICE = 10;
+const NUM_FIRE_TRUCKS = 0; // spawned during riot
+const NUM_POLICE_VANS = 0; // spawned during riot
 
 // Central plaza — center of the city
 const PLAZA_X = CITY_W / 2;
@@ -231,6 +234,11 @@ const fires = [];
 const projectiles = [];
 const ambulances = [];
 const injuredQueue = []; // people waiting for ambulance pickup
+const taxis = [];
+const fireTrucks = [];
+const policeVans = [];
+const injuredOnGround = []; // people lying on ground waiting for ambulance
+const carDrivers = []; // civilians who own cars and drive between buildings
 
 const rng = () => Math.random();
 
@@ -351,7 +359,7 @@ scene.background = new THREE.Color(VOID_BG);
 scene.fog = new THREE.FogExp2(VOID_BG, 0.002);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 2000);
-camera.position.set(CITY_W / 2 + 150, 250, CITY_H / 2 + 250);
+camera.position.set(CITY_W / 2 + 80, 110, CITY_H / 2 + 120);
 camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -799,7 +807,7 @@ lampHeadMesh.instanceMatrix.needsUpdate = true;
 // =========================================================================
 // People InstancedMesh — bodies and heads (bigger Minecraft-style)
 // =========================================================================
-const MAX_PEOPLE = 120; // pedestrians + protestors + police
+const MAX_PEOPLE = 180; // pedestrians + protestors + police + emergency crews
 const personBodyGeo = new THREE.BoxGeometry(1, 1, 1);
 const personBodyMat = new THREE.MeshStandardMaterial({ roughness: 0.7 });
 const personBodyMesh = new THREE.InstancedMesh(personBodyGeo, personBodyMat, MAX_PEOPLE);
@@ -877,7 +885,7 @@ function hidePersonInstance(slot) {
 // =========================================================================
 // Cars InstancedMesh — body + cabin
 // =========================================================================
-const MAX_CARS_INST = 25; // extra slots for ambulances
+const MAX_CARS_INST = 45; // extra slots for ambulances, taxis, fire trucks, police vans
 const carBodyGeo = new THREE.BoxGeometry(4, 1.5, 2);
 const carBodyMat = new THREE.MeshStandardMaterial({ metalness: 0.3, roughness: 0.6 });
 const carBodyMesh = new THREE.InstancedMesh(carBodyGeo, carBodyMat, MAX_CARS_INST);
@@ -973,6 +981,78 @@ function hideCarInstance(idx) {
     carHLMesh.setMatrixAt(idx * 2 + s, _mat4);
     carTLMesh.setMatrixAt(idx * 2 + s, _mat4);
   }
+}
+
+// =========================================================================
+// Car Headlight PointLights — only active at night
+// =========================================================================
+const carHeadlights = []; // array of { light1, light2, active }
+for (let i = 0; i < MAX_CARS_INST; i++) {
+  const l1 = new THREE.PointLight(0xffffee, 0, 20);
+  const l2 = new THREE.PointLight(0xffffee, 0, 20);
+  scene.add(l1);
+  scene.add(l2);
+  carHeadlights.push({ light1: l1, light2: l2 });
+}
+
+function updateCarHeadlights(idx, x, z, rotY, isNight) {
+  const hl = carHeadlights[idx];
+  if (!hl) return;
+  const intensity = isNight ? 2.0 : 0;
+  hl.light1.intensity = intensity;
+  hl.light2.intensity = intensity;
+  if (isNight) {
+    const cosR = Math.cos(rotY);
+    const sinR = Math.sin(rotY);
+    const hlLocalX = 2.5;
+    const hlX1 = x + hlLocalX * sinR + 0.7 * cosR;
+    const hlZ1 = z + hlLocalX * cosR - 0.7 * sinR;
+    const hlX2 = x + hlLocalX * sinR - 0.7 * cosR;
+    const hlZ2 = z + hlLocalX * cosR + 0.7 * sinR;
+    hl.light1.position.set(hlX1, 0.8, hlZ1);
+    hl.light2.position.set(hlX2, 0.8, hlZ2);
+  }
+}
+
+// =========================================================================
+// Injured Cross Markers — instanced red cross sprites above injured people
+// =========================================================================
+const MAX_INJURED_MARKERS = 30;
+const crossHGeo = new THREE.PlaneGeometry(1.5, 0.5);
+const crossVGeo = new THREE.PlaneGeometry(0.5, 1.5);
+const crossMat = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false });
+const injuredMarkers = []; // { crossH, crossV, active }
+for (let i = 0; i < MAX_INJURED_MARKERS; i++) {
+  const h = new THREE.Mesh(crossHGeo, crossMat);
+  const v = new THREE.Mesh(crossVGeo, crossMat);
+  h.visible = false;
+  v.visible = false;
+  h.renderOrder = 999;
+  v.renderOrder = 999;
+  scene.add(h);
+  scene.add(v);
+  injuredMarkers.push({ crossH: h, crossV: v, active: false });
+}
+
+function showInjuredMarker(x, y, z) {
+  for (const m of injuredMarkers) {
+    if (!m.active) {
+      m.active = true;
+      m.crossH.visible = true;
+      m.crossV.visible = true;
+      m.crossH.position.set(x, y + 5, z);
+      m.crossV.position.set(x, y + 5, z);
+      return m;
+    }
+  }
+  return null;
+}
+
+function hideInjuredMarker(marker) {
+  if (!marker) return;
+  marker.active = false;
+  marker.crossH.visible = false;
+  marker.crossV.visible = false;
 }
 
 // =========================================================================
@@ -1111,6 +1191,35 @@ function edgeSpawnPos() {
   }
 }
 
+// Find curb parking position near a building (on nearest road edge)
+function curbNearBuilding(bldg) {
+  let bestDist = Infinity, bestPos = null;
+  // Check vertical roads for nearest curb
+  for (const vx of vRoads) {
+    const d = Math.abs(bldg.x - vx);
+    if (d < bestDist) {
+      bestDist = d;
+      const side = bldg.x > vx ? 1 : -1;
+      bestPos = { x: vx + side * (ROAD_W / 2 - 1.5), z: bldg.z };
+    }
+  }
+  // Check horizontal roads
+  for (const hz of hRoads) {
+    const d = Math.abs(bldg.z - hz);
+    if (d < bestDist) {
+      bestDist = d;
+      const side = bldg.z > hz ? 1 : -1;
+      bestPos = { x: bldg.x, z: hz + side * (ROAD_W / 2 - 1.5) };
+    }
+  }
+  return bestPos || { x: bldg.x, z: bldg.z + (bldg.d || 10) / 2 + 3 };
+}
+
+// Get door position of a building
+function doorPos(bldg) {
+  return { x: bldg.x, z: bldg.z + (bldg.d || 10) / 2 + 0.5 };
+}
+
 function addKillFeedEntry(text) {
   killFeed.unshift({ text, age: 0 });
   if (killFeed.length > 10) killFeed.pop();
@@ -1187,6 +1296,57 @@ for (let i = 0; i < NUM_PEDESTRIANS; i++) {
 }
 
 // =========================================================================
+// Car-driving civilians — people who walk to car, drive, park, walk to dest
+// =========================================================================
+const houseBuildings = buildings.filter(b => b.type === 'house' || b.type === 'shop');
+
+for (let i = 0; i < 10 && houseBuildings.length >= 2; i++) {
+  const homeIdx = Math.floor(rng() * houseBuildings.length);
+  const home = houseBuildings[homeIdx];
+  let destIdx = Math.floor(rng() * houseBuildings.length);
+  while (destIdx === homeIdx && houseBuildings.length > 1) destIdx = Math.floor(rng() * houseBuildings.length);
+  const dest = houseBuildings[destIdx];
+
+  const personSlot = allocPersonSlot();
+  const carSlot = allocCarSlot();
+  if (personSlot < 0 || carSlot < 0) break;
+
+  const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+  const hue = rng();
+  const bodyColor = new THREE.Color().setHSL(hue, 0.6, 0.45).getHex();
+  const cabinColor = new THREE.Color().setHSL(hue, 0.5, 0.35).getHex();
+
+  const homeDoor = doorPos(home);
+  const homeCurb = curbNearBuilding(home);
+
+  // Park car at home curb initially
+  updateCarInstance(carSlot, homeCurb.x, 0, homeCurb.z, 0, bodyColor, cabinColor);
+
+  carDrivers.push({
+    personSlot, carSlot,
+    x: homeDoor.x, z: homeDoor.z, y: 0, rotY: 0,
+    bodyColor: COLOR_CIVILIAN, headColor,
+    carBodyColor: bodyColor, carCabinColor: cabinColor,
+    scale: 1.0, speed: 2.0 + rng() * 1.0,
+    home, dest,
+    homeDoor, homeCurb,
+    destDoor: doorPos(dest),
+    destCurb: curbNearBuilding(dest),
+    // State machine: walk_to_car, driving, walk_to_dest, at_dest, walk_to_car_return, driving_home, walk_home, at_home
+    state: 'at_home',
+    stateTimer: 3 + rng() * 15, // wait before first trip
+    roadPath: [],
+    roadIdx: 0,
+    alive: true, visible: true, carMoving: false,
+  });
+}
+
+// =========================================================================
+// Taxis — yellow cars cruising roads, picking up carless residents
+// =========================================================================
+// (spawned after cars section below)
+
+// =========================================================================
 // Cars — road-following with intersection turns
 // =========================================================================
 function pickRandomRoadStart() {
@@ -1257,6 +1417,35 @@ for (let i = 0; i < NUM_CARS; i++) {
     alive: true,
     pauseTimer: 0,
     nextIntersection: nextInt,
+  });
+}
+
+// =========================================================================
+// Taxis — yellow cars cruising roads
+// =========================================================================
+for (let i = 0; i < NUM_TAXIS; i++) {
+  const start = pickRandomRoadStart();
+  const slot = allocCarSlot();
+  if (slot < 0) break;
+  const nextInt = findNextIntersection(start.x, start.z, start.horizontal, start.dir);
+
+  taxis.push({
+    idx: slot,
+    x: start.x, z: start.z,
+    horizontal: start.horizontal,
+    dir: start.dir,
+    speed: 6 + rng() * 4,
+    bodyColor: 0xFFCC00, cabinColor: 0xDDAA00,
+    alive: true,
+    pauseTimer: 0,
+    nextIntersection: nextInt,
+    // Passenger state
+    passenger: null, // ref to a pedestrian waiting for taxi
+    state: 'cruising', // cruising, picking_up, dropping_off
+    pickupTarget: null, // {x, z}
+    dropoffTarget: null,
+    roadPath: [],
+    roadIdx: 0,
   });
 }
 
@@ -1714,6 +1903,278 @@ function launchProjectile(from, to, type) {
 }
 
 // =========================================================================
+// Emergency Vehicles — Fire Trucks and Police Vans
+// =========================================================================
+function spawnFireTruck(targetFire) {
+  const slot = allocCarSlot();
+  if (slot < 0) return;
+  const edgePos = edgeSpawnPos();
+  const road = snapToNearestRoad(edgePos.x, edgePos.z);
+  const startX = road ? road.x : edgePos.x;
+  const startZ = road ? road.z : edgePos.z;
+  const waypoints = planRoadPath(startX, startZ, targetFire.x, targetFire.z);
+
+  const light1 = new THREE.PointLight(0xff0000, 3, 30);
+  light1.position.set(startX, 3.5, startZ);
+  scene.add(light1);
+  const light2 = new THREE.PointLight(0xff4400, 3, 30);
+  light2.position.set(startX, 3.5, startZ);
+  scene.add(light2);
+
+  fireTrucks.push({
+    idx: slot, x: startX, z: startZ, speed: 10,
+    bodyColor: 0xCC0000, cabinColor: 0xAA0000,
+    light1, light2, flashTimer: 0,
+    waypoints, waypointIdx: 0,
+    phase: 'driving', // driving, fighting_fire, returning
+    targetFire, fightTimer: 0,
+    alive: true, sirenTimer: 0,
+  });
+  addKillFeedEntry('Fire truck dispatched!');
+  playSiren();
+}
+
+function spawnPoliceVan() {
+  const slot = allocCarSlot();
+  if (slot < 0) return;
+  const edgePos = edgeSpawnPos();
+  const road = snapToNearestRoad(edgePos.x, edgePos.z);
+  const startX = road ? road.x : edgePos.x;
+  const startZ = road ? road.z : edgePos.z;
+  const waypoints = planRoadPath(startX, startZ, PLAZA_X + (rng() - 0.5) * 30, PLAZA_Z - 40);
+
+  const light1 = new THREE.PointLight(0x0000ff, 3, 25);
+  light1.position.set(startX, 3.5, startZ);
+  scene.add(light1);
+  const light2 = new THREE.PointLight(0xff0000, 3, 25);
+  light2.position.set(startX, 3.5, startZ);
+  scene.add(light2);
+
+  policeVans.push({
+    idx: slot, x: startX, z: startZ, speed: 11,
+    bodyColor: 0x223366, cabinColor: 0x1a2244,
+    light1, light2, flashTimer: 0,
+    waypoints, waypointIdx: 0,
+    phase: 'driving', // driving, deploying, done
+    deployTimer: 0, deployed: false,
+    alive: true, sirenTimer: 0,
+  });
+  addKillFeedEntry('Police van dispatched!');
+  playSiren();
+}
+
+function updateEmergencyVehicles(dt) {
+  const isNight = nightMode || simTime < 6 || simTime > 20;
+
+  // Fire trucks
+  for (let i = fireTrucks.length - 1; i >= 0; i--) {
+    const ft = fireTrucks[i];
+    if (!ft.alive) continue;
+    ft.flashTimer += dt;
+    ft.sirenTimer += dt;
+    const flashPhase = Math.floor(ft.flashTimer * 4) % 2;
+    ft.light1.intensity = flashPhase === 0 ? 5 : 0.5;
+    ft.light2.intensity = flashPhase === 1 ? 5 : 0.5;
+    ft.light1.position.set(ft.x + 1, 3.5, ft.z);
+    ft.light2.position.set(ft.x - 1, 3.5, ft.z);
+    if (ft.sirenTimer > 4) { ft.sirenTimer = 0; playSiren(); }
+
+    if (ft.phase === 'driving') {
+      if (ft.waypointIdx < ft.waypoints.length) {
+        const wp = ft.waypoints[ft.waypointIdx];
+        const dx = wp.x - ft.x, dz = wp.z - ft.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { ft.waypointIdx++; }
+        else { const s = ft.speed * dt; ft.x += (dx / d) * s; ft.z += (dz / d) * s; }
+      } else {
+        ft.phase = 'fighting_fire';
+        ft.fightTimer = 15 + rng() * 10;
+        addKillFeedEntry('Fire truck fighting fire');
+      }
+    } else if (ft.phase === 'fighting_fire') {
+      ft.fightTimer -= dt;
+      // Accelerate fire death
+      if (ft.targetFire && ft.targetFire.life > 0) {
+        ft.targetFire.life -= dt * 2; // fire goes out 3x faster
+      }
+      if (ft.fightTimer <= 0 || !ft.targetFire || ft.targetFire.life <= 0) {
+        ft.phase = 'returning';
+        const edge = edgeSpawnPos();
+        ft.waypoints = planRoadPath(ft.x, ft.z, edge.x, edge.z);
+        ft.waypointIdx = 0;
+      }
+    } else if (ft.phase === 'returning') {
+      if (ft.waypointIdx < ft.waypoints.length) {
+        const wp = ft.waypoints[ft.waypointIdx];
+        const dx = wp.x - ft.x, dz = wp.z - ft.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { ft.waypointIdx++; }
+        else { const s = ft.speed * dt; ft.x += (dx / d) * s; ft.z += (dz / d) * s; }
+      } else {
+        ft.alive = false;
+        scene.remove(ft.light1); scene.remove(ft.light2);
+        hideCarInstance(ft.idx);
+      }
+    }
+
+    if (ft.alive) {
+      let rotY = 0;
+      if (ft.waypointIdx < ft.waypoints.length) {
+        const wp = ft.waypoints[ft.waypointIdx];
+        rotY = Math.atan2(wp.x - ft.x, wp.z - ft.z);
+      }
+      updateCarInstance(ft.idx, ft.x, 0, ft.z, rotY, ft.bodyColor, ft.cabinColor);
+      updateCarHeadlights(ft.idx, ft.x, ft.z, rotY, isNight);
+    }
+  }
+
+  // Police vans
+  for (let i = policeVans.length - 1; i >= 0; i--) {
+    const pv = policeVans[i];
+    if (!pv.alive) continue;
+    pv.flashTimer += dt;
+    pv.sirenTimer += dt;
+    const flashPhase = Math.floor(pv.flashTimer * 4) % 2;
+    pv.light1.intensity = flashPhase === 0 ? 5 : 0.5;
+    pv.light2.intensity = flashPhase === 1 ? 5 : 0.5;
+    pv.light1.position.set(pv.x + 1, 3.5, pv.z);
+    pv.light2.position.set(pv.x - 1, 3.5, pv.z);
+    if (pv.sirenTimer > 4) { pv.sirenTimer = 0; playSiren(); }
+
+    if (pv.phase === 'driving') {
+      if (pv.waypointIdx < pv.waypoints.length) {
+        const wp = pv.waypoints[pv.waypointIdx];
+        const dx = wp.x - pv.x, dz = wp.z - pv.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { pv.waypointIdx++; }
+        else { const s = pv.speed * dt; pv.x += (dx / d) * s; pv.z += (dz / d) * s; }
+      } else {
+        pv.phase = 'deploying';
+        pv.deployTimer = 3;
+        addKillFeedEntry('Police van deploying officers');
+      }
+    } else if (pv.phase === 'deploying') {
+      pv.deployTimer -= dt;
+      if (pv.deployTimer <= 0 && !pv.deployed) {
+        pv.deployed = true;
+        // Spawn 3-4 police from the van
+        const numCops = 3 + Math.floor(rng() * 2);
+        for (let c = 0; c < numCops; c++) {
+          const slot = allocPersonSlot();
+          if (slot < 0) break;
+          const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+          let myRingIdx = -1;
+          if (ringIdx < MAX_RINGS) { myRingIdx = ringIdx++; ringMesh.count = ringIdx; }
+          let myShieldIdx = -1;
+          if (shieldMesh.count < MAX_SHIELDS) { myShieldIdx = shieldMesh.count++; }
+          police.push({
+            slot, myRingIdx, myShieldIdx,
+            x: pv.x + (rng() - 0.5) * 4, z: pv.z + (rng() - 0.5) * 4, y: 0, rotY: 0,
+            bodyColor: COLOR_POLICE, headColor, ringColor: CYAN,
+            scale: 1.15, speed: 2 + rng() * 1.5,
+            alive: true, health: 1.0, fireTimer: 2 + rng() * 4,
+            target: null, holdLine: true,
+            lineX: PLAZA_X + (rng() - 0.5) * 30, lineZ: PLAZA_Z - 30 - rng() * 10,
+            injured: false,
+          });
+        }
+        addKillFeedEntry(`${numCops} officers deployed from van`);
+        pv.phase = 'done';
+      }
+    }
+
+    if (pv.alive) {
+      let rotY = 0;
+      if (pv.phase === 'driving' && pv.waypointIdx < pv.waypoints.length) {
+        const wp = pv.waypoints[pv.waypointIdx];
+        rotY = Math.atan2(wp.x - pv.x, wp.z - pv.z);
+      }
+      updateCarInstance(pv.idx, pv.x, 0, pv.z, rotY, pv.bodyColor, pv.cabinColor);
+      updateCarHeadlights(pv.idx, pv.x, pv.z, rotY, isNight);
+    }
+  }
+
+  // Update car instanced meshes
+  if (fireTrucks.length > 0 || policeVans.length > 0) {
+    carBodyMesh.instanceMatrix.needsUpdate = true;
+    if (carBodyMesh.instanceColor) carBodyMesh.instanceColor.needsUpdate = true;
+    carCabinMesh.instanceMatrix.needsUpdate = true;
+    if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
+    carHLMesh.instanceMatrix.needsUpdate = true;
+    carTLMesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// =========================================================================
+// Injured Person Ground Logic
+// =========================================================================
+function knockDownPerson(person) {
+  if (!person || !person.alive || person.onGround) return;
+  person.onGround = true;
+  person.injured = true;
+
+  // Add to injured on ground list
+  const marker = showInjuredMarker(person.x, 0, person.z);
+  injuredOnGround.push({ person, marker, timer: 15 + rng() * 10, ambulanceDispatched: false });
+
+  injuryCount++;
+}
+
+function updateInjuredOnGround(dt) {
+  for (let i = injuredOnGround.length - 1; i >= 0; i--) {
+    const entry = injuredOnGround[i];
+    entry.timer -= dt;
+
+    // Update marker position to follow person (they stay still but just in case)
+    if (entry.marker && entry.person.alive) {
+      entry.marker.crossH.position.set(entry.person.x, 5, entry.person.z);
+      entry.marker.crossV.position.set(entry.person.x, 5, entry.person.z);
+      // Billboard: face camera
+      entry.marker.crossH.lookAt(camera.position);
+      entry.marker.crossV.lookAt(camera.position);
+    }
+
+    // Render person lying down (rotated 90 degrees on side)
+    if (entry.person.alive && entry.person.onGround) {
+      const slot = entry.person.slot;
+      if (slot >= 0) {
+        const s = (entry.person.scale || 1.0) * PERSON_SCALE;
+        // Body lying on side
+        _euler.set(0, entry.person.rotY || 0, Math.PI / 2);
+        _quat.setFromEuler(_euler);
+        _pos.set(entry.person.x, BODY_W * s / 2, entry.person.z);
+        _scale.set(BODY_W * s, BODY_H * s, BODY_D * s);
+        _mat4.compose(_pos, _quat, _scale);
+        personBodyMesh.setMatrixAt(slot, _mat4);
+        personBodyMesh.setColorAt(slot, _color.set(entry.person.bodyColor));
+        // Head
+        _pos.set(entry.person.x + BODY_H * s * 0.6, BODY_W * s / 2, entry.person.z);
+        _scale.set(HEAD_SIZE * s, HEAD_SIZE * s, HEAD_SIZE * s);
+        _mat4.compose(_pos, _quat, _scale);
+        personHeadMesh.setMatrixAt(slot, _mat4);
+        personHeadMesh.setColorAt(slot, _color.set(entry.person.headColor));
+      }
+    }
+
+    // Dispatch ambulance after delay
+    if (!entry.ambulanceDispatched && entry.timer < 10) {
+      entry.ambulanceDispatched = true;
+      spawnAmbulance(entry.person);
+    }
+
+    // Remove when ambulance picks them up or timer expires
+    if (!entry.person.alive || entry.timer <= 0) {
+      hideInjuredMarker(entry.marker);
+      if (entry.person.alive) {
+        entry.person.alive = false;
+        hidePersonInstance(entry.person.slot);
+      }
+      injuredOnGround.splice(i, 1);
+    }
+  }
+}
+
+// =========================================================================
 // Keyboard
 // =========================================================================
 document.addEventListener('keydown', (e) => {
@@ -1739,6 +2200,10 @@ document.addEventListener('keydown', (e) => {
       createHelicopter();
       addKillFeedEntry('Protest gathering in central plaza');
       addKillFeedEntry('Police helicopter deployed');
+      // Spawn police vans
+      for (let v = 0; v < 2; v++) {
+        setTimeout(() => spawnPoliceVan(), (v + 1) * 5000);
+      }
     } else {
       // Remove riot units — hide their instanced slots
       for (const p of protestors) hidePersonInstance(p.slot);
@@ -1763,6 +2228,25 @@ document.addEventListener('keydown', (e) => {
       }
       ambulances.length = 0;
       injuredQueue.length = 0;
+      // Clear fire trucks
+      for (const ft of fireTrucks) {
+        if (ft.light1) scene.remove(ft.light1);
+        if (ft.light2) scene.remove(ft.light2);
+        hideCarInstance(ft.idx);
+      }
+      fireTrucks.length = 0;
+      // Clear police vans
+      for (const pv of policeVans) {
+        if (pv.light1) scene.remove(pv.light1);
+        if (pv.light2) scene.remove(pv.light2);
+        hideCarInstance(pv.idx);
+      }
+      policeVans.length = 0;
+      // Clear injured on ground
+      for (const entry of injuredOnGround) {
+        hideInjuredMarker(entry.marker);
+      }
+      injuredOnGround.length = 0;
       // Reset rings and shields
       ringMesh.count = 0;
       ringIdx = 0;
@@ -1869,8 +2353,302 @@ function update(dt) {
     }
   }
 
-  // ---- Update cars — road following ----
   let needsCarUpdate = false;
+
+  // ---- Update car-driving civilians ----
+  for (const cd of carDrivers) {
+    if (!cd.alive) continue;
+    cd.stateTimer -= dt;
+
+    if (cd.state === 'at_home' && cd.stateTimer <= 0) {
+      // Start walking to car
+      cd.state = 'walk_to_car';
+      cd.visible = true;
+    } else if (cd.state === 'walk_to_car') {
+      const dx = cd.homeCurb.x - cd.x;
+      const dz = cd.homeCurb.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        // Get in car
+        cd.state = 'driving';
+        cd.visible = false;
+        cd.carMoving = true;
+        hidePersonInstance(cd.personSlot);
+        cd.roadPath = planRoadPath(cd.homeCurb.x, cd.homeCurb.z, cd.destCurb.x, cd.destCurb.z);
+        cd.roadIdx = 0;
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    } else if (cd.state === 'driving') {
+      if (cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const dx = wp.x - cd.x;
+        const dz = wp.z - cd.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 2) {
+          cd.roadIdx++;
+        } else {
+          const s = 8 * dt;
+          cd.x += (dx / d) * s;
+          cd.z += (dz / d) * s;
+        }
+      } else {
+        // Arrived at dest curb — park and get out
+        cd.x = cd.destCurb.x;
+        cd.z = cd.destCurb.z;
+        cd.state = 'walk_to_dest';
+        cd.visible = true;
+        cd.carMoving = false;
+      }
+      // Update car position while driving
+      if (cd.carMoving && cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const rotY = Math.atan2(wp.x - cd.x, wp.z - cd.z);
+        updateCarInstance(cd.carSlot, cd.x, 0, cd.z, rotY, cd.carBodyColor, cd.carCabinColor);
+        updateCarHeadlights(cd.carSlot, cd.x, cd.z, rotY, isNight);
+        needsCarUpdate = true;
+      }
+    } else if (cd.state === 'walk_to_dest') {
+      const dx = cd.destDoor.x - cd.x;
+      const dz = cd.destDoor.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        cd.state = 'at_dest';
+        cd.stateTimer = 10 + rng() * 20;
+        cd.visible = false;
+        hidePersonInstance(cd.personSlot);
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    } else if (cd.state === 'at_dest' && cd.stateTimer <= 0) {
+      // Walk back to car for return trip
+      cd.state = 'walk_to_car_return';
+      cd.x = cd.destDoor.x;
+      cd.z = cd.destDoor.z;
+      cd.visible = true;
+    } else if (cd.state === 'walk_to_car_return') {
+      const dx = cd.destCurb.x - cd.x;
+      const dz = cd.destCurb.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        cd.state = 'driving_home';
+        cd.visible = false;
+        cd.carMoving = true;
+        hidePersonInstance(cd.personSlot);
+        cd.roadPath = planRoadPath(cd.destCurb.x, cd.destCurb.z, cd.homeCurb.x, cd.homeCurb.z);
+        cd.roadIdx = 0;
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    } else if (cd.state === 'driving_home') {
+      if (cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const dx = wp.x - cd.x;
+        const dz = wp.z - cd.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 2) {
+          cd.roadIdx++;
+        } else {
+          const s = 8 * dt;
+          cd.x += (dx / d) * s;
+          cd.z += (dz / d) * s;
+        }
+      } else {
+        cd.x = cd.homeCurb.x;
+        cd.z = cd.homeCurb.z;
+        cd.state = 'walk_home';
+        cd.visible = true;
+        cd.carMoving = false;
+      }
+      if (cd.carMoving && cd.roadIdx < cd.roadPath.length) {
+        const wp = cd.roadPath[cd.roadIdx];
+        const rotY = Math.atan2(wp.x - cd.x, wp.z - cd.z);
+        updateCarInstance(cd.carSlot, cd.x, 0, cd.z, rotY, cd.carBodyColor, cd.carCabinColor);
+        updateCarHeadlights(cd.carSlot, cd.x, cd.z, rotY, isNight);
+        needsCarUpdate = true;
+      }
+    } else if (cd.state === 'walk_home') {
+      const dx = cd.homeDoor.x - cd.x;
+      const dz = cd.homeDoor.z - cd.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 1.5) {
+        cd.state = 'at_home';
+        cd.stateTimer = 10 + rng() * 20;
+        cd.visible = false;
+        hidePersonInstance(cd.personSlot);
+        // Pick new destination for next trip
+        if (houseBuildings.length > 1) {
+          let ni;
+          do { ni = Math.floor(rng() * houseBuildings.length); } while (houseBuildings[ni] === cd.home);
+          cd.dest = houseBuildings[ni];
+          cd.destDoor = doorPos(cd.dest);
+          cd.destCurb = curbNearBuilding(cd.dest);
+        }
+      } else {
+        const s = cd.speed * dt;
+        cd.x += (dx / d) * s;
+        cd.z += (dz / d) * s;
+        cd.rotY = Math.atan2(dx, dz);
+      }
+    }
+
+    // Render person if visible
+    if (cd.visible && cd.alive) {
+      updatePersonInstance(cd.personSlot, cd.x, 0, cd.z, cd.rotY, cd.bodyColor, cd.headColor, cd.scale);
+      needsPersonUpdate = true;
+    }
+    // Park car when not moving
+    if (!cd.carMoving) {
+      const parkPos = (cd.state.includes('home') || cd.state === 'at_home' || cd.state === 'walk_to_car') ? cd.homeCurb : cd.destCurb;
+      updateCarInstance(cd.carSlot, parkPos.x, 0, parkPos.z, 0, cd.carBodyColor, cd.carCabinColor);
+      updateCarHeadlights(cd.carSlot, parkPos.x, parkPos.z, 0, false);
+    }
+  }
+
+  // ---- Update taxis ----
+  for (const taxi of taxis) {
+    if (!taxi.alive) continue;
+    if (taxi.pauseTimer > 0) { taxi.pauseTimer -= dt; continue; }
+
+    if (taxi.state === 'cruising') {
+      // Drive like normal cars on road grid
+      if (!taxi.nextIntersection) {
+        const start = pickRandomRoadStart();
+        taxi.x = start.x; taxi.z = start.z;
+        taxi.horizontal = start.horizontal; taxi.dir = start.dir;
+        taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+        taxi.pauseTimer = 0.5;
+        continue;
+      }
+      const target = taxi.nextIntersection;
+      if (taxi.horizontal) {
+        taxi.z = target.z;
+        const dist = Math.abs(target.x - taxi.x);
+        if (dist < 2) {
+          taxi.x = target.x; taxi.z = target.z;
+          taxi.pauseTimer = 0.3 + rng() * 0.5;
+          const turnRoll = rng();
+          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
+          else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
+          taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+        } else {
+          taxi.x += taxi.dir * taxi.speed * dt;
+        }
+      } else {
+        taxi.x = target.x;
+        const dist = Math.abs(target.z - taxi.z);
+        if (dist < 2) {
+          taxi.x = target.x; taxi.z = target.z;
+          taxi.pauseTimer = 0.3 + rng() * 0.5;
+          const turnRoll = rng();
+          if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
+          else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
+          taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+        } else {
+          taxi.z += taxi.dir * taxi.speed * dt;
+        }
+      }
+
+      // Look for nearby pedestrians who need a ride (randomly assign some as needing taxi)
+      if (rng() < 0.002) {
+        for (const ped of pedestrians) {
+          if (!ped.alive || ped.fleeing || ped.inTaxi) continue;
+          if (ped.inTaxi) continue;
+          const d = dist2d(taxi, ped);
+          if (d < 15) {
+            taxi.passenger = ped;
+            taxi.state = 'picking_up';
+            taxi.pickupTarget = { x: ped.x, z: ped.z };
+            break;
+          }
+        }
+      }
+    } else if (taxi.state === 'picking_up') {
+      if (!taxi.passenger || !taxi.passenger.alive) {
+        taxi.state = 'cruising';
+        taxi.passenger = null;
+        continue;
+      }
+      const dx = taxi.pickupTarget.x - taxi.x;
+      const dz = taxi.pickupTarget.z - taxi.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < 4) {
+        // Pick up passenger
+        taxi.passenger.inTaxi = true;
+        taxi.passenger.alive = false;
+        hidePersonInstance(taxi.passenger.slot);
+        taxi.state = 'dropping_off';
+        taxi.dropoffTarget = randomSidewalkPos();
+        taxi.roadPath = planRoadPath(taxi.x, taxi.z, taxi.dropoffTarget.x, taxi.dropoffTarget.z);
+        taxi.roadIdx = 0;
+        if (rng() < 0.3) addKillFeedEntry('Taxi picked up passenger');
+      } else {
+        const s = taxi.speed * 0.8 * dt;
+        taxi.x += (dx / d) * s;
+        taxi.z += (dz / d) * s;
+      }
+    } else if (taxi.state === 'dropping_off') {
+      if (taxi.roadIdx < taxi.roadPath.length) {
+        const wp = taxi.roadPath[taxi.roadIdx];
+        const dx = wp.x - taxi.x;
+        const dz = wp.z - taxi.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 2) { taxi.roadIdx++; }
+        else {
+          const s = taxi.speed * dt;
+          taxi.x += (dx / d) * s;
+          taxi.z += (dz / d) * s;
+        }
+      } else {
+        // Drop off passenger — respawn as new pedestrian
+        if (taxi.passenger) {
+          const newSlot = allocPersonSlot();
+          if (newSlot >= 0) {
+            const pos = taxi.dropoffTarget;
+            pedestrians.push({
+              slot: newSlot,
+              x: pos.x, z: pos.z, y: 0, rotY: 0,
+              bodyColor: COLOR_CIVILIAN,
+              headColor: taxi.passenger.headColor || SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)],
+              scale: 1.0,
+              speed: 1.5 + rng() * 1.5,
+              target: randomSidewalkPos(),
+              alive: true, fleeing: false,
+            });
+          }
+        }
+        taxi.passenger = null;
+        taxi.state = 'cruising';
+        taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, rng() < 0.5, rng() < 0.5 ? 1 : -1);
+        taxi.horizontal = rng() < 0.5;
+        taxi.dir = rng() < 0.5 ? 1 : -1;
+      }
+    }
+
+    let rotY;
+    if (taxi.state === 'dropping_off' && taxi.roadIdx < taxi.roadPath.length) {
+      const wp = taxi.roadPath[taxi.roadIdx];
+      rotY = Math.atan2(wp.x - taxi.x, wp.z - taxi.z);
+    } else if (taxi.horizontal) {
+      rotY = taxi.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+    } else {
+      rotY = taxi.dir > 0 ? 0 : Math.PI;
+    }
+    updateCarInstance(taxi.idx, taxi.x, 0, taxi.z, rotY, taxi.bodyColor, taxi.cabinColor);
+    updateCarHeadlights(taxi.idx, taxi.x, taxi.z, rotY, isNight);
+    needsCarUpdate = true;
+  }
+
+  // ---- Update cars — road following ----
   for (const car of cars) {
     if (!car.alive) continue;
     if (car.pauseTimer > 0) { car.pauseTimer -= dt; continue; }
@@ -1942,6 +2720,7 @@ function update(dt) {
     }
 
     updateCarInstance(car.idx, car.x, 0, car.z, rotY, car.bodyColor, car.cabinColor);
+    updateCarHeadlights(car.idx, car.x, car.z, rotY, isNight);
     needsCarUpdate = true;
   }
 
@@ -2042,10 +2821,9 @@ function update(dt) {
                 nearest.health -= 0.1;
                 injuryCount++;
                 if (rng() < 0.3) addKillFeedEntry('Police officer hit by rock');
-                // Queue injured police for ambulance
+                // Knock down injured police
                 if (nearest.health < 0.5 && !nearest.injured) {
-                  nearest.injured = true;
-                  injuredQueue.push({ person: nearest, timer: 10 });
+                  knockDownPerson(nearest);
                 }
               }
             }
@@ -2140,13 +2918,11 @@ function update(dt) {
                   arrestCount++;
                   addKillFeedEntry('Protestor arrested');
                 } else {
-                  // Queue injured for ambulance
-                  if (!nearest.injured) {
-                    nearest.injured = true;
-                    injuredQueue.push({ person: nearest, timer: 10 });
+                  // Knock down injured protestor
+                  if (!nearest.injured && !nearest.onGround) {
+                    knockDownPerson(nearest);
                     addKillFeedEntry('Protestor injured!');
-                  }
-                  if (rng() < 0.5) {
+                  } else if (rng() < 0.5 && !nearest.onGround) {
                     nearest.fleeing = true;
                     nearest.speed = 3 + rng() * 2;
                     addKillFeedEntry('Protestor hit, fleeing');
@@ -2211,6 +2987,12 @@ function update(dt) {
 
   // Update ambulances
   updateAmbulances(dt);
+
+  // Update emergency vehicles (fire trucks, police vans)
+  updateEmergencyVehicles(dt);
+
+  // Update injured people on ground
+  updateInjuredOnGround(dt);
 
   // Update person instanced meshes
   personBodyMesh.count = personSlotCount;
@@ -2289,6 +3071,11 @@ function update(dt) {
         createFire(impactPos);
         createSmoke(impactPos);
         playExplosion(impactPos.x, impactPos.z);
+        // Dispatch fire truck to this fire (with delay, max 3 active)
+        if (fireTrucks.filter(ft => ft.alive).length < 3) {
+          const fireRef = fires[fires.length - 1];
+          setTimeout(() => { if (fireRef && fireRef.life > 0) spawnFireTruck(fireRef); }, 3000 + rng() * 5000);
+        }
       }
 
       projectiles.splice(i, 1);
@@ -2380,7 +3167,8 @@ function updateHUD() {
     `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
 
   document.getElementById('civ-count').textContent =
-    pedestrians.filter(p => p.alive).length + cars.filter(c => c.alive).length;
+    pedestrians.filter(p => p.alive).length + cars.filter(c => c.alive).length +
+    carDrivers.filter(cd => cd.alive).length + taxis.length;
   document.getElementById('protestor-count').textContent = protestors.filter(p => p.alive && !p.arrested).length;
   document.getElementById('police-count').textContent = police.filter(p => p.alive).length;
   document.getElementById('arrest-count').textContent = arrestCount;
@@ -2409,6 +3197,9 @@ function updateHUD() {
     if (k.text.includes('helicopter')) color = '#00f0ff';
     if (k.text.includes('Ambulance') || k.text.includes('ambulance')) color = '#ffffff';
     if (k.text.includes('hospital') || k.text.includes('Patient')) color = '#ff6666';
+    if (k.text.includes('Fire truck') || k.text.includes('fire')) color = '#ff4400';
+    if (k.text.includes('Taxi')) color = '#ffcc00';
+    if (k.text.includes('van') || k.text.includes('deployed')) color = '#4488ff';
     return `<div class="${cls}" style="color:${color}">${k.text}</div>`;
   }).join('');
 
@@ -2452,6 +3243,11 @@ function updateDebugOverlay(dt) {
   html += `Protestors: <span class="dbg-val">${protAlive}</span><br>`;
   html += `Police: <span class="dbg-val">${copAlive}</span><br>`;
   html += `Fire sources: <span class="dbg-val">${totalParticles}</span><br>`;
+  html += `Car drivers: <span class="dbg-val">${carDrivers.filter(cd => cd.alive).length}</span><br>`;
+  html += `Taxis: <span class="dbg-val">${taxis.length}</span><br>`;
+  html += `Fire trucks: <span class="dbg-val">${fireTrucks.filter(ft => ft.alive).length}</span><br>`;
+  html += `Police vans: <span class="dbg-val">${policeVans.filter(pv => pv.alive).length}</span><br>`;
+  html += `Injured on ground: <span class="dbg-val">${injuredOnGround.length}</span><br>`;
   html += '<h3>SCENE</h3>';
   html += `Objects: <span class="dbg-val">${scene.children.length}</span><br>`;
   html += `Geometries: <span class="dbg-val">${renderer.info.memory.geometries}</span><br>`;
