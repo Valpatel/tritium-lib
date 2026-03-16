@@ -369,7 +369,9 @@ canvas { display: block; }
         Police Morale: <span class="police-val" id="police-morale">100%</span><br>
         Protest Morale: <span class="protestor-val" id="protestor-morale">80%</span><br>
         Police Budget: <span class="budget-val budget-positive" id="budget-display">$10,000</span><br>
-        Comms: <span class="police-val" id="comms-status">ACTIVE</span>
+        Comms: <span class="police-val" id="comms-status">ACTIVE</span><br>
+        Crowd cohesion: <span class="protestor-val" id="crowd-clusters">0 clusters</span><br>
+        Panic level: <span class="hostile-val" id="panic-level">0%</span>
       </div>
     </div>
   </div>
@@ -2192,6 +2194,23 @@ function moraleColor(baseColor, morale) {
 }
 function lerpMoraleColor(baseColor, morale) { return moraleColor(baseColor, morale); }
 
+// Health-based visual tint — darken/tint color based on damage
+const _healthColorA = new THREE.Color();
+const _healthColorB = new THREE.Color();
+function healthTint(displayColor, health) {
+  if (health > 0.7) return displayColor;
+  _healthColorA.set(displayColor);
+  if (health > 0.5) { _healthColorA.multiplyScalar(0.7 + health * 0.3); return _healthColorA.getHex(); }
+  if (health > 0.3) { _healthColorB.set(0xff8800); _healthColorA.lerp(_healthColorB, (0.5 - health) / 0.2 * 0.4); return _healthColorA.getHex(); }
+  _healthColorB.set(0xcc0000); _healthColorA.lerp(_healthColorB, (0.3 - health) / 0.3 * 0.6); return _healthColorA.getHex();
+}
+// Blood splatter — spawn red particles at damage site
+function spawnBlood(x, z) {
+  for (let i = 0; i < 2; i++) spawnParticle(x, 1.2, z, (rng()-0.5)*2, 1+rng()*2, (rng()-0.5)*2, 0.2, 0xaa0000, 0.5);
+}
+// Health-based speed multiplier: <0.5 = 60%, <0.3 = 40%
+function healthSpeedMul(health) { return health > 0.5 ? 1.0 : health > 0.3 ? 0.6 : 0.4; }
+
 // Person slot tracking
 let personSlotCount = 0;
 
@@ -3489,6 +3508,8 @@ function spawnProtestors() {
       arrested: false,
       injured: false,
       stunnedTimer: 0,
+      aggression: 0.0,
+      panicFlash: 0,
       target: { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 },
     });
   }
@@ -4385,6 +4406,60 @@ function updateInjuredOnGround(dt) {
 }
 
 // =========================================================================
+// Medic Officers — spawn in Phase 3, walk to injured, treat them
+// =========================================================================
+function spawnMedics() {
+  for (let i = 0; i < 2; i++) {
+    const slot = allocPersonSlot();
+    if (slot < 0) break;
+    const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+    let myRingIdx = -1;
+    if (ringIdx < MAX_RINGS) { myRingIdx = ringIdx++; ringMesh.count = ringIdx; }
+    const m = { slot, myRingIdx, myShieldIdx: -1, x: PLAZA_X + (i ? 15 : -15), z: PLAZA_Z - 45, y: 0, rotY: 0,
+      bodyColor: 0xFFFFFF, headColor, ringColor: 0x05ffa1, scale: 1.15, speed: 2.5,
+      alive: true, health: 1.0, morale: 1.0, fireTimer: 999, target: null, holdLine: false,
+      lineX: 0, lineZ: 0, injured: false, isMedic: true, treatTimer: 0, treatTarget: null };
+    police.push(m);
+    medics.push(m);
+    addKillFeedEntry('MEDIC officer deployed');
+  }
+}
+
+function updateMedics(dt) {
+  for (const m of medics) {
+    if (!m.alive) continue;
+    if (m.treatTarget) {
+      m.treatTimer -= dt;
+      if (m.treatTimer <= 0) {
+        addKillFeedEntry('Medic treated casualty at grid ' + formatGrid(m.treatTarget.x, m.treatTarget.z));
+        for (let i = injuredOnGround.length - 1; i >= 0; i--) {
+          if (injuredOnGround[i].person === m.treatTarget) {
+            hideInjuredMarker(injuredOnGround[i].marker);
+            m.treatTarget.health = Math.min(1.0, (m.treatTarget.health || 0) + 0.5);
+            m.treatTarget.onGround = false; m.treatTarget.injured = false;
+            injuredOnGround.splice(i, 1); break;
+          }
+        }
+        m.treatTarget = null;
+      }
+    } else {
+      let best = null, bestD = 999;
+      for (const entry of injuredOnGround) {
+        if (!entry.person.alive) continue;
+        const dx = entry.person.x - m.x, dz = entry.person.z - m.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < bestD) { bestD = d; best = entry.person; }
+      }
+      if (best) {
+        const dx = best.x - m.x, dz = best.z - m.z;
+        if (bestD < 2) { m.treatTarget = best; m.treatTimer = 5; }
+        else { m.x += (dx / bestD) * m.speed * dt; m.z += (dz / bestD) * m.speed * dt; m.rotY = Math.atan2(dx, dz); }
+      }
+    }
+  }
+}
+
+// =========================================================================
 // Weather: Rain update — move 500 drops downward, reset when they hit ground
 // =========================================================================
 function updateRain(dt) {
@@ -4738,7 +4813,7 @@ function advanceCampaignPhase() {
     campaignTimer = 0;
     addKillFeedEntry('PHASE ' + campaignPhase + ': ' + CAMPAIGN_PHASES[campaignPhase].name);
     if (campaignPhase === 2) { riotPhase = 'TENSION'; riotTimer = 0; }
-    if (campaignPhase === 3) { riotPhase = 'DISPERSAL'; addKillFeedEntry('Cleanup operations beginning'); }
+    if (campaignPhase === 3) { riotPhase = 'DISPERSAL'; addKillFeedEntry('Cleanup operations beginning'); spawnMedics(); }
   } else { showCampaignOverlay(); }
 }
 
@@ -5831,8 +5906,22 @@ function update(dt) {
         if (pol.alive && dist2d(pr, pol) < 20) pr.morale = Math.max(0, pr.morale - 0.01 * dt);
       }
       pr.morale = Math.min(1.0, pr.morale + 0.002 * dt); // slow passive recovery
-      if (pr.morale < 0.3 && !pr.fleeing) { pr.fleeing = true; pr.speed = 3 + rng() * 2; }
-      const prDisplayColor = moraleColor(pr.bodyColor, pr.morale);
+      if (pr.morale < 0.3 && !pr.fleeing) {
+        pr.fleeing = true; pr.speed = 3 + rng() * 2;
+        // Panic cascade: nearby protestors within 8 units flee with 50% chance
+        for (const p2 of protestors) {
+          if (p2 === pr || p2.fleeing || !p2.alive || p2.arrested) continue;
+          if (dist2d(pr, p2) < 8 && rng() < 0.5) { p2.fleeing = true; p2.speed = 3 + rng() * 2; p2.panicFlash = 0.4; }
+        }
+      }
+      if (pr.panicFlash > 0) pr.panicFlash = Math.max(0, pr.panicFlash - dt);
+      // Aggression color shift: body reddens with aggression
+      const aggR = ((pr.bodyColor >> 16) & 0xff) + Math.floor(pr.aggression * (255 - ((pr.bodyColor >> 16) & 0xff)));
+      const aggG = Math.floor(((pr.bodyColor >> 8) & 0xff) * (1 - pr.aggression * 0.7));
+      const aggB = Math.floor((pr.bodyColor & 0xff) * (1 - pr.aggression * 0.7));
+      const aggressionColor = (aggR << 16) | (aggG << 8) | aggB;
+      const baseColor = pr.panicFlash > 0 ? 0xfcee0a : aggressionColor;
+      const prDisplayColor = moraleColor(baseColor, pr.morale);
 
       // STUNNED status effect: cannot move for duration
       if (pr.stunnedTimer > 0) {
