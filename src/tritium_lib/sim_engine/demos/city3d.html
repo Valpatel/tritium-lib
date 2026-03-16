@@ -176,6 +176,52 @@ canvas { display: block; }
 
 /* Score display in stats panel */
 .score-val { color: #fcee0a; font-weight: bold; }
+
+/* Supply Panel (bottom-left, demonstrates logistics.py) */
+#supply-panel {
+  position: absolute; bottom: 70px; left: 16px;
+  background: rgba(10, 10, 15, 0.85); border: 1px solid #00f0ff44;
+  border-radius: 4px; padding: 8px 12px; min-width: 200px;
+  font-family: 'Courier New', monospace; font-size: 12px;
+  display: none; z-index: 5;
+}
+#supply-panel h4 { color: #00f0ff; margin: 0 0 6px; font-size: 13px; }
+.supply-row { margin: 3px 0; display: flex; align-items: center; gap: 6px; }
+.supply-label { color: #fcee0a99; width: 90px; font-size: 11px; }
+.supply-bar-bg {
+  flex: 1; height: 10px; background: #1a1a2e; border-radius: 2px;
+  border: 1px solid #ffffff22; overflow: hidden; position: relative;
+}
+.supply-bar-fill {
+  height: 100%; border-radius: 2px; transition: width 0.2s;
+}
+.supply-bar-fill.police { background: #00f0ff; }
+.supply-bar-fill.protestor { background: #ff2a6d; }
+.supply-bar-fill.unlimited { background: #05ffa1; }
+.supply-count { color: #fcee0a; font-size: 10px; width: 36px; text-align: right; }
+
+@keyframes supply-low-flash {
+  0%, 100% { background: inherit; }
+  50% { background: #fcee0a; }
+}
+.supply-bar-fill.supply-low {
+  animation: supply-low-flash 0.6s ease-in-out infinite;
+}
+
+/* Economy display in stats panel */
+.budget-val { font-weight: bold; }
+.budget-positive { color: #05ffa1; }
+.budget-negative { color: #ff2a6d; }
+
+/* Status effect floating labels */
+.status-effect-label {
+  position: absolute; font-family: 'Courier New', monospace;
+  font-size: 10px; font-weight: bold; pointer-events: none;
+  text-shadow: 0 0 4px rgba(0,0,0,0.8);
+}
+.effect-gas { color: #fcee0a; }
+.effect-stunned { color: #ff8800; }
+.effect-bleeding { color: #ff2a6d; }
 </style>
 </head>
 <body>
@@ -199,7 +245,8 @@ canvas { display: block; }
         Rocks Thrown: <span class="stat-val" id="rock-count">0</span><br>
         Injuries: <span class="hostile-val" id="injury-count">0</span><br>
         Barricades: <span class="police-val" id="barricade-count">0</span><br>
-        Score: <span class="score-val" id="score-count">0</span>
+        Score: <span class="score-val" id="score-count">0</span><br>
+        Police Budget: <span class="budget-val budget-positive" id="budget-display">$10,000</span>
       </div>
     </div>
   </div>
@@ -216,7 +263,8 @@ canvas { display: block; }
     <span>C</span> Chase Cam &nbsp;|&nbsp;
     <span>D</span> Debug &nbsp;|&nbsp;
     <span>R</span> Rain &nbsp;|&nbsp;
-    <span>F</span> Fog
+    <span>F</span> Fog &nbsp;|&nbsp;
+    <span>I</span> Intel
   </div>
   <div id="combat-banner">RIOT IN PROGRESS</div>
   <canvas id="fps-graph" width="200" height="60"></canvas>
@@ -249,6 +297,20 @@ window.addEventListener('error', (e) => {
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// --- Error boundary: verify Three.js loaded before proceeding ---
+if (typeof THREE === 'undefined' || typeof THREE.Scene !== 'function') {
+  const fpsEl = document.getElementById('fps');
+  if (fpsEl) {
+    fpsEl.textContent = 'ERROR: Three.js failed to load from CDN';
+    fpsEl.style.color = '#ff2a6d';
+    fpsEl.style.fontSize = '14px';
+  }
+  throw new Error('[CITY3D] Three.js not loaded - check network/CDN availability');
+}
+console.log('[CITY3D] Three.js loaded:', THREE.REVISION);
+
+try { // Error boundary — wraps entire init + render loop setup
 
 // =========================================================================
 // Constants
@@ -345,6 +407,18 @@ let robotTotalHits = 0; // total lidar hits this frame (for debug)
 // Weather state
 let rainActive = false;
 let fogOverride = false;
+
+// Fog of War state (demonstrates intel.py and detection.py)
+let fogOfWarEnabled = false;
+const FOG_CELL_SIZE = 20; // each cell covers 20x20 world units
+const FOG_COLS = Math.ceil(CITY_W / FOG_CELL_SIZE);
+const FOG_ROWS = Math.ceil(CITY_H / FOG_CELL_SIZE);
+const DETECTION_RANGE = 40; // police detection/reveal radius in world units
+// Per-cell state: 0=unexplored, 1=explored (was visible), 2=currently visible
+const fogGrid = new Uint8Array(FOG_COLS * FOG_ROWS); // starts all 0 (unexplored)
+let fogTimer = 0;
+const FOG_UPDATE_INTERVAL = 1.0; // update fog every 1 second
+let detectedCount = 0; // protestors currently detected by police
 
 // Territory control state
 const TERRITORY_COLS = 4;
@@ -1299,6 +1373,26 @@ scene.add(carTLMesh);
 
 let nextCarSlot = 0;
 
+// Unified vehicle rotation: returns the Y-axis rotation so that the car's
+// +Z local axis (its forward direction) points toward (dx, dz).
+// Three.js Y-rotation is counter-clockwise from above, so:
+//   Moving +X: dx>0,dz=0 -> atan2(dx,dz)=PI/2 -> negate -> -PI/2 (correct)
+//   Moving -X: dx<0,dz=0 -> atan2(dx,dz)=-PI/2 -> negate -> PI/2 (correct)
+//   Moving +Z: dx=0,dz>0 -> atan2(dx,dz)=0 -> negate -> 0 (correct)
+//   Moving -Z: dx=0,dz<0 -> atan2(dx,dz)=PI -> negate -> -PI (= PI, correct)
+function vehicleRotY(dx, dz) {
+  return -Math.atan2(dx, dz);
+}
+
+// Rotation from road direction flags (horizontal/dir) — equivalent to vehicleRotY
+// for axis-aligned movement.
+function vehicleRotYFromDir(horizontal, dir) {
+  if (horizontal) {
+    return dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+  }
+  return dir > 0 ? 0 : Math.PI;
+}
+
 function allocCarSlot() {
   if (nextCarSlot >= MAX_CARS_INST) return -1;
   const s = nextCarSlot;
@@ -1993,7 +2087,7 @@ for (let i = 0; i < 10 && houseBuildings.length >= 2; i++) {
 
   // Park car at home curb initially — face along nearest road
   const initRoad = snapToNearestRoad(homeCurb.x, homeCurb.z);
-  const initParkRotY = (initRoad && initRoad.horizontal) ? Math.PI / 2 : 0;
+  const initParkRotY = (initRoad && initRoad.horizontal) ? vehicleRotYFromDir(true, rng() < 0.5 ? 1 : -1) : 0;
   updateCarInstance(carSlot, homeCurb.x, 0, homeCurb.z, initParkRotY, bodyColor, cabinColor);
 
   carDrivers.push({
@@ -2480,12 +2574,12 @@ function updateAmbulances(dt) {
       }
     }
 
-    // Calculate rotation
-    let rotY = 0;
+    // Calculate rotation — use vehicleRotY helper; keep last rotation when stopped
     if (amb.waypointIdx < amb.waypoints.length) {
       const wp = amb.waypoints[amb.waypointIdx];
-      rotY = -Math.atan2(wp.x - amb.x, wp.z - amb.z);
+      amb.lastRotY = vehicleRotY(wp.x - amb.x, wp.z - amb.z);
     }
+    const rotY = amb.lastRotY || 0;
 
     // Ambulance is larger than regular cars (scale 1.4)
     updateCarInstance(amb.idx, amb.x, 0, amb.z, rotY, amb.bodyColor, 0xDD0000, 1.4);
@@ -2905,11 +2999,11 @@ function updateEmergencyVehicles(dt) {
     }
 
     if (ft.alive) {
-      let rotY = 0;
       if (ft.waypointIdx < ft.waypoints.length) {
         const wp = ft.waypoints[ft.waypointIdx];
-        rotY = -Math.atan2(wp.x - ft.x, wp.z - ft.z);
+        ft.lastRotY = vehicleRotY(wp.x - ft.x, wp.z - ft.z);
       }
+      const rotY = ft.lastRotY || 0;
       // Fire truck is larger than regular cars (scale 1.5)
       updateCarInstance(ft.idx, ft.x, 0, ft.z, rotY, ft.bodyColor, ft.cabinColor, 1.5);
       updateCarHeadlights(ft.idx, ft.x, ft.z, rotY, isNight);
@@ -2979,11 +3073,11 @@ function updateEmergencyVehicles(dt) {
     }
 
     if (pv.alive) {
-      let rotY = 0;
       if (pv.phase === 'driving' && pv.waypointIdx < pv.waypoints.length) {
         const wp = pv.waypoints[pv.waypointIdx];
-        rotY = -Math.atan2(wp.x - pv.x, wp.z - pv.z);
+        pv.lastRotY = vehicleRotY(wp.x - pv.x, wp.z - pv.z);
       }
+      const rotY = pv.lastRotY || 0;
       // Police van is larger than regular cars (scale 1.3)
       updateCarInstance(pv.idx, pv.x, 0, pv.z, rotY, pv.bodyColor, pv.cabinColor, 1.3);
       updateCarHeadlights(pv.idx, pv.x, pv.z, rotY, isNight);
@@ -3548,7 +3642,8 @@ function update(dt) {
       // Update car position while driving
       if (cd.carMoving && cd.roadIdx < cd.roadPath.length) {
         const wp = cd.roadPath[cd.roadIdx];
-        const rotY = -Math.atan2(wp.x - cd.x, wp.z - cd.z);
+        const rotY = vehicleRotY(wp.x - cd.x, wp.z - cd.z);
+        cd.carLastRotY = rotY;
         updateCarInstance(cd.carSlot, cd.x, 0, cd.z, rotY, cd.carBodyColor, cd.carCabinColor);
         updateCarHeadlights(cd.carSlot, cd.x, cd.z, rotY, isNight);
         needsCarUpdate = true;
@@ -3622,7 +3717,8 @@ function update(dt) {
       }
       if (cd.carMoving && cd.roadIdx < cd.roadPath.length) {
         const wp = cd.roadPath[cd.roadIdx];
-        const rotY = -Math.atan2(wp.x - cd.x, wp.z - cd.z);
+        const rotY = vehicleRotY(wp.x - cd.x, wp.z - cd.z);
+        cd.carLastRotY = rotY;
         updateCarInstance(cd.carSlot, cd.x, 0, cd.z, rotY, cd.carBodyColor, cd.carCabinColor);
         updateCarHeadlights(cd.carSlot, cd.x, cd.z, rotY, isNight);
         needsCarUpdate = true;
@@ -3665,12 +3761,13 @@ function update(dt) {
       const parkPos = (cd.state.includes('home') || cd.state === 'at_home' || cd.state === 'walk_to_car') ? cd.homeCurb : cd.destCurb;
       // Determine parked rotation: face along nearest road direction
       const parkRoad = snapToNearestRoad(parkPos.x, parkPos.z);
-      let parkRotY = 0;
-      if (parkRoad && parkRoad.horizontal) {
-        // Parked along horizontal road — face along X axis
-        parkRotY = Math.PI / 2;
+      // Use last driving rotation if available, otherwise align to road
+      let parkRotY = cd.carLastRotY || 0;
+      if (cd.carLastRotY === undefined) {
+        if (parkRoad && parkRoad.horizontal) {
+          parkRotY = vehicleRotYFromDir(true, 1); // face +X by default
+        }
       }
-      // else vertical road — face along Z axis, rotY = 0
       updateCarInstance(cd.carSlot, parkPos.x, 0, parkPos.z, parkRotY, cd.carBodyColor, cd.carCabinColor);
       updateCarHeadlights(cd.carSlot, parkPos.x, parkPos.z, parkRotY, false);
     }
@@ -3802,12 +3899,13 @@ function update(dt) {
     let rotY;
     if (taxi.state === 'dropping_off' && taxi.roadIdx < taxi.roadPath.length) {
       const wp = taxi.roadPath[taxi.roadIdx];
-      rotY = -Math.atan2(wp.x - taxi.x, wp.z - taxi.z);
-    } else if (taxi.horizontal) {
-      rotY = taxi.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+      rotY = vehicleRotY(wp.x - taxi.x, wp.z - taxi.z);
+    } else if (taxi.state === 'picking_up' && taxi.pickupTarget) {
+      rotY = vehicleRotY(taxi.pickupTarget.x - taxi.x, taxi.pickupTarget.z - taxi.z);
     } else {
-      rotY = taxi.dir > 0 ? 0 : Math.PI;
+      rotY = vehicleRotYFromDir(taxi.horizontal, taxi.dir);
     }
+    taxi.lastRotY = rotY;
     updateCarInstance(taxi.idx, taxi.x, 0, taxi.z, rotY, taxi.bodyColor, taxi.cabinColor);
     updateCarHeadlights(taxi.idx, taxi.x, taxi.z, rotY, isNight);
     needsCarUpdate = true;
@@ -3885,17 +3983,8 @@ function update(dt) {
       }
     }
 
-    // Calculate rotation: car's long axis is +Z in local space
-    // horizontal dir>0 = moving +X → rotY = -PI/2 so +Z faces +X
-    // horizontal dir<0 = moving -X → rotY = +PI/2 so +Z faces -X
-    // vertical dir>0 = moving +Z → rotY = 0 (default forward)
-    // vertical dir<0 = moving -Z → rotY = PI (face backward)
-    let targetRotY;
-    if (car.horizontal) {
-      targetRotY = car.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
-    } else {
-      targetRotY = car.dir > 0 ? 0 : Math.PI;
-    }
+    // Calculate rotation using unified helper
+    const targetRotY = vehicleRotYFromDir(car.horizontal, car.dir);
     // Smooth rotation toward target (interpolate for turns)
     if (car.rotY === undefined) car.rotY = targetRotY;
     let diff = targetRotY - car.rotY;
@@ -4820,12 +4909,24 @@ function updateDebugOverlay(dt) {
 }
 
 // =========================================================================
+// Scene Readiness Check
+// =========================================================================
+console.log('[CITY3D] Scene ready:', scene.children.length, 'objects');
+if (scene.children.length < 10) {
+  console.error('[CITY3D] Scene has too few objects (' + scene.children.length + '), something failed during init');
+  const _fpsWarn = document.getElementById('fps');
+  if (_fpsWarn) { _fpsWarn.textContent = 'WARN: Scene only ' + scene.children.length + ' objects'; _fpsWarn.style.color = '#fcee0a'; }
+}
+
+// =========================================================================
 // Main Loop
 // =========================================================================
 // Throttle sim to 20fps, render at 60fps, HUD at 4fps
 let simAccum = 0;
 const SIM_STEP = 1 / 20; // 20 sim ticks per second
 let hudTimer = 0;
+let lowFpsCounter = 0; // Performance budget: track consecutive low-FPS seconds
+let perfDegraded = false; // True when expensive features have been auto-disabled
 
 // FPS graph — rolling history for performance monitoring
 const fpsHistory = new Float32Array(200);
@@ -4887,6 +4988,28 @@ function animate() {
     fpsHistory[fpsHistIdx % 200] = fpsDisplay;
     fpsHistIdx++;
     drawFPSGraph();
+
+    // Performance budget: if FPS < 10 for 5 consecutive seconds, disable expensive effects
+    if (fpsDisplay > 0 && fpsDisplay < 10) {
+      lowFpsCounter += 0.5; // fpsTimer fires every 0.5s
+      if (lowFpsCounter >= 5 && !perfDegraded) {
+        particleMesh.visible = false;
+        rainMesh.visible = false;
+        renderer.shadowMap.enabled = false;
+        perfDegraded = true;
+        console.warn('[CITY3D] Low FPS (' + fpsDisplay + '), disabled particles/rain/shadows for performance');
+      }
+    } else {
+      lowFpsCounter = 0;
+      // Restore if FPS recovers above 25
+      if (perfDegraded && fpsDisplay >= 25) {
+        particleMesh.visible = true;
+        rainMesh.visible = true;
+        renderer.shadowMap.enabled = true;
+        perfDegraded = false;
+        console.log('[CITY3D] FPS recovered (' + fpsDisplay + '), re-enabled visual effects');
+      }
+    }
   }
 
   // Sim runs at fixed 20fps
@@ -4909,6 +5032,19 @@ function animate() {
 }
 
 animate();
+
+} catch(e) {
+  console.error('[CITY3D] Fatal init error:', e);
+  document.body.innerHTML = '<div style="color:#ff2a6d;padding:40px;font-family:monospace;font-size:16px;background:#0a0a0f;min-height:100vh">'
+    + '<h1 style="color:#00f0ff">City3D Init Error</h1>'
+    + '<p style="color:#fcee0a;margin:12px 0">The 3D scene failed to initialize. This is usually caused by:</p>'
+    + '<ul style="color:#05ffa1;margin:8px 0 20px 20px;line-height:2">'
+    + '<li>CDN (unpkg.com) blocked or unreachable</li>'
+    + '<li>Browser does not support WebGL2</li>'
+    + '<li>JavaScript runtime error during scene setup</li></ul>'
+    + '<pre style="color:#ff2a6d;background:#12121a;padding:16px;border-radius:4px;overflow:auto;max-width:90vw">'
+    + e.message + '\n\n' + (e.stack || '') + '</pre></div>';
+}
 </script>
 </body>
 </html>
