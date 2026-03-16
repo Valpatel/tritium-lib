@@ -321,9 +321,29 @@ canvas { display: block; }
   color: #fcee0a; font-weight: bold; font-size: 18px;
   text-shadow: 0 0 8px #fcee0a88;
 }
+
+/* Split-view multiplayer overlay */
+#split-view { display:none; position:absolute; top:0; left:0; right:0; bottom:0; pointer-events:none; z-index:90; }
+#split-view.active { display:block; }
+#split-view .sv-line { position:absolute; top:0; bottom:0; left:50%; width:2px; background:#00f0ff; box-shadow:0 0 8px #00f0ff88; }
+#split-view .sv-label { position:absolute; top:8px; font-size:16px; font-weight:bold; text-shadow:0 0 8px currentColor; }
+#split-view .sv-label.left { left:12px; color:#00f0ff; }
+#split-view .sv-label.right { right:12px; color:#ff2a6d; }
+#split-view .sv-panel { position:absolute; bottom:80px; width:46%; font-size:12px; line-height:1.7; padding:8px 12px; background:#0a0a0fcc; border-radius:4px; }
+#split-view .sv-panel.left { left:2%; border:1px solid #00f0ff44; color:#00f0ff; }
+#split-view .sv-panel.right { right:2%; border:1px solid #ff2a6d44; color:#ff2a6d; text-align:right; }
+#split-view .sv-panel b { font-size:13px; }
 </style>
 </head>
 <body>
+
+<div id="split-view">
+  <div class="sv-line"></div>
+  <div class="sv-label left">POLICE CMD</div>
+  <div class="sv-label right">PROTEST CMD</div>
+  <div class="sv-panel left" id="sv-police"></div>
+  <div class="sv-panel right" id="sv-protest"></div>
+</div>
 
 <div id="hud">
   <div id="top-bar">
@@ -471,7 +491,7 @@ const VOID_BG = 0x0a0a0f;
 
 const BLOCK_W = 60, BLOCK_H = 50;
 const GRID_COLS = 8, GRID_ROWS = 6;
-const ROAD_W = 10, SIDEWALK_W = 3;
+const ROAD_W = 16, SIDEWALK_W = 3;
 const CITY_W = GRID_COLS * (BLOCK_W + ROAD_W) + ROAD_W;
 const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
 
@@ -565,6 +585,11 @@ let commsStatus = 'ACTIVE'; // ACTIVE, DEGRADED, JAMMED
 let commsDegradedTimer = 0;
 let commsLinkCount = 0;
 const COMMS_RANGE = 40; // meters — radio range between officers
+
+// EW / Jamming state (demonstrates cyber.py, electronic_warfare.py)
+let ewJamActive = false, ewJamTimer = 0, ewJamX = 0, ewJamZ = 0, ewJamRadius = 40;
+let ewJamCheckTimer = 0, ewCounterNarrated = false;
+const EW_JAM_DURATION = 15, EW_JAM_CHECK_INTERVAL = 30, EW_JAM_CHANCE = 0.1;
 
 const pedestrians = [];
 const cars = [];
@@ -741,6 +766,12 @@ const narrationTemplates = {
   ied_detected: [
     '<span class="callsign">ROS2-{n}:</span> <span class="info">Suspicious device detected</span> grid {grid}. EOD requested.',
     '<span class="callsign">DISPATCH:</span> <span class="info">IED located</span> by robot at grid {grid}. Marking area.',
+  ],
+  ew_jam_start: [
+    '<span class="callsign">COMMS:</span> <span class="alert">Signal interference detected!</span> Grid {grid} is being jammed!',
+  ],
+  ew_counter: [
+    '<span class="callsign">EW TEAM:</span> <span class="info">Deploying counter-measures...</span>',
   ],
 };
 
@@ -2807,7 +2838,7 @@ for (let i = 0; i < 10 && houseBuildings.length >= 2; i++) {
 // =========================================================================
 // Cars — road-following with intersection turns
 // =========================================================================
-const LANE_OFFSET = 1.5; // offset from road centerline per lane
+const LANE_OFFSET = 3.0; // offset from road centerline — wider for visible 2-lane driving
 
 function pickRandomRoadStart() {
   // Pick a random road segment, snap to proper lane from the start
@@ -3372,8 +3403,8 @@ function createHelicopter() {
   heliGroup.add(tailRotor);
 
   // Searchlight — SpotLight pointing down, VERY bright
-  const searchlight = new THREE.SpotLight(0xffffff, 15, 300, Math.PI / 8, 0.3, 0.8);
-  searchlight.position.set(0, -0.5, 0);
+  const searchlight = new THREE.SpotLight(0xffffff, 15, 300, 0.06, 0.5, 0.8);
+  searchlight.position.set(0, -0.3, 0);
   searchlight.castShadow = false;
   heliGroup.add(searchlight);
 
@@ -5431,12 +5462,12 @@ function update(dt) {
           if (bDx * bDx + bDz * bDz < 25) { // within 5 units
             b.cleared = true; buildingsCleared++; breachCooldown = 5;
             addKillFeedEntry('BREACH! Building cleared at (' + Math.round(b.x) + ',' + Math.round(b.z) + ')');
-            addNarration('police_action', { action: 'ALPHA TEAM: Breaching building at grid ' + Math.round(b.x) + '!' });
+            addNarration('building_breach', { grid: Math.round(b.x) + ',' + Math.round(b.z) });
             // Flash windows white then restore after 0.3s
             for (let wi = b.winStart; wi < b.winEnd; wi++) windowMesh.setColorAt(wi, _color.set(0xffffff));
             windowMesh.instanceColor.needsUpdate = true;
-            buildingRoofMesh.setColorAt(b.idx, _color.set(0x225533));
-            buildingRoofMesh.instanceColor.needsUpdate = true;
+            buildingBodyMesh.setColorAt(b.idx, _color.set(0x225533));
+            buildingBodyMesh.instanceColor.needsUpdate = true;
             setTimeout(() => { for (let wi = b.winStart; wi < b.winEnd; wi++) windowMesh.setColorAt(wi, _color.set(0xffdd66)); windowMesh.instanceColor.needsUpdate = true; }, 300);
             break;
           }
@@ -5643,6 +5674,24 @@ function update(dt) {
 
   // Update emergency vehicles (fire trucks, police vans)
   updateEmergencyVehicles(dt);
+
+  // Update patrol boat along canal
+  boatState.x += boatState.dir * boatState.speed * dt;
+  if (boatState.x > CITY_W - 20) { boatState.dir = -1; }
+  if (boatState.x < 20) { boatState.dir = 1; }
+  const boatBob = Math.sin(performance.now() / 1000 * 2) * 0.3;
+  boatGroup.position.set(boatState.x, 0.3 + boatBob, CANAL_Z);
+  boatGroup.rotation.y = boatState.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+  boatState.flashTimer += dt;
+  const boatFlash = Math.floor(boatState.flashTimer * 3) % 2;
+  boatLight.intensity = boatFlash === 0 ? 3 : 0.8;
+  const isBoatNight = nightMode || simTime < 6 || simTime > 20;
+  boatSearchlight.intensity = isBoatNight ? 4 : 0;
+  const wakeOff = boatState.dir > 0 ? -4 : 4;
+  wake1.position.set(boatState.x + wakeOff, 0.1 + boatBob * 0.3, CANAL_Z + 0.6);
+  wake2.position.set(boatState.x + wakeOff * 1.4, 0.08 + boatBob * 0.2, CANAL_Z - 0.5);
+  wake1.material.opacity = 0.4 + Math.sin(performance.now() / 1000 * 5) * 0.2;
+  wake2.material.opacity = 0.3 + Math.cos(performance.now() / 1000 * 4) * 0.15;
 
   // Update injured people on ground
   updateInjuredOnGround(dt);
