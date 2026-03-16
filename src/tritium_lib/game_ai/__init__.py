@@ -48,14 +48,21 @@ from .ambient import (
 )
 
 from .city_sim import (
+    ActivityState,
     Building,
     BuildingType,
     DailySchedule,
+    ErrandType,
+    ERRAND_DURATIONS,
     NeighborhoodSim,
     Resident,
     ResidentRole,
     ScheduleEntry,
     SimVehicle,
+    VehicleType,
+    state_movement_type,
+    state_rf_emission,
+    state_visible_on_map,
 )
 
 from .rf_signatures import (
@@ -106,12 +113,19 @@ __all__ = [
     "PersonRFProfile",
     "RFSignatureGenerator",
     "VehicleRFProfile",
+    "ActivityState",
     "Building",
     "BuildingType",
     "DailySchedule",
+    "ErrandType",
+    "ERRAND_DURATIONS",
     "NeighborhoodSim",
     "Resident",
     "ResidentRole",
     "ScheduleEntry",
     "SimVehicle",
+    "VehicleType",
+    "state_movement_type",
+    "state_rf_emission",
+    "state_visible_on_map",
 ]
