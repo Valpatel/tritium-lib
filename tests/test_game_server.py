@@ -21,6 +21,7 @@ from tritium_lib.sim_engine.demos.game_server import (
     GameState,
     _count_active_modules,
 )
+from tritium_lib.sim_engine.demos.city_sim_backend import CitySim
 
 
 # ---------------------------------------------------------------------------
@@ -493,3 +494,123 @@ class TestBuildFullGameExtended:
         gs = build_full_game()
         frame = game_tick(gs, dt=0.1)
         assert "air_combat" in frame
+
+
+# ---------------------------------------------------------------------------
+# CitySim API endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestCitySimEndpoints:
+    """Test the /api/city/* REST endpoints."""
+
+    def test_city_status_before_start(self, client: TestClient) -> None:
+        """GET /api/city/status returns not running when no sim exists."""
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        gs_mod._city_sim = None
+        gs_mod._city_mode = False
+        resp = client.get("/api/city/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["running"] is False
+        assert data["tick_count"] == 0
+
+    def test_city_start_creates_sim(self, client: TestClient) -> None:
+        """POST /api/city/start creates and starts the CitySim."""
+        resp = client.post("/api/city/start", json={"seed": 42})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "started"
+        assert data["seed"] == 42
+        assert data["civilians"] > 0
+        assert data["vehicles"] > 0
+        assert data["police"] > 0
+        assert data["buildings"] > 0
+
+    def test_city_start_custom_params(self, client: TestClient) -> None:
+        """POST /api/city/start accepts width/height/hour."""
+        resp = client.post("/api/city/start", json={
+            "seed": 99, "width": 300.0, "height": 200.0, "hour": 18.0,
+        })
+        data = resp.json()
+        assert data["status"] == "started"
+        assert data["width"] == 300.0
+        assert data["height"] == 200.0
+
+    def test_city_status_after_start(self, client: TestClient) -> None:
+        """GET /api/city/status returns running=True after start."""
+        client.post("/api/city/start", json={"seed": 42})
+        resp = client.get("/api/city/status")
+        data = resp.json()
+        assert data["running"] is True
+        assert "stats" in data
+        assert data["stats"]["total_civilians"] > 0
+
+    def test_city_stop(self, client: TestClient) -> None:
+        """POST /api/city/stop shuts down the sim."""
+        client.post("/api/city/start", json={"seed": 42})
+        resp = client.post("/api/city/stop")
+        data = resp.json()
+        assert data["status"] == "stopped"
+        # Verify it is actually stopped
+        resp2 = client.get("/api/city/status")
+        assert resp2.json()["running"] is False
+
+    def test_city_stop_without_start(self, client: TestClient) -> None:
+        """POST /api/city/stop returns error when no sim is running."""
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        gs_mod._city_sim = None
+        gs_mod._city_mode = False
+        resp = client.post("/api/city/stop")
+        assert resp.json()["error"] == "no_city_sim"
+
+    def test_city_event_inject(self, client: TestClient) -> None:
+        """POST /api/city/event injects a crowd event."""
+        client.post("/api/city/start", json={"seed": 42})
+        resp = client.post("/api/city/event", json={
+            "event_type": "riot_start", "x": 250.0, "z": 200.0,
+            "radius": 30.0, "intensity": 0.8,
+        })
+        data = resp.json()
+        assert data["status"] == "injected"
+        assert data["event_type"] == "riot_start"
+        assert data["radius"] == 30.0
+
+    def test_city_event_missing_type(self, client: TestClient) -> None:
+        """POST /api/city/event returns error when event_type is missing."""
+        client.post("/api/city/start", json={"seed": 42})
+        resp = client.post("/api/city/event", json={"x": 100, "z": 100})
+        assert resp.json()["error"] == "missing_event_type"
+
+    def test_city_event_without_sim(self, client: TestClient) -> None:
+        """POST /api/city/event returns error when no sim is running."""
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        gs_mod._city_sim = None
+        gs_mod._city_mode = False
+        resp = client.post("/api/city/event", json={"event_type": "gunshot"})
+        assert resp.json()["error"] == "no_city_sim"
+
+    def test_city_frame_format(self, client: TestClient) -> None:
+        """Verify CitySim.to_frame() has expected keys after start + tick."""
+        client.post("/api/city/start", json={"seed": 42})
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        sim = gs_mod._city_sim
+        assert sim is not None
+        frame = sim.tick(0.1)
+        assert frame["type"] == "city_frame"
+        assert "tick" in frame
+        assert "sim_time" in frame
+        assert "civilians" in frame
+        assert "vehicles" in frame
+        assert "police" in frame
+        assert "crowd" in frame
+        assert "buildings" in frame
+        assert "environment" in frame
+        assert "stats" in frame
+        # Verify civilians have position data
+        if frame["civilians"]:
+            civ = frame["civilians"][0]
+            assert "id" in civ
+            assert "x" in civ
+            assert "y" in civ
+            assert "state" in civ

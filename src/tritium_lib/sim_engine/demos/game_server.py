@@ -871,6 +871,24 @@ async def _game_loop() -> None:
         await asyncio.sleep(dt)
 
 
+async def _city_loop() -> None:
+    """Background asyncio task: tick the CitySim at 10 fps."""
+    dt = 0.1  # 10 fps
+    while _city_mode and _city_sim is not None:
+        frame = _city_sim.tick(dt)
+        payload = json.dumps(frame, default=str)
+        disconnected: list[WebSocket] = []
+        for ws in _ws_clients:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                disconnected.append(ws)
+        for ws in disconnected:
+            if ws in _ws_clients:
+                _ws_clients.remove(ws)
+        await asyncio.sleep(dt)
+
+
 def _count_active_modules(gs: GameState) -> int:
     """Count how many subsystem modules are initialized."""
     count = 0

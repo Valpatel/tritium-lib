@@ -2094,13 +2094,13 @@ for (let i = 0; i < MAX_PARTICLES; i++) {
 particleMesh.instanceMatrix.needsUpdate = true;
 if (particleMesh.instanceColor) particleMesh.instanceColor.needsUpdate = true;
 
-function spawnParticle(x, y, z, vx, vy, vz, size, color, life, isTearGas = false) {
+function spawnParticle(x, y, z, vx, vy, vz, size, color, life, isTearGas = false, isSmoke = false) {
   if (particlePool.length === 0) return null;
   const slot = particlePool.pop();
   const p = {
     slot, x, y, z, vx, vy, vz, size, color, life, maxLife: life,
-    isTearGas, rotX: rng() * Math.PI, rotZ: rng() * Math.PI,
-    growRate: isTearGas ? 0.15 : 0.3,
+    isTearGas, isSmoke, rotX: rng() * Math.PI, rotZ: rng() * Math.PI,
+    growRate: isTearGas ? 0.15 : (isSmoke ? 0.08 : 0.3),
   };
   activeParticles.push(p);
   return p;
@@ -2721,6 +2721,7 @@ function spawnProtestors() {
       throwTimer: 3 + rng() * 8,
       arrested: false,
       injured: false,
+      stunnedTimer: 0,
       target: { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 },
     });
   }
@@ -3096,12 +3097,12 @@ function createExplosion(pos) {
 }
 
 function createTearGasCloud(pos) {
-  for (let i = 0; i < 6; i++) {
-    const size = 1.2 + rng() * 1.5;
+  for (let i = 0; i < 4; i++) {
+    const size = 0.8 + rng() * 1.0;
     spawnParticle(
       pos.x + (rng() - 0.5) * 6, 0.5 + rng() * 2, pos.z + (rng() - 0.5) * 6,
       (rng() - 0.5) * 0.8, 0.2 + rng() * 0.5, (rng() - 0.5) * 0.8,
-      size, 0xcccccc, 5 + rng() * 3, true
+      size, 0xcccccc, 3 + rng() * 2, true
     );
   }
   playHiss(pos.x, pos.z);
@@ -3127,7 +3128,7 @@ function createFire(pos) {
     spawnParticle(
       pos.x + (rng() - 0.5) * 3, 0.5 + rng() * 2, pos.z + (rng() - 0.5) * 3,
       (rng() - 0.5) * 1, 0.5 + rng() * 2, (rng() - 0.5) * 1,
-      0.4 + rng() * 0.4,
+      0.6 + rng() * 0.6,
       fireColors[Math.floor(rng() * fireColors.length)],
       2 + rng() * 3
     );
@@ -3139,7 +3140,7 @@ function createSmoke(pos) {
     spawnParticle(
       pos.x + (rng() - 0.5) * 2, 4 + rng() * 3, pos.z + (rng() - 0.5) * 2,
       (rng() - 0.5) * 0.3, 0.5 + rng() * 1.5, (rng() - 0.5) * 0.3,
-      0.8 + rng() * 0.5, 0x555555, 2 + rng() * 2
+      0.5 + rng() * 0.3, 0x555555, 2 + rng() * 2, false, true
     );
   }
 }
@@ -4550,6 +4551,12 @@ function update(dt) {
     for (const pr of protestors) {
       if (!pr.alive || pr.arrested) continue;
 
+      // STUNNED status effect: cannot move for duration
+      if (pr.stunnedTimer > 0) {
+        updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, pr.bodyColor, pr.headColor, pr.scale);
+        continue;
+      }
+
       if (pr.fleeing) {
         // Compute persistent flee direction away from plaza (once)
         if (!pr.fleeTarget) {
@@ -5010,7 +5017,7 @@ function update(dt) {
       spawnParticle(
         f.x + (rng() - 0.5) * 3, 0.5, f.z + (rng() - 0.5) * 3,
         (rng() - 0.5) * 1, 1 + rng() * 3, (rng() - 0.5) * 1,
-        0.3 + rng() * 0.4,
+        0.45 + rng() * 0.6,
         fireColors[Math.floor(rng() * fireColors.length)],
         1 + rng() * 2
       );
@@ -5021,7 +5028,7 @@ function update(dt) {
       spawnParticle(
         f.x + (rng() - 0.5) * 2, 2 + rng(), f.z + (rng() - 0.5) * 2,
         (rng() - 0.5) * 0.5, 0.5 + rng(), (rng() - 0.5) * 0.5,
-        0.8 + rng(), 0x444444, 2 + rng() * 2
+        0.5 + rng() * 0.5, 0x444444, 2 + rng() * 2, false, true
       );
     }
 
@@ -5202,6 +5209,20 @@ function updateDebugOverlay(dt) {
     const pr0 = protestors.filter(p => p.alive)[0];
     if (pr0) html += `Protestor[0] pos: <span class="dbg-val">(${pr0.x.toFixed(1)}, ${pr0.z.toFixed(1)})</span><br>`;
   }
+  html += '<h3>SUPPLY / ECONOMY</h3>';
+  html += `Tear Gas: <span class="dbg-val">${supplyTearGas}/${SUPPLY_TEAR_GAS_MAX}</span><br>`;
+  html += `Rubber Blt: <span class="dbg-val">${supplyRubberBullets}/${SUPPLY_RUBBER_BULLETS_MAX}</span><br>`;
+  html += `Molotovs: <span class="dbg-val">${supplyMolotovs}/${SUPPLY_MOLOTOVS_MAX}</span><br>`;
+  html += `Police Budget: <span class="dbg-val">$${policeBudget.toLocaleString()}</span><br>`;
+  html += `Property Damage: <span class="dbg-val">$${propertyDamage.toLocaleString()}</span><br>`;
+  html += '<h3>Status Effects</h3>';
+  html += `Active effects: <span class="dbg-val">${effectsCount}</span><br>`;
+  const gasCount = activeEffects.filter(e => e.type === 'GAS').length;
+  const stunnedCount = activeEffects.filter(e => e.type === 'STUNNED').length;
+  const bleedingCount = activeEffects.filter(e => e.type === 'BLEEDING').length;
+  html += `GAS: <span class="dbg-val">${gasCount}</span> `;
+  html += `STUNNED: <span class="dbg-val">${stunnedCount}</span> `;
+  html += `BLEEDING: <span class="dbg-val">${bleedingCount}</span><br>`;
   html += '<h3>SCENE</h3>';
   html += `Objects: <span class="dbg-val">${scene.children.length}</span><br>`;
   html += `Geometries: <span class="dbg-val">${renderer.info.memory.geometries}</span><br>`;
@@ -5353,7 +5374,7 @@ function animate() {
     fpsDisplay = Math.round(frameCount / fpsTimer);
     frameCount = 0;
     fpsTimer = 0;
-    document.getElementById('fps').textContent = `${fpsDisplay} FPS`;
+    document.getElementById('fps').textContent = `${fpsDisplay} FPS ${activeParticles.length}/${MAX_PARTICLES}p`;
     fpsHistory[fpsHistIdx % 200] = fpsDisplay;
     fpsHistIdx++;
     drawFPSGraph();
@@ -5396,6 +5417,9 @@ function animate() {
     checkAchievements(0.25);
     updateFogOfWar(0.25);
     updateDebugOverlay(0.25);
+    updateSupplyHUD();
+    updateStatusEffects(0.25);
+    applyStatusEffectVisuals();
     hudTimer = 0;
   }
 
