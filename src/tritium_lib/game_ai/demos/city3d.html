@@ -6,6 +6,7 @@
 
   Three.js City Simulation — 3D Minecraft-style riot scenario.
   Protestors vs Police with molotovs, tear gas, rubber bullets.
+  InstancedMesh rendering for 60fps performance.
 
   Open directly in browser or serve:
     python3 -m tritium_lib.game_ai.demos.serve_city3d
@@ -160,11 +161,11 @@ const PLAZA_X = CITY_W / 2;
 const PLAZA_Z = CITY_H / 2;
 
 // Building type colors (Minecraft style)
-const BLDG_HOUSE   = 0x8B6914; // brown
-const BLDG_OFFICE  = 0x888888; // grey
-const BLDG_SHOP    = 0xD2B48C; // beige/tan
-const BLDG_POLICE  = 0x4466AA; // blue
-const BLDG_ROOF    = 0x333333; // dark roof tops
+const BLDG_HOUSE   = 0x8B6914;
+const BLDG_OFFICE  = 0x888888;
+const BLDG_SHOP    = 0xD2B48C;
+const BLDG_POLICE  = 0x4466AA;
+const BLDG_ROOF    = 0x333333;
 
 // =========================================================================
 // State
@@ -174,7 +175,7 @@ let nightMode = false;
 let chaseCam = false;
 let chaseTarget = null;
 let simTime = 8.0;
-let riotPhase = 'PEACEFUL'; // PEACEFUL, TENSION, RIOT, DISPERSAL
+let riotPhase = 'PEACEFUL';
 let riotTimer = 0;
 
 let molotovCount = 0;
@@ -194,10 +195,35 @@ const smokeParticles = [];
 const buildings = [];
 const streetLamps = [];
 const killFeed = [];
-const fires = []; // persistent fire lights
-const projectiles = []; // arcing rocks/molotovs
+const fires = [];
+const projectiles = [];
 
 const rng = () => Math.random();
+
+// Skin tones for heads
+const SKIN_TONES = [0xFFDBAC, 0xE5A073, 0xC68642, 0x8D5524, 0xF1C27D, 0xFFCD94];
+
+// =========================================================================
+// Road grid helpers — used for car navigation
+// =========================================================================
+// Horizontal road centerlines: z positions
+const hRoads = [];
+for (let row = 0; row <= GRID_ROWS; row++) {
+  hRoads.push(row * (BLOCK_H + ROAD_W) + ROAD_W / 2);
+}
+// Vertical road centerlines: x positions
+const vRoads = [];
+for (let col = 0; col <= GRID_COLS; col++) {
+  vRoads.push(col * (BLOCK_W + ROAD_W) + ROAD_W / 2);
+}
+
+// Intersection positions
+const intersections = [];
+for (const x of vRoads) {
+  for (const z of hRoads) {
+    intersections.push({ x, z });
+  }
+}
 
 // =========================================================================
 // Audio
@@ -291,7 +317,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.minDistance = 30;
 controls.maxDistance = 800;
-controls.maxPolarAngle = Math.PI / 2.1; // don't go below ground
+controls.maxPolarAngle = Math.PI / 2.1;
 controls.update();
 
 // Lights — BRIGHT
@@ -312,8 +338,20 @@ const hemiLight = new THREE.HemisphereLight(0x00f0ff, 0x112244, 0.5);
 scene.add(hemiLight);
 
 // =========================================================================
-// City Generation — Minecraft Style
+// Shared reusable objects for matrix/color setting
 // =========================================================================
+const _mat4 = new THREE.Matrix4();
+const _pos = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+const _scale = new THREE.Vector3();
+const _color = new THREE.Color();
+const _euler = new THREE.Euler();
+
+// =========================================================================
+// City Generation — InstancedMesh approach
+// =========================================================================
+
+// Ground plane
 const groundGeo = new THREE.PlaneGeometry(CITY_W + 100, CITY_H + 100);
 const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 });
 const ground = new THREE.Mesh(groundGeo, groundMat);
@@ -322,11 +360,11 @@ ground.position.set(CITY_W / 2, -0.05, CITY_H / 2);
 ground.receiveShadow = true;
 scene.add(ground);
 
-// Road material — visible grey
+// Road material
 const roadMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.85 });
 const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.8 });
 
-// Roads — horizontal
+// Roads — horizontal (using shared geometries, still individual since each road has different dimensions)
 for (let row = 0; row <= GRID_ROWS; row++) {
   const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
   const geo = new THREE.PlaneGeometry(CITY_W, ROAD_W);
@@ -336,7 +374,7 @@ for (let row = 0; row <= GRID_ROWS; row++) {
   road.receiveShadow = true;
   scene.add(road);
 
-  // Center line — yellow dashes
+  // Center line
   const lineGeo = new THREE.PlaneGeometry(CITY_W, 0.4);
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xaaaa33 });
   const line = new THREE.Mesh(lineGeo, lineMat);
@@ -380,19 +418,48 @@ for (let col = 0; col <= GRID_COLS; col++) {
   }
 }
 
-// Minecraft-style building materials
-function makeBuildingMat(color) {
-  return new THREE.MeshStandardMaterial({ color, roughness: 0.8, metalness: 0.0 });
-}
+// =========================================================================
+// Buildings — InstancedMesh (body + roof as two instanced meshes)
+// =========================================================================
+const MAX_BUILDINGS = 300;
+const buildingBodyGeo = new THREE.BoxGeometry(1, 1, 1);
+const buildingBodyMat = new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0.0 });
+const buildingBodyMesh = new THREE.InstancedMesh(buildingBodyGeo, buildingBodyMat, MAX_BUILDINGS);
+buildingBodyMesh.castShadow = true;
+buildingBodyMesh.receiveShadow = true;
+buildingBodyMesh.count = 0;
+scene.add(buildingBodyMesh);
 
-const roofMat = new THREE.MeshStandardMaterial({ color: BLDG_ROOF, roughness: 0.9 });
+const buildingRoofGeo = new THREE.BoxGeometry(1, 1, 1);
+const buildingRoofMat = new THREE.MeshStandardMaterial({ color: BLDG_ROOF, roughness: 0.9 });
+const buildingRoofMesh = new THREE.InstancedMesh(buildingRoofGeo, buildingRoofMat, MAX_BUILDINGS);
+buildingRoofMesh.castShadow = true;
+buildingRoofMesh.count = 0;
+scene.add(buildingRoofMesh);
+
+// Windows — InstancedMesh for all window quads
+const MAX_WINDOWS = 3000;
+const windowGeo = new THREE.PlaneGeometry(1.5, 1.2);
+const windowMat = new THREE.MeshBasicMaterial({ color: 0xffdd66, transparent: true, opacity: 0.8 });
+const windowMesh = new THREE.InstancedMesh(windowGeo, windowMat, MAX_WINDOWS);
+windowMesh.count = 0;
+scene.add(windowMesh);
+
+// Doors — InstancedMesh
+const MAX_DOORS = 300;
+const doorGeo = new THREE.PlaneGeometry(1, 1);
 const doorMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-const windowGlowMat = new THREE.MeshBasicMaterial({ color: 0xffdd66, transparent: true, opacity: 0.8 });
+const doorIMesh = new THREE.InstancedMesh(doorGeo, doorMat, MAX_DOORS);
+doorIMesh.count = 0;
+scene.add(doorIMesh);
 
-function createMinecraftBuilding(x, z, w, d, h, type) {
-  const group = new THREE.Group();
+let buildingIdx = 0;
+let windowIdx = 0;
+let doorIdx = 0;
 
-  // Main body
+function addInstancedBuilding(x, z, w, d, h, type) {
+  if (buildingIdx >= MAX_BUILDINGS) return;
+
   let color;
   switch (type) {
     case 'house':  color = BLDG_HOUSE; break;
@@ -402,88 +469,152 @@ function createMinecraftBuilding(x, z, w, d, h, type) {
     default:       color = BLDG_OFFICE;
   }
 
-  const bodyGeo = new THREE.BoxGeometry(w, h, d);
-  const bodyMat = makeBuildingMat(color);
-  const body = new THREE.Mesh(bodyGeo, bodyMat);
-  body.position.set(0, h / 2, 0);
-  body.castShadow = true;
-  body.receiveShadow = true;
-  group.add(body);
+  // Body
+  _pos.set(x, h / 2, z);
+  _quat.identity();
+  _scale.set(w, h, d);
+  _mat4.compose(_pos, _quat, _scale);
+  buildingBodyMesh.setMatrixAt(buildingIdx, _mat4);
+  buildingBodyMesh.setColorAt(buildingIdx, _color.set(color));
 
-  // Dark roof cap
-  const roofGeo = new THREE.BoxGeometry(w + 0.2, 0.5, d + 0.2);
-  const roof = new THREE.Mesh(roofGeo, roofMat);
-  roof.position.set(0, h + 0.25, 0);
-  roof.castShadow = true;
-  group.add(roof);
+  // Roof
+  _pos.set(x, h + 0.25, z);
+  _scale.set(w + 0.2, 0.5, d + 0.2);
+  _mat4.compose(_pos, _quat, _scale);
+  buildingRoofMesh.setMatrixAt(buildingIdx, _mat4);
 
-  // Door opening (dark rectangle at ground level)
-  const doorW = Math.min(2, w * 0.3);
-  const doorH = Math.min(3, h * 0.5);
-  const doorGeo = new THREE.PlaneGeometry(doorW, doorH);
-  const door = new THREE.Mesh(doorGeo, doorMat);
-  door.position.set(0, doorH / 2, d / 2 + 0.05);
-  group.add(door);
+  buildingIdx++;
+  buildingBodyMesh.count = buildingIdx;
+  buildingRoofMesh.count = buildingIdx;
 
-  // Glowing windows (emissive)
+  // Door
+  if (doorIdx < MAX_DOORS) {
+    const doorW = Math.min(2, w * 0.3);
+    const doorH = Math.min(3, h * 0.5);
+    _pos.set(x, doorH / 2, z + d / 2 + 0.05);
+    _quat.identity();
+    _scale.set(doorW, doorH, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    doorIMesh.setMatrixAt(doorIdx, _mat4);
+    doorIdx++;
+    doorIMesh.count = doorIdx;
+  }
+
+  // Windows — front/back faces
   const floors = Math.floor(h / 4);
   for (let f = 1; f <= floors; f++) {
     const wy = f * 3.5;
     if (wy > h - 1) break;
-    // windows on front and back
     for (const side of [1, -1]) {
       const numWins = Math.floor(w / 4);
       for (let wi = 0; wi < numWins; wi++) {
-        if (rng() < 0.3) continue; // some windows dark
-        const wx = -w / 2 + 2 + wi * 4;
-        const winGeo = new THREE.PlaneGeometry(1.5, 1.2);
-        const winMat = new THREE.MeshBasicMaterial({
-          color: rng() < 0.7 ? 0xffdd66 : 0x66ddff,
-          transparent: true,
-          opacity: 0.7 + rng() * 0.3
-        });
-        const win = new THREE.Mesh(winGeo, winMat);
-        win.position.set(wx, wy, side * (d / 2 + 0.05));
-        if (side < 0) win.rotation.y = Math.PI;
-        group.add(win);
+        if (rng() < 0.3 || windowIdx >= MAX_WINDOWS) continue;
+        const wx = x - w / 2 + 2 + wi * 4;
+        _pos.set(wx, wy, z + side * (d / 2 + 0.05));
+        _euler.set(0, side < 0 ? Math.PI : 0, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        windowMesh.setMatrixAt(windowIdx, _mat4);
+        const winColor = rng() < 0.7 ? 0xffdd66 : 0x66ddff;
+        windowMesh.setColorAt(windowIdx, _color.set(winColor));
+        windowIdx++;
       }
     }
-    // windows on left and right sides
+    // Side faces
     for (const side of [1, -1]) {
       const numWins = Math.floor(d / 4);
       for (let wi = 0; wi < numWins; wi++) {
-        if (rng() < 0.4) continue;
-        const wz = -d / 2 + 2 + wi * 4;
-        const winGeo = new THREE.PlaneGeometry(1.5, 1.2);
-        const winMat = new THREE.MeshBasicMaterial({
-          color: rng() < 0.7 ? 0xffdd66 : 0x66ddff,
-          transparent: true,
-          opacity: 0.7 + rng() * 0.3
-        });
-        const win = new THREE.Mesh(winGeo, winMat);
-        win.position.set(side * (w / 2 + 0.05), wy, wz);
-        win.rotation.y = side * Math.PI / 2;
-        group.add(win);
+        if (rng() < 0.4 || windowIdx >= MAX_WINDOWS) continue;
+        const wz = z - d / 2 + 2 + wi * 4;
+        _pos.set(x + side * (w / 2 + 0.05), wy, wz);
+        _euler.set(0, side * Math.PI / 2, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        windowMesh.setMatrixAt(windowIdx, _mat4);
+        const winColor = rng() < 0.7 ? 0xffdd66 : 0x66ddff;
+        windowMesh.setColorAt(windowIdx, _color.set(winColor));
+        windowIdx++;
       }
     }
   }
+  windowMesh.count = windowIdx;
 
-  group.position.set(x, 0, z);
-  scene.add(group);
-  return { group, h, type, x, z, w, d };
+  buildings.push({ h, type, x, z, w, d });
 }
 
-// Place buildings in each block
+// =========================================================================
+// Trees — InstancedMesh (trunks + foliage)
+// =========================================================================
+const MAX_TREES = 200;
+const trunkGeo = new THREE.BoxGeometry(1, 5, 1);
+const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5D3A1A });
+const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, MAX_TREES);
+trunkMesh.castShadow = true;
+trunkMesh.count = 0;
+scene.add(trunkMesh);
+
+const leafGeo = new THREE.BoxGeometry(4, 4, 4);
+const leafMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+const leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, MAX_TREES);
+leafMesh.castShadow = true;
+leafMesh.count = 0;
+scene.add(leafMesh);
+
+let treeIdx = 0;
+
+function addTree(tx, tz) {
+  if (treeIdx >= MAX_TREES) return;
+  _quat.identity();
+  _scale.set(1, 1, 1);
+
+  // Trunk
+  _pos.set(tx, 2.5, tz);
+  _mat4.compose(_pos, _quat, _scale);
+  trunkMesh.setMatrixAt(treeIdx, _mat4);
+
+  // Foliage
+  _pos.set(tx, 6, tz);
+  _mat4.compose(_pos, _quat, _scale);
+  leafMesh.setMatrixAt(treeIdx, _mat4);
+
+  treeIdx++;
+  trunkMesh.count = treeIdx;
+  leafMesh.count = treeIdx;
+}
+
+// =========================================================================
+// Street Lamps — InstancedMesh (posts + heads)
+// =========================================================================
+const MAX_LAMPS = 100;
+const lampPostGeo = new THREE.BoxGeometry(0.3, 7, 0.3);
+const lampPostMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+const lampPostMesh = new THREE.InstancedMesh(lampPostGeo, lampPostMat, MAX_LAMPS);
+lampPostMesh.count = 0;
+scene.add(lampPostMesh);
+
+const lampHeadGeo = new THREE.BoxGeometry(1.2, 0.5, 1.2);
+const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.8 });
+const lampHeadMesh = new THREE.InstancedMesh(lampHeadGeo, lampHeadMat, MAX_LAMPS);
+lampHeadMesh.count = 0;
+scene.add(lampHeadMesh);
+
+let lampIdx = 0;
+
+// =========================================================================
+// Place buildings, trees, lamps
+// =========================================================================
+const centerCol = Math.floor(GRID_COLS / 2);
+const centerRow = Math.floor(GRID_ROWS / 2);
+
 for (let row = 0; row < GRID_ROWS; row++) {
   for (let col = 0; col < GRID_COLS; col++) {
     const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
     const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
 
-    // Skip center block for plaza
-    const centerCol = Math.floor(GRID_COLS / 2);
-    const centerRow = Math.floor(GRID_ROWS / 2);
     if (col === centerCol && row === centerRow) {
-      // Central plaza — open space with a fountain
+      // Central plaza
       const plazaGeo = new THREE.PlaneGeometry(BLOCK_W - 4, BLOCK_H - 4);
       const plazaMat = new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.7 });
       const plaza = new THREE.Mesh(plazaGeo, plazaMat);
@@ -506,7 +637,6 @@ for (let row = 0; row < GRID_ROWS; row++) {
     for (let b = 0; b < count; b++) {
       const typeRoll = rng();
       let type;
-      // One police station near center
       if (col === centerCol + 1 && row === centerRow && b === 0) {
         type = 'police';
       } else if (typeRoll < 0.35) {
@@ -524,8 +654,7 @@ for (let row = 0; row < GRID_ROWS; row++) {
       const ox = (rng() - 0.5) * (BLOCK_W - w - 4);
       const oz = (rng() - 0.5) * (BLOCK_H - d - 4);
 
-      const bldg = createMinecraftBuilding(bx + ox, bz + oz, w, d, h, type);
-      buildings.push(bldg);
+      addInstancedBuilding(bx + ox, bz + oz, w, d, h, type);
     }
 
     // Trees in gaps
@@ -533,65 +662,220 @@ for (let row = 0; row < GRID_ROWS; row++) {
     for (let t = 0; t < numTrees; t++) {
       const tx = bx + (rng() - 0.5) * BLOCK_W * 0.8;
       const tz = bz + (rng() - 0.5) * BLOCK_H * 0.8;
-      // Minecraft tree = brown box trunk + green cube foliage
-      const trunkGeo = new THREE.BoxGeometry(1, 5, 1);
-      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5D3A1A });
-      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-      trunk.position.set(tx, 2.5, tz);
-      trunk.castShadow = true;
-      scene.add(trunk);
-
-      const leafGeo = new THREE.BoxGeometry(4, 4, 4);
-      const leafMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
-      const leaf = new THREE.Mesh(leafGeo, leafMat);
-      leaf.position.set(tx, 6, tz);
-      leaf.castShadow = true;
-      scene.add(leaf);
+      addTree(tx, tz);
     }
   }
 }
 
-// Street lamps
+// Finalize instanced mesh instance matrices
+buildingBodyMesh.instanceMatrix.needsUpdate = true;
+if (buildingBodyMesh.instanceColor) buildingBodyMesh.instanceColor.needsUpdate = true;
+buildingRoofMesh.instanceMatrix.needsUpdate = true;
+windowMesh.instanceMatrix.needsUpdate = true;
+if (windowMesh.instanceColor) windowMesh.instanceColor.needsUpdate = true;
+doorIMesh.instanceMatrix.needsUpdate = true;
+trunkMesh.instanceMatrix.needsUpdate = true;
+leafMesh.instanceMatrix.needsUpdate = true;
+
+// Street lamps — keep PointLights for lighting effect but instanced geometry
 for (let row = 0; row <= GRID_ROWS; row++) {
   const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
   for (let col = 0; col <= GRID_COLS; col++) {
     const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
-    const postGeo = new THREE.BoxGeometry(0.3, 7, 0.3);
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
-    const post = new THREE.Mesh(postGeo, postMat);
-    post.position.set(x + 4, 3.5, z + 4);
-    scene.add(post);
+    if (lampIdx >= MAX_LAMPS) break;
 
-    const headGeo = new THREE.BoxGeometry(1.2, 0.5, 1.2);
-    const headMat = new THREE.MeshBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.8 });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.set(x + 4, 7.2, z + 4);
-    scene.add(head);
+    // Post instance
+    _pos.set(x + 4, 3.5, z + 4);
+    _quat.identity();
+    _scale.set(1, 1, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    lampPostMesh.setMatrixAt(lampIdx, _mat4);
 
+    // Head instance
+    _pos.set(x + 4, 7.2, z + 4);
+    _mat4.compose(_pos, _quat, _scale);
+    lampHeadMesh.setMatrixAt(lampIdx, _mat4);
+
+    lampIdx++;
+    lampPostMesh.count = lampIdx;
+    lampHeadMesh.count = lampIdx;
+
+    // Still need actual PointLight for illumination
     const lampLight = new THREE.PointLight(0xffdd88, 0.4, 30);
     lampLight.position.set(x + 4, 7, z + 4);
     scene.add(lampLight);
-    streetLamps.push({ light: lampLight, head });
+    streetLamps.push({ light: lampLight });
+  }
+}
+
+lampPostMesh.instanceMatrix.needsUpdate = true;
+lampHeadMesh.instanceMatrix.needsUpdate = true;
+
+// =========================================================================
+// People InstancedMesh — bodies and heads
+// =========================================================================
+const MAX_PEOPLE = 120; // pedestrians + protestors + police
+const personBodyGeo = new THREE.BoxGeometry(1, 1, 1);
+const personBodyMat = new THREE.MeshStandardMaterial({ roughness: 0.7 });
+const personBodyMesh = new THREE.InstancedMesh(personBodyGeo, personBodyMat, MAX_PEOPLE);
+personBodyMesh.castShadow = true;
+personBodyMesh.count = 0;
+scene.add(personBodyMesh);
+
+const personHeadGeo = new THREE.BoxGeometry(1, 1, 1);
+const personHeadMat = new THREE.MeshStandardMaterial({ roughness: 0.6 });
+const personHeadMesh = new THREE.InstancedMesh(personHeadGeo, personHeadMat, MAX_PEOPLE);
+personHeadMesh.castShadow = true;
+personHeadMesh.count = 0;
+scene.add(personHeadMesh);
+
+// Ring markers for protestors/police
+const MAX_RINGS = 40;
+const ringGeo = new THREE.RingGeometry(1.2, 1.5, 16);
+const ringMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+const ringMesh = new THREE.InstancedMesh(ringGeo, ringMat, MAX_RINGS);
+ringMesh.count = 0;
+scene.add(ringMesh);
+let ringIdx = 0;
+
+// Shield instances for police
+const MAX_SHIELDS = 15;
+const shieldGeo = new THREE.BoxGeometry(0.2, 1.5, 1.2);
+const shieldMat = new THREE.MeshStandardMaterial({ color: 0x3355BB, metalness: 0.5, roughness: 0.3 });
+const shieldMesh = new THREE.InstancedMesh(shieldGeo, shieldMat, MAX_SHIELDS);
+shieldMesh.castShadow = true;
+shieldMesh.count = 0;
+scene.add(shieldMesh);
+
+// Person slot tracking
+let personSlotCount = 0;
+
+function allocPersonSlot() {
+  if (personSlotCount >= MAX_PEOPLE) return -1;
+  return personSlotCount++;
+}
+
+function updatePersonInstance(slot, x, y, z, rotY, bodyW, bodyH, bodyD, bodyColor, headSize, headColor, scale) {
+  if (slot < 0) return;
+  // Body
+  _euler.set(0, rotY, 0);
+  _quat.setFromEuler(_euler);
+  _pos.set(x, y + 1.0 * scale, z);
+  _scale.set(1.5 * scale * bodyW, 1.5 * scale * bodyH, 1.0 * scale * bodyD);
+  _mat4.compose(_pos, _quat, _scale);
+  personBodyMesh.setMatrixAt(slot, _mat4);
+  personBodyMesh.setColorAt(slot, _color.set(bodyColor));
+
+  // Head
+  _pos.set(x, y + 2.15 * scale, z);
+  _scale.set(0.8 * scale, 0.8 * scale, 0.8 * scale);
+  _mat4.compose(_pos, _quat, _scale);
+  personHeadMesh.setMatrixAt(slot, _mat4);
+  personHeadMesh.setColorAt(slot, _color.set(headColor));
+}
+
+function hidePersonInstance(slot) {
+  if (slot < 0) return;
+  // Move off screen
+  _pos.set(0, -100, 0);
+  _quat.identity();
+  _scale.set(0, 0, 0);
+  _mat4.compose(_pos, _quat, _scale);
+  personBodyMesh.setMatrixAt(slot, _mat4);
+  personHeadMesh.setMatrixAt(slot, _mat4);
+}
+
+// =========================================================================
+// Cars InstancedMesh — body + cabin
+// =========================================================================
+const MAX_CARS_INST = 20;
+const carBodyGeo = new THREE.BoxGeometry(4, 1.5, 2);
+const carBodyMat = new THREE.MeshStandardMaterial({ metalness: 0.3, roughness: 0.6 });
+const carBodyMesh = new THREE.InstancedMesh(carBodyGeo, carBodyMat, MAX_CARS_INST);
+carBodyMesh.castShadow = true;
+carBodyMesh.count = 0;
+scene.add(carBodyMesh);
+
+const carCabinGeo = new THREE.BoxGeometry(2.2, 1.0, 1.8);
+const carCabinMat = new THREE.MeshStandardMaterial({ metalness: 0.2, roughness: 0.7 });
+const carCabinMesh = new THREE.InstancedMesh(carCabinGeo, carCabinMat, MAX_CARS_INST);
+carCabinMesh.castShadow = true;
+carCabinMesh.count = 0;
+scene.add(carCabinMesh);
+
+// Headlights and taillights as small instanced meshes
+const carLightGeo = new THREE.BoxGeometry(0.3, 0.3, 0.5);
+const carHLMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
+const carTLMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.7 });
+const carHLMesh = new THREE.InstancedMesh(carLightGeo, carHLMat, MAX_CARS_INST * 2);
+carHLMesh.count = 0;
+scene.add(carHLMesh);
+const carTLMesh = new THREE.InstancedMesh(carLightGeo, carTLMat, MAX_CARS_INST * 2);
+carTLMesh.count = 0;
+scene.add(carTLMesh);
+
+function updateCarInstance(idx, x, y, z, rotY, bodyColor, cabinColor) {
+  const cosR = Math.cos(rotY);
+  const sinR = Math.sin(rotY);
+
+  _euler.set(0, rotY, 0);
+  _quat.setFromEuler(_euler);
+
+  // Body
+  _pos.set(x, 0.75, z);
+  _scale.set(1, 1, 1);
+  _mat4.compose(_pos, _quat, _scale);
+  carBodyMesh.setMatrixAt(idx, _mat4);
+  carBodyMesh.setColorAt(idx, _color.set(bodyColor));
+
+  // Cabin — offset (-0.3, 0.95, 0) in local space
+  const cLocalX = -0.3;
+  const cWorldX = x + cLocalX * cosR;
+  const cWorldZ = z + cLocalX * (-sinR);
+  _pos.set(cWorldX, 1.7, cWorldZ);
+  _mat4.compose(_pos, _quat, _scale);
+  carCabinMesh.setMatrixAt(idx, _mat4);
+  carCabinMesh.setColorAt(idx, _color.set(cabinColor));
+
+  // Headlights — offset (2, -0.15, ±0.7) from body center
+  const hlLocalX = 2;
+  for (let s = 0; s < 2; s++) {
+    const hlLocalZ = s === 0 ? 0.7 : -0.7;
+    const hlX = x + hlLocalX * cosR - hlLocalZ * sinR;
+    const hlZ = z + hlLocalX * (-sinR) + hlLocalZ * (-cosR);
+    _pos.set(hlX, 0.6, hlZ);
+    _mat4.compose(_pos, _quat, _scale);
+    carHLMesh.setMatrixAt(idx * 2 + s, _mat4);
+  }
+
+  // Tail lights — offset (-2, -0.15, ±0.7)
+  const tlLocalX = -2;
+  for (let s = 0; s < 2; s++) {
+    const tlLocalZ = s === 0 ? 0.7 : -0.7;
+    const tlX = x + tlLocalX * cosR - tlLocalZ * sinR;
+    const tlZ = z + tlLocalX * (-sinR) + tlLocalZ * (-cosR);
+    _pos.set(tlX, 0.6, tlZ);
+    _mat4.compose(_pos, _quat, _scale);
+    carTLMesh.setMatrixAt(idx * 2 + s, _mat4);
+  }
+}
+
+function hideCarInstance(idx) {
+  _pos.set(0, -100, 0);
+  _quat.identity();
+  _scale.set(0, 0, 0);
+  _mat4.compose(_pos, _quat, _scale);
+  carBodyMesh.setMatrixAt(idx, _mat4);
+  carCabinMesh.setMatrixAt(idx, _mat4);
+  for (let s = 0; s < 2; s++) {
+    carHLMesh.setMatrixAt(idx * 2 + s, _mat4);
+    carTLMesh.setMatrixAt(idx * 2 + s, _mat4);
   }
 }
 
 // =========================================================================
 // Helpers
 // =========================================================================
-function randomRoadPos() {
-  if (rng() < 0.5) {
-    const row = Math.floor(rng() * (GRID_ROWS + 1));
-    const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
-    const x = rng() * CITY_W;
-    return { x, z };
-  } else {
-    const col = Math.floor(rng() * (GRID_COLS + 1));
-    const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
-    const z = rng() * CITY_H;
-    return { x, z };
-  }
-}
-
 function randomSidewalkPos() {
   const row = Math.floor(rng() * (GRID_ROWS + 1));
   const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2 + (rng() < 0.5 ? 1 : -1) * (ROAD_W / 2 + 1.5);
@@ -599,22 +883,10 @@ function randomSidewalkPos() {
   return { x, z };
 }
 
-function nearestIntersection(x, z) {
-  const col = Math.round((x - ROAD_W / 2) / (BLOCK_W + ROAD_W));
-  const row = Math.round((z - ROAD_W / 2) / (BLOCK_H + ROAD_W));
-  return {
-    x: Math.max(0, Math.min(GRID_COLS, col)) * (BLOCK_W + ROAD_W) + ROAD_W / 2,
-    z: Math.max(0, Math.min(GRID_ROWS, row)) * (BLOCK_H + ROAD_W) + ROAD_W / 2
-  };
-}
-
-function roadPathTo(from, to) {
-  const inter = nearestIntersection(to.x, to.z);
-  return [
-    { x: from.x, z: inter.z },
-    { x: inter.x, z: inter.z },
-    { x: to.x, z: to.z }
-  ];
+function dist2d(a, b) {
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dz * dz);
 }
 
 function edgeSpawnPos() {
@@ -627,39 +899,10 @@ function edgeSpawnPos() {
   }
 }
 
-function dist2d(a, b) {
-  const dx = a.x - b.x;
-  const dz = a.z - b.z;
-  return Math.sqrt(dx * dx + dz * dz);
+function addKillFeedEntry(text) {
+  killFeed.unshift({ text, age: 0 });
+  if (killFeed.length > 10) killFeed.pop();
 }
-
-// =========================================================================
-// Create Minecraft Person (body cube + head cube)
-// =========================================================================
-function createPerson(bodyColor, headColor, scale = 1.0) {
-  const group = new THREE.Group();
-
-  // Body — 1.5m wide, 1.5m tall box
-  const bodyGeo = new THREE.BoxGeometry(1.5 * scale, 1.5 * scale, 1.0 * scale);
-  const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7 });
-  const body = new THREE.Mesh(bodyGeo, bodyMat);
-  body.position.y = 1.0 * scale;
-  body.castShadow = true;
-  group.add(body);
-
-  // Head — skin-tone cube on top
-  const headGeo = new THREE.BoxGeometry(0.8 * scale, 0.8 * scale, 0.8 * scale);
-  const headMat = new THREE.MeshStandardMaterial({ color: headColor, roughness: 0.6 });
-  const head = new THREE.Mesh(headGeo, headMat);
-  head.position.y = 2.15 * scale;
-  head.castShadow = true;
-  group.add(head);
-
-  return group;
-}
-
-// Skin tones for heads
-const SKIN_TONES = [0xFFDBAC, 0xE5A073, 0xC68642, 0x8D5524, 0xF1C27D, 0xFFCD94];
 
 // =========================================================================
 // Pedestrians (civilians)
@@ -667,14 +910,15 @@ const SKIN_TONES = [0xFFDBAC, 0xE5A073, 0xC68642, 0x8D5524, 0xF1C27D, 0xFFCD94];
 for (let i = 0; i < NUM_PEDESTRIANS; i++) {
   const pos = randomSidewalkPos();
   const bodyHue = rng();
-  const bodyColor = new THREE.Color().setHSL(bodyHue, 0.4, 0.4);
+  const bodyColor = new THREE.Color().setHSL(bodyHue, 0.4, 0.4).getHex();
   const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
-  const mesh = createPerson(bodyColor, headColor);
-  mesh.position.set(pos.x, 0, pos.z);
-  scene.add(mesh);
+  const slot = allocPersonSlot();
 
   pedestrians.push({
-    mesh,
+    slot,
+    x: pos.x, z: pos.z, y: 0, rotY: 0,
+    bodyColor, headColor,
+    scale: 1.0,
     speed: 1.5 + rng() * 1.5,
     target: randomSidewalkPos(),
     alive: true,
@@ -683,73 +927,81 @@ for (let i = 0; i < NUM_PEDESTRIANS; i++) {
 }
 
 // =========================================================================
-// Cars — bigger Minecraft-style boxes
+// Cars — road-following with intersection turns
 // =========================================================================
+function pickRandomRoadStart() {
+  // Pick a random road segment
+  if (rng() < 0.5) {
+    // Horizontal road
+    const row = Math.floor(rng() * (GRID_ROWS + 1));
+    const z = hRoads[row];
+    const col = Math.floor(rng() * GRID_COLS);
+    const x = vRoads[col] + rng() * (BLOCK_W + ROAD_W);
+    return { x, z, horizontal: true, dir: rng() < 0.5 ? 1 : -1 };
+  } else {
+    // Vertical road
+    const col = Math.floor(rng() * (GRID_COLS + 1));
+    const x = vRoads[col];
+    const row = Math.floor(rng() * GRID_ROWS);
+    const z = hRoads[row] + rng() * (BLOCK_H + ROAD_W);
+    return { x, z, horizontal: false, dir: rng() < 0.5 ? 1 : -1 };
+  }
+}
+
+function findNextIntersection(x, z, horizontal, dir) {
+  if (horizontal) {
+    // Moving along x axis, find next vRoad crossing
+    if (dir > 0) {
+      for (const vx of vRoads) {
+        if (vx > x + 1) return { x: vx, z };
+      }
+      return null; // off edge
+    } else {
+      for (let i = vRoads.length - 1; i >= 0; i--) {
+        if (vRoads[i] < x - 1) return { x: vRoads[i], z };
+      }
+      return null;
+    }
+  } else {
+    // Moving along z axis, find next hRoad crossing
+    if (dir > 0) {
+      for (const hz of hRoads) {
+        if (hz > z + 1) return { x, z: hz };
+      }
+      return null;
+    } else {
+      for (let i = hRoads.length - 1; i >= 0; i--) {
+        if (hRoads[i] < z - 1) return { x, z: hRoads[i] };
+      }
+      return null;
+    }
+  }
+}
+
 for (let i = 0; i < NUM_CARS; i++) {
-  const pos = randomRoadPos();
+  const start = pickRandomRoadStart();
   const hue = rng();
-  const carGroup = new THREE.Group();
+  const bodyColor = new THREE.Color().setHSL(hue, 0.6, 0.45).getHex();
+  const cabinColor = new THREE.Color().setHSL(hue, 0.5, 0.35).getHex();
 
-  // Body — 4m long, 2m wide, 1.5m tall
-  const bodyGeo = new THREE.BoxGeometry(4, 1.5, 2);
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(hue, 0.6, 0.45),
-    metalness: 0.3, roughness: 0.6
-  });
-  const body = new THREE.Mesh(bodyGeo, bodyMat);
-  body.position.y = 0.75;
-  body.castShadow = true;
-  carGroup.add(body);
+  const nextInt = findNextIntersection(start.x, start.z, start.horizontal, start.dir);
 
-  // Cabin
-  const cabinGeo = new THREE.BoxGeometry(2.2, 1.0, 1.8);
-  const cabinMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(hue, 0.5, 0.35),
-    metalness: 0.2, roughness: 0.7
-  });
-  const cabin = new THREE.Mesh(cabinGeo, cabinMat);
-  cabin.position.set(-0.3, 1.7, 0);
-  cabin.castShadow = true;
-  carGroup.add(cabin);
-
-  // Headlights
-  const hlGeo = new THREE.BoxGeometry(0.3, 0.3, 0.5);
-  const hlMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
-  const hlL = new THREE.Mesh(hlGeo, hlMat);
-  hlL.position.set(2, 0.6, 0.7);
-  carGroup.add(hlL);
-  const hlR = hlL.clone();
-  hlR.position.z = -0.7;
-  carGroup.add(hlR);
-
-  // Tail lights
-  const tlMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.7 });
-  const tlL = new THREE.Mesh(hlGeo, tlMat);
-  tlL.position.set(-2, 0.6, 0.7);
-  carGroup.add(tlL);
-  const tlR = tlL.clone();
-  tlR.position.z = -0.7;
-  carGroup.add(tlR);
-
-  // Headlight beam
-  const hlLight = new THREE.SpotLight(0xffffcc, 0, 30, Math.PI / 6, 0.5);
-  hlLight.position.set(2, 0.6, 0);
-  hlLight.target.position.set(10, 0, 0);
-  carGroup.add(hlLight);
-  carGroup.add(hlLight.target);
-
-  carGroup.position.set(pos.x, 0, pos.z);
-  scene.add(carGroup);
-
-  const dest = randomRoadPos();
-  const path = roadPathTo(pos, dest);
   cars.push({
-    group: carGroup, speed: 5 + rng() * 8,
-    path, pathIdx: 0,
-    headlight: hlLight,
+    idx: i,
+    x: start.x, z: start.z,
+    horizontal: start.horizontal,
+    dir: start.dir,
+    speed: 5 + rng() * 8,
+    bodyColor, cabinColor,
     alive: true,
     pauseTimer: 0,
+    nextIntersection: nextInt,
   });
+
+  carBodyMesh.count = i + 1;
+  carCabinMesh.count = i + 1;
+  carHLMesh.count = (i + 1) * 2;
+  carTLMesh.count = (i + 1) * 2;
 }
 
 // =========================================================================
@@ -757,26 +1009,28 @@ for (let i = 0; i < NUM_CARS; i++) {
 // =========================================================================
 function spawnProtestors() {
   for (let i = 0; i < NUM_PROTESTORS; i++) {
-    // Gather in central plaza
     const angle = rng() * Math.PI * 2;
     const radius = rng() * 20;
     const x = PLAZA_X + Math.cos(angle) * radius;
     const z = PLAZA_Z + Math.sin(angle) * radius;
+    const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+    const slot = allocPersonSlot();
 
-    const mesh = createPerson(0x22AA44, SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)], 1.1);
-    mesh.position.set(x, 0, z);
-    scene.add(mesh);
-
-    // Green marker ring
-    const ringGeo = new THREE.RingGeometry(1.2, 1.5, 16);
-    const ringMat = new THREE.MeshBasicMaterial({ color: GREEN, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.05;
-    mesh.add(ring);
+    // Ring
+    let myRingIdx = -1;
+    if (ringIdx < MAX_RINGS) {
+      myRingIdx = ringIdx++;
+      ringMesh.count = ringIdx;
+    }
 
     protestors.push({
-      mesh, speed: 1.5 + rng() * 2,
+      slot, myRingIdx,
+      x, z, y: 0, rotY: 0,
+      bodyColor: 0x22AA44,
+      headColor,
+      ringColor: GREEN,
+      scale: 1.1,
+      speed: 1.5 + rng() * 2,
       alive: true,
       health: 1.0,
       fleeing: false,
@@ -788,35 +1042,36 @@ function spawnProtestors() {
 }
 
 function spawnPolice() {
-  // Police form a line across the street north of the plaza
   const lineZ = PLAZA_Z - 35;
   const lineStartX = PLAZA_X - 25;
 
   for (let i = 0; i < NUM_POLICE; i++) {
     const x = lineStartX + i * 5;
     const z = lineZ + (rng() - 0.5) * 3;
+    const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+    const slot = allocPersonSlot();
 
-    const mesh = createPerson(0x2244AA, SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)], 1.15);
-    mesh.position.set(x, 0, z);
-    scene.add(mesh);
+    // Ring
+    let myRingIdx = -1;
+    if (ringIdx < MAX_RINGS) {
+      myRingIdx = ringIdx++;
+      ringMesh.count = ringIdx;
+    }
 
-    // Blue marker ring
-    const ringGeo = new THREE.RingGeometry(1.2, 1.5, 16);
-    const ringMat = new THREE.MeshBasicMaterial({ color: CYAN, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.05;
-    mesh.add(ring);
-
-    // Shield — flat box in front
-    const shieldGeo = new THREE.BoxGeometry(0.2, 1.5, 1.2);
-    const shieldMat = new THREE.MeshStandardMaterial({ color: 0x3355BB, metalness: 0.5, roughness: 0.3 });
-    const shield = new THREE.Mesh(shieldGeo, shieldMat);
-    shield.position.set(0.9, 1.0, 0);
-    mesh.add(shield);
+    // Shield
+    let myShieldIdx = -1;
+    if (shieldMesh.count < MAX_SHIELDS) {
+      myShieldIdx = shieldMesh.count++;
+    }
 
     police.push({
-      mesh, speed: 2 + rng() * 1.5,
+      slot, myRingIdx, myShieldIdx,
+      x, z, y: 0, rotY: 0,
+      bodyColor: 0x2244AA,
+      headColor,
+      ringColor: CYAN,
+      scale: 1.15,
+      speed: 2 + rng() * 1.5,
       alive: true,
       health: 1.0,
       fireTimer: 2 + rng() * 4,
@@ -826,6 +1081,85 @@ function spawnPolice() {
       lineZ: lineZ,
     });
   }
+}
+
+// =========================================================================
+// Police Helicopter
+// =========================================================================
+let helicopter = null;
+
+function createHelicopter() {
+  const heliGroup = new THREE.Group();
+
+  // Body — dark box
+  const bodyGeo = new THREE.BoxGeometry(3, 1.5, 2);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.6, metalness: 0.4 });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  heliGroup.add(body);
+
+  // Tail boom
+  const tailGeo = new THREE.BoxGeometry(4, 0.5, 0.5);
+  const tail = new THREE.Mesh(tailGeo, bodyMat);
+  tail.position.set(-3, 0.2, 0);
+  heliGroup.add(tail);
+
+  // Tail fin
+  const finGeo = new THREE.BoxGeometry(0.3, 1.2, 0.8);
+  const fin = new THREE.Mesh(finGeo, bodyMat);
+  fin.position.set(-4.8, 0.8, 0);
+  heliGroup.add(fin);
+
+  // Main rotor — flat spinning box
+  const rotorGeo = new THREE.BoxGeometry(8, 0.08, 0.4);
+  const rotorMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.6 });
+  const rotor = new THREE.Mesh(rotorGeo, rotorMat);
+  rotor.position.y = 1.0;
+  heliGroup.add(rotor);
+
+  // Second rotor blade (perpendicular)
+  const rotor2 = new THREE.Mesh(rotorGeo, rotorMat);
+  rotor2.position.y = 1.0;
+  rotor2.rotation.y = Math.PI / 2;
+  heliGroup.add(rotor2);
+
+  // Tail rotor
+  const tailRotorGeo = new THREE.BoxGeometry(0.08, 1.5, 0.3);
+  const tailRotor = new THREE.Mesh(tailRotorGeo, rotorMat);
+  tailRotor.position.set(-4.8, 0.8, 0.5);
+  heliGroup.add(tailRotor);
+
+  // Searchlight — SpotLight pointing down
+  const searchlight = new THREE.SpotLight(0xffffff, 8, 200, Math.PI / 9, 0.5, 1);
+  searchlight.position.set(0, -0.5, 0);
+  searchlight.castShadow = false;
+  heliGroup.add(searchlight);
+
+  // Searchlight target
+  const slTarget = new THREE.Object3D();
+  slTarget.position.set(0, -80, 0);
+  heliGroup.add(slTarget);
+  searchlight.target = slTarget;
+
+  // Small searchlight glow at source
+  const glowGeo = new THREE.SphereGeometry(0.3, 8, 6);
+  const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffcc, transparent: true, opacity: 0.8 });
+  const glow = new THREE.Mesh(glowGeo, glowMat);
+  glow.position.set(0, -0.5, 0);
+  heliGroup.add(glow);
+
+  heliGroup.position.set(PLAZA_X, 80, PLAZA_Z);
+  scene.add(heliGroup);
+
+  helicopter = {
+    group: heliGroup,
+    rotor, rotor2, tailRotor,
+    searchlight, slTarget,
+    angle: 0,
+    radius: 60,
+    centerX: PLAZA_X,
+    centerZ: PLAZA_Z,
+    rotorAngle: 0,
+  };
 }
 
 // =========================================================================
@@ -842,7 +1176,6 @@ function createTracer(from, to, color = 0xffff00, duration = 0.2) {
   scene.add(line);
   tracers.push({ line, life: duration, maxLife: duration });
 
-  // Glow line slightly offset
   const glowMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, transparent: true, opacity: 0.5 });
   const glow = new THREE.Line(geo.clone(), glowMat);
   glow.position.y = 0.1;
@@ -862,14 +1195,12 @@ function createExplosion(pos) {
   group.position.set(pos.x, 0, pos.z);
   scene.add(group);
 
-  // Core flash — orange sphere
   const coreGeo = new THREE.SphereGeometry(1.5, 12, 8);
   const coreMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 1 });
   const core = new THREE.Mesh(coreGeo, coreMat);
   core.position.y = 2;
   group.add(core);
 
-  // Flying debris CUBES
   const parts = [];
   for (let i = 0; i < 18; i++) {
     const size = 0.2 + rng() * 0.5;
@@ -891,7 +1222,6 @@ function createExplosion(pos) {
 
   explosions.push({ group, core, parts, life: 1.5, age: 0 });
 
-  // Bright flash light
   const exLight = new THREE.PointLight(0xff6600, 8, 50);
   exLight.position.set(pos.x, 4, pos.z);
   scene.add(exLight);
@@ -899,7 +1229,6 @@ function createExplosion(pos) {
 }
 
 function createTearGasCloud(pos) {
-  // White smoke cloud
   for (let i = 0; i < 12; i++) {
     const size = 2 + rng() * 2;
     const geo = new THREE.SphereGeometry(size, 8, 6);
@@ -913,13 +1242,14 @@ function createTearGasCloud(pos) {
 }
 
 function createFire(pos) {
-  // Persistent fire — orange/red point light
-  const light = new THREE.PointLight(0xff6600, 3, 20);
+  // Persistent fire — burns 15-30 seconds
+  const light = new THREE.PointLight(0xff6600, 3, 25);
   light.position.set(pos.x, 2, pos.z);
   scene.add(light);
-  fires.push({ light, life: 10 + rng() * 15, age: 0, x: pos.x, z: pos.z });
+  const totalLife = 15 + rng() * 15; // 15-30 seconds
+  fires.push({ light, life: totalLife, age: 0, x: pos.x, z: pos.z, maxIntensity: 4 });
 
-  // Fire particles
+  // Initial fire particles
   for (let i = 0; i < 6; i++) {
     const fGeo = new THREE.BoxGeometry(0.4, 0.6, 0.4);
     const fMat = new THREE.MeshBasicMaterial({
@@ -967,8 +1297,8 @@ function launchProjectile(from, to, type) {
   const dx = to.x - from.x;
   const dz = to.z - from.z;
   const dist = Math.sqrt(dx * dx + dz * dz);
-  const flightTime = dist / 30; // speed
-  const vy = dist * 0.15 + 5; // arc height
+  const flightTime = dist / 30;
+  const vy = dist * 0.15 + 5;
 
   projectiles.push({
     mesh, type,
@@ -981,11 +1311,6 @@ function launchProjectile(from, to, type) {
     age: 0,
     flightTime,
   });
-}
-
-function addKillFeedEntry(text) {
-  killFeed.unshift({ text, age: 0 });
-  if (killFeed.length > 10) killFeed.pop();
 }
 
 // =========================================================================
@@ -1011,17 +1336,28 @@ document.addEventListener('keydown', (e) => {
       injuryCount = 0;
       spawnProtestors();
       spawnPolice();
+      createHelicopter();
       addKillFeedEntry('Protest gathering in central plaza');
+      addKillFeedEntry('Police helicopter deployed');
     } else {
-      // Remove riot units
-      for (const p of protestors) scene.remove(p.mesh);
-      for (const p of police) scene.remove(p.mesh);
+      // Remove riot units — hide their instanced slots
+      for (const p of protestors) hidePersonInstance(p.slot);
+      for (const p of police) hidePersonInstance(p.slot);
       protestors.length = 0;
       police.length = 0;
       riotPhase = 'PEACEFUL';
       // Clear fires
       for (const f of fires) scene.remove(f.light);
       fires.length = 0;
+      // Remove helicopter
+      if (helicopter) {
+        scene.remove(helicopter.group);
+        helicopter = null;
+      }
+      // Reset rings and shields
+      ringMesh.count = 0;
+      ringIdx = 0;
+      shieldMesh.count = 0;
     }
   }
   if (e.code === 'KeyC') {
@@ -1072,21 +1408,19 @@ function update(dt) {
   // Street lamps
   for (const lamp of streetLamps) {
     lamp.light.intensity = isNight ? 1.5 : 0.2;
-    lamp.head.material.opacity = isNight ? 1.0 : 0.4;
   }
 
-  // Update pedestrians
+  // ---- Update pedestrians ----
+  let needsPersonUpdate = false;
   for (const ped of pedestrians) {
     if (!ped.alive) continue;
-    const p = ped.mesh.position;
 
     // If riot, civilians near plaza flee
     if (riotMode && !ped.fleeing) {
-      const distToPlaza = dist2d(p, { x: PLAZA_X, z: PLAZA_Z });
+      const distToPlaza = dist2d(ped, { x: PLAZA_X, z: PLAZA_Z });
       if (distToPlaza < 80 && riotPhase !== 'PEACEFUL') {
         ped.fleeing = true;
         ped.speed = 3 + rng() * 2;
-        // Flee to nearest building
         if (buildings.length > 0) {
           const bldg = buildings[Math.floor(rng() * buildings.length)];
           ped.target = { x: bldg.x, z: bldg.z };
@@ -1097,56 +1431,112 @@ function update(dt) {
       }
     }
 
-    const dx = ped.target.x - p.x;
-    const dz = ped.target.z - p.z;
+    const dx = ped.target.x - ped.x;
+    const dz = ped.target.z - ped.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < 2) {
       if (ped.fleeing) {
         ped.alive = false;
-        ped.mesh.visible = false;
+        hidePersonInstance(ped.slot);
       } else {
         ped.target = randomSidewalkPos();
       }
     } else {
       const s = ped.speed * dt;
-      p.x += (dx / dist) * s;
-      p.z += (dz / dist) * s;
-      // Face direction
-      ped.mesh.rotation.y = Math.atan2(dx, dz);
+      ped.x += (dx / dist) * s;
+      ped.z += (dz / dist) * s;
+      ped.rotY = Math.atan2(dx, dz);
+    }
+
+    if (ped.alive) {
+      updatePersonInstance(ped.slot, ped.x, ped.y, ped.z, ped.rotY, 1, 1, 1, ped.bodyColor, 0.8, ped.headColor, ped.scale);
+      needsPersonUpdate = true;
     }
   }
 
-  // Update cars
+  // ---- Update cars — road following ----
+  let needsCarUpdate = false;
   for (const car of cars) {
     if (!car.alive) continue;
     if (car.pauseTimer > 0) { car.pauseTimer -= dt; continue; }
 
-    const g = car.group.position;
-    if (car.pathIdx >= car.path.length) {
-      const dest = randomRoadPos();
-      car.path = roadPathTo({ x: g.x, z: g.z }, dest);
-      car.pathIdx = 0;
-      car.pauseTimer = 1.0 + rng() * 2.0;
+    if (!car.nextIntersection) {
+      // Off the edge — pick a new road
+      const start = pickRandomRoadStart();
+      car.x = start.x;
+      car.z = start.z;
+      car.horizontal = start.horizontal;
+      car.dir = start.dir;
+      car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
+      car.pauseTimer = 0.5;
       continue;
     }
 
-    const wp = car.path[car.pathIdx];
-    const dx = wp.x - g.x;
-    const dz = wp.z - g.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < 2) {
-      car.pathIdx++;
-      if (car.pathIdx < car.path.length && rng() < 0.3) {
-        car.pauseTimer = 1.0 + rng() * 2.0;
-      }
+    // Move toward next intersection
+    const target = car.nextIntersection;
+    let dx, dz;
+    if (car.horizontal) {
+      dx = target.x - car.x;
+      dz = 0;
+      // Snap to road centerline
+      car.z = target.z;
     } else {
-      const s = car.speed * dt;
-      g.x += (dx / dist) * s;
-      g.z += (dz / dist) * s;
-      car.group.rotation.y = Math.atan2(dx, dz) - Math.PI / 2;
+      dx = 0;
+      dz = target.z - car.z;
+      // Snap to road centerline
+      car.x = target.x;
     }
 
-    car.headlight.intensity = isNight ? 2 : 0;
+    const dist = Math.abs(dx + dz); // one is always 0
+    if (dist < 2) {
+      // Arrived at intersection — snap to it
+      car.x = target.x;
+      car.z = target.z;
+
+      // Pause briefly at intersection
+      car.pauseTimer = 0.5 + rng() * 1.5;
+
+      // Decide: continue straight, or turn
+      const turnRoll = rng();
+      if (turnRoll < 0.35) {
+        // Turn: switch orientation
+        car.horizontal = !car.horizontal;
+        car.dir = rng() < 0.5 ? 1 : -1;
+      } else if (turnRoll < 0.5) {
+        // U-turn
+        car.dir = -car.dir;
+      }
+      // else continue straight
+
+      car.nextIntersection = findNextIntersection(car.x, car.z, car.horizontal, car.dir);
+    } else {
+      const s = car.speed * dt;
+      if (car.horizontal) {
+        car.x += car.dir * s;
+      } else {
+        car.z += car.dir * s;
+      }
+    }
+
+    // Calculate rotation: car faces direction of travel
+    let rotY;
+    if (car.horizontal) {
+      rotY = car.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+    } else {
+      rotY = car.dir > 0 ? 0 : Math.PI;
+    }
+
+    updateCarInstance(car.idx, car.x, 0, car.z, rotY, car.bodyColor, car.cabinColor);
+    needsCarUpdate = true;
+  }
+
+  if (needsCarUpdate) {
+    carBodyMesh.instanceMatrix.needsUpdate = true;
+    if (carBodyMesh.instanceColor) carBodyMesh.instanceColor.needsUpdate = true;
+    carCabinMesh.instanceMatrix.needsUpdate = true;
+    if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
+    carHLMesh.instanceMatrix.needsUpdate = true;
+    carTLMesh.instanceMatrix.needsUpdate = true;
   }
 
   // ---- RIOT ----
@@ -1166,41 +1556,41 @@ function update(dt) {
     // Update protestors
     for (const pr of protestors) {
       if (!pr.alive || pr.arrested) continue;
-      const p = pr.mesh.position;
 
       if (pr.fleeing) {
-        // Flee away from police
         const fleeDir = rng() < 0.5 ? 1 : -1;
-        const target = { x: p.x + fleeDir * 50, z: p.z + (rng() - 0.5) * 80 };
-        const dx = target.x - p.x;
-        const dz = target.z - p.z;
+        const target = { x: pr.x + fleeDir * 50, z: pr.z + (rng() - 0.5) * 80 };
+        const dx = target.x - pr.x;
+        const dz = target.z - pr.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 1) {
           const s = pr.speed * 1.5 * dt;
-          p.x += (dx / dist) * s;
-          p.z += (dz / dist) * s;
-          pr.mesh.rotation.y = Math.atan2(dx, dz);
+          pr.x += (dx / dist) * s;
+          pr.z += (dz / dist) * s;
+          pr.rotY = Math.atan2(dx, dz);
         }
-        // Leave the map
-        if (p.x < -10 || p.x > CITY_W + 10 || p.z < -10 || p.z > CITY_H + 10) {
+        if (pr.x < -10 || pr.x > CITY_W + 10 || pr.z < -10 || pr.z > CITY_H + 10) {
           pr.alive = false;
-          pr.mesh.visible = false;
+          hidePersonInstance(pr.slot);
         }
+        if (pr.alive) updatePersonInstance(pr.slot, pr.x, pr.y, pr.z, pr.rotY, 1, 1, 1, pr.bodyColor, 0.8, pr.headColor, pr.scale);
         continue;
       }
 
       // Move toward target in plaza
-      const dx = pr.target.x - p.x;
-      const dz = pr.target.z - p.z;
+      const dx = pr.target.x - pr.x;
+      const dz = pr.target.z - pr.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
       if (dist < 3) {
         pr.target = { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 };
       } else {
         const s = pr.speed * dt;
-        p.x += (dx / dist) * s;
-        p.z += (dz / dist) * s;
-        pr.mesh.rotation.y = Math.atan2(dx, dz);
+        pr.x += (dx / dist) * s;
+        pr.z += (dz / dist) * s;
+        pr.rotY = Math.atan2(dx, dz);
       }
+
+      updatePersonInstance(pr.slot, pr.x, pr.y, pr.z, pr.rotY, 1, 1, 1, pr.bodyColor, 0.8, pr.headColor, pr.scale);
 
       // Throw rocks and molotovs during RIOT phase
       if (riotPhase === 'RIOT') {
@@ -1208,11 +1598,10 @@ function update(dt) {
         if (pr.throwTimer <= 0) {
           pr.throwTimer = 2 + rng() * 6;
 
-          // Find nearest police
           let nearest = null, nearDist = Infinity;
           for (const pol of police) {
             if (!pol.alive) continue;
-            const dd = dist2d(p, pol.mesh.position);
+            const dd = dist2d(pr, pol);
             if (dd < nearDist && dd < 60) { nearDist = dd; nearest = pol; }
           }
 
@@ -1220,21 +1609,20 @@ function update(dt) {
             const isMolotov = rng() < 0.2;
             if (isMolotov) {
               launchProjectile(
-                { x: p.x, z: p.z },
-                { x: nearest.mesh.position.x + (rng() - 0.5) * 10, z: nearest.mesh.position.z + (rng() - 0.5) * 10 },
+                { x: pr.x, z: pr.z },
+                { x: nearest.x + (rng() - 0.5) * 10, z: nearest.z + (rng() - 0.5) * 10 },
                 'molotov'
               );
               molotovCount++;
               addKillFeedEntry('Protestor threw molotov!');
             } else {
               launchProjectile(
-                { x: p.x, z: p.z },
-                { x: nearest.mesh.position.x + (rng() - 0.5) * 8, z: nearest.mesh.position.z + (rng() - 0.5) * 8 },
+                { x: pr.x, z: pr.z },
+                { x: nearest.x + (rng() - 0.5) * 8, z: nearest.z + (rng() - 0.5) * 8 },
                 'rock'
               );
               rockCount++;
               if (rng() < 0.3) addKillFeedEntry('Protestor threw rock');
-              // Rock hit chance
               if (rng() < 0.1) {
                 nearest.health -= 0.1;
                 injuryCount++;
@@ -1244,7 +1632,6 @@ function update(dt) {
           }
         }
 
-        // Some protestors scatter randomly
         if (rng() < 0.003) {
           pr.fleeing = true;
           pr.speed = 3 + rng() * 2;
@@ -1255,80 +1642,84 @@ function update(dt) {
     // Update police
     for (const pol of police) {
       if (!pol.alive) continue;
-      const p = pol.mesh.position;
 
       if (pol.holdLine) {
-        // Hold formation, drift back to line
-        const dx = pol.lineX - p.x;
-        const dz = pol.lineZ - p.z;
+        const dx = pol.lineX - pol.x;
+        const dz = pol.lineZ - pol.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 2) {
           const s = pol.speed * 0.5 * dt;
-          p.x += (dx / dist) * s;
-          p.z += (dz / dist) * s;
+          pol.x += (dx / dist) * s;
+          pol.z += (dz / dist) * s;
         }
-        // Face the plaza
-        pol.mesh.rotation.y = Math.atan2(PLAZA_X - p.x, PLAZA_Z - p.z);
+        pol.rotY = Math.atan2(PLAZA_X - pol.x, PLAZA_Z - pol.z);
       }
 
-      // Fire tear gas and rubber bullets during RIOT
+      updatePersonInstance(pol.slot, pol.x, pol.y, pol.z, pol.rotY, 1, 1, 1, pol.bodyColor, 0.8, pol.headColor, pol.scale);
+
+      // Update shield position
+      if (pol.myShieldIdx >= 0) {
+        const cosR = Math.cos(pol.rotY);
+        const sinR = Math.sin(pol.rotY);
+        _pos.set(pol.x + 0.9 * sinR, 1.0, pol.z + 0.9 * cosR);
+        _euler.set(0, pol.rotY, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        shieldMesh.setMatrixAt(pol.myShieldIdx, _mat4);
+      }
+
+      // Fire tear gas and rubber bullets
       if (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') {
         pol.fireTimer -= dt;
         if (pol.fireTimer <= 0) {
           pol.fireTimer = 2 + rng() * 5;
 
-          // Find nearest protestor
           let nearest = null, nearDist = Infinity;
           for (const pr of protestors) {
             if (!pr.alive || pr.arrested || pr.fleeing) continue;
-            const dd = dist2d(p, pr.mesh.position);
+            const dd = dist2d(pol, pr);
             if (dd < nearDist && dd < 80) { nearDist = dd; nearest = pr; }
           }
 
           if (nearest) {
             const isTearGas = rng() < 0.25;
             if (isTearGas) {
-              // Tear gas canister
-              const impactX = nearest.mesh.position.x + (rng() - 0.5) * 15;
-              const impactZ = nearest.mesh.position.z + (rng() - 0.5) * 15;
+              const impactX = nearest.x + (rng() - 0.5) * 15;
+              const impactZ = nearest.z + (rng() - 0.5) * 15;
               createTearGasCloud({ x: impactX, z: impactZ });
               teargasCount++;
               addKillFeedEntry('Police fired tear gas');
 
-              // Tear gas causes protestors nearby to scatter
               for (const pr of protestors) {
                 if (!pr.alive || pr.arrested || pr.fleeing) continue;
-                const dd = dist2d(pr.mesh.position, { x: impactX, z: impactZ });
+                const dd = dist2d(pr, { x: impactX, z: impactZ });
                 if (dd < 20 && rng() < 0.4) {
                   pr.fleeing = true;
                   pr.speed = 3 + rng() * 2;
                 }
               }
             } else {
-              // Rubber bullet — cyan tracer
               createTracer(
-                { x: p.x, z: p.z },
-                { x: nearest.mesh.position.x, z: nearest.mesh.position.z },
+                { x: pol.x, z: pol.z },
+                { x: nearest.x, z: nearest.z },
                 CYAN, 0.25
               );
-              createMuzzleFlash({ x: p.x, z: p.z });
-              playGunshot(p.x, p.z);
+              createMuzzleFlash({ x: pol.x, z: pol.z });
+              playGunshot(pol.x, pol.z);
 
-              // Hit chance
               if (rng() < 0.15) {
                 nearest.health -= 0.3;
-                createHitEffect({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
+                createHitEffect({ x: nearest.x, z: nearest.z });
                 injuryCount++;
 
                 if (nearest.health <= 0) {
-                  // Arrested / incapacitated
                   nearest.arrested = true;
-                  nearest.mesh.rotation.z = Math.PI / 2;
-                  nearest.mesh.position.y = -0.5;
+                  // Lay flat — update with rotated position
+                  nearest.y = -0.5;
                   arrestCount++;
                   addKillFeedEntry('Protestor arrested');
                 } else {
-                  // Hit but not down — might flee
                   if (rng() < 0.5) {
                     nearest.fleeing = true;
                     nearest.speed = 3 + rng() * 2;
@@ -1341,6 +1732,77 @@ function update(dt) {
         }
       }
     }
+
+    // Update ring markers for protestors and police
+    let ri = 0;
+    for (const pr of protestors) {
+      if (pr.myRingIdx >= 0 && pr.alive && !pr.arrested) {
+        _pos.set(pr.x, 0.05, pr.z);
+        _euler.set(-Math.PI / 2, 0, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        ringMesh.setMatrixAt(pr.myRingIdx, _mat4);
+        ringMesh.setColorAt(pr.myRingIdx, _color.set(pr.ringColor));
+      } else if (pr.myRingIdx >= 0) {
+        _pos.set(0, -100, 0);
+        _quat.identity();
+        _scale.set(0, 0, 0);
+        _mat4.compose(_pos, _quat, _scale);
+        ringMesh.setMatrixAt(pr.myRingIdx, _mat4);
+      }
+    }
+    for (const pol of police) {
+      if (pol.myRingIdx >= 0 && pol.alive) {
+        _pos.set(pol.x, 0.05, pol.z);
+        _euler.set(-Math.PI / 2, 0, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        ringMesh.setMatrixAt(pol.myRingIdx, _mat4);
+        ringMesh.setColorAt(pol.myRingIdx, _color.set(pol.ringColor));
+      }
+    }
+    if (ringMesh.count > 0) {
+      ringMesh.instanceMatrix.needsUpdate = true;
+      if (ringMesh.instanceColor) ringMesh.instanceColor.needsUpdate = true;
+    }
+    if (shieldMesh.count > 0) {
+      shieldMesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  // Update person instanced meshes
+  personBodyMesh.count = personSlotCount;
+  personHeadMesh.count = personSlotCount;
+  if (personSlotCount > 0) {
+    personBodyMesh.instanceMatrix.needsUpdate = true;
+    if (personBodyMesh.instanceColor) personBodyMesh.instanceColor.needsUpdate = true;
+    personHeadMesh.instanceMatrix.needsUpdate = true;
+    if (personHeadMesh.instanceColor) personHeadMesh.instanceColor.needsUpdate = true;
+  }
+
+  // ---- Helicopter ----
+  if (helicopter) {
+    const h = helicopter;
+    h.angle += dt * 0.3; // slow circle
+    h.group.position.x = h.centerX + Math.cos(h.angle) * h.radius;
+    h.group.position.z = h.centerZ + Math.sin(h.angle) * h.radius;
+    h.group.position.y = 80 + Math.sin(h.angle * 2) * 3; // slight bob
+
+    // Face direction of travel
+    h.group.rotation.y = -h.angle + Math.PI / 2;
+    // Slight bank into turn
+    h.group.rotation.z = Math.sin(h.angle * 0.3) * 0.1;
+
+    // Spin rotors fast
+    h.rotorAngle += dt * 25;
+    h.rotor.rotation.y = h.rotorAngle;
+    h.rotor2.rotation.y = h.rotorAngle + Math.PI / 2;
+    h.tailRotor.rotation.z = h.rotorAngle * 1.5;
+
+    // Searchlight intensity flicker
+    h.searchlight.intensity = 6 + Math.sin(h.angle * 5) * 2;
   }
 
   // Update projectiles (arcing rocks/molotovs)
@@ -1353,7 +1815,6 @@ function update(dt) {
     proj.mesh.position.z = proj.startZ + proj.vz * t;
     proj.mesh.position.y = 2 + proj.vy * t - 0.5 * proj.gravity * t * t;
 
-    // Spin
     proj.mesh.rotation.x += dt * 5;
     proj.mesh.rotation.z += dt * 3;
 
@@ -1417,7 +1878,6 @@ function update(dt) {
       p.mesh.position.z += p.vel.z * dt;
       p.vel.y -= 15 * dt;
       p.mesh.material.opacity = Math.max(0, 1 - t);
-      // Spin debris
       p.mesh.rotation.x += dt * 3;
       p.mesh.rotation.z += dt * 2;
     }
@@ -1431,7 +1891,6 @@ function update(dt) {
     const s = smokeParticles[i];
     s.mesh.position.y += s.vy * dt;
     if (s.isTearGas) {
-      // Tear gas expands more, drifts
       s.mesh.scale.multiplyScalar(1 + dt * 0.15);
       s.mesh.position.x += (rng() - 0.5) * dt * 2;
       s.mesh.position.z += (rng() - 0.5) * dt * 2;
@@ -1448,16 +1907,24 @@ function update(dt) {
     }
   }
 
-  // Update persistent fires
+  // Update persistent fires — longer burn with gradual dim
   for (let i = fires.length - 1; i >= 0; i--) {
     const f = fires[i];
     f.age += dt;
-    // Flicker
-    f.light.intensity = 2 + Math.sin(f.age * 10) * 1.5 + rng() * 0.5;
+    const lifeRatio = 1.0 - (f.age / f.life);
+    // Flickering intensity that gradually dims over lifetime
+    const baseIntensity = (f.maxIntensity || 3) * Math.max(0.1, lifeRatio);
+    f.light.intensity = baseIntensity + Math.sin(f.age * 12) * baseIntensity * 0.4
+                       + Math.sin(f.age * 7.3) * baseIntensity * 0.2
+                       + rng() * baseIntensity * 0.15;
     f.light.color.setHex(rng() < 0.3 ? 0xff4400 : 0xff8800);
 
-    // Spawn fire particles periodically
-    if (rng() < 0.05) {
+    // Increase light range slightly for bigger fires early on
+    f.light.distance = 20 + 10 * Math.min(1, lifeRatio * 2);
+
+    // Spawn fire particles more frequently in first half of life
+    const spawnRate = lifeRatio > 0.5 ? 0.08 : 0.03;
+    if (rng() < spawnRate) {
       const fGeo = new THREE.BoxGeometry(0.3, 0.5, 0.3);
       const fMat = new THREE.MeshBasicMaterial({
         color: [0xff4400, 0xff8800, 0xffaa00][Math.floor(rng() * 3)],
@@ -1469,6 +1936,16 @@ function update(dt) {
       smokeParticles.push({ mesh: fm, vy: 1 + rng() * 2, life: 1 + rng() * 2 });
     }
 
+    // Smoke wisps in second half of life (dying fire)
+    if (lifeRatio < 0.5 && rng() < 0.02) {
+      const sGeo = new THREE.SphereGeometry(0.8 + rng(), 6, 4);
+      const sMat = new THREE.MeshBasicMaterial({ color: 0x444444, transparent: true, opacity: 0.4 });
+      const sm = new THREE.Mesh(sGeo, sMat);
+      sm.position.set(f.x + (rng() - 0.5) * 2, 2 + rng(), f.z + (rng() - 0.5) * 2);
+      scene.add(sm);
+      smokeParticles.push({ mesh: sm, vy: 0.5 + rng(), life: 2 + rng() * 2 });
+    }
+
     if (f.age >= f.life) {
       scene.remove(f.light);
       fires.splice(i, 1);
@@ -1477,9 +1954,8 @@ function update(dt) {
 
   // Camera
   if (chaseCam && chaseTarget) {
-    const tp = chaseTarget.mesh.position;
-    camera.position.lerp(new THREE.Vector3(tp.x - 15, 20, tp.z + 15), 0.05);
-    camera.lookAt(tp);
+    camera.position.lerp(new THREE.Vector3(chaseTarget.x - 15, 20, chaseTarget.z + 15), 0.05);
+    camera.lookAt(new THREE.Vector3(chaseTarget.x, 1, chaseTarget.z));
   } else {
     controls.update();
   }
@@ -1505,7 +1981,6 @@ function updateHUD() {
   document.getElementById('rock-count').textContent = rockCount;
   document.getElementById('injury-count').textContent = injuryCount;
 
-  // Phase indicator
   const phaseEl = document.getElementById('phase-indicator');
   phaseEl.textContent = riotPhase;
   phaseEl.className = riotPhase === 'RIOT' ? 'riot' :
@@ -1522,6 +1997,7 @@ function updateHUD() {
     if (k.text.includes('Protestor')) color = '#05ffa1';
     if (k.text.includes('molotov') || k.text.includes('RIOT')) color = '#ff2a6d';
     if (k.text.includes('Civilian')) color = '#fcee0a';
+    if (k.text.includes('helicopter')) color = '#00f0ff';
     return `<div class="${cls}" style="color:${color}">${k.text}</div>`;
   }).join('');
 
