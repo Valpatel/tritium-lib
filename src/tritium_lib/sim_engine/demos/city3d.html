@@ -4704,6 +4704,7 @@ document.addEventListener('keydown', (e) => {
       }
       ambulances.length = 0;
       injuredQueue.length = 0;
+      medics.length = 0;
       // Clear fire trucks
       for (const ft of fireTrucks) {
         if (ft.light1) scene.remove(ft.light1);
@@ -5921,7 +5922,7 @@ function update(dt) {
       const aggB = Math.floor((pr.bodyColor & 0xff) * (1 - pr.aggression * 0.7));
       const aggressionColor = (aggR << 16) | (aggG << 8) | aggB;
       const baseColor = pr.panicFlash > 0 ? 0xfcee0a : aggressionColor;
-      const prDisplayColor = moraleColor(baseColor, pr.morale);
+      const prDisplayColor = healthTint(moraleColor(baseColor, pr.morale), pr.health);
 
       // STUNNED status effect: cannot move for duration
       if (pr.stunnedTimer > 0) {
@@ -5961,9 +5962,17 @@ function update(dt) {
         continue;
       }
 
-      // Move toward target in plaza (grounded, y=0)
-      const dx = pr.target.x - pr.x;
-      const dz = pr.target.z - pr.z;
+      // Crowd cohesion: steer toward avg position of nearby protestors (flocking)
+      let cohX = 0, cohZ = 0, cohN = 0;
+      for (const p2 of protestors) {
+        if (p2 === pr || !p2.alive || p2.arrested || p2.fleeing) continue;
+        if (dist2d(pr, p2) < 15) { cohX += p2.x; cohZ += p2.z; cohN++; }
+      }
+      // Move toward target in plaza with cohesion blend (grounded, y=0)
+      let tgtX = pr.target.x, tgtZ = pr.target.z;
+      if (cohN > 0) { tgtX = tgtX * 0.7 + (cohX / cohN) * 0.3; tgtZ = tgtZ * 0.7 + (cohZ / cohN) * 0.3; }
+      const dx = tgtX - pr.x;
+      const dz = tgtZ - pr.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
       if (dist < 3) {
         pr.target = { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 };
@@ -5981,9 +5990,18 @@ function update(dt) {
 
       // Throw rocks and molotovs during RIOT phase
       if (riotPhase === 'RIOT') {
+        // Aggression escalation: nearby throwers boost aggression (within 20 units)
+        let nearThrowers = 0;
+        for (const p2 of protestors) {
+          if (p2 === pr || !p2.alive || p2.arrested) continue;
+          if (p2.aggression > 0.1 && dist2d(pr, p2) < 20) nearThrowers++;
+        }
+        pr.aggression = Math.min(1.0, pr.aggression + nearThrowers * 0.005 * dt);
+        pr.aggression = Math.max(0, pr.aggression - 0.002 * dt); // slow decay
         pr.throwTimer -= dt;
         if (pr.throwTimer <= 0) {
-          pr.throwTimer = 4 + rng() * 10; // slower throw rate to prevent projectile flood
+          pr.throwTimer = (4 + rng() * 10) * (1 - pr.aggression * 0.5); // aggression speeds throwing
+          pr.aggression = Math.min(1.0, pr.aggression + 0.1); // throwing boosts own aggression
 
           let nearest = null, nearDist = Infinity;
           for (const pol of police) {
@@ -6050,7 +6068,7 @@ function update(dt) {
       // Police morale tick
       pol.morale = Math.min(1.0, (pol.morale || 1) + 0.01 * dt);
       for (const f of fires) { if (dist2d(pol, f) < 15) pol.morale = Math.max(0, pol.morale - 0.02 * dt); }
-      const polDisplayColor = moraleColor(pol.bodyColor, pol.morale);
+      const polDisplayColor = healthTint(moraleColor(pol.bodyColor, pol.morale), pol.health);
 
       if (pol.holdLine) {
         // During riot/dispersal, police advance toward the plaza
@@ -6334,6 +6352,7 @@ function update(dt) {
 
   // Update injured people on ground
   updateInjuredOnGround(dt);
+  updateMedics(dt);
 
   // Update person instanced meshes
   personBodyMesh.count = personSlotCount;
@@ -7408,6 +7427,7 @@ renderer.domElement.addEventListener('click', (ev) => {
     const p = police[i];
     if (!p.alive) continue;
     const dd = (p.x - aiIntersect.x) ** 2 + (p.z - aiIntersect.z) ** 2;
+  if (unit.isMedic) return unit.treatTarget ? 'TREATING' : 'RESPONDING';
     if (dd < bestDist) { bestDist = dd; best = p; bestSide = 'police'; }
   }
 
