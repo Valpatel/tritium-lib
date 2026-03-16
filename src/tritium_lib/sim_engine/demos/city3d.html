@@ -44,22 +44,15 @@ canvas { display: block; }
 #phase-indicator.tension { color: #fcee0a; text-shadow: 0 0 8px #fcee0a88; }
 #phase-indicator.dispersal { color: #00f0ff; text-shadow: 0 0 8px #00f0ff88; }
 
-#campaign-phase {
-  font-size: 14px; font-weight: bold; color: #fcee0a; margin-top: 2px;
-  padding: 2px 8px; border-radius: 3px; display: none;
-}
-#campaign-phase.phase1 { background: #05ffa122; color: #05ffa1; }
-#campaign-phase.phase2 { background: #ff2a6d22; color: #ff2a6d; }
-#campaign-phase.phase3 { background: #00f0ff22; color: #00f0ff; }
-#campaign-overlay {
-  display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-  background: #0a0a0fee; border: 2px solid #00f0ff; border-radius: 8px; padding: 32px 48px;
-  color: #e0e0e0; font-size: 15px; text-align: center; z-index: 100; min-width: 340px;
-}
-#campaign-overlay h2 { font-size: 28px; margin-bottom: 12px; }
-#campaign-overlay .stat-row { display: flex; justify-content: space-between; padding: 4px 0; }
-#campaign-overlay .stat-label { color: #888; }
-#campaign-overlay .stat-value { font-weight: bold; color: #05ffa1; }
+#campaign-phase { font-size:14px;font-weight:bold;margin-top:2px;padding:2px 8px;border-radius:3px;display:none; }
+#campaign-phase.phase1 { background:#05ffa122;color:#05ffa1; }
+#campaign-phase.phase2 { background:#ff2a6d22;color:#ff2a6d; }
+#campaign-phase.phase3 { background:#00f0ff22;color:#00f0ff; }
+#campaign-overlay { display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#0a0a0fee;border:2px solid #00f0ff;border-radius:8px;padding:32px 48px;color:#e0e0e0;font-size:15px;text-align:center;z-index:100;min-width:340px; }
+#campaign-overlay h2 { font-size:28px;margin-bottom:12px; }
+#campaign-overlay .stat-row { display:flex;justify-content:space-between;padding:4px 0; }
+#campaign-overlay .stat-label { color:#888; }
+#campaign-overlay .stat-value { font-weight:bold;color:#05ffa1; }
 
 #stats {
   text-align: right; line-height: 1.8; font-size: 14px;
@@ -525,15 +518,11 @@ let riotPhase = 'PEACEFUL';
 let riotTimer = 0;
 
 // Campaign Progression (demonstrates campaign.py + scenario.py)
-let campaignPhase = 0;
-let campaignTimer = 0;
-let campaignComplete = false;
-const CAMPAIGN_PHASES = [
-  null,
-  { name: 'Morning Protest', objective: 'Monitor situation', duration: 60, color: 'phase1' },
-  { name: 'Riot Response', objective: 'Contain riot', color: 'phase2' },
-  { name: 'Aftermath', objective: 'Secure area', color: 'phase3' },
-];
+let campaignPhase = 0; let campaignTimer = 0; let campaignComplete = false;
+const CAMPAIGN_PHASES = [null,
+  {name:'Morning Protest',objective:'Monitor situation',duration:60,color:'phase1'},
+  {name:'Riot Response',objective:'Contain riot',color:'phase2'},
+  {name:'Aftermath',objective:'Secure area',color:'phase3'}];
 const CAMPAIGN_TITLE = 'City Crisis';
 
 let molotovCount = 0;
@@ -609,6 +598,20 @@ let robotTotalHits = 0; // total lidar hits this frame (for debug)
 // Weather state
 let rainActive = false;
 let fogOverride = false;
+
+// Dynamic sky + lightning state (demonstrates weather_fx.py DayNightCycle, LightningSystem)
+let lightningCount = 0;
+let lightningTimer = 0; // frames remaining for flash
+const _skyA = new THREE.Color(), _skyB = new THREE.Color();
+function getSkyColor(h) {
+  if (h >= 7 && h < 17) return 0x88aacc;
+  if (h >= 19 || h < 5) return 0x0a0a0f;
+  if (h >= 5 && h < 6) { _skyA.set(0x0a0a2e); _skyB.set(0xff8844); _skyA.lerp(_skyB, h - 5); return _skyA.getHex(); }
+  if (h >= 6 && h < 7) { _skyA.set(0xff8844); _skyB.set(0x4488cc); _skyA.lerp(_skyB, h - 6); return _skyA.getHex(); }
+  if (h >= 17 && h < 18) { _skyA.set(0x4488cc); _skyB.set(0xff6622); _skyA.lerp(_skyB, h - 17); return _skyA.getHex(); }
+  // 18-19
+  _skyA.set(0xff6622); _skyB.set(0x2a1a3e); _skyA.lerp(_skyB, h - 18); return _skyA.getHex();
+}
 
 // Artillery strike state (demonstrates artillery.py / air_combat.py)
 let artilleryPhase = 'IDLE'; // IDLE | WARNING | IMPACT | SMOKE
