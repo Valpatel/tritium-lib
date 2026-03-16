@@ -106,6 +106,15 @@ from .squad import (
     SquadTactics,
 )
 
+from .tactics import (
+    AIPersonality,
+    PERSONALITY_PRESETS,
+    TacticalAction,
+    TacticalSituation,
+    TacticsEngine,
+    ThreatAssessment,
+)
+
 # NumPy-vectorized variants (optional — graceful fallback if numpy missing)
 try:
     from .steering_np import SteeringSystem, SpatialHash
@@ -186,4 +195,11 @@ __all__ = [
     "SquadRole",
     "SquadState",
     "SquadTactics",
+    # Tactics engine
+    "AIPersonality",
+    "PERSONALITY_PRESETS",
+    "TacticalAction",
+    "TacticalSituation",
+    "TacticsEngine",
+    "ThreatAssessment",
 ]
