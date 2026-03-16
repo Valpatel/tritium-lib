@@ -399,6 +399,11 @@ canvas { display: block; }
       <div class="supply-bar-bg"><div class="supply-bar-fill unlimited" id="supply-rock" style="width:100%"></div></div>
       <span class="supply-count" id="supply-rock-count">INF</span>
     </div>
+    <div class="supply-row" id="supply-convoy-row" style="display:none">
+      <span class="supply-label" style="color:#05ffa199">SUPPLY &larr;</span>
+      <div class="supply-bar-bg"><div class="supply-bar-fill" id="supply-convoy-bar" style="width:0%;background:#225522"></div></div>
+      <span class="supply-count" id="supply-convoy-eta" style="color:#05ffa1">--</span>
+    </div>
   </div>
   <div id="controls">
     <span>SPACE</span> Start Riot &nbsp;|&nbsp;
@@ -416,7 +421,7 @@ canvas { display: block; }
     <span>L</span> Play &nbsp;|&nbsp;
     <span>Click</span> Inspect &nbsp;|&nbsp;
     <span>ESC</span> Deselect &nbsp;|&nbsp;
-    <span>P</span> Next Phase
+    <span>P</span> Next Phase &nbsp;|&nbsp; <span>2</span> Split View
     <span id="rec-btn" onclick="toggleRecording()"><span class="rec-dot"></span>REC</span>
     <span id="rec-timer">00:00</span>
   </div>
@@ -608,6 +613,8 @@ const injuredQueue = []; // people waiting for ambulance pickup
 const taxis = [];
 const fireTrucks = [];
 const policeVans = [];
+let supplyConvoy = null;
+let supplyConvoyTimer = 0;
 const injuredOnGround = []; // people lying on ground waiting for ambulance
 const carDrivers = []; // civilians who own cars and drive between buildings
 
@@ -772,6 +779,10 @@ const narrationTemplates = {
   ],
   ew_counter: [
     '<span class="callsign">EW TEAM:</span> <span class="info">Deploying counter-measures...</span>',
+  ],
+  building_breach: [
+    '<span class="callsign">ALPHA TEAM:</span> <span class="alert">BREACH</span> Building at grid {grid}. Clearing in progress.',
+    '<span class="callsign">BRAVO-1:</span> <span class="alert">FLASHBANG</span> deployed grid {grid}. Entry team moving.',
   ],
 };
 
@@ -1662,11 +1673,33 @@ for (let row = 0; row <= GRID_ROWS; row++) {
     lampPostMesh.count = lampIdx;
     lampHeadMesh.count = lampIdx;
 
-    // Still need actual PointLight for illumination
-    const lampLight = new THREE.PointLight(0xffdd88, 0.4, 30);
-    lampLight.position.set(x + 4, 7, z + 4);
-    scene.add(lampLight);
-    streetLamps.push({ light: lampLight });
+    // Store position only — lights are pooled (max 6 nearest camera)
+    streetLamps.push({ x: x + 4, z: z + 4, light: null });
+  }
+}
+
+// Pooled street lamp lights — only 6 active at once (nearest camera)
+const MAX_LAMP_LIGHTS = 6;
+const lampLightPool = [];
+for (let i = 0; i < MAX_LAMP_LIGHTS; i++) {
+  const ll = new THREE.PointLight(0xffdd88, 0, 50);
+  ll.position.set(0, 7, 0);
+  scene.add(ll);
+  lampLightPool.push(ll);
+}
+
+function updateLampLights(camX, camZ, isNight) {
+  // Sort lamps by distance to camera, assign lights to 6 nearest
+  const sorted = streetLamps.map((l, i) => ({
+    idx: i, dist: (l.x - camX) ** 2 + (l.z - camZ) ** 2, x: l.x, z: l.z
+  })).sort((a, b) => a.dist - b.dist);
+  
+  for (let i = 0; i < MAX_LAMP_LIGHTS; i++) {
+    if (i < sorted.length) {
+      lampLightPool[i].position.set(sorted[i].x, 7, sorted[i].z);
+      lampLightPool[i].intensity = isNight ? 4.0 : 0.2;
+      lampLightPool[i].distance = isNight ? 50 : 30;
+    }
   }
 }
 
@@ -1776,6 +1809,39 @@ commsLines.visible = false;
 commsLines.renderOrder = 102;
 scene.add(commsLines);
 
+// EW Jamming ring (demonstrates electronic_warfare.py) -- pre-allocated
+const ewRingGeo = new THREE.RingGeometry(38, 40, 48);
+ewRingGeo.rotateX(-Math.PI / 2);
+const ewRingMat = new THREE.MeshBasicMaterial({ color: 0xff2a6d, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false });
+const ewRingMesh = new THREE.Mesh(ewRingGeo, ewRingMat);
+ewRingMesh.visible = false; ewRingMesh.renderOrder = 101;
+scene.add(ewRingMesh);
+
+function updateEWJamming(dt) {
+  ewJamCheckTimer += dt;
+  if (ewJamActive) {
+    ewJamTimer -= dt;
+    const remaining = Math.max(0, ewJamTimer);
+    if (remaining < 5 && !ewCounterNarrated) { ewCounterNarrated = true; addNarration('ew_counter'); }
+    const scale = remaining < 5 ? remaining / 5 : 1;
+    ewRingMesh.scale.set(scale, 1, scale);
+    ewRingMesh.position.set(ewJamX, 0.12, ewJamZ);
+    ewRingMesh.visible = true;
+    commsStatus = 'JAMMED';
+    if (ewJamTimer <= 0) { ewJamActive = false; ewRingMesh.visible = false; }
+  } else {
+    ewRingMesh.visible = false;
+    if (riotPhase === 'RIOT' && ewJamCheckTimer >= EW_JAM_CHECK_INTERVAL) {
+      ewJamCheckTimer = 0;
+      if (rng() < EW_JAM_CHANCE) {
+        ewJamActive = true; ewJamTimer = EW_JAM_DURATION; ewCounterNarrated = false;
+        ewJamX = PLAZA_X + (rng() - 0.5) * 20; ewJamZ = PLAZA_Z + (rng() - 0.5) * 20;
+        addNarration('ew_jam_start', { grid: formatGrid(ewJamX, ewJamZ) });
+      }
+    }
+  }
+}
+
 function updateCommsNetwork(dt) {
   // Check for fire proximity — degrades comms
   commsDegradedTimer = Math.max(0, commsDegradedTimer - dt);
@@ -1795,7 +1861,7 @@ function updateCommsNetwork(dt) {
   const el = document.getElementById('comms-status');
   if (el) {
     el.textContent = commsStatus;
-    el.style.color = commsStatus === 'ACTIVE' ? '#05ffa1' : '#fcee0a';
+    el.style.color = commsStatus === 'JAMMED' ? '#ff2a6d' : commsStatus === 'ACTIVE' ? '#05ffa1' : '#fcee0a';
   }
 
   // Update comms lines (only visible in debug mode)
@@ -3756,6 +3822,25 @@ function spawnPoliceVan() {
   playSiren();
 }
 
+
+function spawnSupplyConvoy() {
+  if (supplyConvoy) return;
+  const slot = allocCarSlot();
+  if (slot < 0) return;
+  const edgePos = edgeSpawnPos();
+  const road = snapToNearestRoad(edgePos.x, edgePos.z);
+  const startX = road ? road.x : edgePos.x;
+  const startZ = road ? road.z : edgePos.z;
+  const destX = PLAZA_X, destZ = PLAZA_Z - 35;
+  const waypoints = planRoadPath(startX, startZ, destX, destZ);
+  supplyConvoy = {
+    idx: slot, x: startX, z: startZ, speed: 9,
+    bodyColor: 0x225522, cabinColor: 0x1a3a1a,
+    waypoints, waypointIdx: 0,
+    phase: 'driving', alive: true, destX, destZ,
+  };
+  addKillFeedEntry('Supply convoy en route');
+}
 function updateEmergencyVehicles(dt) {
   const isNight = nightMode || simTime < 6 || simTime > 20;
 
@@ -3888,6 +3973,42 @@ function updateEmergencyVehicles(dt) {
             bodyColor: COLOR_POLICE, headColor, ringColor: CYAN,
             scale: 1.15, speed: 2 + rng() * 1.5,
             alive: true, health: 1.0, morale: 1.0, fireTimer: 2 + rng() * 4,
+
+  // Supply convoy
+  if (supplyConvoy && supplyConvoy.alive) {
+    const sc = supplyConvoy;
+    if (sc.phase === 'driving') {
+      if (sc.waypointIdx < sc.waypoints.length) {
+        const wp = sc.waypoints[sc.waypointIdx];
+        const dx = wp.x - sc.x, dz = wp.z - sc.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { sc.waypointIdx++; }
+        else { const s = sc.speed * dt; sc.x += (dx / d) * s; sc.z += (dz / d) * s; }
+      } else {
+        sc.phase = 'returning';
+        supplyTearGas = Math.min(SUPPLY_TEAR_GAS_MAX, supplyTearGas + 5);
+        supplyRubberBullets = Math.min(SUPPLY_RUBBER_BULLETS_MAX, supplyRubberBullets + 20);
+        addKillFeedEntry('Supply convoy arrived \u2014 restocking');
+        const edge = edgeSpawnPos();
+        sc.waypoints = planRoadPath(sc.x, sc.z, edge.x, edge.z);
+        sc.waypointIdx = 0;
+      }
+    } else if (sc.phase === 'returning') {
+      if (sc.waypointIdx < sc.waypoints.length) {
+        const wp = sc.waypoints[sc.waypointIdx];
+        const dx = wp.x - sc.x, dz = wp.z - sc.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 3) { sc.waypointIdx++; }
+        else { const s = sc.speed * dt; sc.x += (dx / d) * s; sc.z += (dz / d) * s; }
+      } else { sc.alive = false; hideCarInstance(sc.idx); supplyConvoy = null; }
+    }
+    if (sc.alive) {
+      const wp = sc.waypointIdx < sc.waypoints.length ? sc.waypoints[sc.waypointIdx] : null;
+      const rotY = wp ? vehicleRotY(wp.x - sc.x, wp.z - sc.z) : 0;
+      updateCarInstance(sc.idx, sc.x, 0, sc.z, rotY, sc.bodyColor, sc.cabinColor, 1.3);
+      updateCarHeadlights(sc.idx, sc.x, sc.z, rotY, isNight);
+    }
+  }
             target: null, holdLine: true,
             lineX: PLAZA_X + (rng() - 0.5) * 30, lineZ: PLAZA_Z - 30 - rng() * 10,
             injured: false,
@@ -4418,11 +4539,8 @@ function update(dt) {
     renderer.toneMappingExposure = isNight ? 0.9 : 1.4;
   }
 
-  // Street lamps — much brighter at night, wider range
-  for (const lamp of streetLamps) {
-    lamp.light.intensity = isNight ? 4.0 : 0.2;
-    lamp.light.distance = isNight ? 50 : 30;
-  }
+  // Street lamps — update 6 nearest pooled lights
+  updateLampLights(camera.position.x, camera.position.z, isNight);
 
   // Lamp halo sprites — visible at night, subtle glow corona
   const haloOpacity = isNight ? 0.7 : 0.0;
@@ -5030,6 +5148,11 @@ function update(dt) {
         }
       }
     }
+    // GPS spoofing: jitter heading when in EW jammed zone
+    if (ewJamActive) {
+      const jdx = rx - ewJamX, jdz = rz - ewJamZ;
+      if (jdx * jdx + jdz * jdz < ewJamRadius * ewJamRadius) rcar.rotY += (rng() - 0.5) * 0.6;
+    }
     // Robots never pause randomly — override pause timer
     if (rcar.pauseTimer > 0.5) rcar.pauseTimer = 0.3;
     // Slow down when near pedestrians
@@ -5108,6 +5231,17 @@ function update(dt) {
         }
       }
 
+      // Test against IEDs (detect within 2 units of lidar ray)
+      for (const ied of ieds) {
+        if (!ied.armed || ied.detected) continue;
+        const iedDx = ied.x - rx, iedDz = ied.z - rz;
+        const proj2 = iedDx * dirX + iedDz * dirZ;
+        if (proj2 > 0.5 && proj2 < hitDist && (iedDx * iedDx + iedDz * iedDz) - proj2 * proj2 < 4) {
+          ied.detected = true; iedDetected++;
+          addKillFeedEntry('ROS2-' + (r+1) + ' detected suspicious device');
+          addNarration('ied_detected', { n: r+1, grid: formatGrid(ied.x, ied.z) });
+        }
+      }
       if (isHit) hitCount++;
 
       // Set ray vertex positions: origin -> endpoint
@@ -5270,6 +5404,44 @@ function update(dt) {
       addKillFeedEntry('Crowd dispersing');
       if (campaignPhase === 2) { advanceCampaignPhase(); } // dispersal triggers phase 3
       if (!artilleryTriggered) { ensureAudio(); triggerArtilleryStrike(); }
+    }
+
+    // ---- IED placement & update (demonstrates asymmetric.py) ----
+    iedPlaceTimer += dt;
+    if (riotPhase === 'RIOT' && iedPlaceTimer > 10 && ieds.length < MAX_IEDS) {
+      iedPlaceTimer = 0;
+      if (rng() < 0.05) {
+        const planter = protestors.find(p => p.alive && p.x !== undefined);
+        if (planter) {
+          const ied = { x: planter.x, z: planter.z, armed: true, detected: false, idx: ieds.length };
+          ieds.push(ied); iedPlanted++;
+          _iedDummy.position.set(ied.x, 0.1, ied.z); _iedDummy.updateMatrix();
+          iedMesh.setMatrixAt(ied.idx, _iedDummy.matrix);
+          iedMesh.count = ieds.length; iedMesh.instanceMatrix.needsUpdate = true;
+          addKillFeedEntry('IED planted near road');
+        }
+      }
+    }
+    for (const ied of ieds) {
+      if (ied.armed === false) continue;
+      let triggered = false;
+      for (const pol of police) {
+        if (pol.alive && (pol.x - ied.x) ** 2 + (pol.z - ied.z) ** 2 < 9) { triggered = true; pol.health -= 0.6; if (pol.health < 0.5 && pol.alive) { knockDownPerson(pol); } break; }
+      }
+      if (!triggered) { for (const pv of policeVans) { if (pv.alive && (pv.x - ied.x) ** 2 + (pv.z - ied.z) ** 2 < 9) { triggered = true; break; } } }
+      if (triggered) {
+        ied.armed = false; iedDetonated++;
+        createExplosion(ied); playExplosion(ied.x, ied.z);
+        addKillFeedEntry('IED DETONATED -- Officer down!');
+        addNarration('ied_detonate', { grid: formatGrid(ied.x, ied.z) });
+        _iedDummy.position.set(ied.x, -5, ied.z); _iedDummy.updateMatrix();
+        iedMesh.setMatrixAt(ied.idx, _iedDummy.matrix); iedMesh.instanceMatrix.needsUpdate = true;
+      }
+      if (ied.detected && ied.armed) {
+        _iedColor.setHex(Math.sin(riotTimer * 8) > 0 ? 0xff0000 : 0x6b3410);
+        iedMesh.setColorAt(ied.idx, _iedColor);
+        if (iedMesh.instanceColor) iedMesh.instanceColor.needsUpdate = true;
+      }
     }
 
     // Update protestors
@@ -5636,7 +5808,7 @@ function update(dt) {
     }
     formationGeo.setDrawRange(0, alivePoliceF.length);
     formationGeo.attributes.position.needsUpdate = true;
-    formationStatus = maxGap > 15 ? 'BROKEN' : 'LINE';
+    formationStatus = maxGap > (ewJamActive ? 25 : 15) ? 'BROKEN' : 'LINE';
     formationLine.visible = riotMode && alivePoliceF.length > 1;
     formationMat.color.set(formationStatus === 'BROKEN' ? 0xff2a6d : 0x00f0ff);
 
@@ -5965,6 +6137,7 @@ function updateHUD() {
     if (k.text.includes('van') || k.text.includes('deployed')) color = '#4488ff';
     return `<div class="${cls}" style="color:${color}">${k.text}</div>`;
   }).join('');
+let splitViewMode = false;
 
   while (killFeed.length > 0 && killFeed[killFeed.length - 1].age > 12) killFeed.pop();
 
@@ -6051,6 +6224,9 @@ function updateDebugOverlay(dt) {
     html += 'Robot ' + (r+1) + ': <span class="dbg-val">(' + rc.x.toFixed(1) + ', ' + rc.z.toFixed(1) + ')</span>';
     html += ' spd:<span class="dbg-val">' + rc.speed.toFixed(1) + '</span><br>';
   }
+  html += '<h3>ASYMMETRIC (IEDs)</h3>';
+  html += 'IEDs: <span class="dbg-val">' + iedPlanted + ' planted, ' + iedDetected + ' detected, ' + iedDetonated + ' detonated</span><br>';
+  for (const ied of ieds) { html += 'IED@(' + ied.x.toFixed(0) + ',' + ied.z.toFixed(0) + '): <span class="dbg-val">' + (ied.armed ? 'ARMED' : 'SPENT') + (ied.detected ? ' [DETECTED]' : '') + '</span><br>'; }
   html += '<h3>RIOT STATE</h3>';
   html += `Phase: <span class="dbg-val">${riotPhase}</span><br>`;
   html += `Riot mode: <span class="dbg-val">${riotMode}</span><br>`;
@@ -6070,6 +6246,8 @@ function updateDebugOverlay(dt) {
   html += `Status: <span class="dbg-val">${commsStatus}</span><br>`;
   html += `Links: <span class="dbg-val">${commsLinkCount}</span><br>`;
   html += `Range: <span class="dbg-val">${COMMS_RANGE}m</span><br>`;
+  html += 'EW Jam: <span class="dbg-val" style="color:' + (ewJamActive ? '#ff2a6d' : '#05ffa1') + '">' + (ewJamActive ? 'ACTIVE ' + ewJamTimer.toFixed(1) + 's' : 'CLEAR') + '</span><br>';
+  if (ewJamActive) html += 'GPS: <span class="dbg-val" style="color:#fcee0a">SPOOFED</span><br>';
   html += '<h3>SUPPLY / ECONOMY</h3>';
   html += `Tear Gas: <span class="dbg-val">${supplyTearGas}/${SUPPLY_TEAR_GAS_MAX}</span><br>`;
   html += `Rubber Blt: <span class="dbg-val">${supplyRubberBullets}/${SUPPLY_RUBBER_BULLETS_MAX}</span><br>`;
@@ -6488,6 +6666,15 @@ function drawMinimap() {
     drawDot(pr.x, pr.z, riotMode ? '#ff2a6d' : '#05ffa1', 2);
   }
 
+  // IEDs on minimap -- red circles (guerrilla cell indicator)
+  for (const ied of ieds) {
+    if (!ied.armed) continue;
+    ctx.beginPath();
+    ctx.arc(ied.x * sx, ied.z * sz, ied.detected ? 4 : 2, 0, Math.PI * 2);
+    ctx.fillStyle = ied.detected ? '#ff0000' : '#ff2a6d44';
+    ctx.fill();
+  }
+
   // Camera viewport rectangle (white border)
   const tgt = controls.target;
   const dist = camera.position.distanceTo(tgt);
@@ -6617,6 +6804,7 @@ function animate() {
     updateNarrationPanel(0.25);
     checkAchievements(0.25);
     updateFogOfWar(0.25);
+    updateEWJamming(0.25);
     updateCommsNetwork(0.25);
     updateDebugOverlay(0.25);
     updateSupplyHUD();
