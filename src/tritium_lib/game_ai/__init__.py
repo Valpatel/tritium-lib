@@ -47,6 +47,32 @@ from .ambient import (
     EntityType,
 )
 
+from .city_sim import (
+    Building,
+    BuildingType,
+    DailySchedule,
+    NeighborhoodSim,
+    Resident,
+    ResidentRole,
+    ScheduleEntry,
+    SimVehicle,
+)
+
+from .rf_signatures import (
+    BuildingRFProfile,
+    PersonRFProfile,
+    RFSignatureGenerator,
+    VehicleRFProfile,
+)
+
+# NumPy-vectorized variants (optional — graceful fallback if numpy missing)
+try:
+    from .steering_np import SteeringSystem, SpatialHash
+    from .ambient_np import AmbientSimulatorNP
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
 __all__ = [
     "Vec2",
     "distance",
@@ -76,4 +102,8 @@ __all__ = [
     "AmbientSimulator",
     "EntityState",
     "EntityType",
+    "BuildingRFProfile",
+    "PersonRFProfile",
+    "RFSignatureGenerator",
+    "VehicleRFProfile",
 ]
