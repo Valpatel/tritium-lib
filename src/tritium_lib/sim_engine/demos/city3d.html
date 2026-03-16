@@ -984,7 +984,7 @@ function updateStatusEffects(dt) {
     for (const gas of gasClouds) {
       const dx = pol.x - gas.x;
       const dz = pol.z - gas.z;
-      if (dx * dx + dz * dz < 100) { inGas = true; break; }
+      if (dx * dx + dz * dz < 100 && hasLineOfSight(gas.x, gas.z, pol.x, pol.z)) { inGas = true; break; }
     }
     if (inGas && !pol.gasAffected) {
       pol.gasAffected = true;
@@ -1060,6 +1060,20 @@ function updateSupplyHUD() {
   if (rkBar) {
     rkBar.style.width = '100%';
     rkBar.className = 'supply-bar-fill unlimited';
+  }
+
+  // Supply convoy indicator
+  const convoyRow = document.getElementById('supply-convoy-row');
+  const convoyBar = document.getElementById('supply-convoy-bar');
+  const convoyEta = document.getElementById('supply-convoy-eta');
+  if (convoyRow) {
+    const active = supplyConvoy && supplyConvoy.alive;
+    convoyRow.style.display = (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL' || active) ? 'flex' : 'none';
+    if (active && convoyBar) {
+      const pct = supplyConvoy.phase === 'driving' ? (supplyConvoy.waypointIdx / Math.max(1, supplyConvoy.waypoints.length)) * 100 : 100;
+      convoyBar.style.width = pct + '%';
+    } else if (convoyBar) { convoyBar.style.width = '0%'; }
+    if (convoyEta) convoyEta.textContent = active ? 'EN ROUTE' : Math.max(0, Math.ceil(60 - supplyConvoyTimer)) + 's';
   }
 
   // Update economy display (Police Budget)
@@ -1197,6 +1211,10 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// PERFORMANCE FIX 2: Bake static shadows once instead of re-rendering every frame.
+// Static geometry (buildings, trees) doesn't move, so shadows only need one render.
+// After the first frame renders shadows, we disable autoUpdate.
+renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.4;
 document.body.prepend(renderer.domElement);
@@ -1775,8 +1793,7 @@ const lampHalos = [];
 for (const lamp of streetLamps) {
   const halo = new THREE.Sprite(haloMat.clone());
   halo.scale.set(8, 8, 1);
-  halo.position.copy(lamp.light.position);
-  halo.position.y += 0.5;
+  halo.position.set(lamp.x, 7.5, lamp.z);
   scene.add(halo);
   lampHalos.push(halo);
 }
@@ -1993,7 +2010,7 @@ function updateFogOfWar(dt) {
         const ddx = prot.x - cop.x;
         const ddz = prot.z - cop.z;
         const dist = Math.sqrt(ddx * ddx + ddz * ddz);
-        if (dist <= DETECTION_RANGE && lineIdx < MAX_DETECTION_LINES) {
+        if (dist <= DETECTION_RANGE && lineIdx < MAX_DETECTION_LINES && hasLineOfSight(cop.x, cop.z, prot.x, prot.z)) {
           const lb = lineIdx * 6;
           detectionLinePositions[lb]   = cop.x;
           detectionLinePositions[lb+1] = 1.5;
@@ -2019,14 +2036,14 @@ const MAX_PEOPLE = 180; // pedestrians + protestors + police + emergency crews
 const personBodyGeo = new THREE.BoxGeometry(1, 1, 1);
 const personBodyMat = new THREE.MeshStandardMaterial({ roughness: 0.7 });
 const personBodyMesh = new THREE.InstancedMesh(personBodyGeo, personBodyMat, MAX_PEOPLE);
-personBodyMesh.castShadow = true;
+personBodyMesh.castShadow = false; // PERF: dynamic objects skip shadow pass
 personBodyMesh.count = 0;
 scene.add(personBodyMesh);
 
 const personHeadGeo = new THREE.BoxGeometry(1, 1, 1);
 const personHeadMat = new THREE.MeshStandardMaterial({ roughness: 0.6 });
 const personHeadMesh = new THREE.InstancedMesh(personHeadGeo, personHeadMat, MAX_PEOPLE);
-personHeadMesh.castShadow = true;
+personHeadMesh.castShadow = false; // PERF: dynamic objects skip shadow pass
 personHeadMesh.count = 0;
 scene.add(personHeadMesh);
 
@@ -2044,7 +2061,7 @@ const MAX_SHIELDS = 15;
 const shieldGeo = new THREE.BoxGeometry(1.8, 2.5, 0.3); // wide face perpendicular to officer's forward
 const shieldMat = new THREE.MeshStandardMaterial({ color: 0x3355BB, metalness: 0.5, roughness: 0.3 });
 const shieldMesh = new THREE.InstancedMesh(shieldGeo, shieldMat, MAX_SHIELDS);
-shieldMesh.castShadow = true;
+shieldMesh.castShadow = false; // PERF: dynamic objects skip shadow pass
 shieldMesh.count = 0;
 scene.add(shieldMesh);
 
@@ -2146,14 +2163,14 @@ const MAX_CARS_INST = 45; // extra slots for ambulances, taxis, fire trucks, pol
 const carBodyGeo = new THREE.BoxGeometry(2, 1.5, 4);
 const carBodyMat = new THREE.MeshStandardMaterial({ metalness: 0.3, roughness: 0.6 });
 const carBodyMesh = new THREE.InstancedMesh(carBodyGeo, carBodyMat, MAX_CARS_INST);
-carBodyMesh.castShadow = true;
+carBodyMesh.castShadow = false; // PERF: dynamic objects skip shadow pass
 carBodyMesh.count = 0;
 scene.add(carBodyMesh);
 
 const carCabinGeo = new THREE.BoxGeometry(1.8, 1.0, 2.2);
 const carCabinMat = new THREE.MeshStandardMaterial({ metalness: 0.2, roughness: 0.7 });
 const carCabinMesh = new THREE.InstancedMesh(carCabinGeo, carCabinMat, MAX_CARS_INST);
-carCabinMesh.castShadow = true;
+carCabinMesh.castShadow = false; // PERF: dynamic objects skip shadow pass
 carCabinMesh.count = 0;
 scene.add(carCabinMesh);
 
@@ -2567,14 +2584,36 @@ if (typeof hospitalBuilding !== 'undefined' && hospitalBuilding && objectiveDefs
 let objectiveRotation = 0;
 let holdGroundTimer = 0; // tracks how long protestors hold plaza
 
-// CRITICAL: Disable frustum culling on ALL InstancedMesh objects.
-// Three.js computes bounding sphere from base geometry (1x1x1 box at origin).
-// When camera zooms in, this tiny sphere gets culled and ALL instances vanish.
+// PERFORMANCE FIX 1: Proper frustum culling with a city-wide bounding sphere.
+// Instead of disabling culling entirely (which renders everything even off-screen),
+// we set a bounding sphere that covers the whole city so Three.js can still cull
+// when the camera looks completely away, but never culls individual instances.
+const _cityCullCenter = new THREE.Vector3(CITY_W / 2, 25, CITY_H / 2);
+const _cityCullRadius = Math.hypot(CITY_W, CITY_H) * 0.6;
+const _cityBoundingSphere = new THREE.Sphere(_cityCullCenter, _cityCullRadius);
 [buildingBodyMesh, buildingRoofMesh, windowMesh, doorIMesh,
  trunkMesh, leafMesh, lampPostMesh, lampHeadMesh,
  personBodyMesh, personHeadMesh, ringMesh, shieldMesh,
  carBodyMesh, carCabinMesh, carHLMesh, carTLMesh,
- particleMesh, barricadeMesh, rainMesh, objectiveMesh].forEach(m => { m.frustumCulled = false; });
+ barricadeMesh, objectiveMesh].forEach(m => {
+  m.geometry.boundingSphere = _cityBoundingSphere.clone();
+  m.frustumCulled = true;
+});
+// Rain and particles span everywhere / fly off-screen -- keep culling disabled
+[particleMesh, rainMesh].forEach(m => { m.frustumCulled = false; });
+// PERFORMANCE FIX 3: Tell the GPU these buffers update every frame.
+// DynamicDrawUsage hints the driver to optimize for frequent uploads.
+[personBodyMesh, personHeadMesh, ringMesh, shieldMesh,
+ carBodyMesh, carCabinMesh, carHLMesh, carTLMesh,
+ particleMesh, rainMesh, objectiveMesh, barricadeMesh].forEach(m => {
+  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  if (m.instanceColor) m.instanceColor.setUsage(THREE.DynamicDrawUsage);
+});
+// Line geometries that update every frame
+[formationGeo, sectorArcGeo, commsLineGeo, detectionLineGeo].forEach(g => {
+  if (g.attributes.position) g.attributes.position.setUsage(THREE.DynamicDrawUsage);
+  if (g.attributes.color) g.attributes.color.setUsage(THREE.DynamicDrawUsage);
+});
 
 // Particle pool tracking
 const particlePool = [];
@@ -2700,6 +2739,22 @@ function isInsideBuilding(px, pz) {
     if (Math.abs(px - b.x) < b.w / 2 && Math.abs(pz - b.z) < b.d / 2) return b;
   }
   return null;
+}
+
+// Line-of-sight raycasting: check if path from A to B is blocked by any building AABB
+// Demonstrates terrain.py LOS and detection.py sensor LOS checks
+function hasLineOfSight(fromX, fromZ, toX, toZ) {
+  const dx = toX - fromX;
+  const dz = toZ - fromZ;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  const steps = Math.ceil(dist / 3); // sample every 3 units
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const px = fromX + dx * t;
+    const pz = fromZ + dz * t;
+    if (isInsideBuilding(px, pz)) return false;
+  }
+  return true;
 }
 
 // Get buildings within radius of a point (for efficient collision checks)
@@ -4004,7 +4059,29 @@ function updateEmergencyVehicles(dt) {
             bodyColor: COLOR_POLICE, headColor, ringColor: CYAN,
             scale: 1.15, speed: 2 + rng() * 1.5,
             alive: true, health: 1.0, morale: 1.0, fireTimer: 2 + rng() * 4,
+            target: null, holdLine: true,
+            lineX: PLAZA_X + (rng() - 0.5) * 30, lineZ: PLAZA_Z - 30 - rng() * 10,
+            injured: false,
+          });
+        }
+        addKillFeedEntry(`${numCops} officers deployed from van`);
+        pv.phase = 'done';
+      }
+    }
 
+    if (pv.alive) {
+      if (pv.phase === 'driving' && pv.waypointIdx < pv.waypoints.length) {
+        const wp = pv.waypoints[pv.waypointIdx];
+        pv.lastRotY = vehicleRotY(wp.x - pv.x, wp.z - pv.z);
+      }
+      const rotY = pv.lastRotY || 0;
+      // Police van is larger than regular cars (scale 1.3)
+      updateCarInstance(pv.idx, pv.x, 0, pv.z, rotY, pv.bodyColor, pv.cabinColor, 1.3);
+      updateCarHeadlights(pv.idx, pv.x, pv.z, rotY, isNight);
+    }
+  }
+
+  // Update car instanced meshes
   // Supply convoy
   if (supplyConvoy && supplyConvoy.alive) {
     const sc = supplyConvoy;
@@ -4040,29 +4117,7 @@ function updateEmergencyVehicles(dt) {
       updateCarHeadlights(sc.idx, sc.x, sc.z, rotY, isNight);
     }
   }
-            target: null, holdLine: true,
-            lineX: PLAZA_X + (rng() - 0.5) * 30, lineZ: PLAZA_Z - 30 - rng() * 10,
-            injured: false,
-          });
-        }
-        addKillFeedEntry(`${numCops} officers deployed from van`);
-        pv.phase = 'done';
-      }
-    }
 
-    if (pv.alive) {
-      if (pv.phase === 'driving' && pv.waypointIdx < pv.waypoints.length) {
-        const wp = pv.waypoints[pv.waypointIdx];
-        pv.lastRotY = vehicleRotY(wp.x - pv.x, wp.z - pv.z);
-      }
-      const rotY = pv.lastRotY || 0;
-      // Police van is larger than regular cars (scale 1.3)
-      updateCarInstance(pv.idx, pv.x, 0, pv.z, rotY, pv.bodyColor, pv.cabinColor, 1.3);
-      updateCarHeadlights(pv.idx, pv.x, pv.z, rotY, isNight);
-    }
-  }
-
-  // Update car instanced meshes
   if (fireTrucks.length > 0 || policeVans.length > 0) {
     carBodyMesh.instanceMatrix.needsUpdate = true;
     if (carBodyMesh.instanceColor) carBodyMesh.instanceColor.needsUpdate = true;
@@ -4328,6 +4383,7 @@ document.addEventListener('keydown', (e) => {
       supplyTearGas = SUPPLY_TEAR_GAS_MAX;
       supplyRubberBullets = SUPPLY_RUBBER_BULLETS_MAX;
       supplyMolotovs = SUPPLY_MOLOTOVS_MAX;
+      supplyConvoyTimer = 0; supplyConvoy = null;
       // Reset economy
       policeBudget = 10000;
       propertyDamage = 0;
@@ -4400,6 +4456,9 @@ document.addEventListener('keydown', (e) => {
         hideCarInstance(pv.idx);
       }
       policeVans.length = 0;
+      // Clear supply convoy
+      if (supplyConvoy) { hideCarInstance(supplyConvoy.idx); supplyConvoy = null; }
+      supplyConvoyTimer = 0;
       // Clear injured on ground
       for (const entry of injuredOnGround) {
         hideInjuredMarker(entry.marker);
@@ -5564,7 +5623,7 @@ function update(dt) {
             if (dd < nearDist && dd < 60) { nearDist = dd; nearest = pol; }
           }
 
-          if (nearest) {
+          if (nearest && hasLineOfSight(pr.x, pr.z, nearest.x, nearest.z)) {
             // Skip action if protestor is stunned
             if (pr.stunnedTimer > 0) {
               // STUNNED: cannot throw, just stand still
@@ -5696,7 +5755,7 @@ function update(dt) {
             if (dd < nearDist && dd < 80) { nearDist = dd; nearest = pr; }
           }
 
-          if (nearest) {
+          if (nearest && hasLineOfSight(pol.x, pol.z, nearest.x, nearest.z)) {
             const wantTearGas = rng() < 0.25;
             // Supply check: only use tear gas if supply > 0
             const canTearGas = wantTearGas && supplyTearGas > 0;
@@ -5717,6 +5776,8 @@ function update(dt) {
               for (const pr of protestors) {
                 if (!pr.alive || pr.arrested || pr.fleeing) continue;
                 const dd = dist2d(pr, { x: impactX, z: impactZ });
+                // Tear gas doesn't affect people behind buildings
+                if (dd < 20 && !hasLineOfSight(impactX, impactZ, pr.x, pr.z)) continue;
                 if (dd < 20) {
                   pr.morale = Math.max(0, pr.morale - 0.1); // tear gas drops morale
                 }
@@ -6188,6 +6249,22 @@ let splitViewMode = false;
 
   // Objectives HUD list (top center)
   let objEl = document.getElementById('objectives-hud');
+
+  // Split-view multiplayer panels
+  if (splitViewMode) {
+    const ap = police.filter(p => p.alive);
+    const pmAvg = ap.length > 0 ? Math.round(ap.reduce((s,p) => s + (p.morale||1), 0) / ap.length * 100) : 0;
+    document.getElementById('sv-police').innerHTML =
+      '<b>POLICE FORCES</b><br>Officers: ' + ap.length +
+      '<br>Morale: ' + pmAvg + '%<br>Budget: $' + policeBudget.toLocaleString() +
+      '<br>Tear Gas: ' + supplyTearGas + '/' + SUPPLY_TEAR_GAS_MAX;
+    const pr = protestors.filter(p => p.alive && !p.arrested);
+    const prAvg = pr.length > 0 ? Math.round(pr.reduce((s,p) => s + (p.morale||0.8), 0) / pr.length * 100) : 0;
+    document.getElementById('sv-protest').innerHTML =
+      '<b>PROTEST FORCES</b><br>Protestors: ' + pr.length +
+      '<br>Morale: ' + prAvg + '%<br>Molotovs: ' + molotovCount +
+      '<br>Rocks: ' + rockCount;
+  }
   if (objEl && riotMode) {
     let objHtml = '';
     for (const obj of objectiveDefs) {
@@ -6684,6 +6761,7 @@ function drawMinimap() {
     if (pv.alive === false) continue;
     drawDot(pv.x, pv.z, '#4466ff', 3);
   }
+  if (supplyConvoy && supplyConvoy.alive) drawDot(supplyConvoy.x, supplyConvoy.z, '#225522', 4);
 
   // Pedestrians — gray
   for (const ped of pedestrians) {
@@ -6761,8 +6839,11 @@ function updateCompass() {
   compassEl.innerHTML = html.trim();
 }
 
+// Bake static shadows on first frame (buildings, trees don't move)
+let _shadowBaked = false;
 function animate() {
-  requestAnimationFrame(animate);
+if (!_shadowBaked) { renderer.shadowMap.needsUpdate = true; _shadowBaked = true; }
+requestAnimationFrame(animate);
 
   const now = performance.now();
   const dt = Math.min((now - lastTime) / 1000, 0.05);
@@ -6797,6 +6878,7 @@ function animate() {
         particleMesh.visible = true;
         rainMesh.visible = true;
         renderer.shadowMap.enabled = true;
+        renderer.shadowMap.needsUpdate = true; // re-bake after re-enable
         perfDegraded = false;
         console.log('[CITY3D] FPS recovered (' + fpsDisplay + '), re-enabled visual effects');
       }
