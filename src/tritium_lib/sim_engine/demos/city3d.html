@@ -4051,6 +4051,9 @@ document.addEventListener('keydown', (e) => {
       riotPhase = 'TENSION';
       artilleryTriggered = false; artilleryPhase = 'IDLE';
       riotTimer = 0;
+      // Start campaign Phase 1: Morning Protest
+      campaignPhase = 1; campaignTimer = 0; campaignComplete = false;
+      document.getElementById('campaign-overlay').style.display = 'none';
       molotovCount = 0;
       teargasCount = 0;
       rockCount = 0;
@@ -4093,6 +4096,11 @@ document.addEventListener('keydown', (e) => {
       protestors.length = 0;
       police.length = 0;
       riotPhase = 'PEACEFUL';
+      campaignPhase = 0; campaignTimer = 0; campaignComplete = false;
+      document.getElementById('campaign-overlay').style.display = 'none';
+      artilleryPhase = 'IDLE'; artilleryTriggered = false; cameraShakeOx = 0; cameraShakeOz = 0;
+      for (const c of artilleryCraters) c.visible = false;
+      for (const m of artilleryMarkers) m.visible = false;
       addNarration('all_clear');
       // Reset achievement tracking
       policeLineHoldTime = 0;
@@ -4204,7 +4212,35 @@ document.addEventListener('keydown', (e) => {
     ensureAudio();
     triggerArtilleryStrike();
   }
+  if (e.code === 'KeyP') { advanceCampaignPhase(); }
 });
+
+function advanceCampaignPhase() {
+  if (campaignComplete || campaignPhase === 0) return;
+  if (campaignPhase < 3) {
+    campaignPhase++;
+    campaignTimer = 0;
+    addKillFeedEntry('PHASE ' + campaignPhase + ': ' + CAMPAIGN_PHASES[campaignPhase].name);
+    if (campaignPhase === 2) { riotPhase = 'TENSION'; riotTimer = 0; }
+    if (campaignPhase === 3) { riotPhase = 'DISPERSAL'; addKillFeedEntry('Cleanup operations beginning'); }
+  } else { showCampaignOverlay(); }
+}
+
+function showCampaignOverlay() {
+  campaignComplete = true;
+  const ov = document.getElementById('campaign-overlay');
+  const passed = policeBudget > 0 && injuryCount < 15;
+  const verdict = passed ? 'MISSION COMPLETE' : 'MISSION FAILED';
+  const vc = passed ? '#05ffa1' : '#ff2a6d';
+  ov.innerHTML = '<h2 style="color:' + vc + '">' + verdict + '</h2>'
+    + '<p style="color:#888;margin-bottom:16px">' + CAMPAIGN_TITLE + '</p>'
+    + '<div class="stat-row"><span class="stat-label">Arrests</span><span class="stat-value">' + arrestCount + '</span></div>'
+    + '<div class="stat-row"><span class="stat-label">Injuries</span><span class="stat-value" style="color:#ff2a6d">' + injuryCount + '</span></div>'
+    + '<div class="stat-row"><span class="stat-label">Budget</span><span class="stat-value">$' + Math.abs(policeBudget).toLocaleString() + '</span></div>'
+    + '<div class="stat-row"><span class="stat-label">Damage</span><span class="stat-value" style="color:#fcee0a">$' + propertyDamage.toLocaleString() + '</span></div>'
+    + '<p style="margin-top:16px;color:#666;font-size:12px">Press SPACE to restart</p>';
+  ov.style.display = 'block';
+}
 
 // Resize
 window.addEventListener('resize', () => {
