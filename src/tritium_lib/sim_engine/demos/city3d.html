@@ -1579,7 +1579,7 @@ function addTree(tx, tz) {
 // =========================================================================
 // Street Lamps — InstancedMesh (posts + heads)
 // =========================================================================
-const MAX_LAMPS = 100;
+const MAX_LAMPS = 130;
 const lampPostGeo = new THREE.BoxGeometry(0.3, 7, 0.3);
 const lampPostMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
 const lampPostMesh = new THREE.InstancedMesh(lampPostGeo, lampPostMat, MAX_LAMPS);
@@ -1699,31 +1699,42 @@ doorIMesh.instanceMatrix.needsUpdate = true;
 trunkMesh.instanceMatrix.needsUpdate = true;
 leafMesh.instanceMatrix.needsUpdate = true;
 
-// Street lamps — keep PointLights for lighting effect but instanced geometry
+// Street lamps — placed on sidewalk corners at intersections
+// Offset from road center to sidewalk: ROAD_W/2 + 1 (1m into 3m sidewalk)
+const LAMP_OFFSET = ROAD_W / 2 + 1;
 for (let row = 0; row <= GRID_ROWS; row++) {
   const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
   for (let col = 0; col <= GRID_COLS; col++) {
     const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
-    if (lampIdx >= MAX_LAMPS) break;
+    // Place 2 lamps per intersection (diagonal corners) to keep count low
+    const corners = [
+      { dx: -LAMP_OFFSET, dz: -LAMP_OFFSET },
+      { dx:  LAMP_OFFSET, dz:  LAMP_OFFSET },
+    ];
+    for (const c of corners) {
+      if (lampIdx >= MAX_LAMPS) break;
+      const lx = x + c.dx;
+      const lz = z + c.dz;
 
-    // Post instance
-    _pos.set(x + 4, 3.5, z + 4);
-    _quat.identity();
-    _scale.set(1, 1, 1);
-    _mat4.compose(_pos, _quat, _scale);
-    lampPostMesh.setMatrixAt(lampIdx, _mat4);
+      // Post instance
+      _pos.set(lx, 3.5, lz);
+      _quat.identity();
+      _scale.set(1, 1, 1);
+      _mat4.compose(_pos, _quat, _scale);
+      lampPostMesh.setMatrixAt(lampIdx, _mat4);
 
-    // Head instance
-    _pos.set(x + 4, 7.2, z + 4);
-    _mat4.compose(_pos, _quat, _scale);
-    lampHeadMesh.setMatrixAt(lampIdx, _mat4);
+      // Head instance
+      _pos.set(lx, 7.2, lz);
+      _mat4.compose(_pos, _quat, _scale);
+      lampHeadMesh.setMatrixAt(lampIdx, _mat4);
 
-    lampIdx++;
-    lampPostMesh.count = lampIdx;
-    lampHeadMesh.count = lampIdx;
+      lampIdx++;
+      lampPostMesh.count = lampIdx;
+      lampHeadMesh.count = lampIdx;
 
-    // Store position only — lights are pooled (max 6 nearest camera)
-    streetLamps.push({ x: x + 4, z: z + 4, light: null });
+      // Store position only — lights are pooled (max 6 nearest camera)
+      streetLamps.push({ x: lx, z: lz, light: null });
+    }
   }
 }
 
@@ -2363,6 +2374,37 @@ const _iedDummy = new THREE.Object3D();
 const _iedColor = new THREE.Color();
 
 // =========================================================================
+// Traffic Lights — InstancedMesh at every intersection
+// =========================================================================
+const TRAFFIC_CYCLE = 8; // seconds per full red/green cycle
+let trafficPhase = 0;
+function isGreen(intersection, horizontal) {
+  return (Math.floor(trafficPhase / TRAFFIC_CYCLE) % 2 === 0) === horizontal;
+}
+const tlGeo = new THREE.BoxGeometry(0.5, 2.5, 0.5);
+const tlMat = new THREE.MeshStandardMaterial({ emissive: 0x00ff00, emissiveIntensity: 0.8, roughness: 0.5 });
+const trafficLightMesh = new THREE.InstancedMesh(tlGeo, tlMat, intersections.length);
+trafficLightMesh.count = intersections.length;
+scene.add(trafficLightMesh);
+const _tlColor = new THREE.Color();
+for (let i = 0; i < intersections.length; i++) {
+  _pos.set(intersections[i].x + 4, 2.5, intersections[i].z + 4);
+  _quat.identity(); _scale.set(1, 1, 1);
+  _mat4.compose(_pos, _quat, _scale);
+  trafficLightMesh.setMatrixAt(i, _mat4);
+  trafficLightMesh.setColorAt(i, _tlColor.set(0x00ff00));
+}
+trafficLightMesh.instanceMatrix.needsUpdate = true;
+if (trafficLightMesh.instanceColor) trafficLightMesh.instanceColor.needsUpdate = true;
+const tlLights = [];
+for (let i = 0; i < 4; i++) {
+  const pl = new THREE.PointLight(0x00ff00, 0.6, 15);
+  pl.position.set(0, -200, 0);
+  scene.add(pl);
+  tlLights.push(pl);
+}
+
+// =========================================================================
 // Instanced Particle Pool — 500 slots for fire/smoke/debris
 // =========================================================================
 const MAX_PARTICLES = 500;
@@ -2595,7 +2637,7 @@ const _cityBoundingSphere = new THREE.Sphere(_cityCullCenter, _cityCullRadius);
  trunkMesh, leafMesh, lampPostMesh, lampHeadMesh,
  personBodyMesh, personHeadMesh, ringMesh, shieldMesh,
  carBodyMesh, carCabinMesh, carHLMesh, carTLMesh,
- barricadeMesh, objectiveMesh].forEach(m => {
+ barricadeMesh, objectiveMesh, trafficLightMesh].forEach(m => {
   m.geometry.boundingSphere = _cityBoundingSphere.clone();
   m.frustumCulled = true;
 });
@@ -4118,7 +4160,7 @@ function updateEmergencyVehicles(dt) {
     }
   }
 
-  if (fireTrucks.length > 0 || policeVans.length > 0) {
+  if (fireTrucks.length > 0 || policeVans.length > 0 || supplyConvoy) {
     carBodyMesh.instanceMatrix.needsUpdate = true;
     if (carBodyMesh.instanceColor) carBodyMesh.instanceColor.needsUpdate = true;
     carCabinMesh.instanceMatrix.needsUpdate = true;
@@ -4955,6 +4997,7 @@ function update(dt) {
         const dist = Math.abs(target.x - taxi.x);
         if (dist < 5) {
           taxi.pauseTimer = 0.3 + rng() * 0.5;
+          if (!isGreen(target, taxi.horizontal)) taxi.pauseTimer = Math.max(taxi.pauseTimer, 1.5 + rng() * 1.0);
           const turnRoll = rng();
           if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
           else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
@@ -4969,6 +5012,7 @@ function update(dt) {
         const dist = Math.abs(target.z - taxi.z);
         if (dist < 5) {
           taxi.pauseTimer = 0.3 + rng() * 0.5;
+          if (!isGreen(target, taxi.horizontal)) taxi.pauseTimer = Math.max(taxi.pauseTimer, 1.5 + rng() * 1.0);
           const turnRoll = rng();
           if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
           else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
@@ -5118,18 +5162,9 @@ function update(dt) {
       // Pause at stop line
       car.pauseTimer = 0.3 + rng() * 0.8;
 
-      // Intersection right-of-way: horizontal cars yield to vertical cars
-      if (car.horizontal) {
-        for (const other of _allRoadVehicles) {
-          if (other.ref === car) continue;
-          if (other.horizontal) continue; // only yield to vertical traffic
-          const dx = Math.abs(other.x - target.x);
-          const dz = Math.abs(other.z - target.z);
-          if (dx < 10 && dz < 10) {
-            car.pauseTimer += 1.0;
-            break;
-          }
-        }
+      // Traffic light: wait for green before proceeding
+      if (!isGreen(target, car.horizontal)) {
+        car.pauseTimer = Math.max(car.pauseTimer, 1.5 + rng() * 1.0);
       }
 
       // Decide: continue straight, or turn
@@ -6848,6 +6883,25 @@ requestAnimationFrame(animate);
   const now = performance.now();
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
+
+  // ---- Traffic light phase + visual update (2fps via fpsTimer) ----
+  trafficPhase += dt;
+  if (frameCount % 30 === 0) {
+    for (let i = 0; i < intersections.length; i++) {
+      const g = isGreen(intersections[i], true); // true = horizontal green this phase
+      trafficLightMesh.setColorAt(i, _tlColor.set(g ? 0x00ff00 : 0xff0000));
+    }
+    if (trafficLightMesh.instanceColor) trafficLightMesh.instanceColor.needsUpdate = true;
+    // Update 4 nearest point lights to camera
+    const cx = camera.position.x, cz = camera.position.z;
+    const sorted = intersections.map((p, i) => ({ i, d: (p.x - cx) ** 2 + (p.z - cz) ** 2 })).sort((a, b) => a.d - b.d);
+    for (let j = 0; j < 4; j++) {
+      const si = sorted[j]; const p = intersections[si.i];
+      const g = isGreen(p, true);
+      tlLights[j].color.set(g ? 0x00ff00 : 0xff0000);
+      tlLights[j].position.set(p.x + 4, 4, p.z + 4);
+    }
+  }
 
   // FPS counter + history
   frameCount++;
