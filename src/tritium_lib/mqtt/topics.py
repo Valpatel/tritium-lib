@@ -6,9 +6,101 @@
 Both tritium-sc and tritium-edge import these to ensure consistency.
 """
 
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+
+# --- Device-centric topic constants ---
+# These follow the pattern: tritium/devices/{device_id}/{message_type}
+
+TOPIC_HEARTBEAT = "heartbeat"
+TOPIC_SENSORS = "sensors"
+TOPIC_COMMANDS = "commands"
+TOPIC_OTA_STATUS = "ota/status"
+TOPIC_FLEET_BROADCAST = "tritium/fleet/broadcast"
+
+_DEVICE_PREFIX = "tritium/devices"
+
+
+def device_heartbeat(device_id: str) -> str:
+    """Topic for device heartbeat messages."""
+    return f"{_DEVICE_PREFIX}/{device_id}/{TOPIC_HEARTBEAT}"
+
+
+def device_sensors(device_id: str, sensor_type: str) -> str:
+    """Topic for device sensor readings."""
+    return f"{_DEVICE_PREFIX}/{device_id}/{TOPIC_SENSORS}/{sensor_type}"
+
+
+def device_commands(device_id: str) -> str:
+    """Topic for commands sent to a device."""
+    return f"{_DEVICE_PREFIX}/{device_id}/{TOPIC_COMMANDS}"
+
+
+def device_ota_status(device_id: str) -> str:
+    """Topic for OTA update status from a device."""
+    return f"{_DEVICE_PREFIX}/{device_id}/{TOPIC_OTA_STATUS}"
+
+
+def fleet_broadcast() -> str:
+    """Topic for fleet-wide broadcast messages."""
+    return TOPIC_FLEET_BROADCAST
+
+
+# --- Topic parser ---
+
+_DEVICE_TOPIC_RE = re.compile(
+    r"^tritium/devices/(?P<device_id>[^/]+)/(?P<message_type>.+)$"
+)
+
+
+@dataclass
+class ParsedTopic:
+    """Result of parsing a Tritium MQTT topic."""
+    device_id: str
+    message_type: str
+    sensor_type: Optional[str] = None
+
+
+def parse_topic(topic: str) -> Optional[ParsedTopic]:
+    """Extract device_id and message_type from a Tritium device topic.
+
+    Returns None if the topic doesn't match the Tritium device pattern.
+
+    Examples:
+        >>> parse_topic("tritium/devices/esp32-001/heartbeat")
+        ParsedTopic(device_id='esp32-001', message_type='heartbeat')
+
+        >>> parse_topic("tritium/devices/esp32-001/sensors/temperature")
+        ParsedTopic(device_id='esp32-001', message_type='sensors/temperature',
+                    sensor_type='temperature')
+    """
+    m = _DEVICE_TOPIC_RE.match(topic)
+    if not m:
+        return None
+    device_id = m.group("device_id")
+    message_type = m.group("message_type")
+    sensor_type = None
+    if message_type.startswith("sensors/"):
+        sensor_type = message_type[len("sensors/"):]
+    return ParsedTopic(
+        device_id=device_id,
+        message_type=message_type,
+        sensor_type=sensor_type,
+    )
+
+
+# --- Site-scoped topic builder (original API) ---
 
 class TritiumTopics:
-    """Topic builder for Tritium MQTT messages."""
+    """Topic builder for Tritium MQTT messages (site-scoped).
+
+    This builder uses the site-scoped hierarchy:
+      tritium/{site}/{domain}/{device_id}/{data_type}
+    """
 
     def __init__(self, site_id: str = "home"):
         self.site = site_id
@@ -27,6 +119,10 @@ class TritiumTopics:
 
     def edge_ota_status(self, device_id: str) -> str:
         return f"{self.prefix}/edge/{device_id}/ota"
+
+    def edge_capabilities(self, device_id: str) -> str:
+        """Topic for device capability advertisement (retained, published on boot)."""
+        return f"{self.prefix}/edge/{device_id}/capabilities"
 
     # --- Sensor topics (shared) ---
 
@@ -60,6 +156,40 @@ class TritiumTopics:
     def mesh_peers(self, device_id: str) -> str:
         return f"{self.prefix}/mesh/{device_id}/peers"
 
+    # --- Meshtastic topics ---
+
+    def meshtastic_nodes(self, device_id: str) -> str:
+        """Topic for Meshtastic node list updates from a bridge device."""
+        return f"{self.prefix}/meshtastic/{device_id}/nodes"
+
+    def meshtastic_message(self, device_id: str) -> str:
+        """Topic for Meshtastic text messages received by a bridge device."""
+        return f"{self.prefix}/meshtastic/{device_id}/message"
+
+    def meshtastic_command(self, device_id: str) -> str:
+        """Topic for commands sent to a Meshtastic bridge device."""
+        return f"{self.prefix}/meshtastic/{device_id}/command"
+
+    # --- Camera feed topics ---
+
+    def camera_feed(self, device_id: str) -> str:
+        """Topic for continuous camera MJPEG feed frames."""
+        return f"{self.prefix}/cameras/{device_id}/feed"
+
+    def camera_snapshot(self, device_id: str) -> str:
+        """Topic for single camera snapshot requests/responses."""
+        return f"{self.prefix}/cameras/{device_id}/snapshot"
+
+    # --- WiFi passive fingerprinting topics ---
+
+    def wifi_probe(self, device_id: str) -> str:
+        """Topic for WiFi probe request observations from an edge node."""
+        return f"{self.prefix}/edge/{device_id}/wifi_probe"
+
+    def wifi_scan(self, device_id: str) -> str:
+        """Topic for WiFi network scan results from an edge node."""
+        return f"{self.prefix}/edge/{device_id}/wifi_scan"
+
     # --- Robot topics (tritium-sc) ---
 
     def robot_telemetry(self, robot_id: str) -> str:
@@ -89,3 +219,6 @@ class TritiumTopics:
 
     def all_cameras(self) -> str:
         return f"{self.prefix}/cameras/+/#"
+
+    def all_meshtastic(self) -> str:
+        return f"{self.prefix}/meshtastic/+/#"

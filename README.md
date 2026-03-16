@@ -1,66 +1,64 @@
 # tritium-lib
 
-Shared library for the Tritium ecosystem. Provides reusable components across
-[tritium-sc](https://github.com/Valpatel/tritium-sc) and
-[tritium-edge](https://github.com/Valpatel/tritium-edge).
+Shared Python library for models, events, auth, MQTT, and testing across
+the [Tritium](https://github.com/Valpatel/tritium) ecosystem.
 
-## Modules
+## What's inside
 
-| Module | Purpose |
-|--------|---------|
-| `tritium_lib.models` | Shared data models: Device, Command, Firmware, SensorReading |
-| `tritium_lib.mqtt` | MQTT topic conventions and builders |
-| `tritium_lib.auth` | JWT token create/decode utilities |
-| `tritium_lib.events` | Thread-safe pub/sub event bus |
-| `tritium_lib.config` | Pydantic settings base class |
-| `tritium_lib.cot` | CoT (Cursor on Target) XML codec for TAK integration |
+| Package | Description |
+|---------|-------------|
+| `models` | 130+ Pydantic models covering devices, firmware, mesh, BLE, CoT, alerts, topology, diagnostics, camera, Meshtastic, and more |
+| `events` | Thread-safe and async pub/sub event bus (`EventBus`, `AsyncEventBus`) |
+| `mqtt` | MQTT topic hierarchy (`tritium/{site}/{domain}/{device}/{type}`) and parsers |
+| `auth` | JWT token creation/decoding and API key management |
+| `store` | Persistent data stores (BLE sightings, targets, node positions) |
+| `cot` | Cursor on Target XML codec for TAK/ATAK integration |
+| `config` | Pydantic base settings class for service configuration |
+| `web` | Cyberpunk HTML theme engine and dashboard components |
+| `testing` | Visual regression checks and ESP32 device automation |
 
 ## Install
 
 ```bash
-pip install -e .                  # Core
-pip install -e ".[mqtt]"          # With MQTT support
-pip install -e ".[full]"          # Everything
+pip install -e .              # Core
+pip install -e ".[mqtt]"      # With MQTT support
+pip install -e ".[full]"      # Everything
 ```
 
-## Usage
+## Quick examples
 
 ```python
-from tritium_lib.models import Device, DeviceHeartbeat, Command
 from tritium_lib.mqtt import TritiumTopics
-from tritium_lib.auth import create_token, decode_token, TokenType
-from tritium_lib.events import EventBus
-from tritium_lib.cot import device_to_cot
 
-# MQTT topics
 topics = TritiumTopics(site_id="home")
-print(topics.edge_heartbeat("my-device"))
-# → tritium/home/edge/my-device/heartbeat
+topics.edge_heartbeat("esp32-001")
+# → "tritium/home/edge/esp32-001/heartbeat"
+```
 
-# CoT XML for TAK
-xml = device_to_cot("esp32-001", lat=37.7159, lng=-121.896,
-                     capabilities=["camera", "imu"])
-# → <event uid="tritium-edge-esp32-001" type="a-f-G-E-S-C" ...>
+```python
+from tritium_lib.events import EventBus
 
-# Event bus
 bus = EventBus()
 bus.subscribe("device.#", lambda e: print(e.topic, e.data))
 bus.publish("device.heartbeat", {"id": "esp32-001"})
 ```
 
-## Part of Tritium
+```python
+from tritium_lib.testing import VisualCheck
 
-[**Tritium**](https://github.com/Valpatel/tritium) is a distributed cybernetic
-operating system. It turns heterogeneous hardware — microcontrollers, single-board
-computers, robots, cameras, servers, radios — into a unified mesh that observes,
-thinks, and acts. Every device is a node. The network is the computer.
+check = VisualCheck(screenshot_path="screenshot.png")
+issues = check.run()
+for issue in issues:
+    print(issue.severity, issue.description)
+```
 
-tritium-lib is the **spine**: the shared contract that lets every node in the
-mesh speak the same language. It works alongside
-[tritium-sc](https://github.com/Valpatel/tritium-sc) (the brain — command,
-vision, models) and [tritium-edge](https://github.com/Valpatel/tritium-edge)
-(the nervous system — fleet management, OTA, heartbeat).
+## Used by
+
+- **[tritium-edge](https://github.com/Valpatel/tritium-edge)** — IoT fleet
+  server for ESP32-S3 boards; imports models, MQTT topics, auth, and BLE stores.
+- **[tritium-sc](https://github.com/Valpatel/tritium-sc)** — Command center
+  with plugin system; imports models, events, auth, and the web theme engine.
 
 ## License
 
-AGPL-3.0 — Created by Matthew Valancy / Copyright 2026 Valpatel Software LLC
+AGPL-3.0 — Copyright 2026 Valpatel Software LLC

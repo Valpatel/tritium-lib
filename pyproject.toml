@@ -15,11 +15,19 @@ dependencies = [
 
 [project.optional-dependencies]
 mqtt = ["paho-mqtt>=2.0"]
-full = ["paho-mqtt>=2.0", "bcrypt>=4.1.0"]
+graph = ["kuzu>=0.4"]
+testing = ["requests>=2.28", "opencv-python-headless>=4.8", "numpy>=1.24"]
+full = ["paho-mqtt>=2.0", "bcrypt>=4.1.0", "requests>=2.28", "opencv-python-headless>=4.8", "numpy>=1.24", "kuzu>=0.4"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    "ignore::jwt.warnings.InsecureKeyLengthWarning",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
