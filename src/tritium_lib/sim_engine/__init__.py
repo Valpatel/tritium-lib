@@ -609,6 +609,34 @@ except ImportError as _e:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
+# Event Bus: Global pub/sub for all sim modules
+# ---------------------------------------------------------------------------
+try:
+    from .event_bus import (
+        SimEventType,
+        SimEvent as SimBusEvent,  # Alias to avoid clash with scenario.SimEvent
+        SimEventBus,
+        EventFilter,
+        EventListener,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.event_bus not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Abilities: Unit special powers and skills
+# ---------------------------------------------------------------------------
+try:
+    from .abilities import (
+        AbilityType,
+        TargetType,
+        Ability,
+        AbilityEngine,
+        ABILITIES,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.abilities not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # __all__ — comprehensive public API
 # ---------------------------------------------------------------------------
 __all__ = [
@@ -753,4 +781,8 @@ __all__ = [
     # --- Economy ---
     "ResourceType", "ResourcePool", "UnitCost", "BuildQueue", "TechTree",
     "EconomyEngine", "UNIT_COSTS", "TECH_TREE", "ECONOMY_PRESETS",
+    # --- Event Bus ---
+    "SimEventType", "SimBusEvent", "SimEventBus", "EventFilter", "EventListener",
+    # --- Abilities ---
+    "AbilityType", "TargetType", "Ability", "AbilityEngine", "ABILITIES",
 ]

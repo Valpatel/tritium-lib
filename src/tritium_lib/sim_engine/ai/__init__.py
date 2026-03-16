@@ -115,6 +115,13 @@ from .tactics import (
     ThreatAssessment,
 )
 
+from .behavior_profiles import (
+    BehaviorEngine,
+    BehaviorProfile,
+    BehaviorTrait,
+    PROFILES as BEHAVIOR_PROFILES,
+)
+
 # NumPy-vectorized variants (optional — graceful fallback if numpy missing)
 try:
     from .steering_np import SteeringSystem, SpatialHash
@@ -202,4 +209,9 @@ __all__ = [
     "TacticalSituation",
     "TacticsEngine",
     "ThreatAssessment",
+    # Behavior profiles
+    "BehaviorEngine",
+    "BehaviorProfile",
+    "BehaviorTrait",
+    "BEHAVIOR_PROFILES",
 ]

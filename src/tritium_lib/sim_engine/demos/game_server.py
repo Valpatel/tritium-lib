@@ -552,26 +552,28 @@ async def city_view() -> HTMLResponse:
     html = city_path.read_text()
     # Inject WebSocket bridge before closing </body>
     ws_bridge = """
-<script type="module">
-// WebSocket bridge — receives server sim data and overlays on city3d
-const ws = new WebSocket(`ws://${location.host}/ws`);
-ws.onopen = () => console.log('[SIM] Connected to game server');
-ws.onmessage = (e) => {
-  try {
-    const frame = JSON.parse(e.data);
-    // Expose frame data globally for city3d to use
-    window.__simFrame = frame;
-    // Update HUD if elements exist
-    const clock = document.getElementById('clock');
-    if (clock && frame.time !== undefined) {
-      const h = Math.floor(frame.time / 3600) % 24;
-      const m = Math.floor((frame.time % 3600) / 60);
-      clock.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
-    }
-  } catch(err) { /* ignore parse errors */ }
-};
-ws.onerror = () => console.log('[SIM] WebSocket error — running standalone');
-ws.onclose = () => console.log('[SIM] WebSocket closed');
+<script>
+// WebSocket bridge — lightweight, throttled to avoid freezing city3d
+(function() {
+  let frameCount = 0;
+  let ws;
+  function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onopen = function() { console.log('[SIM] Connected'); };
+    ws.onmessage = function(e) {
+      frameCount++;
+      if (frameCount % 10 !== 0) return; // Only process every 10th frame (1fps)
+      try {
+        var f = JSON.parse(e.data);
+        window.__simFrame = { tick: f.tick, time: f.time, phase: f.phase,
+          unit_count: (f.units||[]).length, score: (f.ui||{}).score || 0 };
+      } catch(err) {}
+    };
+    ws.onerror = function() { console.log('[SIM] Standalone mode'); };
+    ws.onclose = function() { setTimeout(connect, 5000); };
+  }
+  setTimeout(connect, 2000); // Delay connect so city3d initializes first
+})();
 </script>
 """
     html = html.replace("</body>", ws_bridge + "</body>")

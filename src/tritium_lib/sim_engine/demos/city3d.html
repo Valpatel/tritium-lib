@@ -886,14 +886,14 @@ function hidePersonInstance(slot) {
 // Cars InstancedMesh — body + cabin
 // =========================================================================
 const MAX_CARS_INST = 45; // extra slots for ambulances, taxis, fire trucks, police vans
-const carBodyGeo = new THREE.BoxGeometry(4, 1.5, 2);
+const carBodyGeo = new THREE.BoxGeometry(2, 1.5, 4);
 const carBodyMat = new THREE.MeshStandardMaterial({ metalness: 0.3, roughness: 0.6 });
 const carBodyMesh = new THREE.InstancedMesh(carBodyGeo, carBodyMat, MAX_CARS_INST);
 carBodyMesh.castShadow = true;
 carBodyMesh.count = 0;
 scene.add(carBodyMesh);
 
-const carCabinGeo = new THREE.BoxGeometry(2.2, 1.0, 1.8);
+const carCabinGeo = new THREE.BoxGeometry(1.8, 1.0, 2.2);
 const carCabinMat = new THREE.MeshStandardMaterial({ metalness: 0.2, roughness: 0.7 });
 const carCabinMesh = new THREE.InstancedMesh(carCabinGeo, carCabinMat, MAX_CARS_INST);
 carCabinMesh.castShadow = true;
@@ -938,32 +938,32 @@ function updateCarInstance(idx, x, y, z, rotY, bodyColor, cabinColor) {
   carBodyMesh.setMatrixAt(idx, _mat4);
   carBodyMesh.setColorAt(idx, _color.set(bodyColor));
 
-  // Cabin — offset (-0.3, 0.95, 0) in local space
-  const cLocalX = -0.3;
-  const cWorldX = x + cLocalX * cosR;
-  const cWorldZ = z + cLocalX * (-sinR);
+  // Cabin — offset (0, 0.95, -0.3) in local space (forward = +Z)
+  const cLocalZ = -0.3;
+  const cWorldX = x + cLocalZ * sinR;
+  const cWorldZ = z + cLocalZ * cosR;
   _pos.set(cWorldX, 1.7, cWorldZ);
   _mat4.compose(_pos, _quat, _scale);
   carCabinMesh.setMatrixAt(idx, _mat4);
   carCabinMesh.setColorAt(idx, _color.set(cabinColor));
 
-  // Headlights — offset (2, -0.15, ±0.7) from body center
-  const hlLocalX = 2;
+  // Headlights — offset (±0.7, -0.15, 2) from body center (front = +Z)
+  const hlLocalZ = 2;
   for (let s = 0; s < 2; s++) {
-    const hlLocalZ = s === 0 ? 0.7 : -0.7;
-    const hlX = x + hlLocalX * cosR - hlLocalZ * sinR;
-    const hlZ = z + hlLocalX * (-sinR) + hlLocalZ * (-cosR);
+    const hlLocalX = s === 0 ? 0.7 : -0.7;
+    const hlX = x + hlLocalX * cosR + hlLocalZ * sinR;
+    const hlZ = z + hlLocalX * (-sinR) + hlLocalZ * cosR;
     _pos.set(hlX, 0.6, hlZ);
     _mat4.compose(_pos, _quat, _scale);
     carHLMesh.setMatrixAt(idx * 2 + s, _mat4);
   }
 
-  // Tail lights — offset (-2, -0.15, ±0.7)
-  const tlLocalX = -2;
+  // Tail lights — offset (±0.7, -0.15, -2) (rear = -Z)
+  const tlLocalZ = -2;
   for (let s = 0; s < 2; s++) {
-    const tlLocalZ = s === 0 ? 0.7 : -0.7;
-    const tlX = x + tlLocalX * cosR - tlLocalZ * sinR;
-    const tlZ = z + tlLocalX * (-sinR) + tlLocalZ * (-cosR);
+    const tlLocalX = s === 0 ? 0.7 : -0.7;
+    const tlX = x + tlLocalX * cosR + tlLocalZ * sinR;
+    const tlZ = z + tlLocalX * (-sinR) + tlLocalZ * cosR;
     _pos.set(tlX, 0.6, tlZ);
     _mat4.compose(_pos, _quat, _scale);
     carTLMesh.setMatrixAt(idx * 2 + s, _mat4);
@@ -2667,27 +2667,29 @@ function update(dt) {
 
     // Move toward next intersection
     const target = car.nextIntersection;
+    // Lane offset: drive on the RIGHT side of the road (offset ~2.5 units)
+    const LANE_OFFSET = 2.5;
     let dx, dz;
     if (car.horizontal) {
       dx = target.x - car.x;
       dz = 0;
-      // Snap to road centerline
-      car.z = target.z;
+      // Right-side lane: dir>0 (moving +X) → offset +Z; dir<0 → offset -Z
+      car.z = target.z + car.dir * LANE_OFFSET;
     } else {
       dx = 0;
       dz = target.z - car.z;
-      // Snap to road centerline
-      car.x = target.x;
+      // Right-side lane: dir>0 (moving +Z) → offset -X; dir<0 → offset +X
+      car.x = target.x - car.dir * LANE_OFFSET;
     }
 
     const dist = Math.abs(dx + dz); // one is always 0
     if (dist < 2) {
       // Arrived at intersection — snap to it
-      car.x = target.x;
-      car.z = target.z;
+      car.x = target.x + (car.horizontal ? 0 : -car.dir * LANE_OFFSET);
+      car.z = target.z + (car.horizontal ? car.dir * LANE_OFFSET : 0);
 
       // Pause briefly at intersection
-      car.pauseTimer = 0.5 + rng() * 1.5;
+      car.pauseTimer = 0.3 + rng() * 0.8;
 
       // Decide: continue straight, or turn
       const turnRoll = rng();
@@ -2711,13 +2713,25 @@ function update(dt) {
       }
     }
 
-    // Calculate rotation: car faces direction of travel
-    let rotY;
+    // Calculate rotation: car's long axis is +Z in local space
+    // horizontal dir>0 = moving +X → rotate -PI/2 (face right)
+    // horizontal dir<0 = moving -X → rotate +PI/2 (face left)
+    // vertical dir>0 = moving +Z → rotate 0 (face forward)
+    // vertical dir<0 = moving -Z → rotate PI (face backward)
+    let targetRotY;
     if (car.horizontal) {
-      rotY = car.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+      targetRotY = car.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
     } else {
-      rotY = car.dir > 0 ? 0 : Math.PI;
+      targetRotY = car.dir > 0 ? 0 : Math.PI;
     }
+    // Smooth rotation toward target (interpolate for turns)
+    if (car.rotY === undefined) car.rotY = targetRotY;
+    let diff = targetRotY - car.rotY;
+    // Normalize angle diff to [-PI, PI]
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    car.rotY += diff * Math.min(1, dt * 5); // smooth turn at 5 rad/s
+    const rotY = car.rotY;
 
     updateCarInstance(car.idx, car.x, 0, car.z, rotY, car.bodyColor, car.cabinColor);
     updateCarHeadlights(car.idx, car.x, car.z, rotY, isNight);
@@ -3012,10 +3026,14 @@ function update(dt) {
     h.group.position.z = h.centerZ + Math.sin(h.angle) * h.radius;
     h.group.position.y = 80 + Math.sin(h.angle * 2) * 3; // slight bob
 
-    // Face direction of travel
-    h.group.rotation.y = -h.angle + Math.PI / 2;
-    // Slight bank into turn
-    h.group.rotation.z = Math.sin(h.angle * 0.3) * 0.1;
+    // Face direction of travel — tangent to circular orbit
+    // Velocity: dx=-sin(a), dz=cos(a). Body +X is forward.
+    // atan2(dz, dx) = atan2(cos(a), -sin(a)) = PI/2 + a → but body forward is +X so subtract PI/2
+    h.group.rotation.y = -h.angle;
+    // Forward lean (pitch) — nose tilts down ~8° when flying, like a real helicopter
+    h.group.rotation.x = -0.14;
+    // Bank into turn — lean inward
+    h.group.rotation.z = -0.15;
 
     // Spin rotors fast
     h.rotorAngle += dt * 25;
@@ -3325,6 +3343,11 @@ function updateDebugOverlay(dt) {
 // =========================================================================
 // Main Loop
 // =========================================================================
+// Throttle sim to 20fps, render at 60fps, HUD at 4fps
+let simAccum = 0;
+const SIM_STEP = 1 / 20; // 20 sim ticks per second
+let hudTimer = 0;
+
 function animate() {
   requestAnimationFrame(animate);
 
@@ -3332,7 +3355,7 @@ function animate() {
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
 
-  // FPS
+  // FPS counter
   frameCount++;
   fpsTimer += dt;
   if (fpsTimer >= 0.5) {
@@ -3342,10 +3365,21 @@ function animate() {
     document.getElementById('fps').textContent = `${fpsDisplay} FPS`;
   }
 
-  update(dt);
-  updateHUD();
+  // Sim runs at fixed 20fps
+  simAccum += dt;
+  if (simAccum >= SIM_STEP) {
+    update(simAccum);
+    simAccum = 0;
+  }
+
+  // HUD updates at 4fps to avoid DOM thrashing
+  hudTimer += dt;
+  if (hudTimer >= 0.25) {
+    updateHUD();
+    hudTimer = 0;
+  }
+
   renderer.render(scene, camera);
-  updateDebugOverlay(dt);
 }
 
 animate();

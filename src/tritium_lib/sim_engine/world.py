@@ -428,9 +428,28 @@ class World:
                 })
 
             if not enemies:
-                # No targets: idle or follow squad order
+                # No targets visible — follow squad order to advance toward enemy
                 if unit.state.status not in ("dead",):
-                    unit.state.status = "idle"
+                    # Find this unit's squad and follow its order
+                    moved = False
+                    for _sid, squad in self.squads.items():
+                        if uid in squad.members and squad.current_order is not None:
+                            order = squad.current_order
+                            if order.order_type in ("advance", "flank_left", "flank_right") and order.target_pos is not None:
+                                direction = _sub(order.target_pos, unit.position)
+                                d = distance(unit.position, order.target_pos)
+                                if d > 5.0:  # don't jitter at destination
+                                    direction = normalize(direction)
+                                    move_speed = unit.effective_speed() * self.environment.movement_speed_modifier()
+                                    dx = direction[0] * move_speed * dt
+                                    dy = direction[1] * move_speed * dt
+                                    unit.position = (unit.position[0] + dx, unit.position[1] + dy)
+                                    unit.heading = math.atan2(direction[1], direction[0])
+                                    unit.state.status = "moving"
+                                    moved = True
+                            break
+                    if not moved:
+                        unit.state.status = "idle"
                 continue
 
             # Simple combat: engage nearest visible enemy
