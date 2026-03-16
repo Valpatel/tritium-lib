@@ -480,6 +480,20 @@ try:
 except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.debug not available: {_e}")
 
+# ---------------------------------------------------------------------------
+# Replay: Recording, playback, analysis, export
+# ---------------------------------------------------------------------------
+try:
+    from .replay import (
+        ReplayFrame,
+        ReplayRecorder,
+        ReplayPlayer,
+        ReplayAnalyzer,
+        ReplayExporter,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.replay not available: {_e}")
+
 
 # ---------------------------------------------------------------------------
 # __all__ — comprehensive public API
@@ -599,4 +613,7 @@ __all__ = [
     "CollisionEvent", "PhysicsWorld", "RigidBody", "VehiclePhysics",
     # --- Debug ---
     "DebugFrame", "DebugStream", "DebugOverlay",
+    # --- Replay ---
+    "ReplayFrame", "ReplayRecorder", "ReplayPlayer",
+    "ReplayAnalyzer", "ReplayExporter",
 ]
