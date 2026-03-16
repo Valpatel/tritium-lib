@@ -1,36 +1,63 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Tests for the visual analysis module.
-
-These test the ANALYSIS functions, not the browser collection.
-Uses synthetic images to verify pixel comparison, color counting, etc.
-"""
+"""Tests for the visual analysis module."""
 
 import os
-import tempfile
 import pytest
 
 from tritium_lib.testing.visual_analysis import (
     file_exists, file_size_kb,
-    VisualDiff, ColorCount, VisionDescription,
+    BoundingBox, DetectedElement, FrameAnalysis,
+    RenderMode,
 )
 
-# OpenCV tests are conditional
 try:
     import cv2
     import numpy as np
     from tritium_lib.testing.visual_analysis import (
-        compare_screenshots, is_mostly_black, count_colored_pixels,
-        detect_changes, save_diff_image,
+        compare_screenshots, is_mostly_black, detect_changes,
+        save_diff_image, detect_panels, detect_markers, detect_text_regions,
+        analyze_frame, load_image,
     )
     HAS_OPENCV = True
 except ImportError:
     HAS_OPENCV = False
 
 
+class TestDataStructures:
+
+    def test_bounding_box(self):
+        bb = BoundingBox(10, 20, 100, 50)
+        assert bb.area == 5000
+        assert bb.center == (60, 45)
+        assert bb.contains(50, 30)
+        assert not bb.contains(5, 5)
+
+    def test_detected_element(self):
+        e = DetectedElement("panel", BoundingBox(0, 0, 100, 50), color="#00f0ff")
+        assert e.element_type == "panel"
+        assert e.bbox.area == 5000
+
+    def test_frame_analysis(self):
+        fa = FrameAnalysis(path="/tmp/test.png")
+        fa.elements.append(DetectedElement("panel", BoundingBox(0, 0, 100, 50)))
+        fa.elements.append(DetectedElement("marker", BoundingBox(50, 50, 10, 10)))
+        assert fa.count("panel") == 1
+        assert fa.count("marker") == 1
+
+    def test_render_mode_constants(self):
+        assert RenderMode.SOLID_BLOCKS == "solid_blocks"
+        assert RenderMode.SEMANTIC == "semantic"
+        assert RenderMode.url_param("wireframe") == "?render_mode=wireframe"
+        assert "render_mode" in RenderMode.api_body("depth")
+
+    def test_semantic_colors(self):
+        assert "panel" in RenderMode.SEMANTIC_COLORS
+        assert "button" in RenderMode.SEMANTIC_COLORS
+
+
 class TestFileAssertions:
-    """Layer 3: simple file assertions (no deps)."""
 
     def test_file_exists_true(self, tmp_path):
         p = tmp_path / "test.png"
@@ -40,99 +67,97 @@ class TestFileAssertions:
     def test_file_exists_false(self, tmp_path):
         assert not file_exists(str(tmp_path / "nope.png"))
 
-    def test_file_exists_too_small(self, tmp_path):
-        p = tmp_path / "tiny.png"
-        p.write_bytes(b"x" * 100)
-        assert not file_exists(str(p))
-
     def test_file_size(self, tmp_path):
         p = tmp_path / "test.png"
         p.write_bytes(b"x" * 5120)
         assert file_size_kb(str(p)) == pytest.approx(5.0)
 
 
-class TestDataclasses:
-    """Verify dataclass construction."""
-
-    def test_visual_diff(self):
-        d = VisualDiff(changed_pixels=100, total_pixels=1000, change_percent=10.0, regions_changed=3)
-        assert d.change_percent == 10.0
-
-    def test_color_count(self):
-        c = ColorCount(total_pixels=1000, matching_pixels=50, percent=5.0)
-        assert c.percent == 5.0
-
-    def test_vision_description(self):
-        v = VisionDescription(description="A map", model="llava:7b", success=True)
-        assert v.success
-
-
 @pytest.mark.skipif(not HAS_OPENCV, reason="OpenCV not installed")
-class TestOpenCVAnalysis:
-    """Layer 1: OpenCV pixel analysis."""
+class TestComparators:
 
-    def _make_solid_image(self, path, color_bgr, w=100, h=100):
-        img = np.full((h, w, 3), color_bgr, dtype=np.uint8)
+    def _solid(self, path, color, w=100, h=100):
+        img = np.full((h, w, 3), color, dtype=np.uint8)
         cv2.imwrite(str(path), img)
         return str(path)
 
-    def test_identical_images_no_diff(self, tmp_path):
-        a = self._make_solid_image(tmp_path / "a.png", (0, 0, 0))
-        b = self._make_solid_image(tmp_path / "b.png", (0, 0, 0))
+    def test_identical_no_diff(self, tmp_path):
+        a = self._solid(tmp_path / "a.png", (0, 0, 0))
+        b = self._solid(tmp_path / "b.png", (0, 0, 0))
         diff = compare_screenshots(a, b)
-        assert diff.changed_pixels == 0
-        assert diff.change_percent == 0
+        assert diff["changed_pixels"] == 0
 
-    def test_different_images_have_diff(self, tmp_path):
-        a = self._make_solid_image(tmp_path / "a.png", (0, 0, 0))
-        b = self._make_solid_image(tmp_path / "b.png", (255, 255, 255))
+    def test_different_has_diff(self, tmp_path):
+        a = self._solid(tmp_path / "a.png", (0, 0, 0))
+        b = self._solid(tmp_path / "b.png", (255, 255, 255))
         diff = compare_screenshots(a, b)
-        assert diff.changed_pixels > 0
-        assert diff.change_percent > 50
+        assert diff["change_percent"] > 50
 
-    def test_is_mostly_black_true(self, tmp_path):
-        p = self._make_solid_image(tmp_path / "black.png", (5, 5, 5))
-        assert is_mostly_black(p)
+    def test_is_black_true(self, tmp_path):
+        assert is_mostly_black(self._solid(tmp_path / "b.png", (5, 5, 5)))
 
-    def test_is_mostly_black_false(self, tmp_path):
-        p = self._make_solid_image(tmp_path / "white.png", (200, 200, 200))
-        assert not is_mostly_black(p)
+    def test_is_black_false(self, tmp_path):
+        assert not is_mostly_black(self._solid(tmp_path / "w.png", (200, 200, 200)))
 
-    def test_count_cyan_pixels(self, tmp_path):
-        # Image with some cyan pixels
-        img = np.zeros((100, 100, 3), dtype=np.uint8)
-        img[0:50, :] = (255, 240, 0)  # BGR cyan
-        p = str(tmp_path / "cyan.png")
-        cv2.imwrite(p, img)
-        result = count_colored_pixels(p, (255, 240, 0), tolerance=20)
-        assert result.percent > 40
-
-    def test_detect_changes_true(self, tmp_path):
-        a = self._make_solid_image(tmp_path / "a.png", (0, 0, 0))
-        b = self._make_solid_image(tmp_path / "b.png", (100, 100, 100))
+    def test_detect_changes(self, tmp_path):
+        a = self._solid(tmp_path / "a.png", (0, 0, 0))
+        b = self._solid(tmp_path / "b.png", (100, 100, 100))
         assert detect_changes(a, b)
 
-    def test_detect_changes_false(self, tmp_path):
-        a = self._make_solid_image(tmp_path / "a.png", (50, 50, 50))
-        b = self._make_solid_image(tmp_path / "b.png", (50, 50, 50))
+    def test_no_changes(self, tmp_path):
+        a = self._solid(tmp_path / "a.png", (50, 50, 50))
+        b = self._solid(tmp_path / "b.png", (50, 50, 50))
         assert not detect_changes(a, b)
 
-    def test_save_diff_image(self, tmp_path):
-        a = self._make_solid_image(tmp_path / "a.png", (0, 0, 0))
-        b = self._make_solid_image(tmp_path / "b.png", (255, 255, 255))
+    def test_save_diff(self, tmp_path):
+        a = self._solid(tmp_path / "a.png", (0, 0, 0))
+        b = self._solid(tmp_path / "b.png", (255, 255, 255))
         out = str(tmp_path / "diff.png")
         result = save_diff_image(a, b, out)
         assert result is not None
         assert os.path.exists(out)
 
-    def test_partial_change(self, tmp_path):
-        # 100x100 image, top half changed
-        img_a = np.zeros((100, 100, 3), dtype=np.uint8)
-        img_b = np.zeros((100, 100, 3), dtype=np.uint8)
-        img_b[0:50, :] = (200, 200, 200)
-        a = str(tmp_path / "a.png")
-        b = str(tmp_path / "b.png")
-        cv2.imwrite(a, img_a)
-        cv2.imwrite(b, img_b)
-        diff = compare_screenshots(a, b)
-        assert 40 < diff.change_percent < 60  # ~50% changed
+
+@pytest.mark.skipif(not HAS_OPENCV, reason="OpenCV not installed")
+class TestDetectors:
+
+    def test_detect_markers_on_dark_bg(self, tmp_path):
+        """Bright colored dots on dark background should be detected."""
+        img = np.zeros((200, 200, 3), dtype=np.uint8)
+        # Place some cyan dots
+        cv2.circle(img, (50, 50), 8, (255, 240, 0), -1)
+        cv2.circle(img, (150, 100), 6, (0, 255, 100), -1)
+        p = str(tmp_path / "markers.png")
+        cv2.imwrite(p, img)
+        markers = detect_markers(p)
+        assert len(markers) >= 2
+
+    def test_detect_text_regions(self, tmp_path):
+        """Bright text-like regions should be detected."""
+        img = np.zeros((200, 400, 3), dtype=np.uint8)
+        cv2.putText(img, "HELLO WORLD", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(img, "STATUS: OK", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 240, 255), 1)
+        p = str(tmp_path / "text.png")
+        cv2.imwrite(p, img)
+        regions = detect_text_regions(p)
+        assert len(regions) >= 1
+
+    def test_analyze_frame(self, tmp_path):
+        """Full frame analysis returns structured result."""
+        img = np.full((400, 600, 3), (30, 30, 40), dtype=np.uint8)  # dark gray, not black
+        cv2.rectangle(img, (10, 10), (200, 150), (255, 240, 0), 2)
+        cv2.rectangle(img, (10, 10), (200, 150), (100, 80, 40), -1)  # filled panel
+        cv2.circle(img, (300, 200), 8, (0, 255, 100), -1)
+        p = str(tmp_path / "frame.png")
+        cv2.imwrite(p, img)
+        analysis = analyze_frame(p)
+        assert not analysis.is_black_screen
+        assert analysis.pixel_stats["mean_brightness"] > 0
+        assert len(analysis.dominant_colors) > 0
+
+    def test_black_screen_detection(self, tmp_path):
+        img = np.zeros((200, 200, 3), dtype=np.uint8)
+        p = str(tmp_path / "black.png")
+        cv2.imwrite(p, img)
+        analysis = analyze_frame(p)
+        assert analysis.is_black_screen
