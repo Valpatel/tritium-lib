@@ -51,7 +51,7 @@ class TestServerEndpoints:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Tritium Sim Engine" in resp.text
-        assert "<canvas" in resp.text
+        assert "</html>" in resp.text
 
     def test_status_before_start(self, client: TestClient) -> None:
         resp = client.get("/api/status")

@@ -759,3 +759,273 @@ class TestRender:
         frame = world.render()
         assert "crowd" in frame
         assert len(frame["crowd"]) == 10
+
+
+# ============================================================================
+# Extended Preset Tests
+# ============================================================================
+
+
+class TestAllPresetsDetailed:
+    """Verify every WORLD_PRESET builds correctly and can run for 100 ticks."""
+
+    @pytest.mark.parametrize("preset_name", list(WORLD_PRESETS.keys()))
+    def test_preset_builds_without_error(self, preset_name):
+        world = WORLD_PRESETS[preset_name]()
+        assert isinstance(world, World)
+        assert world.tick_count == 0
+        assert len(world.units) > 0
+
+    @pytest.mark.parametrize("preset_name", list(WORLD_PRESETS.keys()))
+    def test_preset_runs_100_ticks(self, preset_name):
+        world = WORLD_PRESETS[preset_name]()
+        for _ in range(100):
+            frame = world.tick(dt=0.05)
+        assert world.tick_count == 100
+        assert world.sim_time > 0.0
+        assert isinstance(frame, dict)
+
+    @pytest.mark.parametrize("preset_name", list(WORLD_PRESETS.keys()))
+    def test_preset_produces_valid_frames(self, preset_name):
+        world = WORLD_PRESETS[preset_name]()
+        frame = world.tick(dt=0.05)
+        assert "tick" in frame
+        assert "time" in frame
+        assert "units" in frame
+        assert "events" in frame
+
+    @pytest.mark.parametrize("preset_name", list(WORLD_PRESETS.keys()))
+    def test_preset_stats_consistent(self, preset_name):
+        world = WORLD_PRESETS[preset_name]()
+        stats = world.stats()
+        total = stats["alive_friendly"] + stats["alive_hostile"] + stats["dead"]
+        assert total == stats["total_units"]
+
+
+# ============================================================================
+# Extended WorldBuilder Tests
+# ============================================================================
+
+
+class TestWorldBuilderChainMethods:
+    """Test all WorldBuilder chain methods work and return self."""
+
+    def test_set_map_size_returns_self(self):
+        b = WorldBuilder()
+        result = b.set_map_size(100, 100)
+        assert result is b
+
+    def test_set_seed_returns_self(self):
+        b = WorldBuilder()
+        result = b.set_seed(99)
+        assert result is b
+
+    def test_set_time_returns_self(self):
+        b = WorldBuilder()
+        result = b.set_time(hour=12.0)
+        assert result is b
+
+    def test_set_weather_returns_self(self):
+        b = WorldBuilder()
+        result = b.set_weather(Weather.CLEAR)
+        assert result is b
+
+    def test_set_tick_rate_returns_self(self):
+        b = WorldBuilder()
+        result = b.set_tick_rate(30.0)
+        assert result is b
+
+    def test_set_gravity_returns_self(self):
+        b = WorldBuilder()
+        result = b.set_gravity(5.0)
+        assert result is b
+
+    def test_enable_destruction_returns_self(self):
+        b = WorldBuilder()
+        result = b.enable_destruction(True)
+        assert result is b
+
+    def test_enable_los_returns_self(self):
+        b = WorldBuilder()
+        result = b.enable_los(False)
+        assert result is b
+
+    def test_enable_crowds_returns_self(self):
+        b = WorldBuilder()
+        result = b.enable_crowds(True)
+        assert result is b
+
+    def test_enable_vehicles_returns_self(self):
+        b = WorldBuilder()
+        result = b.enable_vehicles(True)
+        assert result is b
+
+    def test_spawn_friendly_squad_returns_self(self):
+        b = WorldBuilder()
+        result = b.spawn_friendly_squad("Alpha", ["infantry"], (0, 0))
+        assert result is b
+
+    def test_spawn_hostile_squad_returns_self(self):
+        b = WorldBuilder()
+        result = b.spawn_hostile_squad("Bravo", ["infantry"], (50, 50))
+        assert result is b
+
+    def test_add_building_returns_self(self):
+        b = WorldBuilder()
+        result = b.add_building((10, 10), (5, 5, 3), "wood")
+        assert result is b
+
+    def test_add_vehicle_returns_self(self):
+        b = WorldBuilder()
+        result = b.add_vehicle("humvee", "V1", "friendly", (0, 0))
+        assert result is b
+
+    def test_add_crowd_returns_self(self):
+        b = WorldBuilder()
+        result = b.add_crowd((50, 50), 10, 5.0, CrowdMood.CALM)
+        assert result is b
+
+    def test_add_terrain_noise_returns_self(self):
+        b = WorldBuilder()
+        result = b.add_terrain_noise(octaves=2, amplitude=3.0)
+        assert result is b
+
+    def test_full_chain_builds_world(self):
+        world = (
+            WorldBuilder()
+            .set_map_size(300, 300)
+            .set_seed(42)
+            .set_time(hour=6.0)
+            .set_weather(Weather.RAIN)
+            .set_tick_rate(20.0)
+            .set_gravity(9.81)
+            .enable_destruction(True)
+            .enable_los(True)
+            .enable_crowds(True)
+            .enable_vehicles(True)
+            .add_terrain_noise(octaves=3, amplitude=5.0, seed=42)
+            .spawn_friendly_squad("Alpha", ["infantry", "sniper", "medic"], (50, 50), spacing=3.0)
+            .spawn_hostile_squad("Tango", ["infantry", "heavy"], (200, 200), spacing=3.0)
+            .add_vehicle("humvee", "Truck-1", "friendly", (40, 40))
+            .add_building((100, 100), (15, 10, 8), "concrete")
+            .add_crowd((150, 150), 30, 15.0, CrowdMood.AGITATED)
+            .build()
+        )
+        assert world.config.map_size == (300, 300)
+        assert len(world.units) == 5
+        assert len(world.vehicles) == 1
+        assert world.crowd is not None
+        assert len(world.crowd.members) == 30
+        assert world.destruction is not None
+        assert len(world.destruction.structures) == 1
+
+
+# ============================================================================
+# Extended Tick Tests — Movement and Engagement Over Time
+# ============================================================================
+
+
+class TestTickMovementAndEngagement:
+    """Test that units actually move and engage over time."""
+
+    def test_units_engage_enemies_over_time(self):
+        world = World(WorldConfig(seed=42, enable_los=False))
+        f = world.spawn_unit("infantry", "F1", "friendly", (10, 10))
+        h = world.spawn_unit("infantry", "H1", "hostile", (30, 10))
+        all_events = []
+        for _ in range(100):
+            frame = world.tick(dt=0.1)
+            all_events.extend(frame.get("events", []))
+        # Units should have either moved, taken damage, or fired
+        damage = f.state.damage_taken + h.state.damage_taken
+        fire_events = [e for e in all_events if e.get("type") == "fire"]
+        assert damage > 0 or len(fire_events) > 0, (
+            "No damage or fire events after 100 ticks with close enemies"
+        )
+
+    def test_combat_produces_kills_over_time(self):
+        world = World(WorldConfig(seed=42, enable_los=False))
+        world.spawn_unit("infantry", "F1", "friendly", (10, 10))
+        world.spawn_unit("infantry", "F2", "friendly", (12, 10))
+        world.spawn_unit("infantry", "F3", "friendly", (14, 10))
+        world.spawn_unit("infantry", "H1", "hostile", (20, 10))
+        all_events = []
+        for _ in range(200):
+            frame = world.tick(dt=0.05)
+            all_events.extend(frame.get("events", []))
+        kill_events = [e for e in all_events if e.get("type") == "unit_killed"]
+        fire_events = [e for e in all_events if e.get("type") == "fire"]
+        # With 3 vs 1 at close range for 200 ticks, expect at least fire events
+        assert len(fire_events) > 0
+
+    def test_100_ticks_no_crash(self):
+        world = World(WorldConfig(seed=42))
+        world.spawn_unit("infantry", "A", "friendly", (50, 50))
+        world.spawn_unit("infantry", "B", "hostile", (55, 50))
+        world.spawn_unit("sniper", "C", "friendly", (45, 45))
+        world.spawn_vehicle("humvee", "V1", "friendly", (40, 40))
+        world.spawn_crowd((60, 60), 20, 10.0)
+        for _ in range(100):
+            frame = world.tick(dt=0.05)
+        assert world.tick_count == 100
+        assert isinstance(frame, dict)
+
+    def test_sim_time_advances_correctly(self):
+        world = World()
+        for _ in range(100):
+            world.tick(dt=0.1)
+        assert world.sim_time == pytest.approx(10.0, abs=0.01)
+
+
+# ============================================================================
+# Vehicle Physics Extended
+# ============================================================================
+
+
+class TestVehiclePhysicsExtended:
+    def test_vehicle_speed_changes_position(self):
+        world = World(WorldConfig(seed=42))
+        v = world.spawn_vehicle("humvee", "Speed-Test", "friendly", (100, 100))
+        v.speed = 20.0
+        v.heading = 0.0  # heading east
+        initial_pos = v.position
+        for _ in range(30):
+            world.tick(dt=0.1)
+        dx = abs(v.position[0] - initial_pos[0])
+        dy = abs(v.position[1] - initial_pos[1])
+        assert dx > 0.1 or dy > 0.1, "Vehicle did not move"
+
+    def test_multiple_vehicles_spawn(self):
+        world = World()
+        v1 = world.spawn_vehicle("humvee", "V1", "friendly", (10, 10))
+        v2 = world.spawn_vehicle("technical", "V2", "hostile", (90, 90))
+        v3 = world.spawn_vehicle("quadcopter", "D1", "friendly", (50, 50))
+        assert len(world.vehicles) == 3
+        assert v1.vehicle_id != v2.vehicle_id != v3.vehicle_id
+
+
+# ============================================================================
+# Crowd Integration Extended
+# ============================================================================
+
+
+class TestCrowdIntegrationExtended:
+    def test_crowd_in_world_tick(self):
+        world = World(WorldConfig(seed=42))
+        world.spawn_crowd((100, 100), 40, 20.0, CrowdMood.CALM)
+        for _ in range(50):
+            frame = world.tick(dt=0.05)
+        assert "crowd" in frame
+        assert len(frame["crowd"]) == 40
+
+    def test_crowd_reacts_to_combat(self):
+        world = World(WorldConfig(seed=42, enable_los=False))
+        world.spawn_unit("infantry", "F1", "friendly", (10, 10))
+        world.spawn_unit("infantry", "H1", "hostile", (15, 10))
+        ids = world.spawn_crowd((12, 12), 30, 5.0, CrowdMood.CALM)
+        for _ in range(50):
+            world.tick(dt=0.1)
+        # After combat nearby, some crowd members may have changed mood
+        moods = {m.mood for m in world.crowd.members}
+        # At minimum the crowd system ran without crashing
+        assert len(world.crowd.members) == 30

@@ -495,6 +495,59 @@ except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.debug not available: {_e}")
 
 # ---------------------------------------------------------------------------
+# Morale: Unit morale and psychology
+# ---------------------------------------------------------------------------
+try:
+    from .morale import (
+        MoraleEngine,
+        MoraleEvent,
+        MoraleEventType,
+        MoraleState,
+        UnitMorale,
+        COMMANDER_AURA_RADIUS,
+        RECOVERY_DELAY,
+        RECOVERY_RATE,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.morale not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Electronic Warfare: Jammers, cyber, EMP, spoofing
+# ---------------------------------------------------------------------------
+try:
+    from .electronic_warfare import (
+        EWEngine,
+        EWJammer,
+        JammerType,
+        CyberAttack,
+        CyberAttackType,
+        EMPEvent,
+        EMPScale,
+        SpoofContact,
+        DisruptedSystem,
+        EMP_PRESETS,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.electronic_warfare not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Supply Routes: Supply lines, convoys, unit supply tracking
+# ---------------------------------------------------------------------------
+try:
+    from .supply_routes import (
+        SupplyRouteEngine,
+        SupplyLine,
+        SupplyConvoy,
+        UnitSupplyState,
+        ConvoyStatus,
+        RouteStatus,
+        SupplyLevel,
+        DELIVERY_RANGE,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.supply_routes not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # Replay: Recording, playback, analysis, export
 # ---------------------------------------------------------------------------
 try:
@@ -522,6 +575,37 @@ try:
     )
 except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.commander not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Status Effects: Buffs, debuffs, DOT/HOT, crowd control
+# ---------------------------------------------------------------------------
+try:
+    from .status_effects import (
+        EffectType,
+        StatusEffect,
+        StatusEffectEngine,
+        EFFECTS_CATALOG,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.status_effects not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Economy: Resources, build queue, tech tree, RTS layer
+# ---------------------------------------------------------------------------
+try:
+    from .economy import (
+        ResourceType,
+        ResourcePool,
+        UnitCost,
+        BuildQueue,
+        TechTree,
+        EconomyEngine,
+        UNIT_COSTS as UNIT_COSTS,
+        TECH_TREE as TECH_TREE,
+        ECONOMY_PRESETS,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.economy not available: {_e}")
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +732,25 @@ __all__ = [
     # --- Replay ---
     "ReplayFrame", "ReplayRecorder", "ReplayPlayer",
     "ReplayAnalyzer", "ReplayExporter",
+    # --- Morale ---
+    "MoraleEngine", "MoraleEvent", "MoraleEventType",
+    "MoraleState", "UnitMorale",
+    "COMMANDER_AURA_RADIUS", "RECOVERY_DELAY", "RECOVERY_RATE",
+    # --- Electronic Warfare ---
+    "EWEngine", "EWJammer", "JammerType",
+    "CyberAttack", "CyberAttackType",
+    "EMPEvent", "EMPScale", "SpoofContact",
+    "DisruptedSystem", "EMP_PRESETS",
+    # --- Supply Routes ---
+    "SupplyRouteEngine", "SupplyLine", "SupplyConvoy",
+    "UnitSupplyState", "ConvoyStatus", "RouteStatus",
+    "SupplyLevel", "DELIVERY_RANGE",
     # --- Commander ---
     "NarrationEvent", "CommanderPersonality", "BattleNarrator",
     "TacticalAdvisor", "NarrationLog", "PERSONALITIES",
+    # --- Status Effects ---
+    "EffectType", "StatusEffect", "StatusEffectEngine", "EFFECTS_CATALOG",
+    # --- Economy ---
+    "ResourceType", "ResourcePool", "UnitCost", "BuildQueue", "TechTree",
+    "EconomyEngine", "UNIT_COSTS", "TECH_TREE", "ECONOMY_PRESETS",
 ]

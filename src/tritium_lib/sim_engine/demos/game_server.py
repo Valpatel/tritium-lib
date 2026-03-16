@@ -122,6 +122,16 @@ from tritium_lib.sim_engine.renderer import SimRenderer, RenderLayer
 from tritium_lib.sim_engine.ai.tactics import TacticsEngine, TacticalAction
 # 26. ai/squad.py
 from tritium_lib.sim_engine.ai.squad import Squad, SquadRole, SquadTactics, Order
+# 27. morale.py
+from tritium_lib.sim_engine.morale import MoraleEngine, MoraleEvent, MoraleEventType
+# 28. electronic_warfare.py
+from tritium_lib.sim_engine.electronic_warfare import (
+    EWEngine, EWJammer, JammerType, CyberAttack,
+)
+# 29. supply_routes.py
+from tritium_lib.sim_engine.supply_routes import (
+    SupplyRouteEngine, SupplyLine, SupplyConvoy,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +156,9 @@ class GameState:
         self.intel: IntelEngine | None = None
         self.diplomacy: DiplomacyEngine | None = None
         self.campaign: Campaign | None = None
+        self.morale: MoraleEngine | None = None
+        self.ew: EWEngine | None = None
+        self.supply_routes: SupplyRouteEngine | None = None
         self.running: bool = False
         self.paused: bool = False
         self.tick_count: int = 0
@@ -320,6 +333,40 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # --- 23. Campaign ---
     gs.campaign = Campaign.from_preset("tutorial")
 
+    # --- 27. Morale ---
+    gs.morale = MoraleEngine()
+    for uid, unit in gs.world.units.items():
+        is_cmd = unit.unit_type in (UnitType.HEAVY,)  # first heavy is de facto leader
+        gs.morale.register_unit(
+            uid,
+            alliance=unit.alliance.value,
+            starting_morale=75.0,
+            is_commander=is_cmd,
+        )
+
+    # --- 28. Electronic Warfare ---
+    gs.ew = EWEngine(rng_seed=42)
+    # Hostile jammer near the center of the map
+    gs.ew.place_jammer(EWJammer(
+        jammer_id="hostile_jammer_1",
+        position=(350.0, 350.0),
+        radius=80.0,
+        jammer_type=JammerType.COMMUNICATIONS,
+        alliance="hostile",
+    ))
+
+    # --- 29. Supply Routes ---
+    gs.supply_routes = SupplyRouteEngine()
+    gs.supply_routes.add_supply_line(SupplyLine(
+        line_id="main_supply",
+        waypoints=[(50.0, 50.0), (95.0, 95.0), (100.0, 100.0)],
+        source_cache_id="cache_alpha",
+        alliance="friendly",
+    ))
+    for uid, unit in gs.world.units.items():
+        if unit.alliance == Alliance.FRIENDLY:
+            gs.supply_routes.register_unit(uid, alliance="friendly")
+
     gs.start_time = time.time()
     return gs
 
@@ -416,6 +463,60 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     if gs.diplomacy is not None:
         gs.diplomacy.tick(dt)
 
+    # 11. Morale tick
+    if gs.morale is not None:
+        unit_positions_morale = {
+            uid: u.position for uid, u in gs.world.units.items() if u.is_alive()
+        }
+        # Feed kill events as morale events
+        morale_events: list[MoraleEvent] = []
+        for ev in frame.get("events", []):
+            if ev.get("type") == "unit_killed":
+                killer = ev.get("source_id", "")
+                victim = ev.get("target_id", "")
+                if killer:
+                    morale_events.append(MoraleEvent(
+                        unit_id=killer,
+                        event_type=MoraleEventType.ENEMY_KILLED,
+                    ))
+                if victim:
+                    gs.morale.mark_dead(victim)
+                    # Nearby allies see ally die
+                    victim_unit = gs.world.units.get(victim)
+                    if victim_unit:
+                        for uid, u in gs.world.units.items():
+                            if (u.is_alive()
+                                    and u.alliance == victim_unit.alliance
+                                    and uid != victim):
+                                from tritium_lib.sim_engine.ai.steering import distance as _dist
+                                if _dist(u.position, victim_unit.position) < 80.0:
+                                    morale_events.append(MoraleEvent(
+                                        unit_id=uid,
+                                        event_type=MoraleEventType.ALLY_KILLED,
+                                    ))
+        notifications = gs.morale.tick(dt, unit_positions=unit_positions_morale, events=morale_events)
+        frame["morale"] = gs.morale.to_three_js()
+        frame["morale_events"] = notifications
+
+    # 12. Electronic Warfare tick
+    if gs.ew is not None:
+        ew_result = gs.ew.tick(dt)
+        frame["electronic_warfare"] = gs.ew.to_three_js()
+        frame["ew_events"] = ew_result.get("events", [])
+
+    # 13. Supply Routes tick
+    if gs.supply_routes is not None:
+        unit_pos_supply = {
+            uid: u.position for uid, u in gs.world.units.items() if u.is_alive()
+        }
+        enemy_pos_supply = {
+            uid: u.position for uid, u in gs.world.units.items()
+            if u.is_alive() and u.alliance == Alliance.HOSTILE
+        }
+        sr_result = gs.supply_routes.tick(dt, unit_positions=unit_pos_supply, enemy_positions=enemy_pos_supply)
+        frame["supply_routes"] = gs.supply_routes.to_three_js()
+        frame["supply_warnings"] = sr_result.get("warnings", [])
+
     # Add metadata
     frame["tick"] = gs.tick_count
     frame["sim_time"] = round(gs.world.sim_time, 2)
@@ -439,6 +540,42 @@ _game_task: asyncio.Task | None = None
 async def index() -> HTMLResponse:
     """Serve the game client HTML page."""
     return HTMLResponse(content=GAME_HTML, status_code=200)
+
+
+@app.get("/city", response_class=HTMLResponse)
+async def city_view() -> HTMLResponse:
+    """Serve the city3d.html demo with WebSocket bridge injected."""
+    import pathlib
+    city_path = pathlib.Path(__file__).parent / "city3d.html"
+    if not city_path.exists():
+        return HTMLResponse("<h1>city3d.html not found</h1>", status_code=404)
+    html = city_path.read_text()
+    # Inject WebSocket bridge before closing </body>
+    ws_bridge = """
+<script type="module">
+// WebSocket bridge — receives server sim data and overlays on city3d
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.onopen = () => console.log('[SIM] Connected to game server');
+ws.onmessage = (e) => {
+  try {
+    const frame = JSON.parse(e.data);
+    // Expose frame data globally for city3d to use
+    window.__simFrame = frame;
+    // Update HUD if elements exist
+    const clock = document.getElementById('clock');
+    if (clock && frame.time !== undefined) {
+      const h = Math.floor(frame.time / 3600) % 24;
+      const m = Math.floor((frame.time % 3600) / 60);
+      clock.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+    }
+  } catch(err) { /* ignore parse errors */ }
+};
+ws.onerror = () => console.log('[SIM] WebSocket error — running standalone');
+ws.onclose = () => console.log('[SIM] WebSocket closed');
+</script>
+"""
+    html = html.replace("</body>", ws_bridge + "</body>")
+    return HTMLResponse(content=html, status_code=200)
 
 
 @app.get("/api/status")
@@ -605,6 +742,7 @@ def _count_active_modules(gs: GameState) -> int:
         "world", "scoring", "detection", "comms", "medical",
         "logistics", "naval", "air_combat", "engineering",
         "asymmetric", "civilians", "intel", "diplomacy", "campaign",
+        "morale", "ew", "supply_routes",
     ):
         if getattr(gs, attr, None) is not None:
             count += 1

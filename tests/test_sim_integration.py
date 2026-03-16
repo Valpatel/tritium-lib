@@ -746,3 +746,252 @@ class TestFullIntegration:
         )
         # Also verify scenario module was imported
         assert ScenarioConfig is not None  # scenario.py
+
+
+# ====================================================================
+# Deep integration: detection engine with LOS
+# ====================================================================
+
+
+class TestDetectionIntegration:
+    """Test detection engine correctly detects units based on range and environment."""
+
+    def test_detection_finds_nearby_units(self):
+        """A sensor should detect a unit within its range."""
+        detection = DetectionEngine()
+        detection.sensors.append(Sensor(
+            sensor_id="vis-1", sensor_type=SensorType.VISUAL,
+            position=(50.0, 50.0), heading=0.0, fov_deg=360.0,
+            range_m=100.0, sensitivity=0.9, owner_id="observer",
+        ))
+        detection.set_signature("target-1", SignatureProfile(
+            visual=0.8, thermal=0.7, acoustic=0.5, radar=0.3,
+        ))
+        entity_positions = {"target-1": (60.0, 50.0)}
+        detection.tick(0.1, entity_positions, {"weather": "clear", "is_night": False})
+        assert len(detection.detections) > 0
+        detected_ids = {d.target_id for d in detection.detections}
+        assert "target-1" in detected_ids
+
+    def test_detection_misses_distant_units(self):
+        """A sensor should NOT detect a unit far beyond its range."""
+        detection = DetectionEngine()
+        detection.sensors.append(Sensor(
+            sensor_id="vis-1", sensor_type=SensorType.VISUAL,
+            position=(50.0, 50.0), heading=0.0, fov_deg=360.0,
+            range_m=20.0, sensitivity=0.5, owner_id="observer",
+        ))
+        detection.set_signature("far-target", SignatureProfile(
+            visual=0.1, thermal=0.1, acoustic=0.1, radar=0.1,
+        ))
+        entity_positions = {"far-target": (500.0, 500.0)}
+        detection.tick(0.1, entity_positions, {"weather": "clear", "is_night": False})
+        detected_ids = {d.target_id for d in detection.detections}
+        assert "far-target" not in detected_ids
+
+    def test_thermal_sensor_at_night(self):
+        """Thermal sensor should work well at night."""
+        detection = DetectionEngine()
+        detection.sensors.append(Sensor(
+            sensor_id="therm-1", sensor_type=SensorType.THERMAL,
+            position=(50.0, 50.0), heading=0.0, fov_deg=180.0,
+            range_m=150.0, sensitivity=0.9, owner_id="observer",
+        ))
+        detection.set_signature("night-target", SignatureProfile(
+            visual=0.2, thermal=0.95, acoustic=0.5, radar=0.3,
+        ))
+        entity_positions = {"night-target": (80.0, 50.0)}
+        detection.tick(0.1, entity_positions, {"weather": "clear", "is_night": True})
+        detected_ids = {d.target_id for d in detection.detections}
+        assert "night-target" in detected_ids
+
+
+# ====================================================================
+# Deep integration: medical processes injuries from damage
+# ====================================================================
+
+
+class TestMedicalIntegration:
+    """Test medical engine processes injuries from combat damage."""
+
+    def test_inflict_injury_creates_casualty(self):
+        medical = MedicalEngine()
+        medical.inflict_injury("unit-1", InjuryType.GUNSHOT)
+        assert len(medical.casualties) >= 1
+
+    def test_multiple_injuries_tracked(self):
+        medical = MedicalEngine()
+        medical.inflict_injury("unit-1", InjuryType.GUNSHOT)
+        medical.inflict_injury("unit-2", InjuryType.BLAST)
+        medical.inflict_injury("unit-3", InjuryType.BURN)
+        assert len(medical.casualties) >= 3
+
+    def test_medical_tick_runs(self):
+        medical = MedicalEngine()
+        medical.inflict_injury("unit-1", InjuryType.GUNSHOT)
+        # Should not crash
+        events = medical.tick(0.1)
+        assert isinstance(events, list)
+
+    def test_medical_to_three_js(self):
+        medical = MedicalEngine()
+        medical.inflict_injury("unit-1", InjuryType.GUNSHOT)
+        data = medical.to_three_js()
+        assert isinstance(data, dict)
+
+
+# ====================================================================
+# Deep integration: logistics resupply
+# ====================================================================
+
+
+class TestLogisticsIntegration:
+    """Test logistics resupply when units are near caches."""
+
+    def test_cache_created_with_supplies(self):
+        logistics = LogisticsEngine()
+        cache = cache_from_preset(
+            "infantry_fob", "cache-1", (100.0, 100.0), alliance="friendly",
+        )
+        logistics.add_cache(cache)
+        assert len(logistics.caches) == 1
+        assert cache.available(SupplyType.AMMO) > 0
+
+    def test_unit_supplies_consumed(self):
+        logistics = LogisticsEngine()
+        cache = cache_from_preset(
+            "infantry_fob", "cache-1", (100.0, 100.0), alliance="friendly",
+        )
+        logistics.add_cache(cache)
+        uid = "soldier-1"
+        logistics.set_consumption_rate(uid, {SupplyType.AMMO: 1.0})
+        logistics.unit_supplies[uid] = {SupplyType.AMMO: 10.0}
+        # Tick many times
+        for _ in range(20):
+            logistics.tick(
+                0.1,
+                unit_positions={uid: (100.0, 100.0)},
+                unit_alliances={uid: "friendly"},
+            )
+        ammo = logistics.unit_supplies.get(uid, {}).get(SupplyType.AMMO, 10.0)
+        # Ammo should have decreased or been resupplied from cache
+        cache_ammo = cache.available(SupplyType.AMMO)
+        # Either unit consumed or cache was tapped
+        assert ammo < 10.0 or cache_ammo < cache.capacity.get(SupplyType.AMMO, 0.0)
+
+    def test_logistics_to_three_js(self):
+        logistics = LogisticsEngine()
+        cache = cache_from_preset(
+            "forward_cache", "cache-1", (50.0, 50.0), alliance="friendly",
+        )
+        logistics.add_cache(cache)
+        data = logistics.to_three_js()
+        assert isinstance(data, dict)
+        assert "caches" in data
+
+
+# ====================================================================
+# Deep integration: scoring tracks kills from world events
+# ====================================================================
+
+
+class TestScoringIntegration:
+    """Test scoring engine tracks kills from world events."""
+
+    def test_record_kill_updates_leaderboard(self):
+        scoring = ScoringEngine()
+        scoring.register_unit("killer-1", "Ace", "friendly")
+        scoring.register_unit("victim-1", "Target", "hostile")
+        scoring.record_kill("killer-1", "victim-1")
+        lb = scoring.get_leaderboard()
+        assert len(lb) >= 2
+        # The killer should have 1 kill
+        killer_entry = next((e for e in lb if e.get("unit_id") == "killer-1"), None)
+        assert killer_entry is not None
+        assert killer_entry.get("kills", 0) == 1
+
+    def test_team_scores_track_kills_and_deaths(self):
+        scoring = ScoringEngine()
+        scoring.register_unit("f1", "Friendly-1", "friendly")
+        scoring.register_unit("h1", "Hostile-1", "hostile")
+        scoring.record_kill("f1", "h1")
+        assert scoring.team_scores["friendly"].total_kills == 1
+        assert scoring.team_scores["hostile"].total_deaths == 1
+
+    def test_generate_aar_produces_report(self):
+        scoring = ScoringEngine()
+        scoring.register_unit("f1", "Alpha-1", "friendly")
+        scoring.register_unit("h1", "Tango-1", "hostile")
+        scoring.record_kill("f1", "h1")
+        aar = scoring.generate_aar(winner_alliance="friendly")
+        assert isinstance(aar, dict)
+
+
+# ====================================================================
+# Full game lifecycle test
+# ====================================================================
+
+
+class TestFullGameLifecycle:
+    """Test complete game lifecycle: start, tick 100 times, check stats, AAR."""
+
+    def test_lifecycle(self):
+        from tritium_lib.sim_engine.demos.game_server import build_full_game, game_tick
+
+        # Start
+        gs = build_full_game("urban_combat")
+        assert gs.world is not None
+        assert gs.scoring is not None
+
+        # Tick 100 times
+        for _ in range(100):
+            frame = game_tick(gs, dt=0.1)
+
+        # Check stats
+        assert gs.tick_count == 100
+        stats = frame["stats"]
+        assert stats["total_units"] > 0
+        total = stats["alive_friendly"] + stats["alive_hostile"] + stats["dead"]
+        assert total == stats["total_units"]
+
+        # Check leaderboard
+        lb = gs.scoring.get_leaderboard()
+        assert isinstance(lb, list)
+        assert len(lb) > 0
+
+        # Generate AAR
+        winner = None
+        if stats["alive_friendly"] > 0 and stats["alive_hostile"] == 0:
+            winner = "friendly"
+        elif stats["alive_hostile"] > 0 and stats["alive_friendly"] == 0:
+            winner = "hostile"
+        aar = gs.scoring.generate_aar(winner_alliance=winner)
+        assert isinstance(aar, dict)
+
+        # AAR should be JSON-serializable
+        import json
+        serialized = json.dumps(aar, default=str, ensure_ascii=True)
+        assert len(serialized) > 10
+
+    def test_lifecycle_frame_keys(self):
+        from tritium_lib.sim_engine.demos.game_server import build_full_game, game_tick
+
+        gs = build_full_game("urban_combat")
+        frame = game_tick(gs, dt=0.1)
+
+        # Frame should have all subsystem outputs
+        expected_keys = ["tick", "sim_time", "stats", "preset", "units",
+                         "detection", "comms", "medical", "logistics", "naval"]
+        for key in expected_keys:
+            assert key in frame, f"Missing key: {key}"
+
+    def test_lifecycle_multiple_presets(self):
+        """All world presets should work with game_tick."""
+        from tritium_lib.sim_engine.demos.game_server import build_full_game, game_tick
+
+        # build_full_game always uses urban_combat builder, so just verify
+        # it can tick without crashing
+        gs = build_full_game("urban_combat")
+        for _ in range(10):
+            frame = game_tick(gs, dt=0.1)
+        assert gs.tick_count == 10
