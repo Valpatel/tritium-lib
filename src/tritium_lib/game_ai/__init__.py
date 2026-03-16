@@ -106,4 +106,12 @@ __all__ = [
     "PersonRFProfile",
     "RFSignatureGenerator",
     "VehicleRFProfile",
+    "Building",
+    "BuildingType",
+    "DailySchedule",
+    "NeighborhoodSim",
+    "Resident",
+    "ResidentRole",
+    "ScheduleEntry",
+    "SimVehicle",
 ]
