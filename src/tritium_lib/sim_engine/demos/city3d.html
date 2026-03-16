@@ -3734,6 +3734,8 @@ function createHelicopter() {
     centerX: PLAZA_X,
     centerZ: PLAZA_Z,
     rotorAngle: 0,
+    searchTarget: null, // {x, z} crowd center during riot
+    searchTimer: 0,
   };
 }
 
@@ -5172,6 +5174,7 @@ function update(dt) {
           const newSlot = allocPersonSlot();
           if (newSlot >= 0) {
             const pos = taxi.dropoffTarget;
+            const _td = randomSidewalkPos(), _tw = planPedPath(pos, _td);
             pedestrians.push({
               slot: newSlot,
               x: pos.x, z: pos.z, y: 0, rotY: 0,
@@ -5179,7 +5182,7 @@ function update(dt) {
               headColor: taxi.passenger.headColor || SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)],
               scale: 1.0,
               speed: 1.5 + rng() * 1.5,
-              target: randomSidewalkPos(),
+              target: _tw[0], waypoints: _tw.slice(1),
               alive: true, fleeing: false,
             });
           }
@@ -5202,6 +5205,18 @@ function update(dt) {
       rotY = vehicleRotYFromDir(taxi.horizontal, taxi.dir);
     }
     taxi.lastRotY = rotY;
+    // Taxi brake lights + turn signals
+    const taxiBraking = taxi.pauseTimer > 0;
+    carTLMesh.setColorAt(taxi.idx * 2, taxiBraking ? _tlBrake : _tlDefault);
+    carTLMesh.setColorAt(taxi.idx * 2 + 1, taxiBraking ? _tlBrake : _tlDefault);
+    if (taxi.turnTimer > 0) {
+      taxi.turnTimer -= dt;
+      const tBlinkOn = Math.floor(performance.now() / 300) % 2 === 0;
+      const tSide = taxi.turnSignal || 0;
+      carHLMesh.setColorAt(taxi.idx * 2 + tSide, tBlinkOn ? _hlOrange : _hlDefault);
+      carHLMesh.setColorAt(taxi.idx * 2 + (1 - tSide), _hlDefault);
+      if (taxi.turnTimer <= 0) { taxi.turnTimer = 0; taxi.turnSignal = undefined; }
+    }
     updateCarInstance(taxi.idx, taxi.x, 0, taxi.z, rotY, taxi.bodyColor, taxi.cabinColor);
     updateCarHeadlights(taxi.idx, taxi.x, taxi.z, rotY, isNight);
     needsCarUpdate = true;
@@ -5212,7 +5227,22 @@ function update(dt) {
     if (!car.alive) continue;
     // Cap pause timer to prevent pause-lock from multiple collision events
     if (car.pauseTimer > 2.0) car.pauseTimer = 2.0;
-    if (car.pauseTimer > 0) { car.pauseTimer -= dt; continue; }
+    if (car.pauseTimer > 0) {
+      car.pauseTimer -= dt;
+      // Brake lights ON while paused; also tick turn signals
+      carTLMesh.setColorAt(car.idx * 2, _tlBrake);
+      carTLMesh.setColorAt(car.idx * 2 + 1, _tlBrake);
+      if (car.turnTimer > 0) {
+        car.turnTimer -= dt;
+        const blinkOn = Math.floor(performance.now() / 300) % 2 === 0;
+        const side = car.turnSignal || 0;
+        carHLMesh.setColorAt(car.idx * 2 + side, blinkOn ? _hlOrange : _hlDefault);
+        carHLMesh.setColorAt(car.idx * 2 + (1 - side), _hlDefault);
+        if (car.turnTimer <= 0) { car.turnTimer = 0; car.turnSignal = undefined; }
+      }
+      needsCarUpdate = true;
+      continue;
+    }
 
     if (!car.nextIntersection) {
       // Off the edge — pick a new road
