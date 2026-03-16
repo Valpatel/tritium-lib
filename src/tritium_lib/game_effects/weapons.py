@@ -36,6 +36,8 @@ class FireMode(Enum):
     AUTO = "auto"       # Continuous fire while triggered
     BOLT = "bolt"       # Bolt action — slow, powerful, manual cycle
     PUMP = "pump"       # Pump action — shotgun style
+    MELEE = "melee"     # Swing/stab — no projectile, contact damage
+    THROWN = "thrown"    # Single throw — grenade, knife, rock
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +161,78 @@ WEAPONS: dict[str, WeaponProfile] = {
         damage=20, spread_deg=5.0, tracer_every=3,
         sound_id="minigun_spin", muzzle_flash_size=1.5,
         spread_bloom_per_shot=0.0, spread_max_deg=8.0,
+    ),
+
+    # --- Pistols (more variety) ---
+    "revolver": WeaponProfile(
+        "Revolver .357", FireMode.SEMI, rpm=90,
+        effective_range=50, damage=40, spread_deg=3.0,
+        sound_id="pistol_heavy", muzzle_flash_size=0.8,
+        sound_pitch_base=0.75, recoil_force=2.0,
+    ),
+    "glock": WeaponProfile(
+        "Glock 17", FireMode.SEMI, rpm=150,
+        effective_range=50, damage=18, spread_deg=3.5,
+        sound_id="pistol_shot", muzzle_flash_size=0.5,
+        sound_pitch_base=1.05,
+    ),
+
+    # --- Melee ---
+    "knife": WeaponProfile(
+        "Combat Knife", FireMode.MELEE, rpm=120,
+        projectile_speed=0, effective_range=2.0, damage=35,
+        spread_deg=0, sound_id="knife_slash", muzzle_flash_size=0.0,
+        sound_volume=0.6, recoil_force=0.0,
+    ),
+    "machete": WeaponProfile(
+        "Machete", FireMode.MELEE, rpm=80,
+        projectile_speed=0, effective_range=2.5, damage=50,
+        spread_deg=0, sound_id="blade_swing", muzzle_flash_size=0.0,
+        sound_volume=0.7, recoil_force=0.0,
+    ),
+    "bat": WeaponProfile(
+        "Baseball Bat", FireMode.MELEE, rpm=60,
+        projectile_speed=0, effective_range=2.5, damage=30,
+        spread_deg=0, sound_id="bat_swing", muzzle_flash_size=0.0,
+        sound_volume=0.8, recoil_force=0.0, sound_pitch_base=0.6,
+    ),
+    "fists": WeaponProfile(
+        "Fists", FireMode.MELEE, rpm=180,
+        projectile_speed=0, effective_range=1.5, damage=10,
+        spread_deg=0, sound_id="punch", muzzle_flash_size=0.0,
+        sound_volume=0.5, recoil_force=0.0, sound_pitch_base=1.3,
+    ),
+    "taser": WeaponProfile(
+        "Taser", FireMode.SEMI, rpm=10,
+        projectile_speed=50, effective_range=5.0, damage=5,
+        spread_deg=2.0, sound_id="taser_zap", muzzle_flash_size=0.3,
+        sound_volume=0.7, sound_pitch_base=1.8,
+    ),
+
+    # --- Thrown ---
+    "grenade": WeaponProfile(
+        "Frag Grenade", FireMode.THROWN, rpm=15,
+        projectile_speed=15, effective_range=30, damage=100,
+        spread_deg=5.0, sound_id="grenade_throw", muzzle_flash_size=0.0,
+        sound_volume=0.4, recoil_force=0.0,
+    ),
+    "molotov": WeaponProfile(
+        "Molotov Cocktail", FireMode.THROWN, rpm=12,
+        projectile_speed=12, effective_range=25, damage=40,
+        spread_deg=8.0, sound_id="bottle_throw", muzzle_flash_size=0.0,
+        sound_volume=0.4, recoil_force=0.0,
+    ),
+    "throwing_knife": WeaponProfile(
+        "Throwing Knife", FireMode.THROWN, rpm=40,
+        projectile_speed=20, effective_range=15, damage=45,
+        spread_deg=3.0, sound_id="knife_throw", muzzle_flash_size=0.0,
+        sound_volume=0.3, recoil_force=0.0,
+    ),
+    "rock": WeaponProfile(
+        "Rock", FireMode.THROWN, rpm=30,
+        projectile_speed=10, effective_range=20, damage=8,
+        spread_deg=10.0, sound_id="rock_throw", muzzle_flash_size=0.0,
+        sound_volume=0.3, recoil_force=0.0, sound_pitch_base=0.7,
     ),
 
     # --- Special ---

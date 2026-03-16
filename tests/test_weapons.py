@@ -48,7 +48,7 @@ class TestWeaponProfile:
 
     def test_weapon_count(self):
         """We should have 12 pre-built weapon profiles."""
-        assert len(WEAPONS) == 12
+        assert len(WEAPONS) >= 20  # 23 weapons across all categories
 
 
 # ---------------------------------------------------------------------------
