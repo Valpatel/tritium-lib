@@ -8,6 +8,9 @@ follow realistic daily patterns.  Entities move along paths, respond to
 time-of-day density profiles, and export dicts compatible with
 TargetTracker ingestion.
 
+Uses Vec2 = tuple[float, float] consistent with the rest of the movement
+module (steering, pathfinding).
+
 Usage::
 
     from tritium_lib.movement.ambient import AmbientSimulator, ActivityProfile
@@ -25,47 +28,11 @@ from __future__ import annotations
 
 import math
 import random
-import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
-
-# ---------------------------------------------------------------------------
-# Vec2 — lightweight 2D vector
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Vec2:
-    """Simple 2D vector for local-meter coordinates."""
-
-    x: float = 0.0
-    y: float = 0.0
-
-    def __add__(self, other: Vec2) -> Vec2:
-        return Vec2(self.x + other.x, self.y + other.y)
-
-    def __sub__(self, other: Vec2) -> Vec2:
-        return Vec2(self.x - other.x, self.y - other.y)
-
-    def __mul__(self, scalar: float) -> Vec2:
-        return Vec2(self.x * scalar, self.y * scalar)
-
-    def length(self) -> float:
-        return math.hypot(self.x, self.y)
-
-    def normalized(self) -> Vec2:
-        ln = self.length()
-        if ln < 1e-9:
-            return Vec2(0.0, 0.0)
-        return Vec2(self.x / ln, self.y / ln)
-
-    def distance_to(self, other: Vec2) -> float:
-        return (self - other).length()
-
-    def as_tuple(self) -> tuple[float, float]:
-        return (self.x, self.y)
+from tritium_lib.movement.steering import Vec2, distance, normalize, magnitude
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +74,29 @@ _STOP_CHANCE: dict[str, float] = {
 
 
 # ---------------------------------------------------------------------------
+# Vec2 helpers (thin wrappers around steering module)
+# ---------------------------------------------------------------------------
+
+def _add(a: Vec2, b: Vec2) -> Vec2:
+    return (a[0] + b[0], a[1] + b[1])
+
+
+def _sub(a: Vec2, b: Vec2) -> Vec2:
+    return (a[0] - b[0], a[1] - b[1])
+
+
+def _scale(v: Vec2, s: float) -> Vec2:
+    return (v[0] * s, v[1] * s)
+
+
+def _clamp_to_bounds(p: Vec2, lo: Vec2, hi: Vec2) -> Vec2:
+    return (
+        max(lo[0], min(hi[0], p[0])),
+        max(lo[1], min(hi[1], p[1])),
+    )
+
+
+# ---------------------------------------------------------------------------
 # ActivityProfile — time-of-day density curves
 # ---------------------------------------------------------------------------
 
@@ -130,60 +120,54 @@ class ActivityProfile:
         Morning rush 7-9, evening rush 5-7, quiet overnight.
         """
         p = cls()
-        ped = {
+        p.pedestrian_density = {
             0: 0.02, 1: 0.01, 2: 0.01, 3: 0.01, 4: 0.02, 5: 0.05,
             6: 0.15, 7: 0.45, 8: 0.55, 9: 0.35, 10: 0.25, 11: 0.30,
             12: 0.40, 13: 0.35, 14: 0.30, 15: 0.40, 16: 0.50, 17: 0.60,
             18: 0.55, 19: 0.40, 20: 0.25, 21: 0.15, 22: 0.08, 23: 0.04,
         }
-        veh = {
+        p.vehicle_density = {
             0: 0.03, 1: 0.02, 2: 0.02, 3: 0.02, 4: 0.05, 5: 0.10,
             6: 0.25, 7: 0.60, 8: 0.70, 9: 0.40, 10: 0.25, 11: 0.30,
             12: 0.35, 13: 0.30, 14: 0.25, 15: 0.35, 16: 0.55, 17: 0.70,
             18: 0.55, 19: 0.35, 20: 0.20, 21: 0.12, 22: 0.08, 23: 0.05,
         }
-        p.pedestrian_density = ped
-        p.vehicle_density = veh
         return p
 
     @classmethod
     def commercial(cls) -> ActivityProfile:
         """Business district pattern — busy 8-18, dead at night."""
         p = cls()
-        ped = {
+        p.pedestrian_density = {
             0: 0.02, 1: 0.01, 2: 0.01, 3: 0.01, 4: 0.02, 5: 0.03,
             6: 0.08, 7: 0.25, 8: 0.65, 9: 0.80, 10: 0.85, 11: 0.90,
             12: 0.95, 13: 0.90, 14: 0.85, 15: 0.80, 16: 0.70, 17: 0.55,
             18: 0.30, 19: 0.15, 20: 0.08, 21: 0.05, 22: 0.03, 23: 0.02,
         }
-        veh = {
+        p.vehicle_density = {
             0: 0.02, 1: 0.01, 2: 0.01, 3: 0.02, 4: 0.03, 5: 0.05,
             6: 0.15, 7: 0.45, 8: 0.75, 9: 0.65, 10: 0.50, 11: 0.55,
             12: 0.60, 13: 0.55, 14: 0.50, 15: 0.55, 16: 0.65, 17: 0.80,
             18: 0.50, 19: 0.25, 20: 0.10, 21: 0.05, 22: 0.03, 23: 0.02,
         }
-        p.pedestrian_density = ped
-        p.vehicle_density = veh
         return p
 
     @classmethod
     def school(cls) -> ActivityProfile:
         """School zone pattern — peaks at 8am and 3pm."""
         p = cls()
-        ped = {
+        p.pedestrian_density = {
             0: 0.01, 1: 0.01, 2: 0.01, 3: 0.01, 4: 0.01, 5: 0.02,
             6: 0.05, 7: 0.40, 8: 0.90, 9: 0.20, 10: 0.10, 11: 0.10,
             12: 0.15, 13: 0.10, 14: 0.30, 15: 0.90, 16: 0.50, 17: 0.20,
             18: 0.10, 19: 0.05, 20: 0.03, 21: 0.02, 22: 0.01, 23: 0.01,
         }
-        veh = {
+        p.vehicle_density = {
             0: 0.02, 1: 0.01, 2: 0.01, 3: 0.01, 4: 0.02, 5: 0.05,
             6: 0.10, 7: 0.50, 8: 0.85, 9: 0.20, 10: 0.10, 11: 0.10,
             12: 0.15, 13: 0.10, 14: 0.35, 15: 0.85, 16: 0.45, 17: 0.20,
             18: 0.10, 19: 0.05, 20: 0.03, 21: 0.02, 22: 0.01, 23: 0.01,
         }
-        p.pedestrian_density = ped
-        p.vehicle_density = veh
         return p
 
     def density_at(self, hour: float, entity_type: str) -> float:
@@ -210,19 +194,23 @@ class ActivityProfile:
 
 @dataclass
 class AmbientEntity:
-    """A simulated background entity (pedestrian, vehicle, cyclist, etc.)."""
+    """A simulated background entity (pedestrian, vehicle, cyclist, etc.).
+
+    All positions and velocities use Vec2 = tuple[float, float] in local
+    meters, consistent with tritium_lib.movement.steering.
+    """
 
     entity_id: str = ""
     entity_type: str = EntityType.PEDESTRIAN
-    position: Vec2 = field(default_factory=Vec2)
-    velocity: Vec2 = field(default_factory=Vec2)
+    position: Vec2 = (0.0, 0.0)
+    velocity: Vec2 = (0.0, 0.0)
     heading: float = 0.0  # degrees, 0=north, clockwise
     speed: float = 1.2
     state: EntityState = EntityState.MOVING
     path: list[Vec2] = field(default_factory=list)
     path_index: int = 0
     _stop_timer: float = 0.0
-    _wander_offset: Vec2 = field(default_factory=Vec2)
+    _wander_offset: Vec2 = (0.0, 0.0)
 
     # -- movement -------------------------------------------------------------
 
@@ -238,7 +226,7 @@ class AmbientEntity:
             if self._stop_timer <= 0:
                 self.state = EntityState.MOVING
             else:
-                self.velocity = Vec2(0.0, 0.0)
+                self.velocity = (0.0, 0.0)
                 return
 
         # Random stops (phone check, dog sniffing, traffic light)
@@ -248,32 +236,28 @@ class AmbientEntity:
             if self.entity_type == EntityType.DOG_WALKER:
                 self._stop_timer = random.uniform(3.0, 15.0)
             self.state = EntityState.STOPPED
-            self.velocity = Vec2(0.0, 0.0)
+            self.velocity = (0.0, 0.0)
             return
 
         # Follow path if one exists
         if self.path and self.path_index < len(self.path):
             target = self.path[self.path_index]
+
             # Dog walker wander offset
             if self.entity_type == EntityType.DOG_WALKER:
-                offset = Vec2(
-                    random.gauss(0, 0.3),
-                    random.gauss(0, 0.3),
-                )
-                self._wander_offset = Vec2(
-                    self._wander_offset.x * 0.95 + offset.x * 0.05,
-                    self._wander_offset.y * 0.95 + offset.y * 0.05,
-                )
-                target = target + self._wander_offset
+                ox = self._wander_offset[0] * 0.95 + random.gauss(0, 0.3) * 0.05
+                oy = self._wander_offset[1] * 0.95 + random.gauss(0, 0.3) * 0.05
+                self._wander_offset = (ox, oy)
+                target = _add(target, self._wander_offset)
 
-            direction = target - self.position
-            dist = direction.length()
+            direction = _sub(target, self.position)
+            dist = magnitude(direction)
 
             if dist < self.speed * dt * 1.5:
                 # Arrived at waypoint
                 self.path_index += 1
-                # Joggers loop back to start
                 if self.path_index >= len(self.path):
+                    # Joggers loop back to start
                     if self.entity_type == EntityType.JOGGER:
                         self.path_index = 0
                     else:
@@ -283,21 +267,20 @@ class AmbientEntity:
                         else:
                             self.state = EntityState.STOPPED
                             self._stop_timer = random.uniform(5.0, 30.0)
-                        self.velocity = Vec2(0.0, 0.0)
+                        self.velocity = (0.0, 0.0)
                         return
             else:
-                norm = direction.normalized()
-                self.velocity = norm * self.speed
-                self.heading = math.degrees(math.atan2(norm.x, norm.y)) % 360
+                norm = normalize(direction)
+                self.velocity = _scale(norm, self.speed)
+                self.heading = math.degrees(math.atan2(norm[0], norm[1])) % 360
 
         # Apply velocity
-        self.position = self.position + self.velocity * dt
+        self.position = _add(self.position, _scale(self.velocity, dt))
 
         # Clamp to walkable area
         if walkable_area:
             lo, hi = walkable_area
-            self.position.x = max(lo.x, min(hi.x, self.position.x))
-            self.position.y = max(lo.y, min(hi.y, self.position.y))
+            self.position = _clamp_to_bounds(self.position, lo, hi)
 
     # -- serialization --------------------------------------------------------
 
@@ -307,8 +290,6 @@ class AmbientEntity:
         classification = "person"
         if etype == EntityType.VEHICLE:
             classification = "vehicle"
-        elif etype == EntityType.CYCLIST:
-            classification = "person"
 
         return {
             "target_id": f"amb_{self.entity_id}",
@@ -317,8 +298,8 @@ class AmbientEntity:
             "asset_type": etype,
             "alliance": "neutral",
             "classification": classification,
-            "position_x": self.position.x,
-            "position_y": self.position.y,
+            "position_x": self.position[0],
+            "position_y": self.position[1],
             "heading": self.heading,
             "speed": self.speed if self.state == EntityState.MOVING else 0.0,
             "state": self.state.value if isinstance(self.state, EntityState) else self.state,
@@ -393,7 +374,7 @@ class AmbientSimulator:
         ent = AmbientEntity(
             entity_id=self._uid(),
             entity_type=EntityType.PEDESTRIAN,
-            position=Vec2(pos.x, pos.y),
+            position=(pos[0], pos[1]),
             speed=speed,
             path=path,
             state=EntityState.MOVING,
@@ -413,7 +394,7 @@ class AmbientSimulator:
         ent = AmbientEntity(
             entity_id=self._uid(),
             entity_type=EntityType.VEHICLE,
-            position=Vec2(pos.x, pos.y),
+            position=(pos[0], pos[1]),
             speed=speed,
             path=path,
             state=EntityState.MOVING,
@@ -430,7 +411,7 @@ class AmbientSimulator:
         ent = AmbientEntity(
             entity_id=self._uid(),
             entity_type=EntityType.JOGGER,
-            position=Vec2(pos.x, pos.y),
+            position=(pos[0], pos[1]),
             speed=speed,
             path=route,
             state=EntityState.MOVING,
@@ -447,7 +428,7 @@ class AmbientSimulator:
         ent = AmbientEntity(
             entity_id=self._uid(),
             entity_type=EntityType.DOG_WALKER,
-            position=Vec2(pos.x, pos.y),
+            position=(pos[0], pos[1]),
             speed=speed,
             path=path,
             state=EntityState.MOVING,
@@ -464,7 +445,7 @@ class AmbientSimulator:
         ent = AmbientEntity(
             entity_id=self._uid(),
             entity_type=EntityType.CYCLIST,
-            position=Vec2(pos.x, pos.y),
+            position=(pos[0], pos[1]),
             speed=speed,
             path=path,
             state=EntityState.MOVING,
@@ -479,9 +460,9 @@ class AmbientSimulator:
 
     def _random_position(self) -> Vec2:
         lo, hi = self.bounds
-        return Vec2(
-            self._rng.uniform(lo.x, hi.x),
-            self._rng.uniform(lo.y, hi.y),
+        return (
+            self._rng.uniform(lo[0], hi[0]),
+            self._rng.uniform(lo[1], hi[1]),
         )
 
     def _random_edge_position(self) -> Vec2:
@@ -489,60 +470,57 @@ class AmbientSimulator:
         lo, hi = self.bounds
         edge = self._rng.randint(0, 3)
         if edge == 0:  # top
-            return Vec2(self._rng.uniform(lo.x, hi.x), hi.y)
+            return (self._rng.uniform(lo[0], hi[0]), hi[1])
         elif edge == 1:  # bottom
-            return Vec2(self._rng.uniform(lo.x, hi.x), lo.y)
+            return (self._rng.uniform(lo[0], hi[0]), lo[1])
         elif edge == 2:  # left
-            return Vec2(lo.x, self._rng.uniform(lo.y, hi.y))
+            return (lo[0], self._rng.uniform(lo[1], hi[1]))
         else:  # right
-            return Vec2(hi.x, self._rng.uniform(lo.y, hi.y))
+            return (hi[0], self._rng.uniform(lo[1], hi[1]))
 
     def _generate_walking_path(
         self, start: Vec2, end: Vec2, waypoints: int = 3
     ) -> list[Vec2]:
         """Generate a walking path with random intermediate waypoints."""
-        path = [Vec2(start.x, start.y)]
+        path: list[Vec2] = [(start[0], start[1])]
         for i in range(1, waypoints + 1):
             frac = i / (waypoints + 1)
-            mid_x = start.x + (end.x - start.x) * frac + self._rng.gauss(0, 15)
-            mid_y = start.y + (end.y - start.y) * frac + self._rng.gauss(0, 15)
-            # Clamp to bounds
+            mid_x = start[0] + (end[0] - start[0]) * frac + self._rng.gauss(0, 15)
+            mid_y = start[1] + (end[1] - start[1]) * frac + self._rng.gauss(0, 15)
             lo, hi = self.bounds
-            mid_x = max(lo.x, min(hi.x, mid_x))
-            mid_y = max(lo.y, min(hi.y, mid_y))
-            path.append(Vec2(mid_x, mid_y))
-        path.append(Vec2(end.x, end.y))
+            mid_x = max(lo[0], min(hi[0], mid_x))
+            mid_y = max(lo[1], min(hi[1], mid_y))
+            path.append((mid_x, mid_y))
+        path.append((end[0], end[1]))
         return path
 
     def _generate_road_path(self, start: Vec2, end: Vec2) -> list[Vec2]:
         """Generate an L-shaped or Z-shaped road path (axis-aligned turns)."""
-        path = [Vec2(start.x, start.y)]
-        # One or two axis-aligned turns
+        path: list[Vec2] = [(start[0], start[1])]
         if self._rng.random() < 0.5:
             # L-shape: go horizontal first, then vertical
-            path.append(Vec2(end.x, start.y))
+            path.append((end[0], start[1]))
         else:
             # Z-shape: go vertical partway, horizontal, then vertical
-            mid_y = start.y + (end.y - start.y) * self._rng.uniform(0.3, 0.7)
-            path.append(Vec2(start.x, mid_y))
-            path.append(Vec2(end.x, mid_y))
-        path.append(Vec2(end.x, end.y))
+            mid_y = start[1] + (end[1] - start[1]) * self._rng.uniform(0.3, 0.7)
+            path.append((start[0], mid_y))
+            path.append((end[0], mid_y))
+        path.append((end[0], end[1]))
         return path
 
     def _generate_loop_path(self, center: Vec2, radius: float = 80.0) -> list[Vec2]:
         """Generate a roughly circular loop path for joggers."""
         points: list[Vec2] = []
         n = 8
+        lo, hi = self.bounds
         for i in range(n):
             angle = 2 * math.pi * i / n
             r = radius * self._rng.uniform(0.8, 1.2)
-            px = center.x + r * math.cos(angle)
-            py = center.y + r * math.sin(angle)
-            # Clamp to bounds
-            lo, hi = self.bounds
-            px = max(lo.x, min(hi.x, px))
-            py = max(lo.y, min(hi.y, py))
-            points.append(Vec2(px, py))
+            px = center[0] + r * math.cos(angle)
+            py = center[1] + r * math.sin(angle)
+            px = max(lo[0], min(hi[0], px))
+            py = max(lo[1], min(hi[1], py))
+            points.append((px, py))
         return points
 
     def _adjust_population(self, current_hour: float) -> None:
@@ -553,7 +531,7 @@ class AmbientSimulator:
         want_ped = max(0, int(self._target_pedestrians * ped_density))
         want_veh = max(0, int(self._target_vehicles * veh_density))
 
-        # Count current by type (non-vehicle pedestrian-like types count as pedestrians)
+        # Count current by type
         cur_ped = 0
         cur_veh = 0
         for e in self.entities.values():

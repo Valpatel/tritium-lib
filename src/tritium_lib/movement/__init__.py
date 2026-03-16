@@ -39,6 +39,14 @@ from .pathfinding import (
     plan_random_walk,
 )
 
+from .ambient import (
+    ActivityProfile,
+    AmbientEntity,
+    AmbientSimulator,
+    EntityState,
+    EntityType,
+)
+
 __all__ = [
     "Vec2",
     "distance",
@@ -63,4 +71,9 @@ __all__ = [
     "WalkableArea",
     "plan_patrol_route",
     "plan_random_walk",
+    "ActivityProfile",
+    "AmbientEntity",
+    "AmbientSimulator",
+    "EntityState",
+    "EntityType",
 ]
