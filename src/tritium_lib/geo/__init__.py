@@ -203,20 +203,27 @@ def point_in_polygon(
 
 
 def point_in_polygon_latlng(
-    lat: float, lng: float, polygon: list[tuple[float, float]]
+    lat: float, lng: float, polygon: list
 ) -> bool:
     """Point-in-polygon test using (lat, lng) coordinates.
 
-    Alias for point_in_polygon with lat/lng naming convention.
+    Accepts polygon vertices as either tuples ``(lat, lng)`` or dicts
+    ``{"lat": float, "lon": float}`` (as used by floorplan room polygons).
 
     Args:
         lat: Latitude of the point to test.
         lng: Longitude of the point to test.
-        polygon: List of (lat, lng) vertices defining a closed polygon.
+        polygon: List of vertices — tuples or dicts with "lat"/"lon" keys.
 
     Returns:
         True if the point is inside the polygon.
     """
+    if not polygon:
+        return False
+    # Normalize dicts to tuples if needed
+    first = polygon[0]
+    if isinstance(first, dict):
+        polygon = [(v.get("lat", 0), v.get("lon", v.get("lng", 0))) for v in polygon]
     return point_in_polygon(lat, lng, polygon)
 
 
