@@ -191,7 +191,8 @@ canvas { display: block; }
       Civilians: <span class="stat-val" id="civ-count">0</span><br>
       Protestors: <span class="protestor-val" id="protestor-count">0</span><br>
       Police: <span class="police-val" id="police-count">0</span><br>
-      Arrests: <span class="hostile-val" id="arrest-count">0</span>
+      Arrests: <span class="hostile-val" id="arrest-count">0</span><br>
+      ROS2 Robots: <span style="color:#00f0ff;font-weight:bold" id="robot-count">0</span>
       <div id="riot-stats">
         Molotovs: <span class="hostile-val" id="molotov-count">0</span><br>
         Tear Gas: <span class="police-val" id="teargas-count">0</span><br>
@@ -322,6 +323,15 @@ const policeVans = [];
 const injuredOnGround = []; // people lying on ground waiting for ambulance
 const carDrivers = []; // civilians who own cars and drive between buildings
 
+// ROS2 Robot Car state
+const NUM_ROBOT_CARS = 3;
+const LIDAR_RAYS = 12;
+const LIDAR_RANGE = 15;
+const ROBOT_TRAIL_LENGTH = 20;
+const robotCars = []; // references into cars[] with isRobot=true
+let robotLidarAngle = 0; // shared rotation angle for all robot lidar
+let robotTotalHits = 0; // total lidar hits this frame (for debug)
+
 // Weather state
 let rainActive = false;
 let fogOverride = false;
@@ -337,6 +347,227 @@ const TERRITORY_UPDATE_INTERVAL = 2.0; // update every 2 seconds
 const objectives = [];
 
 const rng = () => Math.random();
+
+// =========================================================================
+// Commander Narration System (demonstrates commander.py)
+// =========================================================================
+const narrationMessages = [];
+const NARRATION_MAX_VISIBLE = 4;
+const NARRATION_FADE_TIME = 8;
+
+const narrationTemplates = {
+  riot_start: [
+    '<span class="callsign">DISPATCH:</span> All units, Code 10-10 at Central Plaza. Riot in progress.',
+    '<span class="callsign">DISPATCH:</span> 10-10 Central Plaza. Civil disturbance, all available units respond.',
+    '<span class="callsign">COMMAND:</span> Declaring Code 10-10. Central Plaza. All units converge.',
+  ],
+  tear_gas: [
+    '<span class="callsign">ALPHA LEAD:</span> Gas deployed at grid {grid}. Wind from northwest.',
+    '<span class="callsign">BRAVO-2:</span> Tear gas away at {grid}. Masks on.',
+    '<span class="callsign">ALPHA-1:</span> CS deployed grid {grid}. Crowd beginning to disperse.',
+  ],
+  molotov: [
+    '<span class="callsign">ALPHA-3:</span> <span class="alert">CONTACT</span> Incendiary device thrown at our position!',
+    '<span class="callsign">BRAVO-1:</span> <span class="alert">MOLOTOV</span> at police line! Taking fire!',
+    '<span class="callsign">CHARLIE-2:</span> <span class="alert">FIREBOMB</span> inbound! Officers take cover!',
+  ],
+  officer_down: [
+    '<span class="callsign">MEDIC:</span> <span class="alert">Officer down</span> at grid {grid}! Requesting immediate evac!',
+    '<span class="callsign">ALPHA-4:</span> <span class="alert">Man down!</span> Need medic at grid {grid}!',
+    '<span class="callsign">DISPATCH:</span> <span class="alert">10-999</span> officer needs assistance, grid {grid}.',
+  ],
+  fire_started: [
+    '<span class="callsign">FIRE CONTROL:</span> Structure fire at grid {grid}. Dispatch engine.',
+    '<span class="callsign">DISPATCH:</span> Fire reported grid {grid}. Engine company responding.',
+    '<span class="callsign">BRAVO LEAD:</span> Fire at {grid}. Request fire suppression.',
+  ],
+  arrest: [
+    '<span class="callsign">DISPATCH:</span> <span class="info">Suspect in custody.</span> {n} total arrests.',
+    '<span class="callsign">ALPHA-2:</span> <span class="info">One in custody.</span> {n} total.',
+    '<span class="callsign">BRAVO-3:</span> <span class="info">Apprehended subject.</span> Running total: {n}.',
+  ],
+  all_clear: [
+    '<span class="callsign">COMMAND:</span> <span class="info">Situation stabilized.</span> Return to normal operations.',
+    '<span class="callsign">DISPATCH:</span> <span class="info">All clear.</span> Stand down from Code 10-10.',
+    '<span class="callsign">COMMAND:</span> <span class="info">Riot contained.</span> Resume patrol duties.',
+  ],
+  ambulance_dispatch: [
+    '<span class="callsign">DISPATCH:</span> Ambulance en route to grid {grid}. ETA 2 minutes.',
+    '<span class="callsign">MEDIC-1:</span> Responding to casualty at {grid}. Lights and sirens.',
+  ],
+  helicopter: [
+    '<span class="callsign">AIR-1:</span> Overhead Central Plaza. Searchlight active. Eyes on crowd.',
+    '<span class="callsign">AIR-1:</span> Orbiting plaza. Estimating {n} hostiles remaining.',
+  ],
+  van_deploy: [
+    '<span class="callsign">DISPATCH:</span> Tactical unit deploying at grid {grid}. Reinforcements on scene.',
+    '<span class="callsign">TAC-1:</span> Van on station. Deploying officers at {grid}.',
+  ],
+  fire_truck: [
+    '<span class="callsign">ENGINE-1:</span> Responding to fire at grid {grid}. ETA 90 seconds.',
+    '<span class="callsign">FIRE CONTROL:</span> Pumper en route to {grid}.',
+  ],
+  fire_extinguished: [
+    '<span class="callsign">ENGINE-1:</span> <span class="info">Fire knocked down</span> at grid {grid}. Overhaul in progress.',
+    '<span class="callsign">FIRE CONTROL:</span> <span class="info">Fire contained</span> at {grid}. All clear.',
+  ],
+};
+
+function formatGrid(x, z) {
+  const col = String.fromCharCode(65 + Math.min(7, Math.max(0, Math.floor((x / CITY_W) * 8))));
+  const row = Math.min(6, Math.max(1, Math.floor((z / CITY_H) * 6) + 1));
+  return col + row;
+}
+
+function pickTemplate(type, vars) {
+  const templates = narrationTemplates[type];
+  if (!templates || templates.length === 0) return '';
+  let msg = templates[Math.floor(rng() * templates.length)];
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      msg = msg.replace(new RegExp('\\{' + k + '\\}', 'g'), v);
+    }
+  }
+  return msg;
+}
+
+function addNarration(type, vars) {
+  const html = pickTemplate(type, vars);
+  if (!html) return;
+  narrationMessages.push({ html, age: 0 });
+  if (narrationMessages.length > NARRATION_MAX_VISIBLE) {
+    narrationMessages.shift();
+  }
+}
+
+function updateNarrationPanel(dt) {
+  const panel = document.getElementById('narration-panel');
+  if (!panel) return;
+
+  for (let i = narrationMessages.length - 1; i >= 0; i--) {
+    narrationMessages[i].age += dt;
+    if (narrationMessages[i].age > NARRATION_FADE_TIME + 2) {
+      narrationMessages.splice(i, 1);
+    }
+  }
+
+  if (narrationMessages.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+
+  panel.innerHTML = narrationMessages.map(m => {
+    const fading = m.age > NARRATION_FADE_TIME ? ' fading' : '';
+    return '<div class="narration-msg' + fading + '">' + m.html + '</div>';
+  }).join('');
+}
+
+// =========================================================================
+// Achievement System (demonstrates scoring.py)
+// =========================================================================
+let totalScore = 0;
+const achievementsAwarded = {};
+const achievementDefs = {
+  first_responder: { name: 'First Responder', desc: 'First ambulance dispatched', points: 100 },
+  firebreaker: { name: 'Firebreaker', desc: 'Fire truck extinguishes first fire', points: 150 },
+  peacekeeper: { name: 'Peacekeeper', desc: '5 arrests without injuries', points: 200 },
+  iron_line: { name: 'Iron Line', desc: 'Police hold line for 60 seconds', points: 250 },
+  crowd_control: { name: 'Crowd Control', desc: 'Tear gas disperses 10+ protestors', points: 175 },
+  under_fire: { name: 'Under Fire', desc: 'Survive 5 molotov attacks', points: 300 },
+};
+
+let policeLineHoldTime = 0;
+let tearGasDispersedTotal = 0;
+
+function awardAchievement(id) {
+  if (achievementsAwarded[id]) return;
+  const def = achievementDefs[id];
+  if (!def) return;
+  achievementsAwarded[id] = true;
+  totalScore += def.points;
+  showAchievementToast(def.name, def.desc, def.points);
+}
+
+function showAchievementToast(name, desc, points) {
+  const container = document.getElementById('achievement-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = 'achievement-toast';
+  toast.innerHTML =
+    '<span class="ach-icon">&#9733;</span>' +
+    '<span class="ach-name">' + name + '</span>' +
+    '<span class="ach-score">+' + points + '</span>' +
+    '<span class="ach-desc">' + desc + '</span>';
+
+  container.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      toast.classList.add('show');
+    });
+  });
+
+  setTimeout(() => {
+    toast.classList.remove('show');
+    toast.classList.add('hide');
+    setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 500);
+  }, 5000);
+}
+
+function checkAchievements(dt) {
+  if (!riotMode) return;
+
+  // Iron Line: police hold formation for 60 seconds during riot
+  if (riotPhase === 'RIOT' && police.length > 0) {
+    const holdingCount = police.filter(p => p.alive && p.holdLine).length;
+    if (holdingCount >= Math.floor(police.length * 0.7)) {
+      policeLineHoldTime += dt;
+      if (policeLineHoldTime >= 60) {
+        awardAchievement('iron_line');
+      }
+    }
+  }
+
+  // Peacekeeper: 5+ arrests and no injuries
+  if (arrestCount >= 5 && injuryCount === 0) {
+    awardAchievement('peacekeeper');
+  }
+}
+
+// =========================================================================
+// Soundtrack State (demonstrates soundtrack.py)
+// =========================================================================
+let soundtrackState = 'PEACEFUL';
+
+function updateSoundtrackState() {
+  let newState;
+  switch (riotPhase) {
+    case 'PEACEFUL': newState = 'PEACEFUL'; break;
+    case 'TENSION':  newState = 'TENSION'; break;
+    case 'RIOT':     newState = 'COMBAT'; break;
+    case 'DISPERSAL': newState = 'AFTERMATH'; break;
+    default: newState = 'PEACEFUL';
+  }
+  soundtrackState = newState;
+
+  const el = document.getElementById('soundtrack-indicator');
+  if (!el) return;
+
+  const stateMap = {
+    PEACEFUL:  { text: '\u266B PEACEFUL', cls: 'peaceful' },
+    TENSION:   { text: '\u266B TENSION', cls: 'tension' },
+    COMBAT:    { text: '\u266B COMBAT', cls: 'combat' },
+    AFTERMATH: { text: '\u266B AFTERMATH', cls: 'aftermath' },
+  };
+
+  const info = stateMap[soundtrackState] || stateMap.PEACEFUL;
+  el.textContent = info.text;
+  el.className = info.cls;
+}
 
 // Skin tones for heads
 const SKIN_TONES = [0xFFDBAC, 0xE5A073, 0xC68642, 0x8D5524, 0xF1C27D, 0xFFCD94];
@@ -888,8 +1119,8 @@ for (let row = 0; row < GRID_ROWS; row++) {
 
 // Patch hospital position into objective
 if (hospitalBuilding) {
-  objectiveDefs[2].x = hospitalBuilding.x;
-  objectiveDefs[2].z = hospitalBuilding.z;
+// DEFERRED: objectiveDefs[2].x = hospitalBuilding.x;
+// DEFERRED: objectiveDefs[2].z = hospitalBuilding.z;
 }
 
 // If no hospital was placed, force one
@@ -901,8 +1132,8 @@ if (!hospitalBuilding) {
 
 // Re-patch hospital objective position after possible force-placement
 if (hospitalBuilding) {
-  objectiveDefs[2].x = hospitalBuilding.x;
-  objectiveDefs[2].z = hospitalBuilding.z;
+// DEFERRED: objectiveDefs[2].x = hospitalBuilding.x;
+// DEFERRED: objectiveDefs[2].z = hospitalBuilding.z;
 }
 
 // Finalize instanced mesh instance matrices
@@ -1405,6 +1636,12 @@ const objectiveDefs = [
   { name: 'HOLD GROUND', x: PLAZA_X + 20, z: PLAZA_Z + 20, faction: 'protestor', objectiveColor: 0xfcee0a, objectiveStatus: 'inactive' },
   { name: 'PROTECT HOSPITAL', x: 0, z: 0, faction: 'police', objectiveColor: 0xfcee0a, objectiveStatus: 'inactive' }, // position set after hospital placed
 ];
+
+// Deferred: patch hospital position into objectives
+if (typeof hospitalBuilding !== 'undefined' && hospitalBuilding && objectiveDefs.length > 2) {
+  objectiveDefs[2].x = hospitalBuilding.x;
+  objectiveDefs[2].z = hospitalBuilding.z;
+}
 let objectiveRotation = 0;
 let holdGroundTimer = 0; // tracks how long protestors hold plaza
 
@@ -1776,23 +2013,90 @@ for (let i = 0; i < 10 && houseBuildings.length >= 2; i++) {
 // =========================================================================
 // Cars — road-following with intersection turns
 // =========================================================================
+const LANE_OFFSET = 1.5; // offset from road centerline per lane
+
 function pickRandomRoadStart() {
-  // Pick a random road segment
+  // Pick a random road segment, snap to proper lane from the start
   if (rng() < 0.5) {
     // Horizontal road
     const row = Math.floor(rng() * (GRID_ROWS + 1));
-    const z = hRoads[row];
+    const roadZ = hRoads[row];
     const col = Math.floor(rng() * GRID_COLS);
     const x = vRoads[col] + rng() * (BLOCK_W + ROAD_W);
-    return { x, z, horizontal: true, dir: rng() < 0.5 ? 1 : -1 };
+    const dir = rng() < 0.5 ? 1 : -1;
+    // Right-side driving: dir>0 (moving +X) uses +Z lane, dir<0 uses -Z lane
+    const z = roadZ + dir * LANE_OFFSET;
+    return { x, z, horizontal: true, dir };
   } else {
     // Vertical road
     const col = Math.floor(rng() * (GRID_COLS + 1));
-    const x = vRoads[col];
+    const roadX = vRoads[col];
     const row = Math.floor(rng() * GRID_ROWS);
     const z = hRoads[row] + rng() * (BLOCK_H + ROAD_W);
-    return { x, z, horizontal: false, dir: rng() < 0.5 ? 1 : -1 };
+    const dir = rng() < 0.5 ? 1 : -1;
+    // Right-side driving: dir>0 (moving +Z) uses -X lane, dir<0 uses +X lane
+    const x = roadX - dir * LANE_OFFSET;
+    return { x, z, horizontal: false, dir };
   }
+}
+
+// Collect all active road vehicles into a flat list for collision checks.
+// Called once per frame before vehicle update loops.
+let _allRoadVehicles = [];
+function collectAllRoadVehicles() {
+  const list = [];
+  for (const c of cars) {
+    if (c.alive) list.push({ x: c.x, z: c.z, dir: c.dir, horizontal: c.horizontal, speed: c.speed, paused: c.pauseTimer > 0, ref: c });
+  }
+  for (const t of taxis) {
+    if (t.alive) list.push({ x: t.x, z: t.z, dir: t.dir, horizontal: t.horizontal, speed: t.speed, paused: t.pauseTimer > 0, ref: t });
+  }
+  for (const cd of carDrivers) {
+    if (cd.alive && cd.carMoving) list.push({ x: cd.x, z: cd.z, dir: 0, horizontal: true, speed: 8, paused: false, ref: cd });
+  }
+  for (const a of ambulances) {
+    if (a.alive) list.push({ x: a.x, z: a.z, dir: 0, horizontal: true, speed: a.speed, paused: false, ref: a });
+  }
+  for (const ft of fireTrucks) {
+    if (ft.alive) list.push({ x: ft.x, z: ft.z, dir: 0, horizontal: true, speed: ft.speed, paused: false, ref: ft });
+  }
+  for (const pv of policeVans) {
+    if (pv.alive) list.push({ x: pv.x, z: pv.z, dir: 0, horizontal: true, speed: pv.speed, paused: false, ref: pv });
+  }
+  _allRoadVehicles = list;
+}
+
+// Check if a vehicle is blocked by any vehicle ahead in its lane.
+// Returns speed multiplier: 0 = full stop, 0.3 = crawl, 1.0 = clear.
+function checkVehicleCollision(vehRef, vehX, vehZ, horizontal, dir) {
+  const GAP_STOP = 3;    // full stop distance
+  const GAP_SLOW = 6;    // start slowing
+  const LANE_TOL = 2.5;  // lateral tolerance for same-lane check
+
+  let minAheadDist = Infinity;
+  let aheadStopped = false;
+
+  for (const other of _allRoadVehicles) {
+    if (other.ref === vehRef) continue;
+    const odx = other.x - vehX;
+    const odz = other.z - vehZ;
+
+    if (horizontal) {
+      if (Math.abs(odz) > LANE_TOL) continue;
+      const ahead = odx * dir;
+      if (ahead <= 0) continue;
+      if (ahead < minAheadDist) { minAheadDist = ahead; aheadStopped = other.paused; }
+    } else {
+      if (Math.abs(odx) > LANE_TOL) continue;
+      const ahead = odz * dir;
+      if (ahead <= 0) continue;
+      if (ahead < minAheadDist) { minAheadDist = ahead; aheadStopped = other.paused; }
+    }
+  }
+
+  if (minAheadDist < GAP_STOP) return 0;
+  if (minAheadDist < GAP_SLOW) return aheadStopped ? 0 : 0.3;
+  return 1.0;
 }
 
 function findNextIntersection(x, z, horizontal, dir) {
@@ -1827,24 +2131,109 @@ function findNextIntersection(x, z, horizontal, dir) {
 
 for (let i = 0; i < NUM_CARS; i++) {
   const start = pickRandomRoadStart();
-  const hue = rng();
-  const bodyColor = new THREE.Color().setHSL(hue, 0.6, 0.45).getHex();
-  const cabinColor = new THREE.Color().setHSL(hue, 0.5, 0.35).getHex();
+  const isRobot = i < NUM_ROBOT_CARS;
+  const hue = isRobot ? 0.52 : rng(); // cyan hue for robots
+  const bodyColor = isRobot ? 0x00f0ff : new THREE.Color().setHSL(hue, 0.6, 0.45).getHex();
+  const cabinColor = isRobot ? 0x008899 : new THREE.Color().setHSL(hue, 0.5, 0.35).getHex();
 
   const nextInt = findNextIntersection(start.x, start.z, start.horizontal, start.dir);
   const slot = allocCarSlot();
 
-  cars.push({
+  const carObj = {
     idx: slot,
     x: start.x, z: start.z,
     horizontal: start.horizontal,
     dir: start.dir,
-    speed: 5 + rng() * 8,
+    speed: isRobot ? 6 : 5 + rng() * 8,
     bodyColor, cabinColor,
     alive: true,
     pauseTimer: 0,
     nextIntersection: nextInt,
-  });
+    isRobot: isRobot,
+  };
+  cars.push(carObj);
+  if (isRobot) robotCars.push(carObj);
+}
+
+// =========================================================================
+// ROS2 Robot Car Visuals — lidar, trails, warning lights, labels
+// =========================================================================
+
+// Lidar spinning cylinder on roof (one per robot)
+const lidarCylGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.5, 8);
+const lidarCylMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 0.4 });
+const robotLidarCyls = [];
+for (let r = 0; r < NUM_ROBOT_CARS; r++) {
+  const cyl = new THREE.Mesh(lidarCylGeo, lidarCylMat);
+  cyl.frustumCulled = false;
+  scene.add(cyl);
+  robotLidarCyls.push(cyl);
+}
+
+// Lidar rays — one BufferGeometry LineSegments per robot, 12 rays x 2 verts = 24 verts
+const robotLidarLines = [];
+for (let r = 0; r < NUM_ROBOT_CARS; r++) {
+  const positions = new Float32Array(LIDAR_RAYS * 2 * 3); // 24 verts x 3 floats
+  const colors = new Float32Array(LIDAR_RAYS * 2 * 3);
+  // Initialize colors to cyan
+  for (let c = 0; c < colors.length; c += 3) {
+    colors[c] = 0; colors[c+1] = 0.94; colors[c+2] = 1.0;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5 });
+  const line = new THREE.LineSegments(geo, mat);
+  line.frustumCulled = false;
+  scene.add(line);
+  robotLidarLines.push({ line, positions, colors, geo });
+}
+
+// Trail lines — one per robot, 19 segments = 38 verts (LineSegments)
+const robotTrails = [];
+const TRAIL_SEGMENTS = ROBOT_TRAIL_LENGTH - 1;
+for (let r = 0; r < NUM_ROBOT_CARS; r++) {
+  const positions = new Float32Array(TRAIL_SEGMENTS * 2 * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.3 });
+  const line = new THREE.LineSegments(geo, mat);
+  line.frustumCulled = false;
+  scene.add(line);
+  const history = [];
+  robotTrails.push({ line, positions, geo, history, timer: 0 });
+}
+
+// Warning light — amber point light per robot (activated near obstacles)
+const robotWarningLights = [];
+for (let r = 0; r < NUM_ROBOT_CARS; r++) {
+  const light = new THREE.PointLight(0xffaa00, 0, 10);
+  scene.add(light);
+  robotWarningLights.push({ light, active: false, blinkTimer: 0 });
+}
+
+// ROS2 label sprites — canvas-based sprite above each robot
+const robotLabels = [];
+function makeRobotLabelSprite(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#00f0ff';
+  ctx.font = 'bold 20px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, 64, 22);
+  const tex = new THREE.CanvasTexture(canvas);
+  const spMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(spMat);
+  sprite.scale.set(4, 1, 1);
+  sprite.frustumCulled = false;
+  return sprite;
+}
+for (let r = 0; r < NUM_ROBOT_CARS; r++) {
+  const sprite = makeRobotLabelSprite('ROS2-' + (r + 1));
+  scene.add(sprite);
+  robotLabels.push(sprite);
 }
 
 // =========================================================================
@@ -1999,6 +2388,8 @@ function spawnAmbulance(targetPerson) {
   };
   ambulances.push(ambulance);
   addKillFeedEntry('Ambulance dispatched!');
+  addNarration('ambulance_dispatch', { grid: formatGrid(targetPerson.x, targetPerson.z) });
+  if (!achievementsAwarded.first_responder) awardAchievement('first_responder');
   playSiren();
 }
 
@@ -2034,7 +2425,10 @@ function updateAmbulances(dt) {
         if (dist < 3) {
           amb.waypointIdx++;
         } else {
-          const s = amb.speed * dt;
+          const ambHoriz = Math.abs(dx) > Math.abs(dz);
+          const ambDir = ambHoriz ? (dx > 0 ? 1 : -1) : (dz > 0 ? 1 : -1);
+          const collMult = checkVehicleCollision(amb, amb.x, amb.z, ambHoriz, ambDir);
+          const s = amb.speed * Math.max(collMult, 0.5) * dt; // emergency: never fully stop
           amb.x += (dx / dist) * s;
           amb.z += (dz / dist) * s;
         }
@@ -2298,6 +2692,7 @@ function createFire(pos) {
   scene.add(light);
   const totalLife = 20 + rng() * 10; // 20-30 seconds
   fires.push({ light, life: totalLife, age: 0, x: pos.x, z: pos.z, maxIntensity: 5 });
+  addNarration('fire_started', { grid: formatGrid(pos.x, pos.z) });
 
   // Initial burst of fire particles using instanced pool
   for (let i = 0; i < 12; i++) {
@@ -2398,6 +2793,7 @@ function spawnFireTruck(targetFire) {
     alive: true, sirenTimer: 0,
   });
   addKillFeedEntry('Fire truck dispatched!');
+  addNarration('fire_truck', { grid: formatGrid(targetFire.x, targetFire.z) });
   playSiren();
 }
 
@@ -2452,7 +2848,13 @@ function updateEmergencyVehicles(dt) {
         const dx = wp.x - ft.x, dz = wp.z - ft.z;
         const d = Math.sqrt(dx * dx + dz * dz);
         if (d < 3) { ft.waypointIdx++; }
-        else { const s = ft.speed * dt; ft.x += (dx / d) * s; ft.z += (dz / d) * s; }
+        else {
+          const ftH = Math.abs(dx) > Math.abs(dz);
+          const ftD = ftH ? (dx > 0 ? 1 : -1) : (dz > 0 ? 1 : -1);
+          const cm = checkVehicleCollision(ft, ft.x, ft.z, ftH, ftD);
+          const s = ft.speed * Math.max(cm, 0.5) * dt;
+          ft.x += (dx / d) * s; ft.z += (dz / d) * s;
+        }
       } else {
         ft.phase = 'fighting_fire';
         ft.fightTimer = 15 + rng() * 10;
@@ -2466,6 +2868,8 @@ function updateEmergencyVehicles(dt) {
       }
       if (ft.fightTimer <= 0 || !ft.targetFire || ft.targetFire.life <= 0) {
         ft.phase = 'returning';
+        addNarration('fire_extinguished', { grid: formatGrid(ft.x, ft.z) });
+        awardAchievement('firebreaker');
         const edge = edgeSpawnPos();
         ft.waypoints = planRoadPath(ft.x, ft.z, edge.x, edge.z);
         ft.waypointIdx = 0;
@@ -2476,7 +2880,13 @@ function updateEmergencyVehicles(dt) {
         const dx = wp.x - ft.x, dz = wp.z - ft.z;
         const d = Math.sqrt(dx * dx + dz * dz);
         if (d < 3) { ft.waypointIdx++; }
-        else { const s = ft.speed * dt; ft.x += (dx / d) * s; ft.z += (dz / d) * s; }
+        else {
+          const ftH = Math.abs(dx) > Math.abs(dz);
+          const ftD = ftH ? (dx > 0 ? 1 : -1) : (dz > 0 ? 1 : -1);
+          const cm = checkVehicleCollision(ft, ft.x, ft.z, ftH, ftD);
+          const s = ft.speed * Math.max(cm, 0.5) * dt;
+          ft.x += (dx / d) * s; ft.z += (dz / d) * s;
+        }
       } else {
         ft.alive = false;
         scene.remove(ft.light1); scene.remove(ft.light2);
@@ -2515,11 +2925,18 @@ function updateEmergencyVehicles(dt) {
         const dx = wp.x - pv.x, dz = wp.z - pv.z;
         const d = Math.sqrt(dx * dx + dz * dz);
         if (d < 3) { pv.waypointIdx++; }
-        else { const s = pv.speed * dt; pv.x += (dx / d) * s; pv.z += (dz / d) * s; }
+        else {
+          const pvH = Math.abs(dx) > Math.abs(dz);
+          const pvD = pvH ? (dx > 0 ? 1 : -1) : (dz > 0 ? 1 : -1);
+          const cm = checkVehicleCollision(pv, pv.x, pv.z, pvH, pvD);
+          const s = pv.speed * Math.max(cm, 0.5) * dt;
+          pv.x += (dx / d) * s; pv.z += (dz / d) * s;
+        }
       } else {
         pv.phase = 'deploying';
         pv.deployTimer = 3;
         addKillFeedEntry('Police van deploying officers');
+        addNarration('van_deploy', { grid: formatGrid(pv.x, pv.z) });
       }
     } else if (pv.phase === 'deploying') {
       pv.deployTimer -= dt;
@@ -2831,6 +3248,8 @@ document.addEventListener('keydown', (e) => {
       addKillFeedEntry('Protest gathering in central plaza');
       addKillFeedEntry('Police barricades deployed');
       addKillFeedEntry('Police helicopter deployed');
+      addNarration('riot_start');
+      addNarration('helicopter');
       // Spawn police vans
       for (let v = 0; v < 2; v++) {
         setTimeout(() => spawnPoliceVan(), (v + 1) * 5000);
@@ -2842,6 +3261,10 @@ document.addEventListener('keydown', (e) => {
       protestors.length = 0;
       police.length = 0;
       riotPhase = 'PEACEFUL';
+      addNarration('all_clear');
+      // Reset achievement tracking
+      policeLineHoldTime = 0;
+      tearGasDispersedTotal = 0;
       // Clear fires
       for (const f of fires) scene.remove(f.light);
       fires.length = 0;
@@ -3054,6 +3477,9 @@ function update(dt) {
 
   let needsCarUpdate = false;
 
+  // Build collision list once per frame for all vehicle types
+  collectAllRoadVehicles();
+
   // ---- Update car-driving civilians ----
   for (const cd of carDrivers) {
     if (!cd.alive) continue;
@@ -3090,7 +3516,11 @@ function update(dt) {
         if (d < 2) {
           cd.roadIdx++;
         } else {
-          const s = 8 * dt;
+          // Determine movement direction for collision check
+          const cdHoriz = Math.abs(dx) > Math.abs(dz);
+          const cdDir = cdHoriz ? (dx > 0 ? 1 : -1) : (dz > 0 ? 1 : -1);
+          const collMult = checkVehicleCollision(cd, cd.x, cd.z, cdHoriz, cdDir);
+          const s = 8 * collMult * dt;
           cd.x += (dx / d) * s;
           cd.z += (dz / d) * s;
         }
@@ -3157,7 +3587,10 @@ function update(dt) {
         if (d < 2) {
           cd.roadIdx++;
         } else {
-          const s = 8 * dt;
+          const cdHoriz = Math.abs(dx) > Math.abs(dz);
+          const cdDir = cdHoriz ? (dx > 0 ? 1 : -1) : (dz > 0 ? 1 : -1);
+          const collMult = checkVehicleCollision(cd, cd.x, cd.z, cdHoriz, cdDir);
+          const s = 8 * collMult * dt;
           cd.x += (dx / d) * s;
           cd.z += (dz / d) * s;
         }
@@ -3237,31 +3670,34 @@ function update(dt) {
         continue;
       }
       const target = taxi.nextIntersection;
+      // Enforce lane position every frame
       if (taxi.horizontal) {
-        taxi.z = target.z;
+        taxi.z = target.z + taxi.dir * LANE_OFFSET;
         const dist = Math.abs(target.x - taxi.x);
-        if (dist < 2) {
-          taxi.x = target.x; taxi.z = target.z;
+        if (dist < 5) {
           taxi.pauseTimer = 0.3 + rng() * 0.5;
           const turnRoll = rng();
           if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
           else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
-          taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+          taxi.nextIntersection = findNextIntersection(target.x, target.z, taxi.horizontal, taxi.dir);
         } else {
-          taxi.x += taxi.dir * taxi.speed * dt;
+          const collMult = checkVehicleCollision(taxi, taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+          const barMult = isBlockedByBarricade(taxi.x, taxi.z, 5) ? 0.15 : 1.0;
+          taxi.x += taxi.dir * taxi.speed * Math.min(collMult, barMult) * dt;
         }
       } else {
-        taxi.x = target.x;
+        taxi.x = target.x - taxi.dir * LANE_OFFSET;
         const dist = Math.abs(target.z - taxi.z);
-        if (dist < 2) {
-          taxi.x = target.x; taxi.z = target.z;
+        if (dist < 5) {
           taxi.pauseTimer = 0.3 + rng() * 0.5;
           const turnRoll = rng();
           if (turnRoll < 0.35) { taxi.horizontal = !taxi.horizontal; taxi.dir = rng() < 0.5 ? 1 : -1; }
           else if (turnRoll < 0.5) { taxi.dir = -taxi.dir; }
-          taxi.nextIntersection = findNextIntersection(taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+          taxi.nextIntersection = findNextIntersection(target.x, target.z, taxi.horizontal, taxi.dir);
         } else {
-          taxi.z += taxi.dir * taxi.speed * dt;
+          const collMult = checkVehicleCollision(taxi, taxi.x, taxi.z, taxi.horizontal, taxi.dir);
+          const barMult = isBlockedByBarricade(taxi.x, taxi.z, 5) ? 0.15 : 1.0;
+          taxi.z += taxi.dir * taxi.speed * Math.min(collMult, barMult) * dt;
         }
       }
 
@@ -3374,28 +3810,21 @@ function update(dt) {
 
     // Move toward next intersection
     const target = car.nextIntersection;
-    // Lane offset: road=10 wide, sidewalk=3 each side, 2 lanes of 2. Offset from center = 1.5
-    const LANE_OFFSET = 1.5;
-    let dx, dz;
+    // Enforce lane position EVERY frame — snap non-movement axis to lane
     if (car.horizontal) {
-      dx = target.x - car.x;
-      dz = 0;
       // Right-side lane: dir>0 (moving +X) → offset +Z; dir<0 → offset -Z
       car.z = target.z + car.dir * LANE_OFFSET;
     } else {
-      dx = 0;
-      dz = target.z - car.z;
       // Right-side lane: dir>0 (moving +Z) → offset -X; dir<0 → offset +X
       car.x = target.x - car.dir * LANE_OFFSET;
     }
 
-    const dist = Math.abs(dx + dz); // one is always 0
+    const dist = car.horizontal ? Math.abs(target.x - car.x) : Math.abs(target.z - car.z);
     // Stop BEFORE the intersection (5 units back = one car length)
     const STOP_DIST = 5;
     if (dist < STOP_DIST) {
       // Stop short of intersection center — stay one car length back
       if (dist > 2) {
-        // Still approaching — snap to stop line, not the center
         if (car.horizontal) {
           car.x = target.x - car.dir * (STOP_DIST - 1);
         } else {
@@ -3418,21 +3847,11 @@ function update(dt) {
       // After pause expires, car will proceed through intersection to next one
       car.nextIntersection = findNextIntersection(target.x, target.z, car.horizontal, car.dir);
     } else {
-      // Simple forward collision avoidance — slow down if car ahead or barricade
-      let blocked = false;
-      for (const other of cars) {
-        if (other === car || !other.alive) continue;
-        const odx = other.x - car.x, odz = other.z - car.z;
-        const oDist = Math.sqrt(odx * odx + odz * odz);
-        if (oDist > 12 || oDist < 0.5) continue;
-        if (car.horizontal && Math.abs(odz) < 4 && odx * car.dir > 0 && Math.abs(odx) < 8) { blocked = true; break; }
-        if (!car.horizontal && Math.abs(odx) < 4 && odz * car.dir > 0 && Math.abs(odz) < 8) { blocked = true; break; }
-      }
-      // Check barricade blocking — cars stop within 5m of active barricades
-      if (!blocked && isBlockedByBarricade(car.x, car.z, 5)) {
-        blocked = true;
-      }
-      const speedMult = blocked ? 0.15 : 1.0;
+      // Collision avoidance — check all vehicle types on this road/lane
+      const collMult = checkVehicleCollision(car, car.x, car.z, car.horizontal, car.dir);
+      // Barricade blocking
+      const barMult = isBlockedByBarricade(car.x, car.z, 5) ? 0 : 1.0;
+      const speedMult = Math.min(collMult, barMult);
       const s = car.speed * speedMult * dt;
       if (car.horizontal) {
         car.x += car.dir * s;
@@ -3473,6 +3892,190 @@ function update(dt) {
     if (carCabinMesh.instanceColor) carCabinMesh.instanceColor.needsUpdate = true;
     carHLMesh.instanceMatrix.needsUpdate = true;
     carTLMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // ---- ROS2 ROBOT CARS — lidar, trails, warning lights, labels ----
+  robotLidarAngle += dt * 1.2; // slow rotation ~1.2 rad/s
+  robotTotalHits = 0;
+
+  for (let r = 0; r < robotCars.length; r++) {
+    const rcar = robotCars[r];
+    if (!rcar.alive) continue;
+
+    const rx = rcar.x;
+    const rz = rcar.z;
+    const rRotY = rcar.rotY || 0;
+    const lidarY = 2.5; // sensor height on roof
+
+    // --- Robot-specific behavior: slow down near pedestrians ---
+    let nearObstacle = false;
+    const DETECT_RADIUS = 8;
+    for (const ped of pedestrians) {
+      if (!ped.alive) continue;
+      const pdx = ped.x - rx, pdz = ped.z - rz;
+      if (pdx * pdx + pdz * pdz < DETECT_RADIUS * DETECT_RADIUS) {
+        nearObstacle = true;
+        break;
+      }
+    }
+    if (!nearObstacle) {
+      for (const pr of protestors) {
+        if (!pr.alive || pr.arrested) continue;
+        const pdx = pr.x - rx, pdz = pr.z - rz;
+        if (pdx * pdx + pdz * pdz < DETECT_RADIUS * DETECT_RADIUS) {
+          nearObstacle = true;
+          break;
+        }
+      }
+    }
+    // Robots never pause randomly — override pause timer
+    if (rcar.pauseTimer > 0.5) rcar.pauseTimer = 0.3;
+    // Slow down when near pedestrians
+    if (nearObstacle) rcar.speed = 2.5;
+    else rcar.speed = 6;
+
+    // --- Lidar spinning cylinder position ---
+    const cyl = robotLidarCyls[r];
+    cyl.position.set(rx, lidarY + 0.25, rz);
+    cyl.rotation.y = robotLidarAngle * 3; // spin faster visually
+
+    // --- Lidar rays: 12 rays radiating from roof ---
+    const ld = robotLidarLines[r];
+    const posArr = ld.positions;
+    const colArr = ld.colors;
+    let hitCount = 0;
+
+    for (let ray = 0; ray < LIDAR_RAYS; ray++) {
+      const angle = robotLidarAngle + (ray / LIDAR_RAYS) * Math.PI * 2;
+      const dirX = Math.cos(angle);
+      const dirZ = Math.sin(angle);
+
+      // Default: full range, no hit
+      let hitDist = LIDAR_RANGE;
+      let isHit = false;
+
+      // Test against buildings (AABB)
+      for (const bldg of buildings) {
+        // Simple ray-AABB intersection on XZ plane
+        const bMinX = bldg.x - bldg.w / 2, bMaxX = bldg.x + bldg.w / 2;
+        const bMinZ = bldg.z - bldg.d / 2, bMaxZ = bldg.z + bldg.d / 2;
+
+        let tmin = -Infinity, tmax = Infinity;
+        if (Math.abs(dirX) > 0.0001) {
+          const t1 = (bMinX - rx) / dirX, t2 = (bMaxX - rx) / dirX;
+          tmin = Math.max(tmin, Math.min(t1, t2));
+          tmax = Math.min(tmax, Math.max(t1, t2));
+        } else if (rx < bMinX || rx > bMaxX) { continue; }
+        if (Math.abs(dirZ) > 0.0001) {
+          const t1 = (bMinZ - rz) / dirZ, t2 = (bMaxZ - rz) / dirZ;
+          tmin = Math.max(tmin, Math.min(t1, t2));
+          tmax = Math.min(tmax, Math.max(t1, t2));
+        } else if (rz < bMinZ || rz > bMaxZ) { continue; }
+
+        if (tmin <= tmax && tmax > 0 && tmin < hitDist && tmin > 0.5) {
+          hitDist = tmin;
+          isHit = true;
+        }
+      }
+
+      // Test against other cars (sphere approx, radius ~2.5)
+      for (const oc of cars) {
+        if (oc === rcar || !oc.alive) continue;
+        const ocDx = oc.x - rx, ocDz = oc.z - rz;
+        const proj = ocDx * dirX + ocDz * dirZ;
+        if (proj < 0.5 || proj > hitDist) continue;
+        const perpSq = (ocDx * ocDx + ocDz * ocDz) - proj * proj;
+        if (perpSq < 6.25) { // radius^2 = 2.5^2
+          hitDist = proj - Math.sqrt(Math.max(0, 6.25 - perpSq));
+          if (hitDist < 0.5) hitDist = 0.5;
+          isHit = true;
+        }
+      }
+
+      // Test against pedestrians (sphere approx, radius ~1)
+      for (const ped of pedestrians) {
+        if (!ped.alive) continue;
+        const pdx = ped.x - rx, pdz = ped.z - rz;
+        const proj = pdx * dirX + pdz * dirZ;
+        if (proj < 0.5 || proj > hitDist) continue;
+        const perpSq = (pdx * pdx + pdz * pdz) - proj * proj;
+        if (perpSq < 1.0) {
+          hitDist = proj - Math.sqrt(Math.max(0, 1.0 - perpSq));
+          if (hitDist < 0.5) hitDist = 0.5;
+          isHit = true;
+        }
+      }
+
+      if (isHit) hitCount++;
+
+      // Set ray vertex positions: origin -> endpoint
+      const vi = ray * 2 * 3; // 2 verts per ray, 3 floats per vert
+      // Origin (car roof)
+      posArr[vi]     = rx;
+      posArr[vi + 1] = lidarY;
+      posArr[vi + 2] = rz;
+      // Endpoint
+      posArr[vi + 3] = rx + dirX * hitDist;
+      posArr[vi + 4] = lidarY;
+      posArr[vi + 5] = rz + dirZ * hitDist;
+
+      // Color: cyan for ray, red tip if hit
+      // Origin vertex: always cyan
+      colArr[vi]     = 0;
+      colArr[vi + 1] = 0.94;
+      colArr[vi + 2] = 1.0;
+      // End vertex: red if hit, cyan if not
+      if (isHit) {
+        colArr[vi + 3] = 1.0;
+        colArr[vi + 4] = 0.1;
+        colArr[vi + 5] = 0.1;
+      } else {
+        colArr[vi + 3] = 0;
+        colArr[vi + 4] = 0.94;
+        colArr[vi + 5] = 1.0;
+      }
+    }
+    ld.geo.attributes.position.needsUpdate = true;
+    ld.geo.attributes.color.needsUpdate = true;
+    robotTotalHits += hitCount;
+
+    // --- Warning light: blink amber when near obstacles ---
+    const wl = robotWarningLights[r];
+    wl.light.position.set(rx, 3.2, rz);
+    if (nearObstacle) {
+      wl.blinkTimer += dt;
+      wl.light.intensity = (Math.sin(wl.blinkTimer * 12) > 0) ? 4.0 : 0;
+    } else {
+      wl.light.intensity = 0;
+      wl.blinkTimer = 0;
+    }
+
+    // --- Trail: record position every 0.15s ---
+    const trail = robotTrails[r];
+    trail.timer += dt;
+    if (trail.timer > 0.15) {
+      trail.timer = 0;
+      trail.history.push({ x: rx, z: rz });
+      if (trail.history.length > ROBOT_TRAIL_LENGTH) trail.history.shift();
+    }
+    // Build trail line segments from history
+    const hist = trail.history;
+    const tp = trail.positions;
+    // Clear all
+    for (let t = 0; t < tp.length; t++) tp[t] = 0;
+    for (let s = 0; s < hist.length - 1 && s < TRAIL_SEGMENTS; s++) {
+      const si = s * 2 * 3;
+      tp[si]     = hist[s].x;
+      tp[si + 1] = 0.3;
+      tp[si + 2] = hist[s].z;
+      tp[si + 3] = hist[s + 1].x;
+      tp[si + 4] = 0.3;
+      tp[si + 5] = hist[s + 1].z;
+    }
+    trail.geo.attributes.position.needsUpdate = true;
+
+    // --- Label sprite: float above car ---
+    robotLabels[r].position.set(rx, 4.5, rz);
   }
 
   // ---- RIOT ----
@@ -3560,6 +4163,8 @@ function update(dt) {
               );
               molotovCount++;
               addKillFeedEntry('Protestor threw molotov!');
+              addNarration('molotov');
+              if (molotovCount >= 5) awardAchievement('under_fire');
             } else {
               launchProjectile(
                 { x: pr.x, z: pr.z },
@@ -3575,6 +4180,7 @@ function update(dt) {
                 // Knock down injured police
                 if (nearest.health < 0.5 && !nearest.injured) {
                   knockDownPerson(nearest);
+                  addNarration('officer_down', { grid: formatGrid(nearest.x, nearest.z) });
                 }
               }
             }
@@ -3649,15 +4255,20 @@ function update(dt) {
               createTearGasCloud({ x: impactX, z: impactZ });
               teargasCount++;
               addKillFeedEntry('Police fired tear gas');
+              addNarration('tear_gas', { grid: formatGrid(impactX, impactZ) });
 
+              let dispersedThisGas = 0;
               for (const pr of protestors) {
                 if (!pr.alive || pr.arrested || pr.fleeing) continue;
                 const dd = dist2d(pr, { x: impactX, z: impactZ });
                 if (dd < 20 && rng() < 0.4) {
                   pr.fleeing = true;
                   pr.speed = 3 + rng() * 2;
+                  dispersedThisGas++;
                 }
               }
+              tearGasDispersedTotal += dispersedThisGas;
+              if (tearGasDispersedTotal >= 10) awardAchievement('crowd_control');
             } else {
               createTracer(
                 { x: pol.x, z: pol.z },
@@ -3677,6 +4288,7 @@ function update(dt) {
                   nearest.y = -0.5;
                   arrestCount++;
                   addKillFeedEntry('Protestor arrested');
+                  addNarration('arrest', { n: arrestCount });
                 } else {
                   // Knock down injured protestor
                   if (!nearest.injured && !nearest.onGround) {
@@ -3953,13 +4565,18 @@ function updateHUD() {
   document.getElementById('protestor-count').textContent = protestors.filter(p => p.alive && !p.arrested).length;
   document.getElementById('police-count').textContent = police.filter(p => p.alive).length;
   document.getElementById('arrest-count').textContent = arrestCount;
+  document.getElementById('robot-count').textContent = robotCars.filter(r => r.alive).length;
 
   document.getElementById('molotov-count').textContent = molotovCount;
   document.getElementById('teargas-count').textContent = teargasCount;
   document.getElementById('rock-count').textContent = rockCount;
   document.getElementById('injury-count').textContent = injuryCount;
+  document.getElementById('score-count').textContent = totalScore;
   document.getElementById('barricade-count').textContent =
     `${barricades.filter(b => b.active).length}/${barricades.length}`;
+
+  // Update soundtrack state indicator
+  updateSoundtrackState();
 
   const phaseEl = document.getElementById('phase-indicator');
   phaseEl.textContent = riotPhase;
@@ -4058,6 +4675,16 @@ function updateDebugOverlay(dt) {
   html += `Ambulances: <span class="dbg-val">${ambulances.filter(a => a.alive).length}</span><br>`;
   html += `Barricades: <span class="dbg-val">${barricades.filter(b => b.active).length}/${barricades.length}</span><br>`;
   html += `Active particles: <span class="dbg-val">${activeParticles.length}/${MAX_PARTICLES}</span><br>`;
+  // Robot cars debug info
+  html += '<h3>ROS2 ROBOTS</h3>';
+  html += 'Active: <span class="dbg-val">' + robotCars.filter(r => r.alive).length + '/' + NUM_ROBOT_CARS + '</span><br>';
+  html += 'Lidar hits: <span class="dbg-val">' + robotTotalHits + '</span><br>';
+  for (let r = 0; r < robotCars.length; r++) {
+    const rc = robotCars[r];
+    if (!rc.alive) continue;
+    html += 'Robot ' + (r+1) + ': <span class="dbg-val">(' + rc.x.toFixed(1) + ', ' + rc.z.toFixed(1) + ')</span>';
+    html += ' spd:<span class="dbg-val">' + rc.speed.toFixed(1) + '</span><br>';
+  }
   html += '<h3>RIOT STATE</h3>';
   html += `Phase: <span class="dbg-val">${riotPhase}</span><br>`;
   html += `Riot mode: <span class="dbg-val">${riotMode}</span><br>`;
@@ -4228,6 +4855,8 @@ function animate() {
   hudTimer += dt;
   if (hudTimer >= 0.25) {
     updateHUD();
+    updateNarrationPanel(0.25);
+    checkAchievements(0.25);
     hudTimer = 0;
   }
 
