@@ -414,6 +414,7 @@ canvas { display: block; }
     <span>C</span> Chase Cam &nbsp;|&nbsp;
     <span>D</span> Debug &nbsp;|&nbsp;
     <span>R</span> Rain &nbsp;|&nbsp;
+    <span>S</span> Sound &nbsp;|&nbsp;
     <span>F</span> Fog &nbsp;|&nbsp;
     <span>I</span> Intel &nbsp;|&nbsp;
     <span>M</span> Minimap &nbsp;|&nbsp;
@@ -1211,6 +1212,53 @@ function playSiren() {
   gain.gain.value = 0.06;
   src.connect(gain).connect(ctx.destination);
   src.start();
+}
+
+function playHorn() {
+  const ctx = ensureAudio(), o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.value = 440; g.gain.value = 0.07;
+  o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.15);
+}
+
+// =========================================================================
+// Ambient City Soundscape (demonstrates audio/spatial.py + soundtrack.py)
+// =========================================================================
+let ambientOn = false, ambientGain = null, ambientNoise = null, ambientOsc = null;
+let crowdGain = null, crowdFilter = null, crowdNoise = null;
+let rainGain = null, rainFilter = null, rainNoiseSrc = null;
+
+function initAmbientAudio() {
+  const ctx = ensureAudio();
+  ambientGain = ctx.createGain(); ambientGain.gain.value = 0.03; ambientGain.connect(ctx.destination);
+  ambientOsc = ctx.createOscillator(); ambientOsc.frequency.value = 80; ambientOsc.type = 'sine';
+  const oscGain = ctx.createGain(); oscGain.gain.value = 0.4; ambientOsc.connect(oscGain).connect(ambientGain);
+  const nBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), nd = nBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  ambientNoise = ctx.createBufferSource(); ambientNoise.buffer = nBuf; ambientNoise.loop = true;
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 300;
+  ambientNoise.connect(lp).connect(ambientGain); ambientOsc.start(); ambientNoise.start();
+  crowdGain = ctx.createGain(); crowdGain.gain.value = 0; crowdGain.connect(ctx.destination);
+  crowdFilter = ctx.createBiquadFilter(); crowdFilter.type = 'bandpass'; crowdFilter.frequency.value = 300; crowdFilter.Q.value = 1;
+  const cBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), cd2 = cBuf.getChannelData(0);
+  for (let i = 0; i < cd2.length; i++) cd2[i] = Math.random() * 2 - 1;
+  crowdNoise = ctx.createBufferSource(); crowdNoise.buffer = cBuf; crowdNoise.loop = true;
+  crowdNoise.connect(crowdFilter).connect(crowdGain); crowdNoise.start();
+  rainGain = ctx.createGain(); rainGain.gain.value = 0; rainGain.connect(ctx.destination);
+  rainFilter = ctx.createBiquadFilter(); rainFilter.type = 'highpass'; rainFilter.frequency.value = 4000;
+  rainNoiseSrc = ctx.createBufferSource(); rainNoiseSrc.buffer = nBuf; rainNoiseSrc.loop = true;
+  rainNoiseSrc.connect(rainFilter).connect(rainGain); rainNoiseSrc.start();
+}
+
+function updateAmbientAudio(dt) {
+  if (!ambientOn || !ambientGain) return;
+  const dayVol = (simTime > 7 && simTime < 20) ? 0.04 : 0.015;
+  ambientGain.gain.linearRampToValueAtTime(dayVol, (audioCtx ? audioCtx.currentTime : 0) + 0.1);
+  const isRiot = riotPhase === 'RIOT';
+  const crowdVol = isRiot ? Math.min(0.06, protestors.length * 0.003) : 0;
+  crowdGain.gain.linearRampToValueAtTime(crowdVol, (audioCtx.currentTime) + 0.1);
+  const rVol = rainActive ? 0.035 : 0;
+  rainGain.gain.linearRampToValueAtTime(rVol, (audioCtx.currentTime) + 0.1);
+  for (const car of cars) { if (car.stuckTimer > 0 && Math.random() < 0.02 * dt) playHorn(); }
 }
 
 // =========================================================================
@@ -5070,7 +5118,21 @@ function update(dt) {
   for (const taxi of taxis) {
     if (!taxi.alive) continue;
     if (taxi.pauseTimer > 2.0) taxi.pauseTimer = 2.0;
-    if (taxi.pauseTimer > 0) { taxi.pauseTimer -= dt; continue; }
+    if (taxi.pauseTimer > 0) {
+      taxi.pauseTimer -= dt;
+      carTLMesh.setColorAt(taxi.idx * 2, _tlBrake);
+      carTLMesh.setColorAt(taxi.idx * 2 + 1, _tlBrake);
+      if (taxi.turnTimer > 0) {
+        taxi.turnTimer -= dt;
+        const tBlinkOn = Math.floor(performance.now() / 300) % 2 === 0;
+        const tSide = taxi.turnSignal || 0;
+        carHLMesh.setColorAt(taxi.idx * 2 + tSide, tBlinkOn ? _hlOrange : _hlDefault);
+        carHLMesh.setColorAt(taxi.idx * 2 + (1 - tSide), _hlDefault);
+        if (taxi.turnTimer <= 0) { taxi.turnTimer = 0; taxi.turnSignal = undefined; }
+      }
+      needsCarUpdate = true;
+      continue;
+    }
 
     if (taxi.state === 'cruising') {
       // Drive like normal cars on road grid
@@ -6209,20 +6271,36 @@ function update(dt) {
     const isNightNow = nightMode || simTime < 6 || simTime > 20;
     h.beam.material.opacity = isNightNow ? 0.12 : 0.04;
 
-    // Update ground splash — offset forward to match beam direction
-    // Helicopter pitches forward, so beam hits ground ahead of helicopter
-    // Beam is 80m long, pitch is -0.14 rad → forward offset ≈ 80 * sin(0.14) ≈ 11m
+    // Searchlight crowd tracking — find densest protestor cluster every 2s during riot
+    h.searchTimer += dt;
+    if (h.searchTimer > 2) {
+      h.searchTimer = 0;
+      if (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') {
+        const alive = protestors.filter(p => p.alive && !p.arrested);
+        let best = null, bestN = 0;
+        for (const p of alive) {
+          const n = alive.filter(q => q !== p && Math.hypot(q.x - p.x, q.z - p.z) < 15).length;
+          if (n > bestN) { bestN = n; best = p; }
+        }
+        h.searchTarget = best ? { x: best.x, z: best.z } : null;
+      } else { h.searchTarget = null; }
+    }
+
+    // Update ground splash — track crowd center or default forward offset
     if (h.splash) {
-      const fwdOffset = 11; // meters ahead due to pitch
-      const heliYaw = h.group.rotation.y;
-      // Helicopter body +X is forward, so forward direction in world:
-      const fwdX = Math.cos(heliYaw) * fwdOffset;
-      const fwdZ = -Math.sin(heliYaw) * fwdOffset;
-      h.splash.position.set(
-        h.group.position.x + fwdX,
-        0.1,
-        h.group.position.z + fwdZ
-      );
+      let splashX, splashZ;
+      if (h.searchTarget) {
+        const lerpF = 1 - Math.exp(-2 * dt);
+        splashX = h.splash.position.x + (h.searchTarget.x - h.splash.position.x) * lerpF;
+        splashZ = h.splash.position.z + (h.searchTarget.z - h.splash.position.z) * lerpF;
+        h.slTarget.position.set(splashX - h.group.position.x, -80, splashZ - h.group.position.z);
+      } else {
+        const fwdOffset = 11, heliYaw = h.group.rotation.y;
+        splashX = h.group.position.x + Math.cos(heliYaw) * fwdOffset;
+        splashZ = h.group.position.z - Math.sin(heliYaw) * fwdOffset;
+        h.slTarget.position.set(0, -80, 0);
+      }
+      h.splash.position.set(splashX, 0.1, splashZ);
       h.splash.material.opacity = isNightNow ? 0.25 : 0.08;
     }
   }
