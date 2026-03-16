@@ -1449,6 +1449,50 @@ lampPostMesh.instanceMatrix.needsUpdate = true;
 lampHeadMesh.instanceMatrix.needsUpdate = true;
 
 // =========================================================================
+// Night City Glow — PointLights at building cluster centers for ambient city light
+// =========================================================================
+const cityGlowLights = [];
+const glowPositions = [
+  [CITY_W * 0.25, 20, CITY_H * 0.25],
+  [CITY_W * 0.75, 20, CITY_H * 0.25],
+  [CITY_W * 0.25, 20, CITY_H * 0.75],
+  [CITY_W * 0.75, 20, CITY_H * 0.75],
+];
+for (const gp of glowPositions) {
+  const gl = new THREE.PointLight(0xffcc66, 0, 120);
+  gl.position.set(gp[0], gp[1], gp[2]);
+  scene.add(gl);
+  cityGlowLights.push(gl);
+}
+
+// =========================================================================
+// Lamp Halo Sprites — corona glow at each street lamp (visible at night)
+// =========================================================================
+const haloCanvas = document.createElement('canvas');
+haloCanvas.width = 64; haloCanvas.height = 64;
+const haloCtx = haloCanvas.getContext('2d');
+const haloGrad = haloCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+haloGrad.addColorStop(0, 'rgba(255,221,136,0.6)');
+haloGrad.addColorStop(0.4, 'rgba(255,221,136,0.15)');
+haloGrad.addColorStop(1, 'rgba(255,221,136,0)');
+haloCtx.fillStyle = haloGrad;
+haloCtx.fillRect(0, 0, 64, 64);
+const haloTexture = new THREE.CanvasTexture(haloCanvas);
+const haloMat = new THREE.SpriteMaterial({
+  map: haloTexture, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+
+const lampHalos = [];
+for (const lamp of streetLamps) {
+  const halo = new THREE.Sprite(haloMat.clone());
+  halo.scale.set(8, 8, 1);
+  halo.position.copy(lamp.light.position);
+  halo.position.y += 0.5;
+  scene.add(halo);
+  lampHalos.push(halo);
+}
+
+// =========================================================================
 // Fog of War — single CanvasTexture on one PlaneGeometry (intel.py demo)
 // =========================================================================
 const fogCanvas = document.createElement('canvas');
@@ -1963,9 +2007,10 @@ function isBlockedByBarricade(px, pz, threshold) {
 // Rain Particles — InstancedMesh pool of 500 thin vertical lines
 // =========================================================================
 const RAIN_COUNT = 500;
-const rainGeo = new THREE.BoxGeometry(0.03, 0.8, 0.03);
-const rainMat = new THREE.MeshBasicMaterial({
-  color: 0xaaccff, transparent: true, opacity: 0.4, depthWrite: false,
+const rainGeo = new THREE.BoxGeometry(0.08, 1.5, 0.08);
+const rainMat = new THREE.MeshStandardMaterial({
+  color: 0xccddff, emissive: 0x667799, emissiveIntensity: 0.4,
+  transparent: true, opacity: 0.55, depthWrite: false,
 });
 const rainMesh = new THREE.InstancedMesh(rainGeo, rainMat, RAIN_COUNT);
 rainMesh.count = 0; // hidden until rain is toggled on
@@ -1979,7 +2024,7 @@ for (let i = 0; i < RAIN_COUNT; i++) {
     x: rng() * (CITY_W + 100) - 50,
     y: rng() * 80,
     z: rng() * (CITY_H + 100) - 50,
-    speed: 15 + rng() * 10, // 15-25 m/s
+    speed: 20 + rng() * 25, // 20-45 m/s — varied speeds, some very fast
   });
 }
 
@@ -2142,7 +2187,7 @@ function updateParticles(dt) {
 
     const alpha = Math.max(0, p.life / p.maxLife);
     // Fade: scale shrinks as particle dies (simulates opacity fade)
-    const fadeScale = p.isTearGas ? Math.sqrt(alpha) : alpha;
+    const fadeScale = p.isTearGas ? Math.sqrt(alpha) : (p.isSmoke ? alpha * alpha : alpha);
 
     _euler.set(p.rotX, 0, p.rotZ);
     _quat.setFromEuler(_euler);
@@ -2767,6 +2812,7 @@ function spawnPolice() {
       lineX: x,
       lineZ: lineZ,
       injured: false,
+      gasAffected: false,
     });
   }
 }
@@ -3504,11 +3550,13 @@ function updateRain(dt) {
       drop.y = 80;
       drop.x = rng() * (CITY_W + 100) - 50;
       drop.z = rng() * (CITY_H + 100) - 50;
-      drop.speed = 15 + rng() * 10;
+      drop.speed = 20 + rng() * 25;
     }
     _pos.set(drop.x, drop.y, drop.z);
     _quat.identity();
-    _scale.set(1, 1, 1);
+    // Stretch drops vertically based on speed — fast drops look like streaks
+    const yStretch = 1.0 + (drop.speed - 20) / 25.0; // 1.0 to 2.0
+    _scale.set(1, yStretch, 1);
     _mat4.compose(_pos, _quat, _scale);
     rainMesh.setMatrixAt(i, _mat4);
   }
