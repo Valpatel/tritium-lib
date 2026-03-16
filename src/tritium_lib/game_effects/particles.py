@@ -21,6 +21,8 @@ from typing import Optional
 
 import numpy as np
 
+from tritium_lib.game_debug.streams import DebugStream
+
 # ---------------------------------------------------------------------------
 # Type alias
 # ---------------------------------------------------------------------------
@@ -580,6 +582,9 @@ class EffectsManager:
         self.max_emitters = max_emitters
         self.emitters: list[ParticleEmitter] = []
 
+        # Debug data stream (disabled by default, zero overhead)
+        self.debug = DebugStream("effects")
+
     def add(self, emitter: ParticleEmitter) -> ParticleEmitter:
         """Add an emitter. Drops oldest if at capacity."""
         if len(self.emitters) >= self.max_emitters:
@@ -595,6 +600,26 @@ class EffectsManager:
             if not em.is_finished():
                 alive.append(em)
         self.emitters = alive
+
+        # Emit debug data
+        if self.debug.enabled:
+            frame = self.debug.begin_frame()
+            if frame is not None:
+                frame.entries.append({
+                    "type": "effects_summary",
+                    "active_emitters": len(self.emitters),
+                    "total_particles": self.total_particles(),
+                })
+                for idx, em in enumerate(self.emitters):
+                    frame.entries.append({
+                        "type": "emitter",
+                        "id": idx,
+                        "pos": em.position.tolist(),
+                        "particle_count": len(em.particles),
+                        "done": em.done,
+                        "elapsed": round(em.elapsed, 3),
+                    })
+                self.debug.end_frame(frame)
 
     def get_all_particles(self) -> list[dict]:
         """Export every living particle from all emitters."""

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from tritium_lib.game_debug.streams import DebugStream
+
 
 # ---------------------------------------------------------------------------
 # Spatial hash for O(1) neighbor lookups
@@ -165,6 +167,9 @@ class SteeringSystem:
 
         # Free list for reuse of removed slots
         self._free: list[int] = []
+
+        # Debug data stream (disabled by default, zero overhead)
+        self.debug = DebugStream("steering")
 
     # ------------------------------------------------------------------
     # Agent management
@@ -437,6 +442,22 @@ class SteeringSystem:
         # Only update active agents
         self.velocities[:n][active] = vel_new[active]
         self.positions[:n][active] = pos[active] + vel_new[active] * dt
+
+        # Emit debug data
+        if self.debug.enabled:
+            frame = self.debug.begin_frame()
+            if frame is not None:
+                for i in range(n):
+                    if active[i]:
+                        frame.entries.append({
+                            "type": "agent",
+                            "id": i,
+                            "pos": self.positions[i].tolist(),
+                            "vel": self.velocities[i].tolist(),
+                            "speed": float(np.linalg.norm(self.velocities[i])),
+                            "behavior": int(self.behavior_mask[i]),
+                        })
+                self.debug.end_frame(frame)
 
     # ------------------------------------------------------------------
     # Accessors

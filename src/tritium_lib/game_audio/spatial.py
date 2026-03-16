@@ -6,6 +6,8 @@ computes the math, the browser plays the sound.
 """
 import math
 
+from tritium_lib.game_debug.streams import DebugStream
+
 Vec2 = tuple[float, float]
 
 
@@ -209,6 +211,9 @@ def reverb_level(source: Vec2, buildings: list[tuple[Vec2, float]],
 class SoundEvent:
     """A sound that should be played at a position on the map."""
 
+    # Class-level debug stream shared across all SoundEvent instances
+    debug = DebugStream("audio")
+
     def __init__(self, sound_id: str, position: Vec2,
                  volume: float = 1.0, pitch: float = 1.0,
                  category: str = "effect"):
@@ -231,7 +236,7 @@ class SoundEvent:
         occ = occlusion_factor(self.position, listener_pos, obstacles or [])
         gain = distance_attenuation(self.position, listener_pos) * self.volume * occ
 
-        return {
+        result = {
             "sound_id": self.sound_id,
             "gain": round(gain, 4),
             "pan": round(stereo_pan(self.position, listener_pos, listener_heading), 4),
@@ -241,6 +246,26 @@ class SoundEvent:
             "reverb": round(reverb_level(self.position, buildings or []), 4),
             "category": self.category,
         }
+
+        # Emit debug data
+        if SoundEvent.debug.enabled:
+            frame = SoundEvent.debug.begin_frame()
+            if frame is not None:
+                frame.entries.append({
+                    "type": "sound_computed",
+                    "sound_id": self.sound_id,
+                    "source_pos": list(self.position),
+                    "listener_pos": list(listener_pos),
+                    "gain": result["gain"],
+                    "pan": result["pan"],
+                    "delay": result["delay"],
+                    "pitch": result["pitch"],
+                    "reverb": result["reverb"],
+                    "occlusion": round(occ, 4),
+                })
+                SoundEvent.debug.end_frame(frame)
+
+        return result
 
     def to_dict(self) -> dict:
         """Serialize for transport."""

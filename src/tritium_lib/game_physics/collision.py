@@ -21,6 +21,8 @@ from typing import List
 
 import numpy as np
 
+from tritium_lib.game_debug.streams import DebugStream
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -140,6 +142,9 @@ class PhysicsWorld:
         self._hash = _SpatialHash(cell_size)
         # Accumulated forces for this tick (reset each tick).
         self._forces = np.zeros((max_bodies, 2), dtype=np.float32)
+
+        # Debug data stream (disabled by default, zero overhead)
+        self.debug = DebugStream("physics")
 
     # -- Capacity management -------------------------------------------------
 
@@ -352,5 +357,29 @@ class PhysicsWorld:
                 impulse=abs(j_impulse),
                 relative_speed=abs(rel_speed_normal),
             ))
+
+        # Emit debug data
+        if self.debug.enabled:
+            frame = self.debug.begin_frame()
+            if frame is not None:
+                for i in range(n):
+                    if self.active[i]:
+                        frame.entries.append({
+                            "type": "body",
+                            "id": i,
+                            "pos": self.positions[i].tolist(),
+                            "vel": self.velocities[i].tolist(),
+                            "radius": float(self.radii[i]),
+                            "static": bool(self.static[i]),
+                        })
+                for event in events:
+                    frame.entries.append({
+                        "type": "collision",
+                        "a": event.body_a,
+                        "b": event.body_b,
+                        "impulse": event.impulse,
+                        "point": event.point.tolist(),
+                    })
+                self.debug.end_frame(frame)
 
         return events

@@ -41,6 +41,7 @@ from enum import Enum
 from typing import Optional
 
 from tritium_lib.game_ai.steering import Vec2, distance, normalize, magnitude
+from tritium_lib.game_debug.streams import DebugStream
 
 
 # ---------------------------------------------------------------------------
@@ -1515,6 +1516,9 @@ class NeighborhoodSim:
         self._rng = random.Random(seed)
         self._populated = False
 
+        # Debug data stream (disabled by default, zero overhead)
+        self.debug = DebugStream("city_sim")
+
     # -- public API -----------------------------------------------------------
 
     def populate(self, mix: dict[str, float] | None = None) -> None:
@@ -1551,6 +1555,33 @@ class NeighborhoodSim:
                 dt, current_time, self.bounds,
                 self._buildings_by_type, self._rng,
             )
+
+        # Emit debug data
+        if self.debug.enabled:
+            frame = self.debug.begin_frame()
+            if frame is not None:
+                for r in self.residents:
+                    frame.entries.append({
+                        "type": "resident",
+                        "id": r.name,
+                        "pos": list(r.position),
+                        "activity": r.current_activity,
+                        "state": r.activity_state.value if isinstance(r.activity_state, Enum) else r.activity_state,
+                        "visible": r.visible,
+                        "in_vehicle": r.vehicle is not None and r.vehicle.driving,
+                        "vehicle_pos": list(r.vehicle.position) if r.vehicle and r.vehicle.driving else None,
+                    })
+                for v in self.vehicles:
+                    frame.entries.append({
+                        "type": "vehicle",
+                        "id": v.vehicle_id,
+                        "pos": list(v.position),
+                        "driving": v.driving,
+                        "speed": v.speed,
+                        "path_len": len(v.path),
+                        "path_index": v.path_index,
+                    })
+                self.debug.end_frame(frame)
 
     def get_all_entities(self) -> list[dict]:
         """Export all people + vehicles as TargetTracker-compatible dicts."""

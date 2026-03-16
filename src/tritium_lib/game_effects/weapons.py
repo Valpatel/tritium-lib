@@ -23,6 +23,7 @@ from typing import Optional
 
 from .particles import ParticleEmitter, muzzle_flash, tracer
 from ..game_audio.spatial import SoundEvent
+from ..game_debug.streams import DebugStream
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +320,9 @@ class WeaponFirer:
         self._current_spread_bloom = 0.0  # Additional spread from sustained fire
         self._trigger_consumed = False    # For semi/bolt/pump: one shot per pull
 
+        # Debug data stream (disabled by default, zero overhead)
+        self.debug = DebugStream("weapons")
+
     # -- Trigger control ----------------------------------------------------
 
     def pull_trigger(self) -> bool:
@@ -391,6 +395,30 @@ class WeaponFirer:
             max_rounds_this_tick = max(1, int(dt / spr) + 1) if spr > 0 else 1
             if len(fired) >= max_rounds_this_tick:
                 break
+
+        # Emit debug data
+        if self.debug.enabled and fired:
+            frame = self.debug.begin_frame()
+            if frame is not None:
+                for r in fired:
+                    frame.entries.append({
+                        "type": "fire_event",
+                        "weapon": r.weapon_name,
+                        "pos": list(r.position),
+                        "heading": round(r.heading, 4),
+                        "spread_angle": round(r.spread_angle, 4),
+                        "is_tracer": r.is_tracer,
+                        "damage": r.damage,
+                        "round_number": r.round_number,
+                    })
+                frame.entries.append({
+                    "type": "firer_state",
+                    "ammo": self.ammo,
+                    "cooldown": round(self.cooldown, 4),
+                    "spread_deg": round(self.current_spread_deg, 2),
+                    "is_firing": self.is_firing,
+                })
+                self.debug.end_frame(frame)
 
         return fired
 

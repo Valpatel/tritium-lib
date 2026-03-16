@@ -86,6 +86,24 @@ canvas { display: block; }
   pointer-events: none;
 }
 #combat-banner.show { opacity: 1; }
+
+#debug-overlay {
+  position: absolute; top: 60px; left: 16px;
+  font-size: 12px; color: #05ffa1; line-height: 1.6;
+  background: #0a0a0fcc; padding: 10px 14px; border-radius: 4px;
+  border: 1px solid #05ffa133; max-height: 50vh; overflow-y: auto;
+  display: none; min-width: 260px;
+}
+#debug-overlay.visible { display: block; }
+#debug-overlay h3 { color: #00f0ff; margin: 6px 0 2px; font-size: 13px; }
+#debug-overlay .dbg-val { color: #fcee0a; }
+#debug-overlay .dbg-collision { color: #ff2a6d; }
+
+#debug-canvas {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none; display: none;
+}
+#debug-canvas.visible { display: block; }
 </style>
 </head>
 <body>
@@ -118,9 +136,12 @@ canvas { display: block; }
     <span>RMB Drag</span> Pan &nbsp;|&nbsp;
     <span>Scroll</span> Zoom &nbsp;|&nbsp;
     <span>N</span> Night &nbsp;|&nbsp;
-    <span>C</span> Chase Cam
+    <span>C</span> Chase Cam &nbsp;|&nbsp;
+    <span>D</span> Debug
   </div>
   <div id="combat-banner">RIOT IN PROGRESS</div>
+  <div id="debug-overlay"></div>
+  <canvas id="debug-canvas"></canvas>
 </div>
 
 <script type="importmap">
@@ -1761,6 +1782,11 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyN') {
     nightMode = !nightMode;
   }
+  if (e.code === 'KeyD') {
+    debugMode = !debugMode;
+    document.getElementById('debug-overlay').classList.toggle('visible', debugMode);
+    document.getElementById('debug-canvas').classList.toggle('visible', debugMode);
+  }
 });
 
 // Resize
@@ -2390,6 +2416,117 @@ function updateHUD() {
 }
 
 // =========================================================================
+// Debug Overlay
+// =========================================================================
+let debugMode = false;
+
+function updateDebugOverlay(dt) {
+  if (!debugMode) return;
+
+  const overlay = document.getElementById('debug-overlay');
+  const dbgCanvas = document.getElementById('debug-canvas');
+  const ctx2d = dbgCanvas.getContext('2d');
+
+  // Resize debug canvas to match window
+  if (dbgCanvas.width !== innerWidth || dbgCanvas.height !== innerHeight) {
+    dbgCanvas.width = innerWidth;
+    dbgCanvas.height = innerHeight;
+  }
+  ctx2d.clearRect(0, 0, dbgCanvas.width, dbgCanvas.height);
+
+  // Count entities
+  const pedAlive = pedestrians.filter(p => p.alive).length;
+  const carsAlive = cars.filter(c => c.active !== false).length;
+  const protAlive = protestors.filter(p => p.alive).length;
+  const copAlive = police.filter(p => p.alive).length;
+  const totalParticles = fires.length;
+
+  // Build overlay text
+  let html = '<h3>DEBUG OVERLAY</h3>';
+  html += `FPS: <span class="dbg-val">${fpsDisplay}</span><br>`;
+  html += `Draw calls: <span class="dbg-val">${renderer.info.render.calls}</span><br>`;
+  html += `Triangles: <span class="dbg-val">${renderer.info.render.triangles}</span><br>`;
+  html += '<h3>ENTITIES</h3>';
+  html += `Pedestrians: <span class="dbg-val">${pedAlive}</span><br>`;
+  html += `Cars: <span class="dbg-val">${carsAlive}</span><br>`;
+  html += `Protestors: <span class="dbg-val">${protAlive}</span><br>`;
+  html += `Police: <span class="dbg-val">${copAlive}</span><br>`;
+  html += `Fire sources: <span class="dbg-val">${totalParticles}</span><br>`;
+  html += '<h3>SCENE</h3>';
+  html += `Objects: <span class="dbg-val">${scene.children.length}</span><br>`;
+  html += `Geometries: <span class="dbg-val">${renderer.info.memory.geometries}</span><br>`;
+  html += `Textures: <span class="dbg-val">${renderer.info.memory.textures}</span><br>`;
+
+  overlay.innerHTML = html;
+
+  // Draw debug lines on 2D canvas overlay
+  // Project 3D positions to screen for car paths and person waypoints
+  const projVec = new THREE.Vector3();
+
+  function toScreen(x, y, z) {
+    projVec.set(x, z || 0.5, -y); // world coords: x=east, y=north, z=up -> three.js
+    projVec.project(camera);
+    return {
+      x: (projVec.x * 0.5 + 0.5) * dbgCanvas.width,
+      y: (-projVec.y * 0.5 + 0.5) * dbgCanvas.height,
+      behind: projVec.z > 1
+    };
+  }
+
+  // Draw car bounding circles
+  ctx2d.strokeStyle = '#00f0ff44';
+  ctx2d.lineWidth = 1;
+  for (const c of cars) {
+    if (c.active === false) continue;
+    const s = toScreen(c.x, c.y, 0.5);
+    if (s.behind) continue;
+    ctx2d.beginPath();
+    ctx2d.arc(s.x, s.y, 8, 0, Math.PI * 2);
+    ctx2d.stroke();
+  }
+
+  // Draw pedestrian positions with dotted circles
+  ctx2d.strokeStyle = '#05ffa144';
+  ctx2d.setLineDash([3, 3]);
+  for (const p of pedestrians) {
+    if (!p.alive) continue;
+    const s = toScreen(p.x, p.y, 1.0);
+    if (s.behind) continue;
+    ctx2d.beginPath();
+    ctx2d.arc(s.x, s.y, 5, 0, Math.PI * 2);
+    ctx2d.stroke();
+  }
+
+  // Draw protestor/police positions with colored markers
+  ctx2d.setLineDash([]);
+  for (const p of protestors) {
+    if (!p.alive) continue;
+    const s = toScreen(p.x, p.y, 1.0);
+    if (s.behind) continue;
+    ctx2d.fillStyle = '#05ffa166';
+    ctx2d.fillRect(s.x - 3, s.y - 3, 6, 6);
+  }
+  for (const p of police) {
+    if (!p.alive) continue;
+    const s = toScreen(p.x, p.y, 1.0);
+    if (s.behind) continue;
+    ctx2d.fillStyle = '#00f0ff66';
+    ctx2d.fillRect(s.x - 3, s.y - 3, 6, 6);
+  }
+
+  // Fire positions
+  ctx2d.setLineDash([]);
+  for (const f of fires) {
+    const s = toScreen(f.x, f.y, 0.5);
+    if (s.behind) continue;
+    ctx2d.fillStyle = '#ff2a6d66';
+    ctx2d.beginPath();
+    ctx2d.arc(s.x, s.y, 6, 0, Math.PI * 2);
+    ctx2d.fill();
+  }
+}
+
+// =========================================================================
 // Main Loop
 // =========================================================================
 function animate() {
@@ -2412,6 +2549,7 @@ function animate() {
   update(dt);
   updateHUD();
   renderer.render(scene, camera);
+  updateDebugOverlay(dt);
 }
 
 animate();
