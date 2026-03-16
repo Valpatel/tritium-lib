@@ -222,6 +222,28 @@ canvas { display: block; }
 .effect-gas { color: #fcee0a; }
 .effect-stunned { color: #ff8800; }
 .effect-bleeding { color: #ff2a6d; }
+
+/* Minimap (bottom-left, demonstrates hud.py minimap) */
+#minimap-canvas {
+  position: absolute; bottom: 40px; left: 16px;
+  width: 180px; height: 120px;
+  border: 1px solid #00f0ff33; border-radius: 3px;
+  background: #0a0a0f; z-index: 5;
+  pointer-events: none;
+}
+
+/* Compass (top-center, demonstrates hud.py compass) */
+#compass-hud {
+  position: absolute; top: 30px; left: 50%; transform: translateX(-50%);
+  font-family: 'Courier New', monospace; font-size: 14px;
+  color: #00f0ff; text-shadow: 0 0 6px #00f0ff66;
+  pointer-events: none; z-index: 10;
+  letter-spacing: 2px; white-space: nowrap;
+}
+#compass-hud .compass-active {
+  color: #fcee0a; font-weight: bold; font-size: 18px;
+  text-shadow: 0 0 8px #fcee0a88;
+}
 </style>
 </head>
 <body>
@@ -289,8 +311,11 @@ canvas { display: block; }
     <span>D</span> Debug &nbsp;|&nbsp;
     <span>R</span> Rain &nbsp;|&nbsp;
     <span>F</span> Fog &nbsp;|&nbsp;
-    <span>I</span> Intel
+    <span>I</span> Intel &nbsp;|&nbsp;
+    <span>M</span> Minimap
   </div>
+  <canvas id="minimap-canvas" width="180" height="120"></canvas>
+  <div id="compass-hud"></div>
   <div id="combat-banner">RIOT IN PROGRESS</div>
   <canvas id="fps-graph" width="200" height="60"></canvas>
   <div id="debug-overlay"></div>
@@ -461,6 +486,11 @@ let robotTotalHits = 0; // total lidar hits this frame (for debug)
 // Weather state
 let rainActive = false;
 let fogOverride = false;
+
+// Minimap & Compass state (demonstrates hud.py)
+let minimapVisible = true;
+let compassTimer = 0;
+const COMPASS_UPDATE_INTERVAL = 0.1; // 10fps
 
 // Fog of War state (demonstrates intel.py and detection.py)
 let fogOfWarEnabled = false;
@@ -3876,6 +3906,14 @@ function update(dt) {
   if (rainActive) baseFogDensity = Math.max(baseFogDensity, 0.004);
   if (fogOverride) baseFogDensity = 0.008;
   scene.fog.density = baseFogDensity;
+  // Fog color shifts toward blue when raining
+  if (rainActive) {
+    scene.fog.color.set(0x0a0e1a);
+    scene.background.set(0x0a0e1a);
+  } else {
+    scene.fog.color.set(VOID_BG);
+    scene.background.set(VOID_BG);
+  }
   renderer.toneMappingExposure = isNight ? 0.9 : 1.4;
 
   // Street lamps — much brighter at night, wider range
@@ -3883,6 +3921,27 @@ function update(dt) {
     lamp.light.intensity = isNight ? 4.0 : 0.2;
     lamp.light.distance = isNight ? 50 : 30;
   }
+
+  // Lamp halo sprites — visible at night, subtle glow corona
+  const haloOpacity = isNight ? 0.7 : 0.0;
+  for (const halo of lampHalos) {
+    halo.material.opacity = haloOpacity;
+    halo.visible = isNight;
+  }
+
+  // City glow lights — ambient warm glow at building clusters during night
+  for (const gl of cityGlowLights) {
+    gl.intensity = isNight ? 2.5 : 0;
+  }
+
+  // Wet road effect — darken roads and increase metalness when raining at night
+  const wetRoad = rainActive && isNight;
+  roadMat.color.set(wetRoad ? 0x222233 : 0x444444);
+  roadMat.metalness = wetRoad ? 0.4 : 0.0;
+  roadMat.roughness = wetRoad ? 0.5 : 0.85;
+
+  // Rain material emissive boost at night — glows more against dark sky
+  rainMat.emissiveIntensity = isNight ? 0.7 : 0.3;
 
   // Windows glow brighter at night (emissive intensity)
   windowMat.emissiveIntensity = isNight ? 0.8 : 0.15;
