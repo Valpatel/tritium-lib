@@ -613,6 +613,10 @@ function getSkyColor(h) {
   _skyA.set(0xff6622); _skyB.set(0x2a1a3e); _skyA.lerp(_skyB, h - 18); return _skyA.getHex();
 }
 
+// Building breach state (demonstrates buildings.py clearing)
+let breachCooldown = 0;
+let buildingsCleared = 0;
+
 // Artillery strike state (demonstrates artillery.py / air_combat.py)
 let artilleryPhase = 'IDLE'; // IDLE | WARNING | IMPACT | SMOKE
 let artilleryTimer = 0;
@@ -1378,6 +1382,7 @@ function addInstancedBuilding(x, z, w, d, h, type) {
   }
 
   // Windows — front/back faces
+  const startWinIdx = windowIdx;
   const floors = Math.floor(h / 4);
   for (let f = 1; f <= floors; f++) {
     const wy = f * 3.5;
@@ -1418,7 +1423,7 @@ function addInstancedBuilding(x, z, w, d, h, type) {
   }
   windowMesh.count = windowIdx;
 
-  const bldgData = { h, type, x, z, w, d };
+  const bldgData = { h, type, x, z, w, d, idx: buildingIdx - 1, winStart: startWinIdx, winEnd: windowIdx, cleared: false };
   buildings.push(bldgData);
 
   // Hospital H marker (red cross on roof)
@@ -4690,6 +4695,7 @@ function update(dt) {
   // ---- Update taxis ----
   for (const taxi of taxis) {
     if (!taxi.alive) continue;
+    if (taxi.pauseTimer > 2.0) taxi.pauseTimer = 2.0;
     if (taxi.pauseTimer > 0) { taxi.pauseTimer -= dt; continue; }
 
     if (taxi.state === 'cruising') {
@@ -5369,6 +5375,7 @@ function update(dt) {
       }
     }
 
+    breachCooldown -= dt;
     // Update police
     for (const pol of police) {
       if (!pol.alive) continue;
@@ -5414,6 +5421,26 @@ function update(dt) {
         _scale.set(1, 1, 1);
         _mat4.compose(_pos, _quat, _scale);
         shieldMesh.setMatrixAt(pol.myShieldIdx, _mat4);
+      }
+
+      // Building breach during DISPERSAL (demonstrates buildings.py clearing)
+      if (riotPhase === 'DISPERSAL' && breachCooldown <= 0) {
+        for (const b of buildings) {
+          if (b.cleared) continue;
+          const bDx = pol.x - b.x, bDz = pol.z - b.z;
+          if (bDx * bDx + bDz * bDz < 25) { // within 5 units
+            b.cleared = true; buildingsCleared++; breachCooldown = 5;
+            addKillFeedEntry('BREACH! Building cleared at (' + Math.round(b.x) + ',' + Math.round(b.z) + ')');
+            addNarration('police_action', { action: 'ALPHA TEAM: Breaching building at grid ' + Math.round(b.x) + '!' });
+            // Flash windows white then restore after 0.3s
+            for (let wi = b.winStart; wi < b.winEnd; wi++) windowMesh.setColorAt(wi, _color.set(0xffffff));
+            windowMesh.instanceColor.needsUpdate = true;
+            buildingRoofMesh.setColorAt(b.idx, _color.set(0x225533));
+            buildingRoofMesh.instanceColor.needsUpdate = true;
+            setTimeout(() => { for (let wi = b.winStart; wi < b.winEnd; wi++) windowMesh.setColorAt(wi, _color.set(0xffdd66)); windowMesh.instanceColor.needsUpdate = true; }, 300);
+            break;
+          }
+        }
       }
 
       // Fire tear gas and rubber bullets
@@ -5854,7 +5881,7 @@ function updateHUD() {
   if (prMEl) prMEl.textContent = Math.round(protestorMoraleAvg * 100) + '%';
   // Update soundtrack state indicator
   updateSoundtrackState();
-  updateArtilleryStrike(dt);
+  updateArtilleryStrike(0.25); // HUD updates at 4fps = 0.25s intervals
 
   const phaseEl = document.getElementById('phase-indicator');
   phaseEl.textContent = riotPhase;
@@ -5964,6 +5991,7 @@ function updateDebugOverlay(dt) {
   html += `Barricades: <span class="dbg-val">${barricades.filter(b => b.active).length}/${barricades.length}</span><br>`;
   html += `Detected: <span class="dbg-val">${detectedCount}</span><br>`;
   html += `Active particles: <span class="dbg-val">${activeParticles.length}/${MAX_PARTICLES}</span><br>`;
+  html += `Buildings cleared: <span class="dbg-val">${buildingsCleared}/${buildings.length}</span><br>`;
   // Robot cars debug info
   html += '<h3>ROS2 ROBOTS</h3>';
   html += 'Active: <span class="dbg-val">' + robotCars.filter(r => r.alive).length + '/' + NUM_ROBOT_CARS + '</span><br>';
