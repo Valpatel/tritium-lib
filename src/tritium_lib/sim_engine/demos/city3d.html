@@ -44,6 +44,23 @@ canvas { display: block; }
 #phase-indicator.tension { color: #fcee0a; text-shadow: 0 0 8px #fcee0a88; }
 #phase-indicator.dispersal { color: #00f0ff; text-shadow: 0 0 8px #00f0ff88; }
 
+#campaign-phase {
+  font-size: 14px; font-weight: bold; color: #fcee0a; margin-top: 2px;
+  padding: 2px 8px; border-radius: 3px; display: none;
+}
+#campaign-phase.phase1 { background: #05ffa122; color: #05ffa1; }
+#campaign-phase.phase2 { background: #ff2a6d22; color: #ff2a6d; }
+#campaign-phase.phase3 { background: #00f0ff22; color: #00f0ff; }
+#campaign-overlay {
+  display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  background: #0a0a0fee; border: 2px solid #00f0ff; border-radius: 8px; padding: 32px 48px;
+  color: #e0e0e0; font-size: 15px; text-align: center; z-index: 100; min-width: 340px;
+}
+#campaign-overlay h2 { font-size: 28px; margin-bottom: 12px; }
+#campaign-overlay .stat-row { display: flex; justify-content: space-between; padding: 4px 0; }
+#campaign-overlay .stat-label { color: #888; }
+#campaign-overlay .stat-value { font-weight: bold; color: #05ffa1; }
+
 #stats {
   text-align: right; line-height: 1.8; font-size: 14px;
 }
@@ -321,6 +338,7 @@ canvas { display: block; }
       <div id="clock">08:00</div>
       <div id="time-label">SIMULATION TIME</div>
       <div id="phase-indicator">PEACEFUL</div>
+      <div id="campaign-phase"></div>
     </div>
     <div id="stats">
       Civilians: <span class="stat-val" id="civ-count">0</span><br>
@@ -384,7 +402,8 @@ canvas { display: block; }
     <span>K</span> Rec &nbsp;|&nbsp;
     <span>L</span> Play &nbsp;|&nbsp;
     <span>Click</span> Inspect &nbsp;|&nbsp;
-    <span>ESC</span> Deselect
+    <span>ESC</span> Deselect &nbsp;|&nbsp;
+    <span>P</span> Next Phase
     <span id="rec-btn" onclick="toggleRecording()"><span class="rec-dot"></span>REC</span>
     <span id="rec-timer">00:00</span>
   </div>
@@ -408,6 +427,7 @@ canvas { display: block; }
   <div id="narration-panel"></div>
   <div id="achievement-container"></div>
   <div id="soundtrack-indicator" class="peaceful">&#9835; PEACEFUL</div>
+  <div id="campaign-overlay"></div>
 </div>
 
 <script type="importmap">
@@ -2786,36 +2806,33 @@ function collectAllRoadVehicles() {
   _allRoadVehicles = list;
 }
 
-// Check if a vehicle is blocked by any vehicle ahead in its lane.
-// Returns speed multiplier: 0 = full stop, 0.3 = crawl, 1.0 = clear.
+// Simple car collision: proximity + ahead check. Cars are ~4m long x ~2m wide.
 function checkVehicleCollision(vehRef, vehX, vehZ, horizontal, dir) {
-  const GAP_STOP = 3;    // full stop distance
-  const GAP_SLOW = 6;    // start slowing
-  const LANE_TOL = 1.2;  // lateral tolerance — must be < lane spacing (1.5*2=3) to avoid cross-lane false positives
-
-  let minAheadDist = Infinity;
-  let aheadStopped = false;
+  let minDist = Infinity;
+  let minAhead = Infinity;
 
   for (const other of _allRoadVehicles) {
     if (other.ref === vehRef) continue;
     const odx = other.x - vehX;
     const odz = other.z - vehZ;
+    const dist = Math.sqrt(odx * odx + odz * odz);
+    if (dist < minDist) minDist = dist;
 
+    // Ahead check on same road
     if (horizontal) {
-      if (Math.abs(odz) > LANE_TOL) continue;
+      if (Math.abs(odz) > 2.5) continue;
       const ahead = odx * dir;
-      if (ahead <= 0) continue;
-      if (ahead < minAheadDist) { minAheadDist = ahead; aheadStopped = other.paused; }
+      if (ahead > 0 && ahead < minAhead) minAhead = ahead;
     } else {
-      if (Math.abs(odx) > LANE_TOL) continue;
+      if (Math.abs(odx) > 2.5) continue;
       const ahead = odz * dir;
-      if (ahead <= 0) continue;
-      if (ahead < minAheadDist) { minAheadDist = ahead; aheadStopped = other.paused; }
+      if (ahead > 0 && ahead < minAhead) minAhead = ahead;
     }
   }
 
-  if (minAheadDist < GAP_STOP) return 0.05; // near-stop but not permanent deadlock
-  if (minAheadDist < GAP_SLOW) return 0.3;
+  if (minDist < 4) return 0;       // overlapping — hard stop
+  if (minAhead < 5) return 0.05;   // very close ahead
+  if (minAhead < 8) return 0.3;    // approaching ahead
   return 1.0;
 }
 
@@ -3392,6 +3409,68 @@ function createExplosion(pos) {
     exLight.position.set(pos.x, 4, pos.z);
     exLight.visible = true;
     muzzleFlashes.push({ light: exLight, life: 0.3 });
+  }
+}
+
+
+// =========================================================================
+// Artillery Strike System (demonstrates artillery.py / air_combat.py)
+// =========================================================================
+for (let i = 0; i < 3; i++) {
+  const crater = new THREE.Mesh(new THREE.CircleGeometry(5, 16), new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.8, depthWrite: false }));
+  crater.rotation.x = -Math.PI / 2; crater.position.y = 0.05; crater.visible = false;
+  scene.add(crater); artilleryCraters.push(crater);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(4, 5.5, 24), new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.1; ring.visible = false;
+  scene.add(ring); artilleryMarkers.push(ring);
+}
+function triggerArtilleryStrike() {
+  if (artilleryPhase !== 'IDLE') return;
+  artilleryPhase = 'WARNING'; artilleryTimer = 0; artilleryTriggered = true;
+  artilleryTargets.length = 0;
+  for (let i = 0; i < 3; i++) {
+    artilleryTargets.push({ x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 });
+    artilleryMarkers[i].position.set(artilleryTargets[i].x, 0.1, artilleryTargets[i].z);
+    artilleryMarkers[i].visible = true;
+  }
+  addNarration('artillery_warning', { grid: formatGrid(PLAZA_X, PLAZA_Z) });
+  addKillFeedEntry('*** INCOMING ARTILLERY ***'); playSiren();
+}
+function updateArtilleryStrike(dt) {
+  if (artilleryPhase === 'IDLE') return;
+  artilleryTimer += dt;
+  if (artilleryPhase === 'WARNING') {
+    for (const m of artilleryMarkers) m.material.opacity = 0.3 + 0.7 * Math.abs(Math.sin(artilleryTimer * 6));
+    if (artilleryTimer >= 3) {
+      artilleryPhase = 'IMPACT'; artilleryTimer = 0;
+      for (let i = 0; i < 3; i++) {
+        artilleryMarkers[i].visible = false;
+        const t = artilleryTargets[i];
+        createExplosion(t); createExplosion(t); playExplosion(t.x, t.z);
+        artilleryCraters[i].position.set(t.x, 0.06, t.z); artilleryCraters[i].visible = true;
+        for (const p of [...protestors, ...pedestrians]) {
+          if (p.alive && Math.abs(p.x - t.x) < 20 && Math.abs(p.z - t.z) < 20) {
+            const ang = Math.atan2(p.z - t.z, p.x - t.x);
+            p.x += Math.cos(ang) * (10 + rng() * 10); p.z += Math.sin(ang) * (10 + rng() * 10);
+          }
+        }
+      }
+      cameraShakeTimer = 0.5;
+      addKillFeedEntry('ARTILLERY STRIKE -- 3 impacts near Central Plaza');
+      addNarration('artillery_complete', { grid: formatGrid(PLAZA_X, PLAZA_Z) });
+    }
+  } else if (artilleryPhase === 'IMPACT') {
+    if (cameraShakeTimer > 0) {
+      cameraShakeTimer -= dt;
+      cameraShakeOx = (rng() - 0.5) * 4 * (cameraShakeTimer / 0.5);
+      cameraShakeOz = (rng() - 0.5) * 4 * (cameraShakeTimer / 0.5);
+    } else { cameraShakeOx = 0; cameraShakeOz = 0; artilleryPhase = 'SMOKE'; artilleryTimer = 0; artillerySmokeTimer = 0; }
+  } else if (artilleryPhase === 'SMOKE') {
+    artillerySmokeTimer += dt;
+    if (artillerySmokeTimer < 30 && Math.floor(artillerySmokeTimer * 3) > Math.floor((artillerySmokeTimer - dt) * 3)) {
+      for (const t of artilleryTargets) spawnParticle(t.x+(rng()-0.5)*4, 0.5, t.z+(rng()-0.5)*4, (rng()-0.5)*0.3, 1+rng(), (rng()-0.5)*0.3, 1.5+rng(), 0x444444, 4+rng()*2, false, true);
+    }
+    if (artillerySmokeTimer >= 30) artilleryPhase = 'IDLE';
   }
 }
 
@@ -3997,6 +4076,7 @@ document.addEventListener('keydown', (e) => {
       // Remove riot units — hide their instanced slots
       for (const p of protestors) hidePersonInstance(p.slot);
       for (const p of police) hidePersonInstance(p.slot);
+      deselectUnit();
       protestors.length = 0;
       police.length = 0;
       riotPhase = 'PEACEFUL';
@@ -4100,6 +4180,16 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.code === 'Escape') {
     deselectUnit();
+  }
+  if (e.code === 'KeyK') {
+    toggleRecording();
+  }
+  if (e.code === 'KeyL') {
+    togglePlayback();
+  }
+  if (e.code === 'KeyA') {
+    ensureAudio();
+    triggerArtilleryStrike();
   }
 });
 
@@ -4608,13 +4698,13 @@ function update(dt) {
 
     // Move toward next intersection
     const target = car.nextIntersection;
-    // Enforce lane position EVERY frame — snap non-movement axis to lane
+    // Enforce lane: LERP to target lane (smooth transition when turning at intersections)
     if (car.horizontal) {
-      // Right-side lane: dir>0 (moving +X) → offset +Z; dir<0 → offset -Z
-      car.z = target.z + car.dir * LANE_OFFSET;
+      const targetZ = target.z + car.dir * LANE_OFFSET;
+      car.z += (targetZ - car.z) * Math.min(1, 4 * dt);
     } else {
-      // Right-side lane: dir>0 (moving +Z) → offset -X; dir<0 → offset +X
-      car.x = target.x - car.dir * LANE_OFFSET;
+      const targetX = target.x - car.dir * LANE_OFFSET;
+      car.x += (targetX - car.x) * Math.min(1, 4 * dt);
     }
 
     const dist = car.horizontal ? Math.abs(target.x - car.x) : Math.abs(target.z - car.z);
@@ -4882,6 +4972,7 @@ function update(dt) {
     if (riotPhase === 'RIOT' && protestors.filter(p => p.alive && !p.arrested).length < 5) {
       riotPhase = 'DISPERSAL';
       addKillFeedEntry('Crowd dispersing');
+      if (!artilleryTriggered) { ensureAudio(); triggerArtilleryStrike(); }
     }
 
     // Update protestors
@@ -5019,12 +5110,12 @@ function update(dt) {
     }
 
     // Update police
+    for (const pol of police) {
+      if (!pol.alive) continue;
       // Police morale tick
       pol.morale = Math.min(1.0, (pol.morale || 1) + 0.01 * dt);
       for (const f of fires) { if (dist2d(pol, f) < 15) pol.morale = Math.max(0, pol.morale - 0.02 * dt); }
       const polDisplayColor = moraleColor(pol.bodyColor, pol.morale);
-    for (const pol of police) {
-      if (!pol.alive) continue;
 
       if (pol.holdLine) {
         // During riot/dispersal, police advance toward the plaza
@@ -5050,7 +5141,7 @@ function update(dt) {
         pol.rotY = Math.atan2(PLAZA_X - pol.x, PLAZA_Z - pol.z);
       }
 
-      updatePersonInstance(pol.slot, pol.x, 0, pol.z, pol.rotY, pol.bodyColor, pol.headColor, pol.scale);
+      updatePersonInstance(pol.slot, pol.x, 0, pol.z, pol.rotY, polDisplayColor, pol.headColor, pol.scale);
 
       // Update shield position
       if (pol.myShieldIdx >= 0) {
@@ -5211,6 +5302,55 @@ function update(dt) {
     }
   }
 
+
+    // Update formation line — sort alive police by X, connect with line
+    const alivePoliceF = police.filter(p => p.alive).sort((a, b) => a.x - b.x);
+    let maxGap = 0;
+    for (let fi = 0; fi < FORMATION_MAX_VERTS * 3; fi++) formationPositions[fi] = 0;
+    for (let fi = 0; fi < alivePoliceF.length && fi < FORMATION_MAX_VERTS; fi++) {
+      formationPositions[fi * 3]     = alivePoliceF[fi].x;
+      formationPositions[fi * 3 + 1] = 0.15;
+      formationPositions[fi * 3 + 2] = alivePoliceF[fi].z;
+      if (fi > 0) {
+        const gap = dist2d(alivePoliceF[fi], alivePoliceF[fi - 1]);
+        if (gap > maxGap) maxGap = gap;
+      }
+    }
+    formationGeo.setDrawRange(0, alivePoliceF.length);
+    formationGeo.attributes.position.needsUpdate = true;
+    formationStatus = maxGap > 15 ? 'BROKEN' : 'LINE';
+    formationLine.visible = riotMode && alivePoliceF.length > 1;
+    formationMat.color.set(formationStatus === 'BROKEN' ? 0xff2a6d : 0x00f0ff);
+
+    // Update fire sector arcs (debug only)
+    sectorArcLine.visible = debugMode;
+    if (debugMode) {
+      let ai = 0;
+      for (let pi = 0; pi < police.length && pi < ARC_MAX_POLICE; pi++) {
+        const pol = police[pi];
+        if (!pol.alive) continue;
+        const cx = pol.x, cz = pol.z;
+        const fwd = pol.rotY;
+        const halfArc = ARC_ANGLE / 2;
+        const a0 = fwd - halfArc, a1 = fwd + halfArc;
+        // Left radius
+        sectorArcPositions[ai++] = cx; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz;
+        sectorArcPositions[ai++] = cx + Math.sin(a0) * ARC_RANGE; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz + Math.cos(a0) * ARC_RANGE;
+        // Right radius
+        sectorArcPositions[ai++] = cx; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz;
+        sectorArcPositions[ai++] = cx + Math.sin(a1) * ARC_RANGE; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz + Math.cos(a1) * ARC_RANGE;
+        // Arc edge 1
+        const aMid = fwd;
+        sectorArcPositions[ai++] = cx + Math.sin(a0) * ARC_RANGE; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz + Math.cos(a0) * ARC_RANGE;
+        sectorArcPositions[ai++] = cx + Math.sin(aMid) * ARC_RANGE; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz + Math.cos(aMid) * ARC_RANGE;
+        // Arc edge 2
+        sectorArcPositions[ai++] = cx + Math.sin(aMid) * ARC_RANGE; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz + Math.cos(aMid) * ARC_RANGE;
+        sectorArcPositions[ai++] = cx + Math.sin(a1) * ARC_RANGE; sectorArcPositions[ai++] = 0.1; sectorArcPositions[ai++] = cz + Math.cos(a1) * ARC_RANGE;
+      }
+      // Zero remaining
+      while (ai < sectorArcPositions.length) sectorArcPositions[ai++] = 0;
+      sectorArcGeo.attributes.position.needsUpdate = true;
+    }
   // Update ambulances
   updateAmbulances(dt);
 
@@ -5440,8 +5580,19 @@ function updateHUD() {
   document.getElementById('barricade-count').textContent =
     `${barricades.filter(b => b.active).length}/${barricades.length}`;
 
+
+  // Morale HUD
+  const alivePolice = police.filter(p => p.alive);
+  const policeMoraleAvg = alivePolice.length > 0 ? alivePolice.reduce((s, p) => s + (p.morale || 1), 0) / alivePolice.length : 0;
+  const aliveProtestors = protestors.filter(p => p.alive && !p.arrested);
+  const protestorMoraleAvg = aliveProtestors.length > 0 ? aliveProtestors.reduce((s, p) => s + (p.morale || 0.8), 0) / aliveProtestors.length : 0;
+  const pmEl = document.getElementById('police-morale');
+  if (pmEl) pmEl.textContent = Math.round(policeMoraleAvg * 100) + '%';
+  const prMEl = document.getElementById('protestor-morale');
+  if (prMEl) prMEl.textContent = Math.round(protestorMoraleAvg * 100) + '%';
   // Update soundtrack state indicator
   updateSoundtrackState();
+  updateArtilleryStrike(dt);
 
   const phaseEl = document.getElementById('phase-indicator');
   phaseEl.textContent = riotPhase;
@@ -5555,6 +5706,7 @@ function updateDebugOverlay(dt) {
   html += '<h3>RIOT STATE</h3>';
   html += `Phase: <span class="dbg-val">${riotPhase}</span><br>`;
   html += `Riot mode: <span class="dbg-val">${riotMode}</span><br>`;
+  html += `FORMATION: <span class="dbg-val" style="color:${formationStatus === 'BROKEN' ? '#ff2a6d' : '#00f0ff'}">${formationStatus}</span><br>`;
   if (police.length > 0) {
     const pol0 = police[0];
     html += `Police[0] pos: <span class="dbg-val">(${pol0.x.toFixed(1)}, ${pol0.z.toFixed(1)})</span><br>`;
@@ -5566,6 +5718,10 @@ function updateDebugOverlay(dt) {
     const pr0 = protestors.filter(p => p.alive)[0];
     if (pr0) html += `Protestor[0] pos: <span class="dbg-val">(${pr0.x.toFixed(1)}, ${pr0.z.toFixed(1)})</span><br>`;
   }
+  html += '<h3>COMMS NETWORK</h3>';
+  html += `Status: <span class="dbg-val">${commsStatus}</span><br>`;
+  html += `Links: <span class="dbg-val">${commsLinkCount}</span><br>`;
+  html += `Range: <span class="dbg-val">${COMMS_RANGE}m</span><br>`;
   html += '<h3>SUPPLY / ECONOMY</h3>';
   html += `Tear Gas: <span class="dbg-val">${supplyTearGas}/${SUPPLY_TEAR_GAS_MAX}</span><br>`;
   html += `Rubber Blt: <span class="dbg-val">${supplyRubberBullets}/${SUPPLY_RUBBER_BULLETS_MAX}</span><br>`;
@@ -5664,6 +5820,184 @@ if (scene.children.length < 10) {
   const _fpsWarn = document.getElementById('fps');
   if (_fpsWarn) { _fpsWarn.textContent = 'WARN: Scene only ' + scene.children.length + ' objects'; _fpsWarn.style.color = '#fcee0a'; }
 }
+
+// =========================================================================
+// Replay Recording & Playback (demonstrates replay.py)
+// =========================================================================
+const REPLAY_MAX_FRAMES = 3000;
+let replayRecording = false;
+let replayFrames = [];
+let replayPlayback = false;
+let replayIdx = 0;
+let replaySpeed = 1;
+let replayAccum = 0;
+let replayRecordAccum = 0;
+let replayRecStartTime = 0;
+const REPLAY_CAPTURE_STEP = 1 / 10;
+
+function captureReplayFrame() {
+  if (replayFrames.length >= REPLAY_MAX_FRAMES) {
+    toggleRecording();
+    return;
+  }
+  const frame = {
+    simTime: simTime,
+    tick: replayFrames.length,
+    pedestrians: pedestrians.filter(p => p.alive).map(p => ({
+      slot: p.slot, x: p.x, z: p.z, rotY: p.rotY,
+      bodyColor: p.bodyColor, headColor: p.headColor, scale: p.scale
+    })),
+    cars: cars.filter(c => c.alive).map(c => ({
+      idx: c.idx, x: c.x, z: c.z, horizontal: c.horizontal, dir: c.dir,
+      bodyColor: c.bodyColor, cabinColor: c.cabinColor
+    })),
+    protestors: protestors.filter(p => p.alive).map(p => ({
+      slot: p.slot, x: p.x, z: p.z, rotY: p.rotY,
+      bodyColor: p.bodyColor, headColor: p.headColor, scale: p.scale
+    })),
+    police: police.filter(p => p.alive).map(p => ({
+      slot: p.slot, x: p.x, z: p.z, rotY: p.rotY,
+      bodyColor: p.bodyColor, headColor: p.headColor, scale: p.scale
+    })),
+    taxis: taxis.filter(t => t.alive !== false).map(t => ({
+      idx: t.idx, x: t.x, z: t.z, horizontal: t.horizontal, dir: t.dir,
+      bodyColor: t.bodyColor, cabinColor: t.cabinColor
+    })),
+    carDrivers: carDrivers.filter(cd => cd.alive !== false).map(cd => ({
+      personSlot: cd.personSlot, x: cd.x, z: cd.z, rotY: cd.rotY,
+      bodyColor: cd.bodyColor, headColor: cd.headColor, scale: cd.scale,
+      phase: cd.phase
+    })),
+  };
+  replayFrames.push(frame);
+}
+
+function applyReplayFrame(frame) {
+  for (const p of frame.pedestrians) {
+    updatePersonInstance(p.slot, p.x, 0, p.z, p.rotY, p.bodyColor, p.headColor, p.scale);
+  }
+  for (const c of frame.cars) {
+    const rotY = c.horizontal ? (c.dir > 0 ? 0 : Math.PI) : (c.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+    updateCarInstance(c.idx, c.x, 0, c.z, rotY, c.bodyColor, c.cabinColor);
+  }
+  for (const p of frame.protestors) {
+    updatePersonInstance(p.slot, p.x, 0, p.z, p.rotY, p.bodyColor, p.headColor, p.scale);
+  }
+  for (const p of frame.police) {
+    updatePersonInstance(p.slot, p.x, 0, p.z, p.rotY, p.bodyColor, p.headColor, p.scale);
+  }
+  for (const t of frame.taxis) {
+    const rotY = t.horizontal ? (t.dir > 0 ? 0 : Math.PI) : (t.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+    updateCarInstance(t.idx, t.x, 0, t.z, rotY, t.bodyColor, t.cabinColor);
+  }
+  for (const cd of frame.carDrivers) {
+    if (cd.phase === 'walking_to_car' || cd.phase === 'walking_to_dest') {
+      updatePersonInstance(cd.personSlot, cd.x, 0, cd.z, cd.rotY, cd.bodyColor, cd.headColor, cd.scale);
+    }
+  }
+}
+
+function toggleRecording() {
+  const btn = document.getElementById('rec-btn');
+  const timer = document.getElementById('rec-timer');
+  if (replayPlayback) return;
+
+  replayRecording = !replayRecording;
+  if (replayRecording) {
+    replayFrames = [];
+    replayRecordAccum = 0;
+    replayRecStartTime = performance.now();
+    btn.classList.add('recording');
+    console.log('[REPLAY] Recording started');
+  } else {
+    btn.classList.remove('recording');
+    timer.style.display = 'none';
+    console.log('[REPLAY] Recording stopped, ' + replayFrames.length + ' frames captured');
+    if (replayFrames.length > 0) {
+      showPlaybackBar();
+    }
+  }
+}
+
+function showPlaybackBar() {
+  const bar = document.getElementById('playback-bar');
+  bar.classList.add('visible');
+  updatePlaybackHUD();
+}
+
+function hidePlaybackBar() {
+  document.getElementById('playback-bar').classList.remove('visible');
+}
+
+function togglePlayback() {
+  if (replayFrames.length === 0) return;
+  if (replayRecording) toggleRecording();
+  replayPlayback = !replayPlayback;
+  replayAccum = 0;
+  if (replayPlayback) {
+    if (replayIdx >= replayFrames.length - 1) replayIdx = 0;
+    showPlaybackBar();
+    console.log('[REPLAY] Playback started, ' + replayFrames.length + ' frames');
+  } else {
+    console.log('[REPLAY] Playback paused at frame ' + replayIdx);
+  }
+  document.getElementById('pb-play').textContent = replayPlayback ? 'PAUSE' : 'PLAY';
+}
+
+function stopPlayback() {
+  replayPlayback = false;
+  replayIdx = 0;
+  document.getElementById('pb-play').textContent = 'PLAY';
+  hidePlaybackBar();
+  console.log('[REPLAY] Playback stopped');
+}
+
+function setPlaybackSpeed(speed) {
+  replaySpeed = speed;
+  const buttons = document.getElementById('playback-bar').querySelectorAll('button');
+  buttons.forEach(b => {
+    if (b.textContent.endsWith('x') && parseFloat(b.textContent) === speed) {
+      b.classList.add('active');
+    } else if (b.textContent.endsWith('x')) {
+      b.classList.remove('active');
+    }
+  });
+}
+
+function seekPlayback(event) {
+  if (replayFrames.length === 0) return;
+  const bar = document.getElementById('playback-scrubber');
+  const rect = bar.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+  replayIdx = Math.floor(pct * (replayFrames.length - 1));
+  applyReplayFrame(replayFrames[replayIdx]);
+  updatePlaybackHUD();
+}
+
+function updatePlaybackHUD() {
+  const total = replayFrames.length;
+  if (total === 0) return;
+  const pct = total > 1 ? (replayIdx / (total - 1)) * 100 : 0;
+  document.getElementById('playback-progress').style.width = pct + '%';
+  document.getElementById('playback-frame').textContent = (replayIdx + 1) + '/' + total;
+}
+
+function updateRecordingTimer() {
+  if (!replayRecording) return;
+  const elapsed = (performance.now() - replayRecStartTime) / 1000;
+  const mins = Math.floor(elapsed / 60);
+  const secs = Math.floor(elapsed % 60);
+  const timer = document.getElementById('rec-timer');
+  timer.textContent = String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+  timer.style.display = 'inline';
+}
+
+// Expose replay functions to global scope for onclick handlers
+window.toggleRecording = toggleRecording;
+window.togglePlayback = togglePlayback;
+window.stopPlayback = stopPlayback;
+window.setPlaybackSpeed = setPlaybackSpeed;
+window.seekPlayback = seekPlayback;
 
 // =========================================================================
 // Main Loop
@@ -5894,11 +6228,35 @@ function animate() {
     }
   }
 
-  // Sim runs at fixed 20fps
-  simAccum += dt;
-  if (simAccum >= SIM_STEP) {
-    update(simAccum);
-    simAccum = 0;
+  // Sim runs at fixed 20fps (with replay support)
+  if (replayPlayback) {
+    // During playback, advance through recorded frames instead of live sim
+    replayAccum += dt * replaySpeed;
+    while (replayAccum >= REPLAY_CAPTURE_STEP && replayIdx < replayFrames.length - 1) {
+      replayIdx++;
+      replayAccum -= REPLAY_CAPTURE_STEP;
+    }
+    applyReplayFrame(replayFrames[replayIdx]);
+    updatePlaybackHUD();
+    // Auto-pause at end
+    if (replayIdx >= replayFrames.length - 1) {
+      replayPlayback = false;
+      document.getElementById('pb-play').textContent = 'PLAY';
+    }
+  } else {
+    simAccum += dt;
+    if (simAccum >= SIM_STEP) {
+      update(simAccum);
+      simAccum = 0;
+    }
+    // Recording: capture frames at 10fps
+    if (replayRecording) {
+      replayRecordAccum += dt;
+      if (replayRecordAccum >= REPLAY_CAPTURE_STEP) {
+        captureReplayFrame();
+        replayRecordAccum -= REPLAY_CAPTURE_STEP;
+      }
+    }
   }
 
   // HUD updates at 4fps to avoid DOM thrashing
@@ -5908,11 +6266,14 @@ function animate() {
     updateNarrationPanel(0.25);
     checkAchievements(0.25);
     updateFogOfWar(0.25);
+    updateCommsNetwork(0.25);
     updateDebugOverlay(0.25);
     updateSupplyHUD();
+    updateAIPanel();
     updateStatusEffects(0.25);
     applyStatusEffectVisuals();
     drawMinimap();
+    updateRecordingTimer();
     hudTimer = 0;
   }
 
@@ -5926,6 +6287,188 @@ function animate() {
   renderer.render(scene, camera);
 }
 
+
+// =========================================================================
+// AI Decision Panel — unit click-to-inspect
+// =========================================================================
+let selectedUnit = null;
+let selectedSide = null; // 'police' or 'protestor'
+const aiPanel = document.getElementById('ai-panel');
+const aiRaycaster = new THREE.Raycaster();
+const aiMouse = new THREE.Vector2();
+const aiPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const aiIntersect = new THREE.Vector3();
+
+// Target line (unit -> destination)
+const targetLineGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(), new THREE.Vector3()
+]);
+const targetLineMat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.5 });
+const targetLine = new THREE.Line(targetLineGeo, targetLineMat);
+targetLine.visible = false;
+scene.add(targetLine);
+
+function deselectUnit() {
+  // Restore ring color before deselecting
+  if (selectedUnit && selectedUnit.myRingIdx >= 0) {
+    ringMesh.setColorAt(selectedUnit.myRingIdx, _color.set(selectedUnit.ringColor));
+    if (ringMesh.instanceColor) ringMesh.instanceColor.needsUpdate = true;
+  }
+  selectedUnit = null;
+  selectedSide = null;
+  aiPanel.classList.remove('visible');
+  targetLine.visible = false;
+}
+
+renderer.domElement.addEventListener('click', (ev) => {
+  aiMouse.x = (ev.clientX / innerWidth) * 2 - 1;
+  aiMouse.y = -(ev.clientY / innerHeight) * 2 + 1;
+  aiRaycaster.setFromCamera(aiMouse, camera);
+  aiRaycaster.ray.intersectPlane(aiPlane, aiIntersect);
+  if (!aiIntersect) return;
+
+  // Restore previous selection ring color
+  if (selectedUnit && selectedUnit.myRingIdx >= 0) {
+    ringMesh.setColorAt(selectedUnit.myRingIdx, _color.set(selectedUnit.ringColor));
+    if (ringMesh.instanceColor) ringMesh.instanceColor.needsUpdate = true;
+  }
+
+  // Find nearest unit within 5 world units of click
+  let best = null, bestDist = 25, bestSide = null; // 25 = 5^2
+  for (let i = 0; i < protestors.length; i++) {
+    const p = protestors[i];
+    if (!p.alive || p.arrested) continue;
+    const dd = (p.x - aiIntersect.x) ** 2 + (p.z - aiIntersect.z) ** 2;
+    if (dd < bestDist) { bestDist = dd; best = p; bestSide = 'protestor'; }
+  }
+  for (let i = 0; i < police.length; i++) {
+    const p = police[i];
+    if (!p.alive) continue;
+    const dd = (p.x - aiIntersect.x) ** 2 + (p.z - aiIntersect.z) ** 2;
+    if (dd < bestDist) { bestDist = dd; best = p; bestSide = 'police'; }
+  }
+
+  if (best) {
+    selectedUnit = best;
+    selectedSide = bestSide;
+    aiPanel.classList.add('visible');
+  } else {
+    deselectUnit();
+  }
+});
+
+function getUnitAction(unit, side) {
+  if (!unit.alive) return 'DOWN';
+  if (unit.arrested) return 'ARRESTED';
+  if (unit.stunnedTimer > 0) return 'STUNNED';
+  if (unit.injured) return 'INJURED';
+  if (side === 'protestor') {
+    if (unit.fleeing) return 'FLEEING';
+    if (unit.throwTimer < 1) return 'THROWING';
+    return 'PROTESTING';
+  }
+  if (unit.holdLine) return 'HOLDING LINE';
+  if (unit.fireTimer < 0.5) return 'FIRING';
+  return 'ADVANCING';
+}
+
+function getUnitReasoning(unit, side) {
+  if (unit.stunnedTimer > 0) return 'Stunned by flash -> IMMOBILIZED';
+  if (unit.injured) return 'Took damage -> SEEKING COVER';
+  if (side === 'protestor') {
+    if (unit.fleeing) return 'Morale broken -> FLEE AREA';
+    if (unit.morale > 0.7) return 'High morale -> HOLD GROUND';
+    if (unit.morale < 0.3) return 'Low morale -> MIGHT FLEE';
+    return 'Moderate morale -> CONTINUE PROTEST';
+  }
+  if (unit.holdLine) {
+    if (unit.morale > 0.8) return 'Discipline high -> HOLD LINE';
+    return 'Orders received -> MAINTAIN POSITION';
+  }
+  return 'Pursuing protestors -> ADVANCE';
+}
+
+function getPersonality(unit, side) {
+  if (side === 'police') {
+    if (unit.speed > 3) return 'AGGRESSIVE';
+    if (unit.fireTimer > 4) return 'CAUTIOUS';
+    return 'DISCIPLINED';
+  }
+  if (unit.throwTimer < 5) return 'AGGRESSIVE';
+  if (unit.speed > 3) return 'AGITATOR';
+  return 'CAUTIOUS';
+}
+
+function barColor(val) {
+  if (val > 0.6) return '#05ffa1';
+  if (val > 0.3) return '#fcee0a';
+  return '#ff2a6d';
+}
+
+function updateAIPanel() {
+  if (!selectedUnit || !selectedUnit.alive) { deselectUnit(); return; }
+  if (selectedUnit.arrested) { deselectUnit(); return; }
+
+  const u = selectedUnit;
+  const side = selectedSide;
+  const idx = side === 'police' ? police.indexOf(u) : protestors.indexOf(u);
+  const label = side === 'police' ? 'OFFICER' : 'PROTESTOR';
+  const action = getUnitAction(u, side);
+  const reason = getUnitReasoning(u, side);
+  const personality = getPersonality(u, side);
+  const morale = u.morale !== undefined ? u.morale : 1;
+  const health = u.health !== undefined ? u.health : 1;
+
+  // Find nearest threat
+  const enemies = side === 'police' ? protestors : police;
+  let nearDist = Infinity;
+  for (const e of enemies) {
+    if (!e.alive || e.arrested) continue;
+    const dd = Math.sqrt((u.x - e.x) ** 2 + (u.z - e.z) ** 2);
+    if (dd < nearDist) nearDist = dd;
+  }
+  const threatStr = nearDist < 1000 ? Math.round(nearDist) + 'm away' : 'None';
+
+  // Check for nearby fire
+  let nearFire = Infinity;
+  for (const f of fires) {
+    const dd = Math.sqrt((u.x - f.x) ** 2 + (u.z - f.z) ** 2);
+    if (dd < nearFire) nearFire = dd;
+  }
+  const fireNote = nearFire < 15 ? ' | Fire ' + Math.round(nearFire) + 'm' : '';
+
+  const sideColor = side === 'police' ? '#00f0ff' : '#ff2a6d';
+  const threatLabel = side === 'police' ? 'Protestor' : 'Officer';
+
+  aiPanel.innerHTML = '<h3 style="color:' + sideColor + '">' + label + ' #' + idx + '</h3>' +
+    '<div class="ai-action">' + action + '</div>' +
+    '<span class="ai-label">Personality:</span> <span class="ai-val">' + personality + '</span><br>' +
+    '<span class="ai-label">Morale:</span>' +
+    '<div class="ai-bar"><div class="ai-bar-fill" style="width:' + (morale * 100) + '%;background:' + barColor(morale) + '"></div></div>' +
+    '<span class="ai-label">Health:</span>' +
+    '<div class="ai-bar"><div class="ai-bar-fill" style="width:' + (health * 100) + '%;background:' + barColor(health) + '"></div></div>' +
+    '<span class="ai-label">Threat:</span> <span class="ai-val">' + threatLabel + ' ' + threatStr + fireNote + '</span><br>' +
+    '<div class="ai-reason">' + reason + '</div>';
+
+  // Selection ring: override the unit's ring to white
+  if (u.myRingIdx >= 0) {
+    ringMesh.setColorAt(u.myRingIdx, _color.set(0xffffff));
+    if (ringMesh.instanceColor) ringMesh.instanceColor.needsUpdate = true;
+  }
+
+  // Target line from unit to destination
+  const dest = u.target || (u.holdLine ? { x: u.lineX, z: u.lineZ } : null);
+  if (dest) {
+    const pts = targetLineGeo.attributes.position;
+    pts.setXYZ(0, u.x, 1.5, u.z);
+    pts.setXYZ(1, dest.x, 0.5, dest.z);
+    pts.needsUpdate = true;
+    targetLine.visible = true;
+    targetLineMat.color.set(sideColor);
+  } else {
+    targetLine.visible = false;
+  }
+}
 animate();
 
 } catch(e) {
