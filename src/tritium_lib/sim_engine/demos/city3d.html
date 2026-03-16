@@ -2071,7 +2071,7 @@ function collectAllRoadVehicles() {
 function checkVehicleCollision(vehRef, vehX, vehZ, horizontal, dir) {
   const GAP_STOP = 3;    // full stop distance
   const GAP_SLOW = 6;    // start slowing
-  const LANE_TOL = 2.5;  // lateral tolerance for same-lane check
+  const LANE_TOL = 1.2;  // lateral tolerance — must be < lane spacing (1.5*2=3) to avoid cross-lane false positives
 
   let minAheadDist = Infinity;
   let aheadStopped = false;
@@ -2094,8 +2094,8 @@ function checkVehicleCollision(vehRef, vehX, vehZ, horizontal, dir) {
     }
   }
 
-  if (minAheadDist < GAP_STOP) return 0;
-  if (minAheadDist < GAP_SLOW) return aheadStopped ? 0 : 0.3;
+  if (minAheadDist < GAP_STOP) return 0.05; // near-stop but not permanent deadlock
+  if (minAheadDist < GAP_SLOW) return 0.3;
   return 1.0;
 }
 
@@ -4406,9 +4406,20 @@ function update(dt) {
     const isNightNow = nightMode || simTime < 6 || simTime > 20;
     h.beam.material.opacity = isNightNow ? 0.12 : 0.04;
 
-    // Update ground splash position
+    // Update ground splash — offset forward to match beam direction
+    // Helicopter pitches forward, so beam hits ground ahead of helicopter
+    // Beam is 80m long, pitch is -0.14 rad → forward offset ≈ 80 * sin(0.14) ≈ 11m
     if (h.splash) {
-      h.splash.position.set(h.group.position.x, 0.1, h.group.position.z);
+      const fwdOffset = 11; // meters ahead due to pitch
+      const heliYaw = h.group.rotation.y;
+      // Helicopter body +X is forward, so forward direction in world:
+      const fwdX = Math.cos(heliYaw) * fwdOffset;
+      const fwdZ = -Math.sin(heliYaw) * fwdOffset;
+      h.splash.position.set(
+        h.group.position.x + fwdX,
+        0.1,
+        h.group.position.z + fwdZ
+      );
       h.splash.material.opacity = isNightNow ? 0.25 : 0.08;
     }
   }
