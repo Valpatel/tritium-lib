@@ -4685,6 +4685,11 @@ document.addEventListener('keydown', (e) => {
       rainMesh.count = 0;
     }
   }
+  if (e.code === 'KeyS') {
+    ambientOn = !ambientOn;
+    if (ambientOn && !ambientGain) initAmbientAudio();
+    if (!ambientOn && ambientGain) ambientGain.gain.value = 0;
+  }
   if (e.code === 'KeyF') {
     fogOverride = !fogOverride;
   }
