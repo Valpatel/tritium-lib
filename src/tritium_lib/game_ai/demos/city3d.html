@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<!--
+  Created by Matthew Valancy
+  Copyright 2026 Valpatel Software LLC
+  Licensed under AGPL-3.0 — see LICENSE for details.
+
+  Three.js City Simulation — 3D visualization of the full game_ai stack.
+  Mirrors NeighborhoodSim (city_sim.py) with combat from combat_ai.py.
+
+  Open directly in browser or serve:
+    python3 -m tritium_lib.game_ai.demos.serve_city3d
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tritium City 3D — Tactical Simulation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
+canvas { display: block; }
+
+#hud {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none; color: #fcee0a; font-size: 13px;
+}
+#hud > div { pointer-events: auto; }
+
+#top-bar {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  padding: 12px 16px;
+}
+#clock {
+  font-size: 28px; font-weight: bold; color: #00f0ff;
+  text-shadow: 0 0 10px #00f0ff88;
+}
+#time-label { font-size: 11px; color: #00f0ff99; }
+#stats {
+  text-align: right; line-height: 1.6;
+}
+.stat-val { color: #05ffa1; font-weight: bold; }
+.hostile-val { color: #ff2a6d; }
+.defend-val { color: #00f0ff; }
+
+#kill-feed {
+  position: absolute; bottom: 60px; left: 16px;
+  max-height: 200px; overflow: hidden; font-size: 12px;
+  line-height: 1.5;
+}
+.kill-entry { opacity: 0.9; }
+.kill-entry.fade { opacity: 0.3; }
+
+#controls {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  text-align: center; font-size: 12px; color: #fcee0a88;
+  background: #0a0a0f88; padding: 6px 16px; border-radius: 4px;
+  border: 1px solid #fcee0a22;
+}
+#controls span { color: #00f0ff; }
+
+#fps {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: #05ffa188;
+}
+
+#combat-banner {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 36px; font-weight: bold; color: #ff2a6d;
+  text-shadow: 0 0 20px #ff2a6d88, 0 0 40px #ff2a6d44;
+  opacity: 0; transition: opacity 0.3s;
+  pointer-events: none;
+}
+#combat-banner.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="top-bar">
+    <div>
+      <div id="clock">08:00</div>
+      <div id="time-label">SIMULATION TIME</div>
+    </div>
+    <div id="stats">
+      Civilians: <span class="stat-val" id="civ-count">0</span><br>
+      Defenders: <span class="defend-val" id="def-count">0</span><br>
+      Hostiles: <span class="hostile-val" id="host-count">0</span><br>
+      Eliminated: <span class="hostile-val" id="kill-count">0</span>
+    </div>
+  </div>
+  <div id="fps">-- FPS</div>
+  <div id="kill-feed"></div>
+  <div id="controls">
+    <span>SPACE</span> Combat &nbsp;|&nbsp;
+    <span>C</span> Chase Cam &nbsp;|&nbsp;
+    <span>N</span> Night &nbsp;|&nbsp;
+    <span>Scroll</span> Zoom &nbsp;|&nbsp;
+    <span>RMB Drag</span> Pan
+  </div>
+  <div id="combat-banner">COMBAT ENGAGED</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// =========================================================================
+// Constants
+// =========================================================================
+const CYAN    = 0x00f0ff;
+const MAGENTA = 0xff2a6d;
+const GREEN   = 0x05ffa1;
+const YELLOW  = 0xfcee0a;
+const VOID_BG = 0x0a0a0f;
+
+const BLOCK_W = 60, BLOCK_H = 50;
+const GRID_COLS = 8, GRID_ROWS = 6;
+const ROAD_W = 10, SIDEWALK_W = 3;
+const CITY_W = GRID_COLS * (BLOCK_W + ROAD_W) + ROAD_W;
+const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
+
+const NUM_PEDESTRIANS = 30;
+const NUM_CARS = 15;
+
+// =========================================================================
+// State
+// =========================================================================
+let combatMode = false;
+let nightMode = false;
+let chaseCam = false;
+let chaseTarget = null;
+let simTime = 8.0; // hours since midnight
+let kills = 0;
+
+const pedestrians = [];
+const cars = [];
+const hostiles = [];
+const defenders = [];
+const tracers = [];
+const explosions = [];
+const muzzleFlashes = [];
+const smokeParticles = [];
+const buildings = [];
+const streetLamps = [];
+const killFeed = [];
+
+// =========================================================================
+// Audio
+// =========================================================================
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playGunshot(x, z) {
+  const ctx = ensureAudio();
+  const bufSize = ctx.sampleRate * 0.08;
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const env = Math.exp(-i / (bufSize * 0.15));
+    data[i] = (Math.random() * 2 - 1) * env * 0.4;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const panner = ctx.createPanner();
+  panner.positionX.value = x * 0.01;
+  panner.positionZ.value = z * 0.01;
+  panner.distanceModel = 'exponential';
+  panner.refDistance = 1;
+  panner.rolloffFactor = 2;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.15;
+  src.connect(panner).connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+function playExplosion(x, z) {
+  const ctx = ensureAudio();
+  const dur = 0.5;
+  const bufSize = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const t = i / ctx.sampleRate;
+    const env = Math.exp(-t * 6);
+    const low = Math.sin(2 * Math.PI * 40 * t + Math.sin(2 * Math.PI * 15 * t) * 3);
+    data[i] = (low * 0.6 + (Math.random() * 2 - 1) * 0.4) * env * 0.3;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const panner = ctx.createPanner();
+  panner.positionX.value = x * 0.01;
+  panner.positionZ.value = z * 0.01;
+  panner.distanceModel = 'exponential';
+  panner.refDistance = 1;
+  panner.rolloffFactor = 1.5;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.2;
+  src.connect(panner).connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+// =========================================================================
+// Scene Setup
+// =========================================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(VOID_BG);
+scene.fog = new THREE.FogExp2(VOID_BG, 0.003);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 2000);
+camera.position.set(CITY_W / 2, 300, CITY_H / 2 + 200);
+camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.prepend(renderer.domElement);
+
+// Lights
+const ambientLight = new THREE.AmbientLight(0x334466, 0.4);
+scene.add(ambientLight);
+
+const sunLight = new THREE.DirectionalLight(0xffeedd, 1.0);
+sunLight.position.set(200, 300, 100);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.left = -CITY_W;
+sunLight.shadow.camera.right = CITY_W;
+sunLight.shadow.camera.top = CITY_H;
+sunLight.shadow.camera.bottom = -CITY_H;
+scene.add(sunLight);
+
+const hemiLight = new THREE.HemisphereLight(0x446688, 0x223344, 0.3);
+scene.add(hemiLight);
+
+// =========================================================================
+// City Generation
+// =========================================================================
+const groundGeo = new THREE.PlaneGeometry(CITY_W + 100, CITY_H + 100);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(CITY_W / 2, -0.05, CITY_H / 2);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Materials
+const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.85 });
+const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.8 });
+const buildingMats = [
+  new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: 0x12121a, roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: 0x0e1828, roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: 0x181830, roughness: 0.7 }),
+  new THREE.MeshStandardMaterial({ color: 0x202035, roughness: 0.7 }),
+];
+
+const rng = () => Math.random();
+
+// Roads — horizontal
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+  const geo = new THREE.PlaneGeometry(CITY_W, ROAD_W);
+  const road = new THREE.Mesh(geo, roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(CITY_W / 2, 0.01, z);
+  road.receiveShadow = true;
+  scene.add(road);
+
+  // Road lines
+  const lineGeo = new THREE.PlaneGeometry(CITY_W, 0.3);
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0x555522 });
+  const line = new THREE.Mesh(lineGeo, lineMat);
+  line.rotation.x = -Math.PI / 2;
+  line.position.set(CITY_W / 2, 0.02, z);
+  scene.add(line);
+}
+
+// Roads — vertical
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+  const geo = new THREE.PlaneGeometry(ROAD_W, CITY_H);
+  const road = new THREE.Mesh(geo, roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(x, 0.01, CITY_H / 2);
+  road.receiveShadow = true;
+  scene.add(road);
+}
+
+// Sidewalks along roads
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+  for (const side of [-1, 1]) {
+    const sz = z + side * (ROAD_W / 2 + SIDEWALK_W / 2);
+    const geo = new THREE.PlaneGeometry(CITY_W, SIDEWALK_W);
+    const sw = new THREE.Mesh(geo, sidewalkMat);
+    sw.rotation.x = -Math.PI / 2;
+    sw.position.set(CITY_W / 2, 0.05, sz);
+    scene.add(sw);
+  }
+}
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+  for (const side of [-1, 1]) {
+    const sx = x + side * (ROAD_W / 2 + SIDEWALK_W / 2);
+    const geo = new THREE.PlaneGeometry(SIDEWALK_W, CITY_H);
+    const sw = new THREE.Mesh(geo, sidewalkMat);
+    sw.rotation.x = -Math.PI / 2;
+    sw.position.set(sx, 0.05, CITY_H / 2);
+    scene.add(sw);
+  }
+}
+
+// Buildings in each block
+const windowMat = new THREE.MeshBasicMaterial({ color: CYAN, transparent: true, opacity: 0.3 });
+
+for (let row = 0; row < GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+    const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+
+    // 2-4 buildings per block
+    const count = 2 + Math.floor(rng() * 3);
+    for (let b = 0; b < count; b++) {
+      const isOffice = rng() < 0.3;
+      const h = isOffice ? 15 + rng() * 35 : 6 + rng() * 10;
+      const w = 6 + rng() * 14;
+      const d = 6 + rng() * 14;
+      const ox = (rng() - 0.5) * (BLOCK_W - w - 4);
+      const oz = (rng() - 0.5) * (BLOCK_H - d - 4);
+
+      const geo = new THREE.BoxGeometry(w, h, d);
+      const mat = buildingMats[Math.floor(rng() * buildingMats.length)];
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(bx + ox, h / 2, bz + oz);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+
+      buildings.push({ mesh, h, isOffice, x: bx + ox, z: bz + oz, w, d });
+
+      // Window glow strips
+      if (h > 10) {
+        const floors = Math.floor(h / 4);
+        for (let f = 1; f <= floors; f++) {
+          if (rng() < 0.6) {
+            const wg = new THREE.PlaneGeometry(w * 0.7, 1.2);
+            const wm = new THREE.Mesh(wg, windowMat.clone());
+            wm.position.set(bx + ox, f * 4, bz + oz + d / 2 + 0.05);
+            scene.add(wm);
+            // Back side
+            const wm2 = wm.clone();
+            wm2.position.z = bz + oz - d / 2 - 0.05;
+            wm2.rotation.y = Math.PI;
+            scene.add(wm2);
+          }
+        }
+      }
+
+      // Neon accent on tall buildings
+      if (h > 25 && rng() < 0.5) {
+        const neonColor = [CYAN, MAGENTA, GREEN][Math.floor(rng() * 3)];
+        const neonGeo = new THREE.BoxGeometry(w + 0.5, 0.4, d + 0.5);
+        const neonMat = new THREE.MeshBasicMaterial({ color: neonColor, transparent: true, opacity: 0.7 });
+        const neon = new THREE.Mesh(neonGeo, neonMat);
+        neon.position.set(bx + ox, h + 0.2, bz + oz);
+        scene.add(neon);
+
+        const nLight = new THREE.PointLight(neonColor, 0.5, 30);
+        nLight.position.set(bx + ox, h + 1, bz + oz);
+        scene.add(nLight);
+      }
+    }
+
+    // Trees in gaps
+    const numTrees = Math.floor(rng() * 3);
+    for (let t = 0; t < numTrees; t++) {
+      const tx = bx + (rng() - 0.5) * BLOCK_W * 0.8;
+      const tz = bz + (rng() - 0.5) * BLOCK_H * 0.8;
+      // Trunk
+      const trunkGeo = new THREE.CylinderGeometry(0.3, 0.4, 4, 6);
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3d2817 });
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.set(tx, 2, tz);
+      trunk.castShadow = true;
+      scene.add(trunk);
+      // Foliage
+      const leafGeo = new THREE.SphereGeometry(2.5, 8, 6);
+      const leafMat = new THREE.MeshStandardMaterial({ color: 0x0a5020 });
+      const leaf = new THREE.Mesh(leafGeo, leafMat);
+      leaf.position.set(tx, 5.5, tz);
+      leaf.castShadow = true;
+      scene.add(leaf);
+    }
+  }
+}
+
+// Street lamps
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+    // Lamp post
+    const postGeo = new THREE.CylinderGeometry(0.15, 0.2, 7, 6);
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+    const post = new THREE.Mesh(postGeo, postMat);
+    post.position.set(x + 4, 3.5, z + 4);
+    scene.add(post);
+
+    // Lamp head
+    const headGeo = new THREE.SphereGeometry(0.6, 8, 6);
+    const headMat = new THREE.MeshBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.8 });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.set(x + 4, 7.2, z + 4);
+    scene.add(head);
+
+    const lampLight = new THREE.PointLight(0xffdd88, 0.3, 25);
+    lampLight.position.set(x + 4, 7, z + 4);
+    scene.add(lampLight);
+    streetLamps.push({ light: lampLight, head });
+  }
+}
+
+// =========================================================================
+// Helpers
+// =========================================================================
+function randomRoadPos() {
+  // Pick a random position on a road
+  if (rng() < 0.5) {
+    // Horizontal road
+    const row = Math.floor(rng() * (GRID_ROWS + 1));
+    const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+    const x = rng() * CITY_W;
+    return { x, z };
+  } else {
+    const col = Math.floor(rng() * (GRID_COLS + 1));
+    const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+    const z = rng() * CITY_H;
+    return { x, z };
+  }
+}
+
+function randomSidewalkPos() {
+  const row = Math.floor(rng() * (GRID_ROWS + 1));
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2 + (rng() < 0.5 ? 1 : -1) * (ROAD_W / 2 + 1.5);
+  const x = rng() * CITY_W;
+  return { x, z };
+}
+
+function nearestIntersection(x, z) {
+  const col = Math.round((x - ROAD_W / 2) / (BLOCK_W + ROAD_W));
+  const row = Math.round((z - ROAD_W / 2) / (BLOCK_H + ROAD_W));
+  return {
+    x: Math.max(0, Math.min(GRID_COLS, col)) * (BLOCK_W + ROAD_W) + ROAD_W / 2,
+    z: Math.max(0, Math.min(GRID_ROWS, row)) * (BLOCK_H + ROAD_W) + ROAD_W / 2
+  };
+}
+
+function roadPathTo(from, to) {
+  // L-shaped road path via nearest intersection
+  const inter = nearestIntersection(to.x, to.z);
+  return [
+    { x: from.x, z: inter.z },
+    { x: inter.x, z: inter.z },
+    { x: to.x, z: to.z }
+  ];
+}
+
+function edgeSpawnPos() {
+  const side = Math.floor(rng() * 4);
+  switch (side) {
+    case 0: return { x: -5, z: rng() * CITY_H };
+    case 1: return { x: CITY_W + 5, z: rng() * CITY_H };
+    case 2: return { x: rng() * CITY_W, z: -5 };
+    default: return { x: rng() * CITY_W, z: CITY_H + 5 };
+  }
+}
+
+// =========================================================================
+// Pedestrians
+// =========================================================================
+const pedGeo = new THREE.CapsuleGeometry(0.4, 1.2, 4, 8);
+
+for (let i = 0; i < NUM_PEDESTRIANS; i++) {
+  const pos = randomSidewalkPos();
+  const color = new THREE.Color().setHSL(rng(), 0.5, 0.5);
+  const mat = new THREE.MeshStandardMaterial({ color });
+  const mesh = new THREE.Mesh(pedGeo, mat);
+  mesh.position.set(pos.x, 1, pos.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+
+  const dest = randomSidewalkPos();
+  pedestrians.push({
+    mesh, speed: 1.5 + rng() * 1.5,
+    target: dest,
+    alive: true,
+  });
+}
+
+// =========================================================================
+// Cars
+// =========================================================================
+for (let i = 0; i < NUM_CARS; i++) {
+  const pos = randomRoadPos();
+  const hue = rng();
+  const carGroup = new THREE.Group();
+
+  // Body
+  const bodyGeo = new THREE.BoxGeometry(3, 1.5, 2);
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setHSL(hue, 0.6, 0.4),
+    metalness: 0.4, roughness: 0.5
+  });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = 0.75;
+  body.castShadow = true;
+  carGroup.add(body);
+
+  // Roof
+  const roofGeo = new THREE.BoxGeometry(1.8, 0.8, 1.8);
+  const roof = new THREE.Mesh(roofGeo, bodyMat);
+  roof.position.set(-0.2, 1.6, 0);
+  carGroup.add(roof);
+
+  // Headlights
+  const hlGeo = new THREE.SphereGeometry(0.2, 6, 4);
+  const hlMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
+  const hlL = new THREE.Mesh(hlGeo, hlMat);
+  hlL.position.set(1.5, 0.6, 0.7);
+  carGroup.add(hlL);
+  const hlR = hlL.clone();
+  hlR.position.z = -0.7;
+  carGroup.add(hlR);
+
+  // Headlight beams (visible at night)
+  const hlLight = new THREE.SpotLight(0xffffcc, 0, 30, Math.PI / 6, 0.5);
+  hlLight.position.set(1.5, 0.6, 0);
+  hlLight.target.position.set(10, 0, 0);
+  carGroup.add(hlLight);
+  carGroup.add(hlLight.target);
+
+  // Tail lights
+  const tlMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.6 });
+  const tlL = new THREE.Mesh(hlGeo, tlMat);
+  tlL.position.set(-1.5, 0.6, 0.7);
+  carGroup.add(tlL);
+  const tlR = tlL.clone();
+  tlR.position.z = -0.7;
+  carGroup.add(tlR);
+
+  carGroup.position.set(pos.x, 0, pos.z);
+  scene.add(carGroup);
+
+  const dest = randomRoadPos();
+  const path = roadPathTo(pos, dest);
+  cars.push({
+    group: carGroup, speed: 5 + rng() * 8,
+    path, pathIdx: 0,
+    headlight: hlLight,
+    alive: true,
+    pauseTimer: 0,
+  });
+}
+
+// =========================================================================
+// Combat Units
+// =========================================================================
+const unitGeo = new THREE.CapsuleGeometry(0.5, 1.4, 4, 8);
+const hostileMat = new THREE.MeshStandardMaterial({ color: MAGENTA, emissive: MAGENTA, emissiveIntensity: 0.3 });
+const defenderMat = new THREE.MeshStandardMaterial({ color: CYAN, emissive: CYAN, emissiveIntensity: 0.3 });
+
+function spawnHostile() {
+  const pos = edgeSpawnPos();
+  const mesh = new THREE.Mesh(unitGeo, hostileMat);
+  mesh.position.set(pos.x, 1, pos.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+
+  // Marker ring
+  const ringGeo = new THREE.RingGeometry(1.0, 1.3, 16);
+  const ringMat = new THREE.MeshBasicMaterial({ color: MAGENTA, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.05;
+  mesh.add(ring);
+
+  hostiles.push({
+    mesh, speed: 2 + rng() * 2,
+    target: { x: CITY_W / 2 + (rng() - 0.5) * 200, z: CITY_H / 2 + (rng() - 0.5) * 200 },
+    health: 1.0,
+    alive: true,
+    fireTimer: 1 + rng() * 3,
+  });
+}
+
+function spawnDefender() {
+  const x = CITY_W / 2 + (rng() - 0.5) * 150;
+  const z = CITY_H / 2 + (rng() - 0.5) * 150;
+  const mesh = new THREE.Mesh(unitGeo, defenderMat);
+  mesh.position.set(x, 1, z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+
+  const ringGeo = new THREE.RingGeometry(1.0, 1.3, 16);
+  const ringMat = new THREE.MeshBasicMaterial({ color: CYAN, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.05;
+  mesh.add(ring);
+
+  defenders.push({
+    mesh, speed: 2.5 + rng() * 1.5,
+    health: 1.0,
+    alive: true,
+    fireTimer: 0.5 + rng() * 2,
+    target: null,
+  });
+}
+
+// =========================================================================
+// Effects
+// =========================================================================
+function createTracer(from, to, color = 0xffff00) {
+  const points = [
+    new THREE.Vector3(from.x, 2, from.z),
+    new THREE.Vector3(to.x, 2, to.z),
+  ];
+  const geo = new THREE.BufferGeometry().setFromPoints(points);
+  const mat = new THREE.LineBasicMaterial({ color, linewidth: 2, transparent: true, opacity: 1 });
+  const line = new THREE.Line(geo, mat);
+  scene.add(line);
+  tracers.push({ line, life: 0.15 });
+}
+
+function createMuzzleFlash(pos) {
+  const light = new THREE.PointLight(0xffaa00, 3, 15);
+  light.position.set(pos.x, 2.5, pos.z);
+  scene.add(light);
+  muzzleFlashes.push({ light, life: 0.06 });
+}
+
+function createExplosion(pos) {
+  const group = new THREE.Group();
+  group.position.set(pos.x, 0, pos.z);
+  scene.add(group);
+
+  // Core flash
+  const coreGeo = new THREE.SphereGeometry(1, 12, 8);
+  const coreMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 1 });
+  const core = new THREE.Mesh(coreGeo, coreMat);
+  core.position.y = 2;
+  group.add(core);
+
+  // Particles
+  const parts = [];
+  for (let i = 0; i < 15; i++) {
+    const pGeo = new THREE.SphereGeometry(0.3 + rng() * 0.4, 6, 4);
+    const pMat = new THREE.MeshBasicMaterial({
+      color: rng() < 0.5 ? 0xff4400 : 0xffaa00,
+      transparent: true, opacity: 1
+    });
+    const p = new THREE.Mesh(pGeo, pMat);
+    p.position.y = 2;
+    const vel = {
+      x: (rng() - 0.5) * 20,
+      y: 5 + rng() * 15,
+      z: (rng() - 0.5) * 20,
+    };
+    group.add(p);
+    parts.push({ mesh: p, vel });
+  }
+
+  explosions.push({ group, core, parts, life: 1.5, age: 0 });
+
+  // Light flash
+  const exLight = new THREE.PointLight(0xff6600, 5, 40);
+  exLight.position.set(pos.x, 4, pos.z);
+  scene.add(exLight);
+  muzzleFlashes.push({ light: exLight, life: 0.3 });
+}
+
+function createSmoke(pos) {
+  for (let i = 0; i < 5; i++) {
+    const geo = new THREE.SphereGeometry(1.5 + rng(), 8, 6);
+    const mat = new THREE.MeshBasicMaterial({ color: 0x444444, transparent: true, opacity: 0.4 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(pos.x + (rng() - 0.5) * 3, 1 + rng() * 2, pos.z + (rng() - 0.5) * 3);
+    scene.add(mesh);
+    smokeParticles.push({ mesh, vy: 1 + rng() * 2, life: 3 + rng() * 2 });
+  }
+}
+
+function createHitEffect(pos) {
+  const light = new THREE.PointLight(0xff0000, 4, 10);
+  light.position.set(pos.x, 2, pos.z);
+  scene.add(light);
+  muzzleFlashes.push({ light, life: 0.1 });
+}
+
+function addKillFeedEntry(text) {
+  killFeed.unshift({ text, age: 0 });
+  if (killFeed.length > 8) killFeed.pop();
+}
+
+// =========================================================================
+// Camera Controls
+// =========================================================================
+let panOffset = { x: 0, z: 0 };
+let zoomLevel = 300;
+let isPanning = false;
+let panStart = { x: 0, y: 0 };
+
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  zoomLevel = Math.max(30, Math.min(600, zoomLevel + e.deltaY * 0.3));
+}, { passive: false });
+
+renderer.domElement.addEventListener('mousedown', (e) => {
+  if (e.button === 2) { isPanning = true; panStart = { x: e.clientX, y: e.clientY }; }
+});
+renderer.domElement.addEventListener('mousemove', (e) => {
+  if (!isPanning) return;
+  const dx = e.clientX - panStart.x;
+  const dy = e.clientY - panStart.y;
+  panOffset.x -= dx * 0.5;
+  panOffset.z -= dy * 0.5;
+  panStart = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('mouseup', (e) => {
+  if (e.button === 2) isPanning = false;
+});
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Keyboard
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    combatMode = !combatMode;
+    const banner = document.getElementById('combat-banner');
+    banner.textContent = combatMode ? 'COMBAT ENGAGED' : 'COMBAT DISENGAGED';
+    banner.classList.add('show');
+    setTimeout(() => banner.classList.remove('show'), 1500);
+
+    if (combatMode) {
+      ensureAudio();
+      // Spawn initial forces
+      for (let i = 0; i < 8; i++) spawnHostile();
+      for (let i = 0; i < 6; i++) spawnDefender();
+    } else {
+      // Remove combat units
+      for (const h of hostiles) scene.remove(h.mesh);
+      for (const d of defenders) scene.remove(d.mesh);
+      hostiles.length = 0;
+      defenders.length = 0;
+      kills = 0;
+    }
+  }
+  if (e.code === 'KeyC') {
+    chaseCam = !chaseCam;
+    if (chaseCam) {
+      const all = [...pedestrians.filter(p => p.alive), ...cars.filter(c => c.alive)];
+      chaseTarget = all.length > 0 ? all[Math.floor(rng() * all.length)] : null;
+    }
+  }
+  if (e.code === 'KeyN') {
+    nightMode = !nightMode;
+  }
+});
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// =========================================================================
+// Update Loop
+// =========================================================================
+let lastTime = performance.now();
+let frameCount = 0;
+let fpsDisplay = 0;
+let fpsTimer = 0;
+
+function update(dt) {
+  // Advance sim time (1 real second = 2 sim minutes)
+  simTime += dt * (2 / 60);
+  if (simTime >= 24) simTime -= 24;
+
+  const isNight = nightMode || simTime < 6 || simTime > 20;
+
+  // Day/night lighting
+  const dayFactor = isNight ? 0.15 : 1.0;
+  ambientLight.intensity = 0.1 + dayFactor * 0.4;
+  sunLight.intensity = dayFactor * 1.0;
+  hemiLight.intensity = 0.1 + dayFactor * 0.2;
+  scene.fog.density = isNight ? 0.005 : 0.002;
+  renderer.toneMappingExposure = isNight ? 0.8 : 1.2;
+
+  // Street lamps
+  for (const lamp of streetLamps) {
+    lamp.light.intensity = isNight ? 1.2 : 0.1;
+    lamp.head.material.opacity = isNight ? 1.0 : 0.3;
+  }
+
+  // Update pedestrians
+  for (const ped of pedestrians) {
+    if (!ped.alive) continue;
+    const p = ped.mesh.position;
+    const dx = ped.target.x - p.x;
+    const dz = ped.target.z - p.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < 2) {
+      ped.target = randomSidewalkPos();
+    } else {
+      const s = ped.speed * dt;
+      p.x += (dx / dist) * s;
+      p.z += (dz / dist) * s;
+    }
+    // Keep on sidewalk level
+    p.y = 1;
+  }
+
+  // Update cars
+  for (const car of cars) {
+    if (!car.alive) continue;
+    if (car.pauseTimer > 0) { car.pauseTimer -= dt; continue; }
+
+    const g = car.group.position;
+    if (car.pathIdx >= car.path.length) {
+      // New destination
+      const dest = randomRoadPos();
+      car.path = roadPathTo({ x: g.x, z: g.z }, dest);
+      car.pathIdx = 0;
+      car.pauseTimer = 1.0 + rng() * 2.0; // Pause at intersection
+      continue;
+    }
+
+    const wp = car.path[car.pathIdx];
+    const dx = wp.x - g.x;
+    const dz = wp.z - g.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < 2) {
+      car.pathIdx++;
+      // Random intersection pause
+      if (car.pathIdx < car.path.length && rng() < 0.3) {
+        car.pauseTimer = 1.0 + rng() * 2.0;
+      }
+    } else {
+      const s = car.speed * dt;
+      g.x += (dx / dist) * s;
+      g.z += (dz / dist) * s;
+      // Face direction of travel
+      car.group.rotation.y = Math.atan2(dx, dz) - Math.PI / 2;
+    }
+
+    // Headlights
+    car.headlight.intensity = isNight ? 2 : 0;
+  }
+
+  // ---- Combat ----
+  if (combatMode) {
+    // Spawn more hostiles periodically
+    if (rng() < 0.01) spawnHostile();
+
+    // Update hostiles — advance toward city center
+    for (const h of hostiles) {
+      if (!h.alive) continue;
+      const p = h.mesh.position;
+      const dx = h.target.x - p.x;
+      const dz = h.target.z - p.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 5) {
+        h.target = { x: CITY_W / 2 + (rng() - 0.5) * 200, z: CITY_H / 2 + (rng() - 0.5) * 200 };
+      } else {
+        const s = h.speed * dt;
+        p.x += (dx / dist) * s;
+        p.z += (dz / dist) * s;
+      }
+
+      // Hostile fires at nearest defender
+      h.fireTimer -= dt;
+      if (h.fireTimer <= 0) {
+        h.fireTimer = 1.5 + rng() * 3;
+        let nearest = null, nearDist = Infinity;
+        for (const d of defenders) {
+          if (!d.alive) continue;
+          const dd = p.distanceTo(d.mesh.position);
+          if (dd < nearDist && dd < 80) { nearDist = dd; nearest = d; }
+        }
+        if (nearest) {
+          createTracer({ x: p.x, z: p.z }, { x: nearest.mesh.position.x, z: nearest.mesh.position.z }, MAGENTA);
+          createMuzzleFlash({ x: p.x, z: p.z });
+          playGunshot(p.x, p.z);
+          // Hit chance
+          if (rng() < 0.15) {
+            nearest.health -= 0.25;
+            createHitEffect({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
+            if (nearest.health <= 0) {
+              nearest.alive = false;
+              nearest.mesh.rotation.z = Math.PI / 2;
+              nearest.mesh.position.y = 0.5;
+              addKillFeedEntry(`Hostile eliminated defender`);
+            }
+          }
+        }
+      }
+    }
+
+    // Update defenders — engage nearest hostile
+    for (const d of defenders) {
+      if (!d.alive) continue;
+      const p = d.mesh.position;
+
+      // Find nearest hostile
+      let nearest = null, nearDist = Infinity;
+      for (const h of hostiles) {
+        if (!h.alive) continue;
+        const dd = p.distanceTo(h.mesh.position);
+        if (dd < nearDist) { nearDist = dd; nearest = h; }
+      }
+
+      if (nearest && nearDist < 100) {
+        // Move toward engagement range
+        if (nearDist > 40) {
+          const dx = nearest.mesh.position.x - p.x;
+          const dz = nearest.mesh.position.z - p.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          const s = d.speed * dt;
+          p.x += (dx / dist) * s;
+          p.z += (dz / dist) * s;
+        }
+
+        // Fire
+        d.fireTimer -= dt;
+        if (d.fireTimer <= 0) {
+          d.fireTimer = 0.8 + rng() * 2;
+          createTracer({ x: p.x, z: p.z }, { x: nearest.mesh.position.x, z: nearest.mesh.position.z }, CYAN);
+          createMuzzleFlash({ x: p.x, z: p.z });
+          playGunshot(p.x, p.z);
+          // Hit chance (defenders slightly better)
+          if (rng() < 0.2) {
+            nearest.health -= 0.35;
+            createHitEffect({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
+            if (nearest.health <= 0) {
+              nearest.alive = false;
+              nearest.mesh.rotation.z = Math.PI / 2;
+              nearest.mesh.position.y = 0.5;
+              kills++;
+              addKillFeedEntry(`Defender eliminated hostile`);
+              // Explosion on kill sometimes
+              if (rng() < 0.3) {
+                createExplosion({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
+                createSmoke({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
+                playExplosion(nearest.mesh.position.x, nearest.mesh.position.z);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Occasional molotov from hostiles
+    if (rng() < 0.002 && hostiles.filter(h => h.alive).length > 0) {
+      const thrower = hostiles.filter(h => h.alive)[Math.floor(rng() * hostiles.filter(h => h.alive).length)];
+      if (thrower) {
+        const tp = thrower.mesh.position;
+        const impactX = tp.x + (rng() - 0.5) * 40;
+        const impactZ = tp.z + (rng() - 0.5) * 40;
+        createExplosion({ x: impactX, z: impactZ });
+        playExplosion(impactX, impactZ);
+        addKillFeedEntry(`Hostile threw molotov`);
+
+        // Fire particles at impact
+        for (let i = 0; i < 8; i++) {
+          const fGeo = new THREE.SphereGeometry(0.3, 6, 4);
+          const fMat = new THREE.MeshBasicMaterial({
+            color: [0xff4400, 0xff8800, 0xffaa00][Math.floor(rng() * 3)],
+            transparent: true, opacity: 0.8
+          });
+          const f = new THREE.Mesh(fGeo, fMat);
+          f.position.set(impactX + (rng() - 0.5) * 5, 0.5 + rng() * 2, impactZ + (rng() - 0.5) * 5);
+          scene.add(f);
+          smokeParticles.push({ mesh: f, vy: 0.5 + rng(), life: 2 + rng() * 3 });
+        }
+      }
+    }
+  }
+
+  // Update effects
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    tracers[i].life -= dt;
+    tracers[i].line.material.opacity = Math.max(0, tracers[i].life / 0.15);
+    if (tracers[i].life <= 0) {
+      scene.remove(tracers[i].line);
+      tracers[i].line.geometry.dispose();
+      tracers[i].line.material.dispose();
+      tracers.splice(i, 1);
+    }
+  }
+
+  for (let i = muzzleFlashes.length - 1; i >= 0; i--) {
+    muzzleFlashes[i].life -= dt;
+    if (muzzleFlashes[i].life <= 0) {
+      scene.remove(muzzleFlashes[i].light);
+      muzzleFlashes.splice(i, 1);
+    }
+  }
+
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const ex = explosions[i];
+    ex.age += dt;
+    const t = ex.age / ex.life;
+    ex.core.scale.setScalar(1 + t * 5);
+    ex.core.material.opacity = Math.max(0, 1 - t);
+    for (const p of ex.parts) {
+      p.mesh.position.x += p.vel.x * dt;
+      p.mesh.position.y += p.vel.y * dt;
+      p.mesh.position.z += p.vel.z * dt;
+      p.vel.y -= 15 * dt; // gravity
+      p.mesh.material.opacity = Math.max(0, 1 - t);
+    }
+    if (ex.age >= ex.life) {
+      scene.remove(ex.group);
+      explosions.splice(i, 1);
+    }
+  }
+
+  for (let i = smokeParticles.length - 1; i >= 0; i--) {
+    const s = smokeParticles[i];
+    s.mesh.position.y += s.vy * dt;
+    s.mesh.scale.multiplyScalar(1 + dt * 0.3);
+    s.life -= dt;
+    s.mesh.material.opacity = Math.max(0, s.life * 0.15);
+    if (s.life <= 0) {
+      scene.remove(s.mesh);
+      s.mesh.geometry.dispose();
+      s.mesh.material.dispose();
+      smokeParticles.splice(i, 1);
+    }
+  }
+
+  // Camera
+  if (chaseCam && chaseTarget) {
+    const tp = chaseTarget.mesh ? chaseTarget.mesh.position : chaseTarget.group.position;
+    camera.position.lerp(new THREE.Vector3(tp.x - 15, 20, tp.z + 15), 0.05);
+    camera.lookAt(tp);
+  } else {
+    const cx = CITY_W / 2 + panOffset.x;
+    const cz = CITY_H / 2 + panOffset.z;
+    camera.position.set(cx, zoomLevel, cz + zoomLevel * 0.6);
+    camera.lookAt(cx, 0, cz);
+  }
+
+  // Update audio listener position to match camera
+  if (audioCtx) {
+    const l = audioCtx.listener;
+    if (l.positionX) {
+      l.positionX.value = camera.position.x * 0.01;
+      l.positionY.value = camera.position.y * 0.01;
+      l.positionZ.value = camera.position.z * 0.01;
+    }
+  }
+}
+
+// =========================================================================
+// HUD
+// =========================================================================
+function updateHUD() {
+  const hours = Math.floor(simTime);
+  const mins = Math.floor((simTime - hours) * 60);
+  document.getElementById('clock').textContent =
+    `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+
+  document.getElementById('civ-count').textContent =
+    pedestrians.filter(p => p.alive).length + cars.filter(c => c.alive).length;
+  document.getElementById('def-count').textContent = defenders.filter(d => d.alive).length;
+  document.getElementById('host-count').textContent = hostiles.filter(h => h.alive).length;
+  document.getElementById('kill-count').textContent = kills;
+
+  // Kill feed
+  const feed = document.getElementById('kill-feed');
+  feed.innerHTML = killFeed.map((k, i) => {
+    k.age += 1 / 60;
+    const cls = k.age > 5 ? 'kill-entry fade' : 'kill-entry';
+    const color = k.text.includes('Defender') ? '#00f0ff' : '#ff2a6d';
+    return `<div class="${cls}" style="color:${color}">${k.text}</div>`;
+  }).join('');
+
+  // Remove old entries
+  while (killFeed.length > 0 && killFeed[killFeed.length - 1].age > 10) killFeed.pop();
+}
+
+// =========================================================================
+// Main Loop
+// =========================================================================
+function animate() {
+  requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05); // cap at 50ms
+  lastTime = now;
+
+  // FPS
+  frameCount++;
+  fpsTimer += dt;
+  if (fpsTimer >= 0.5) {
+    fpsDisplay = Math.round(frameCount / fpsTimer);
+    frameCount = 0;
+    fpsTimer = 0;
+    document.getElementById('fps').textContent = `${fpsDisplay} FPS`;
+  }
+
+  update(dt);
+  updateHUD();
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+</body>
+</html>
