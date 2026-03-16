@@ -4,8 +4,8 @@
   Copyright 2026 Valpatel Software LLC
   Licensed under AGPL-3.0 — see LICENSE for details.
 
-  Three.js City Simulation — 3D visualization of the full game_ai stack.
-  Mirrors NeighborhoodSim (city_sim.py) with combat from combat_ai.py.
+  Three.js City Simulation — 3D Minecraft-style riot scenario.
+  Protestors vs Police with molotovs, tear gas, rubber bullets.
 
   Open directly in browser or serve:
     python3 -m tritium_lib.game_ai.demos.serve_city3d
@@ -13,7 +13,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Tritium City 3D — Tactical Simulation</title>
+<title>Tritium City 3D — Riot Simulation</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
@@ -30,21 +30,36 @@ canvas { display: block; }
   padding: 12px 16px;
 }
 #clock {
-  font-size: 28px; font-weight: bold; color: #00f0ff;
+  font-size: 42px; font-weight: bold; color: #00f0ff;
   text-shadow: 0 0 10px #00f0ff88;
 }
 #time-label { font-size: 11px; color: #00f0ff99; }
+#phase-indicator {
+  font-size: 20px; font-weight: bold; color: #05ffa1;
+  text-shadow: 0 0 8px #05ffa188;
+  margin-top: 4px;
+}
+#phase-indicator.riot { color: #ff2a6d; text-shadow: 0 0 12px #ff2a6d88; }
+#phase-indicator.tension { color: #fcee0a; text-shadow: 0 0 8px #fcee0a88; }
+#phase-indicator.dispersal { color: #00f0ff; text-shadow: 0 0 8px #00f0ff88; }
+
 #stats {
-  text-align: right; line-height: 1.6;
+  text-align: right; line-height: 1.8; font-size: 14px;
 }
 .stat-val { color: #05ffa1; font-weight: bold; }
+.protestor-val { color: #05ffa1; }
+.police-val { color: #00f0ff; }
 .hostile-val { color: #ff2a6d; }
-.defend-val { color: #00f0ff; }
+
+#riot-stats {
+  text-align: right; margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid #fcee0a33; font-size: 13px; line-height: 1.6;
+}
 
 #kill-feed {
   position: absolute; bottom: 60px; left: 16px;
-  max-height: 200px; overflow: hidden; font-size: 12px;
-  line-height: 1.5;
+  max-height: 250px; overflow: hidden; font-size: 13px;
+  line-height: 1.6;
 }
 .kill-entry { opacity: 0.9; }
 .kill-entry.fade { opacity: 0.3; }
@@ -64,7 +79,7 @@ canvas { display: block; }
 
 #combat-banner {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 36px; font-weight: bold; color: #ff2a6d;
+  font-size: 42px; font-weight: bold; color: #ff2a6d;
   text-shadow: 0 0 20px #ff2a6d88, 0 0 40px #ff2a6d44;
   opacity: 0; transition: opacity 0.3s;
   pointer-events: none;
@@ -79,24 +94,32 @@ canvas { display: block; }
     <div>
       <div id="clock">08:00</div>
       <div id="time-label">SIMULATION TIME</div>
+      <div id="phase-indicator">PEACEFUL</div>
     </div>
     <div id="stats">
       Civilians: <span class="stat-val" id="civ-count">0</span><br>
-      Defenders: <span class="defend-val" id="def-count">0</span><br>
-      Hostiles: <span class="hostile-val" id="host-count">0</span><br>
-      Eliminated: <span class="hostile-val" id="kill-count">0</span>
+      Protestors: <span class="protestor-val" id="protestor-count">0</span><br>
+      Police: <span class="police-val" id="police-count">0</span><br>
+      Arrests: <span class="hostile-val" id="arrest-count">0</span>
+      <div id="riot-stats">
+        Molotovs: <span class="hostile-val" id="molotov-count">0</span><br>
+        Tear Gas: <span class="police-val" id="teargas-count">0</span><br>
+        Rocks Thrown: <span class="stat-val" id="rock-count">0</span><br>
+        Injuries: <span class="hostile-val" id="injury-count">0</span>
+      </div>
     </div>
   </div>
   <div id="fps">-- FPS</div>
   <div id="kill-feed"></div>
   <div id="controls">
-    <span>SPACE</span> Combat &nbsp;|&nbsp;
-    <span>C</span> Chase Cam &nbsp;|&nbsp;
-    <span>N</span> Night &nbsp;|&nbsp;
+    <span>SPACE</span> Start Riot &nbsp;|&nbsp;
+    <span>LMB Drag</span> Rotate &nbsp;|&nbsp;
+    <span>RMB Drag</span> Pan &nbsp;|&nbsp;
     <span>Scroll</span> Zoom &nbsp;|&nbsp;
-    <span>RMB Drag</span> Pan
+    <span>N</span> Night &nbsp;|&nbsp;
+    <span>C</span> Chase Cam
   </div>
-  <div id="combat-banner">COMBAT ENGAGED</div>
+  <div id="combat-banner">RIOT IN PROGRESS</div>
 </div>
 
 <script type="importmap">
@@ -110,6 +133,7 @@ canvas { display: block; }
 
 <script type="module">
 import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // =========================================================================
 // Constants
@@ -126,23 +150,43 @@ const ROAD_W = 10, SIDEWALK_W = 3;
 const CITY_W = GRID_COLS * (BLOCK_W + ROAD_W) + ROAD_W;
 const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
 
-const NUM_PEDESTRIANS = 30;
-const NUM_CARS = 15;
+const NUM_PEDESTRIANS = 25;
+const NUM_CARS = 12;
+const NUM_PROTESTORS = 20;
+const NUM_POLICE = 10;
+
+// Central plaza — center of the city
+const PLAZA_X = CITY_W / 2;
+const PLAZA_Z = CITY_H / 2;
+
+// Building type colors (Minecraft style)
+const BLDG_HOUSE   = 0x8B6914; // brown
+const BLDG_OFFICE  = 0x888888; // grey
+const BLDG_SHOP    = 0xD2B48C; // beige/tan
+const BLDG_POLICE  = 0x4466AA; // blue
+const BLDG_ROOF    = 0x333333; // dark roof tops
 
 // =========================================================================
 // State
 // =========================================================================
-let combatMode = false;
+let riotMode = false;
 let nightMode = false;
 let chaseCam = false;
 let chaseTarget = null;
-let simTime = 8.0; // hours since midnight
-let kills = 0;
+let simTime = 8.0;
+let riotPhase = 'PEACEFUL'; // PEACEFUL, TENSION, RIOT, DISPERSAL
+let riotTimer = 0;
+
+let molotovCount = 0;
+let teargasCount = 0;
+let rockCount = 0;
+let arrestCount = 0;
+let injuryCount = 0;
 
 const pedestrians = [];
 const cars = [];
-const hostiles = [];
-const defenders = [];
+const protestors = [];
+const police = [];
 const tracers = [];
 const explosions = [];
 const muzzleFlashes = [];
@@ -150,6 +194,10 @@ const smokeParticles = [];
 const buildings = [];
 const streetLamps = [];
 const killFeed = [];
+const fires = []; // persistent fire lights
+const projectiles = []; // arcing rocks/molotovs
+
+const rng = () => Math.random();
 
 // =========================================================================
 // Audio
@@ -171,15 +219,9 @@ function playGunshot(x, z) {
   }
   const src = ctx.createBufferSource();
   src.buffer = buf;
-  const panner = ctx.createPanner();
-  panner.positionX.value = x * 0.01;
-  panner.positionZ.value = z * 0.01;
-  panner.distanceModel = 'exponential';
-  panner.refDistance = 1;
-  panner.rolloffFactor = 2;
   const gain = ctx.createGain();
-  gain.gain.value = 0.15;
-  src.connect(panner).connect(gain).connect(ctx.destination);
+  gain.gain.value = 0.12;
+  src.connect(gain).connect(ctx.destination);
   src.start();
 }
 
@@ -197,15 +239,28 @@ function playExplosion(x, z) {
   }
   const src = ctx.createBufferSource();
   src.buffer = buf;
-  const panner = ctx.createPanner();
-  panner.positionX.value = x * 0.01;
-  panner.positionZ.value = z * 0.01;
-  panner.distanceModel = 'exponential';
-  panner.refDistance = 1;
-  panner.rolloffFactor = 1.5;
   const gain = ctx.createGain();
-  gain.gain.value = 0.2;
-  src.connect(panner).connect(gain).connect(ctx.destination);
+  gain.gain.value = 0.15;
+  src.connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+function playHiss(x, z) {
+  const ctx = ensureAudio();
+  const dur = 0.8;
+  const bufSize = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const t = i / ctx.sampleRate;
+    const env = Math.exp(-t * 2);
+    data[i] = (Math.random() * 2 - 1) * env * 0.15;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.1;
+  src.connect(gain).connect(ctx.destination);
   src.start();
 }
 
@@ -214,10 +269,10 @@ function playExplosion(x, z) {
 // =========================================================================
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(VOID_BG);
-scene.fog = new THREE.FogExp2(VOID_BG, 0.003);
+scene.fog = new THREE.FogExp2(VOID_BG, 0.002);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 2000);
-camera.position.set(CITY_W / 2, 300, CITY_H / 2 + 200);
+camera.position.set(CITY_W / 2 + 150, 250, CITY_H / 2 + 250);
 camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -226,15 +281,25 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 1.4;
 document.body.prepend(renderer.domElement);
 
-// Lights
-const ambientLight = new THREE.AmbientLight(0x334466, 0.4);
+// OrbitControls
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(CITY_W / 2, 0, CITY_H / 2);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 30;
+controls.maxDistance = 800;
+controls.maxPolarAngle = Math.PI / 2.1; // don't go below ground
+controls.update();
+
+// Lights — BRIGHT
+const ambientLight = new THREE.AmbientLight(0x8899bb, 0.5);
 scene.add(ambientLight);
 
-const sunLight = new THREE.DirectionalLight(0xffeedd, 1.0);
-sunLight.position.set(200, 300, 100);
+const sunLight = new THREE.DirectionalLight(0xffeedd, 1.2);
+sunLight.position.set(200, 400, 100);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.set(2048, 2048);
 sunLight.shadow.camera.left = -CITY_W;
@@ -243,32 +308,23 @@ sunLight.shadow.camera.top = CITY_H;
 sunLight.shadow.camera.bottom = -CITY_H;
 scene.add(sunLight);
 
-const hemiLight = new THREE.HemisphereLight(0x446688, 0x223344, 0.3);
+const hemiLight = new THREE.HemisphereLight(0x00f0ff, 0x112244, 0.5);
 scene.add(hemiLight);
 
 // =========================================================================
-// City Generation
+// City Generation — Minecraft Style
 // =========================================================================
 const groundGeo = new THREE.PlaneGeometry(CITY_W + 100, CITY_H + 100);
-const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2;
 ground.position.set(CITY_W / 2, -0.05, CITY_H / 2);
 ground.receiveShadow = true;
 scene.add(ground);
 
-// Materials
-const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.85 });
-const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.8 });
-const buildingMats = [
-  new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.7 }),
-  new THREE.MeshStandardMaterial({ color: 0x12121a, roughness: 0.7 }),
-  new THREE.MeshStandardMaterial({ color: 0x0e1828, roughness: 0.7 }),
-  new THREE.MeshStandardMaterial({ color: 0x181830, roughness: 0.7 }),
-  new THREE.MeshStandardMaterial({ color: 0x202035, roughness: 0.7 }),
-];
-
-const rng = () => Math.random();
+// Road material — visible grey
+const roadMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.85 });
+const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.8 });
 
 // Roads — horizontal
 for (let row = 0; row <= GRID_ROWS; row++) {
@@ -280,9 +336,9 @@ for (let row = 0; row <= GRID_ROWS; row++) {
   road.receiveShadow = true;
   scene.add(road);
 
-  // Road lines
-  const lineGeo = new THREE.PlaneGeometry(CITY_W, 0.3);
-  const lineMat = new THREE.MeshBasicMaterial({ color: 0x555522 });
+  // Center line — yellow dashes
+  const lineGeo = new THREE.PlaneGeometry(CITY_W, 0.4);
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xaaaa33 });
   const line = new THREE.Mesh(lineGeo, lineMat);
   line.rotation.x = -Math.PI / 2;
   line.position.set(CITY_W / 2, 0.02, z);
@@ -300,7 +356,7 @@ for (let col = 0; col <= GRID_COLS; col++) {
   scene.add(road);
 }
 
-// Sidewalks along roads
+// Sidewalks
 for (let row = 0; row <= GRID_ROWS; row++) {
   const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
   for (const side of [-1, 1]) {
@@ -324,65 +380,152 @@ for (let col = 0; col <= GRID_COLS; col++) {
   }
 }
 
-// Buildings in each block
-const windowMat = new THREE.MeshBasicMaterial({ color: CYAN, transparent: true, opacity: 0.3 });
+// Minecraft-style building materials
+function makeBuildingMat(color) {
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.8, metalness: 0.0 });
+}
 
+const roofMat = new THREE.MeshStandardMaterial({ color: BLDG_ROOF, roughness: 0.9 });
+const doorMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+const windowGlowMat = new THREE.MeshBasicMaterial({ color: 0xffdd66, transparent: true, opacity: 0.8 });
+
+function createMinecraftBuilding(x, z, w, d, h, type) {
+  const group = new THREE.Group();
+
+  // Main body
+  let color;
+  switch (type) {
+    case 'house':  color = BLDG_HOUSE; break;
+    case 'office': color = BLDG_OFFICE; break;
+    case 'shop':   color = BLDG_SHOP; break;
+    case 'police': color = BLDG_POLICE; break;
+    default:       color = BLDG_OFFICE;
+  }
+
+  const bodyGeo = new THREE.BoxGeometry(w, h, d);
+  const bodyMat = makeBuildingMat(color);
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.set(0, h / 2, 0);
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  // Dark roof cap
+  const roofGeo = new THREE.BoxGeometry(w + 0.2, 0.5, d + 0.2);
+  const roof = new THREE.Mesh(roofGeo, roofMat);
+  roof.position.set(0, h + 0.25, 0);
+  roof.castShadow = true;
+  group.add(roof);
+
+  // Door opening (dark rectangle at ground level)
+  const doorW = Math.min(2, w * 0.3);
+  const doorH = Math.min(3, h * 0.5);
+  const doorGeo = new THREE.PlaneGeometry(doorW, doorH);
+  const door = new THREE.Mesh(doorGeo, doorMat);
+  door.position.set(0, doorH / 2, d / 2 + 0.05);
+  group.add(door);
+
+  // Glowing windows (emissive)
+  const floors = Math.floor(h / 4);
+  for (let f = 1; f <= floors; f++) {
+    const wy = f * 3.5;
+    if (wy > h - 1) break;
+    // windows on front and back
+    for (const side of [1, -1]) {
+      const numWins = Math.floor(w / 4);
+      for (let wi = 0; wi < numWins; wi++) {
+        if (rng() < 0.3) continue; // some windows dark
+        const wx = -w / 2 + 2 + wi * 4;
+        const winGeo = new THREE.PlaneGeometry(1.5, 1.2);
+        const winMat = new THREE.MeshBasicMaterial({
+          color: rng() < 0.7 ? 0xffdd66 : 0x66ddff,
+          transparent: true,
+          opacity: 0.7 + rng() * 0.3
+        });
+        const win = new THREE.Mesh(winGeo, winMat);
+        win.position.set(wx, wy, side * (d / 2 + 0.05));
+        if (side < 0) win.rotation.y = Math.PI;
+        group.add(win);
+      }
+    }
+    // windows on left and right sides
+    for (const side of [1, -1]) {
+      const numWins = Math.floor(d / 4);
+      for (let wi = 0; wi < numWins; wi++) {
+        if (rng() < 0.4) continue;
+        const wz = -d / 2 + 2 + wi * 4;
+        const winGeo = new THREE.PlaneGeometry(1.5, 1.2);
+        const winMat = new THREE.MeshBasicMaterial({
+          color: rng() < 0.7 ? 0xffdd66 : 0x66ddff,
+          transparent: true,
+          opacity: 0.7 + rng() * 0.3
+        });
+        const win = new THREE.Mesh(winGeo, winMat);
+        win.position.set(side * (w / 2 + 0.05), wy, wz);
+        win.rotation.y = side * Math.PI / 2;
+        group.add(win);
+      }
+    }
+  }
+
+  group.position.set(x, 0, z);
+  scene.add(group);
+  return { group, h, type, x, z, w, d };
+}
+
+// Place buildings in each block
 for (let row = 0; row < GRID_ROWS; row++) {
   for (let col = 0; col < GRID_COLS; col++) {
     const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
     const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
 
+    // Skip center block for plaza
+    const centerCol = Math.floor(GRID_COLS / 2);
+    const centerRow = Math.floor(GRID_ROWS / 2);
+    if (col === centerCol && row === centerRow) {
+      // Central plaza — open space with a fountain
+      const plazaGeo = new THREE.PlaneGeometry(BLOCK_W - 4, BLOCK_H - 4);
+      const plazaMat = new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.7 });
+      const plaza = new THREE.Mesh(plazaGeo, plazaMat);
+      plaza.rotation.x = -Math.PI / 2;
+      plaza.position.set(bx, 0.06, bz);
+      scene.add(plaza);
+
+      // Fountain
+      const fountGeo = new THREE.CylinderGeometry(3, 4, 1.5, 12);
+      const fountMat = new THREE.MeshStandardMaterial({ color: 0x555566 });
+      const fount = new THREE.Mesh(fountGeo, fountMat);
+      fount.position.set(bx, 0.75, bz);
+      fount.castShadow = true;
+      scene.add(fount);
+      continue;
+    }
+
     // 2-4 buildings per block
     const count = 2 + Math.floor(rng() * 3);
     for (let b = 0; b < count; b++) {
-      const isOffice = rng() < 0.3;
-      const h = isOffice ? 15 + rng() * 35 : 6 + rng() * 10;
-      const w = 6 + rng() * 14;
-      const d = 6 + rng() * 14;
+      const typeRoll = rng();
+      let type;
+      // One police station near center
+      if (col === centerCol + 1 && row === centerRow && b === 0) {
+        type = 'police';
+      } else if (typeRoll < 0.35) {
+        type = 'house';
+      } else if (typeRoll < 0.65) {
+        type = 'office';
+      } else {
+        type = 'shop';
+      }
+
+      const isOffice = type === 'office';
+      const h = isOffice ? 15 + rng() * 30 : 6 + rng() * 10;
+      const w = 8 + rng() * 12;
+      const d = 8 + rng() * 12;
       const ox = (rng() - 0.5) * (BLOCK_W - w - 4);
       const oz = (rng() - 0.5) * (BLOCK_H - d - 4);
 
-      const geo = new THREE.BoxGeometry(w, h, d);
-      const mat = buildingMats[Math.floor(rng() * buildingMats.length)];
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(bx + ox, h / 2, bz + oz);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      scene.add(mesh);
-
-      buildings.push({ mesh, h, isOffice, x: bx + ox, z: bz + oz, w, d });
-
-      // Window glow strips
-      if (h > 10) {
-        const floors = Math.floor(h / 4);
-        for (let f = 1; f <= floors; f++) {
-          if (rng() < 0.6) {
-            const wg = new THREE.PlaneGeometry(w * 0.7, 1.2);
-            const wm = new THREE.Mesh(wg, windowMat.clone());
-            wm.position.set(bx + ox, f * 4, bz + oz + d / 2 + 0.05);
-            scene.add(wm);
-            // Back side
-            const wm2 = wm.clone();
-            wm2.position.z = bz + oz - d / 2 - 0.05;
-            wm2.rotation.y = Math.PI;
-            scene.add(wm2);
-          }
-        }
-      }
-
-      // Neon accent on tall buildings
-      if (h > 25 && rng() < 0.5) {
-        const neonColor = [CYAN, MAGENTA, GREEN][Math.floor(rng() * 3)];
-        const neonGeo = new THREE.BoxGeometry(w + 0.5, 0.4, d + 0.5);
-        const neonMat = new THREE.MeshBasicMaterial({ color: neonColor, transparent: true, opacity: 0.7 });
-        const neon = new THREE.Mesh(neonGeo, neonMat);
-        neon.position.set(bx + ox, h + 0.2, bz + oz);
-        scene.add(neon);
-
-        const nLight = new THREE.PointLight(neonColor, 0.5, 30);
-        nLight.position.set(bx + ox, h + 1, bz + oz);
-        scene.add(nLight);
-      }
+      const bldg = createMinecraftBuilding(bx + ox, bz + oz, w, d, h, type);
+      buildings.push(bldg);
     }
 
     // Trees in gaps
@@ -390,18 +533,18 @@ for (let row = 0; row < GRID_ROWS; row++) {
     for (let t = 0; t < numTrees; t++) {
       const tx = bx + (rng() - 0.5) * BLOCK_W * 0.8;
       const tz = bz + (rng() - 0.5) * BLOCK_H * 0.8;
-      // Trunk
-      const trunkGeo = new THREE.CylinderGeometry(0.3, 0.4, 4, 6);
-      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3d2817 });
+      // Minecraft tree = brown box trunk + green cube foliage
+      const trunkGeo = new THREE.BoxGeometry(1, 5, 1);
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5D3A1A });
       const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-      trunk.position.set(tx, 2, tz);
+      trunk.position.set(tx, 2.5, tz);
       trunk.castShadow = true;
       scene.add(trunk);
-      // Foliage
-      const leafGeo = new THREE.SphereGeometry(2.5, 8, 6);
-      const leafMat = new THREE.MeshStandardMaterial({ color: 0x0a5020 });
+
+      const leafGeo = new THREE.BoxGeometry(4, 4, 4);
+      const leafMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
       const leaf = new THREE.Mesh(leafGeo, leafMat);
-      leaf.position.set(tx, 5.5, tz);
+      leaf.position.set(tx, 6, tz);
       leaf.castShadow = true;
       scene.add(leaf);
     }
@@ -413,21 +556,19 @@ for (let row = 0; row <= GRID_ROWS; row++) {
   const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
   for (let col = 0; col <= GRID_COLS; col++) {
     const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
-    // Lamp post
-    const postGeo = new THREE.CylinderGeometry(0.15, 0.2, 7, 6);
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+    const postGeo = new THREE.BoxGeometry(0.3, 7, 0.3);
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
     const post = new THREE.Mesh(postGeo, postMat);
     post.position.set(x + 4, 3.5, z + 4);
     scene.add(post);
 
-    // Lamp head
-    const headGeo = new THREE.SphereGeometry(0.6, 8, 6);
+    const headGeo = new THREE.BoxGeometry(1.2, 0.5, 1.2);
     const headMat = new THREE.MeshBasicMaterial({ color: 0xffdd88, transparent: true, opacity: 0.8 });
     const head = new THREE.Mesh(headGeo, headMat);
     head.position.set(x + 4, 7.2, z + 4);
     scene.add(head);
 
-    const lampLight = new THREE.PointLight(0xffdd88, 0.3, 25);
+    const lampLight = new THREE.PointLight(0xffdd88, 0.4, 30);
     lampLight.position.set(x + 4, 7, z + 4);
     scene.add(lampLight);
     streetLamps.push({ light: lampLight, head });
@@ -438,9 +579,7 @@ for (let row = 0; row <= GRID_ROWS; row++) {
 // Helpers
 // =========================================================================
 function randomRoadPos() {
-  // Pick a random position on a road
   if (rng() < 0.5) {
-    // Horizontal road
     const row = Math.floor(rng() * (GRID_ROWS + 1));
     const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
     const x = rng() * CITY_W;
@@ -470,7 +609,6 @@ function nearestIntersection(x, z) {
 }
 
 function roadPathTo(from, to) {
-  // L-shaped road path via nearest intersection
   const inter = nearestIntersection(to.x, to.z);
   return [
     { x: from.x, z: inter.z },
@@ -489,78 +627,116 @@ function edgeSpawnPos() {
   }
 }
 
-// =========================================================================
-// Pedestrians
-// =========================================================================
-const pedGeo = new THREE.CapsuleGeometry(0.4, 1.2, 4, 8);
+function dist2d(a, b) {
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dz * dz);
+}
 
+// =========================================================================
+// Create Minecraft Person (body cube + head cube)
+// =========================================================================
+function createPerson(bodyColor, headColor, scale = 1.0) {
+  const group = new THREE.Group();
+
+  // Body — 1.5m wide, 1.5m tall box
+  const bodyGeo = new THREE.BoxGeometry(1.5 * scale, 1.5 * scale, 1.0 * scale);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7 });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = 1.0 * scale;
+  body.castShadow = true;
+  group.add(body);
+
+  // Head — skin-tone cube on top
+  const headGeo = new THREE.BoxGeometry(0.8 * scale, 0.8 * scale, 0.8 * scale);
+  const headMat = new THREE.MeshStandardMaterial({ color: headColor, roughness: 0.6 });
+  const head = new THREE.Mesh(headGeo, headMat);
+  head.position.y = 2.15 * scale;
+  head.castShadow = true;
+  group.add(head);
+
+  return group;
+}
+
+// Skin tones for heads
+const SKIN_TONES = [0xFFDBAC, 0xE5A073, 0xC68642, 0x8D5524, 0xF1C27D, 0xFFCD94];
+
+// =========================================================================
+// Pedestrians (civilians)
+// =========================================================================
 for (let i = 0; i < NUM_PEDESTRIANS; i++) {
   const pos = randomSidewalkPos();
-  const color = new THREE.Color().setHSL(rng(), 0.5, 0.5);
-  const mat = new THREE.MeshStandardMaterial({ color });
-  const mesh = new THREE.Mesh(pedGeo, mat);
-  mesh.position.set(pos.x, 1, pos.z);
-  mesh.castShadow = true;
+  const bodyHue = rng();
+  const bodyColor = new THREE.Color().setHSL(bodyHue, 0.4, 0.4);
+  const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
+  const mesh = createPerson(bodyColor, headColor);
+  mesh.position.set(pos.x, 0, pos.z);
   scene.add(mesh);
 
-  const dest = randomSidewalkPos();
   pedestrians.push({
-    mesh, speed: 1.5 + rng() * 1.5,
-    target: dest,
+    mesh,
+    speed: 1.5 + rng() * 1.5,
+    target: randomSidewalkPos(),
     alive: true,
+    fleeing: false,
   });
 }
 
 // =========================================================================
-// Cars
+// Cars — bigger Minecraft-style boxes
 // =========================================================================
 for (let i = 0; i < NUM_CARS; i++) {
   const pos = randomRoadPos();
   const hue = rng();
   const carGroup = new THREE.Group();
 
-  // Body
-  const bodyGeo = new THREE.BoxGeometry(3, 1.5, 2);
+  // Body — 4m long, 2m wide, 1.5m tall
+  const bodyGeo = new THREE.BoxGeometry(4, 1.5, 2);
   const bodyMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(hue, 0.6, 0.4),
-    metalness: 0.4, roughness: 0.5
+    color: new THREE.Color().setHSL(hue, 0.6, 0.45),
+    metalness: 0.3, roughness: 0.6
   });
   const body = new THREE.Mesh(bodyGeo, bodyMat);
   body.position.y = 0.75;
   body.castShadow = true;
   carGroup.add(body);
 
-  // Roof
-  const roofGeo = new THREE.BoxGeometry(1.8, 0.8, 1.8);
-  const roof = new THREE.Mesh(roofGeo, bodyMat);
-  roof.position.set(-0.2, 1.6, 0);
-  carGroup.add(roof);
+  // Cabin
+  const cabinGeo = new THREE.BoxGeometry(2.2, 1.0, 1.8);
+  const cabinMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setHSL(hue, 0.5, 0.35),
+    metalness: 0.2, roughness: 0.7
+  });
+  const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+  cabin.position.set(-0.3, 1.7, 0);
+  cabin.castShadow = true;
+  carGroup.add(cabin);
 
   // Headlights
-  const hlGeo = new THREE.SphereGeometry(0.2, 6, 4);
+  const hlGeo = new THREE.BoxGeometry(0.3, 0.3, 0.5);
   const hlMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
   const hlL = new THREE.Mesh(hlGeo, hlMat);
-  hlL.position.set(1.5, 0.6, 0.7);
+  hlL.position.set(2, 0.6, 0.7);
   carGroup.add(hlL);
   const hlR = hlL.clone();
   hlR.position.z = -0.7;
   carGroup.add(hlR);
 
-  // Headlight beams (visible at night)
-  const hlLight = new THREE.SpotLight(0xffffcc, 0, 30, Math.PI / 6, 0.5);
-  hlLight.position.set(1.5, 0.6, 0);
-  hlLight.target.position.set(10, 0, 0);
-  carGroup.add(hlLight);
-  carGroup.add(hlLight.target);
-
   // Tail lights
-  const tlMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.6 });
+  const tlMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.7 });
   const tlL = new THREE.Mesh(hlGeo, tlMat);
-  tlL.position.set(-1.5, 0.6, 0.7);
+  tlL.position.set(-2, 0.6, 0.7);
   carGroup.add(tlL);
   const tlR = tlL.clone();
   tlR.position.z = -0.7;
   carGroup.add(tlR);
+
+  // Headlight beam
+  const hlLight = new THREE.SpotLight(0xffffcc, 0, 30, Math.PI / 6, 0.5);
+  hlLight.position.set(2, 0.6, 0);
+  hlLight.target.position.set(10, 0, 0);
+  carGroup.add(hlLight);
+  carGroup.add(hlLight.target);
 
   carGroup.position.set(pos.x, 0, pos.z);
   scene.add(carGroup);
@@ -577,80 +753,108 @@ for (let i = 0; i < NUM_CARS; i++) {
 }
 
 // =========================================================================
-// Combat Units
+// Riot Units
 // =========================================================================
-const unitGeo = new THREE.CapsuleGeometry(0.5, 1.4, 4, 8);
-const hostileMat = new THREE.MeshStandardMaterial({ color: MAGENTA, emissive: MAGENTA, emissiveIntensity: 0.3 });
-const defenderMat = new THREE.MeshStandardMaterial({ color: CYAN, emissive: CYAN, emissiveIntensity: 0.3 });
+function spawnProtestors() {
+  for (let i = 0; i < NUM_PROTESTORS; i++) {
+    // Gather in central plaza
+    const angle = rng() * Math.PI * 2;
+    const radius = rng() * 20;
+    const x = PLAZA_X + Math.cos(angle) * radius;
+    const z = PLAZA_Z + Math.sin(angle) * radius;
 
-function spawnHostile() {
-  const pos = edgeSpawnPos();
-  const mesh = new THREE.Mesh(unitGeo, hostileMat);
-  mesh.position.set(pos.x, 1, pos.z);
-  mesh.castShadow = true;
-  scene.add(mesh);
+    const mesh = createPerson(0x22AA44, SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)], 1.1);
+    mesh.position.set(x, 0, z);
+    scene.add(mesh);
 
-  // Marker ring
-  const ringGeo = new THREE.RingGeometry(1.0, 1.3, 16);
-  const ringMat = new THREE.MeshBasicMaterial({ color: MAGENTA, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
-  const ring = new THREE.Mesh(ringGeo, ringMat);
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.05;
-  mesh.add(ring);
+    // Green marker ring
+    const ringGeo = new THREE.RingGeometry(1.2, 1.5, 16);
+    const ringMat = new THREE.MeshBasicMaterial({ color: GREEN, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    mesh.add(ring);
 
-  hostiles.push({
-    mesh, speed: 2 + rng() * 2,
-    target: { x: CITY_W / 2 + (rng() - 0.5) * 200, z: CITY_H / 2 + (rng() - 0.5) * 200 },
-    health: 1.0,
-    alive: true,
-    fireTimer: 1 + rng() * 3,
-  });
+    protestors.push({
+      mesh, speed: 1.5 + rng() * 2,
+      alive: true,
+      health: 1.0,
+      fleeing: false,
+      throwTimer: 3 + rng() * 8,
+      arrested: false,
+      target: { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 },
+    });
+  }
 }
 
-function spawnDefender() {
-  const x = CITY_W / 2 + (rng() - 0.5) * 150;
-  const z = CITY_H / 2 + (rng() - 0.5) * 150;
-  const mesh = new THREE.Mesh(unitGeo, defenderMat);
-  mesh.position.set(x, 1, z);
-  mesh.castShadow = true;
-  scene.add(mesh);
+function spawnPolice() {
+  // Police form a line across the street north of the plaza
+  const lineZ = PLAZA_Z - 35;
+  const lineStartX = PLAZA_X - 25;
 
-  const ringGeo = new THREE.RingGeometry(1.0, 1.3, 16);
-  const ringMat = new THREE.MeshBasicMaterial({ color: CYAN, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
-  const ring = new THREE.Mesh(ringGeo, ringMat);
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.05;
-  mesh.add(ring);
+  for (let i = 0; i < NUM_POLICE; i++) {
+    const x = lineStartX + i * 5;
+    const z = lineZ + (rng() - 0.5) * 3;
 
-  defenders.push({
-    mesh, speed: 2.5 + rng() * 1.5,
-    health: 1.0,
-    alive: true,
-    fireTimer: 0.5 + rng() * 2,
-    target: null,
-  });
+    const mesh = createPerson(0x2244AA, SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)], 1.15);
+    mesh.position.set(x, 0, z);
+    scene.add(mesh);
+
+    // Blue marker ring
+    const ringGeo = new THREE.RingGeometry(1.2, 1.5, 16);
+    const ringMat = new THREE.MeshBasicMaterial({ color: CYAN, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    mesh.add(ring);
+
+    // Shield — flat box in front
+    const shieldGeo = new THREE.BoxGeometry(0.2, 1.5, 1.2);
+    const shieldMat = new THREE.MeshStandardMaterial({ color: 0x3355BB, metalness: 0.5, roughness: 0.3 });
+    const shield = new THREE.Mesh(shieldGeo, shieldMat);
+    shield.position.set(0.9, 1.0, 0);
+    mesh.add(shield);
+
+    police.push({
+      mesh, speed: 2 + rng() * 1.5,
+      alive: true,
+      health: 1.0,
+      fireTimer: 2 + rng() * 4,
+      target: null,
+      holdLine: true,
+      lineX: x,
+      lineZ: lineZ,
+    });
+  }
 }
 
 // =========================================================================
 // Effects
 // =========================================================================
-function createTracer(from, to, color = 0xffff00) {
+function createTracer(from, to, color = 0xffff00, duration = 0.2) {
   const points = [
     new THREE.Vector3(from.x, 2, from.z),
     new THREE.Vector3(to.x, 2, to.z),
   ];
   const geo = new THREE.BufferGeometry().setFromPoints(points);
-  const mat = new THREE.LineBasicMaterial({ color, linewidth: 2, transparent: true, opacity: 1 });
+  const mat = new THREE.LineBasicMaterial({ color, linewidth: 3, transparent: true, opacity: 1 });
   const line = new THREE.Line(geo, mat);
   scene.add(line);
-  tracers.push({ line, life: 0.15 });
+  tracers.push({ line, life: duration, maxLife: duration });
+
+  // Glow line slightly offset
+  const glowMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, transparent: true, opacity: 0.5 });
+  const glow = new THREE.Line(geo.clone(), glowMat);
+  glow.position.y = 0.1;
+  scene.add(glow);
+  tracers.push({ line: glow, life: duration * 0.8, maxLife: duration * 0.8 });
 }
 
 function createMuzzleFlash(pos) {
-  const light = new THREE.PointLight(0xffaa00, 3, 15);
+  const light = new THREE.PointLight(0xffaa00, 5, 20);
   light.position.set(pos.x, 2.5, pos.z);
   scene.add(light);
-  muzzleFlashes.push({ light, life: 0.06 });
+  muzzleFlashes.push({ light, life: 0.05 });
 }
 
 function createExplosion(pos) {
@@ -658,27 +862,28 @@ function createExplosion(pos) {
   group.position.set(pos.x, 0, pos.z);
   scene.add(group);
 
-  // Core flash
-  const coreGeo = new THREE.SphereGeometry(1, 12, 8);
+  // Core flash — orange sphere
+  const coreGeo = new THREE.SphereGeometry(1.5, 12, 8);
   const coreMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 1 });
   const core = new THREE.Mesh(coreGeo, coreMat);
   core.position.y = 2;
   group.add(core);
 
-  // Particles
+  // Flying debris CUBES
   const parts = [];
-  for (let i = 0; i < 15; i++) {
-    const pGeo = new THREE.SphereGeometry(0.3 + rng() * 0.4, 6, 4);
+  for (let i = 0; i < 18; i++) {
+    const size = 0.2 + rng() * 0.5;
+    const pGeo = new THREE.BoxGeometry(size, size, size);
     const pMat = new THREE.MeshBasicMaterial({
-      color: rng() < 0.5 ? 0xff4400 : 0xffaa00,
+      color: [0xff4400, 0xff8800, 0xffaa00, 0x666666][Math.floor(rng() * 4)],
       transparent: true, opacity: 1
     });
     const p = new THREE.Mesh(pGeo, pMat);
     p.position.y = 2;
     const vel = {
-      x: (rng() - 0.5) * 20,
-      y: 5 + rng() * 15,
-      z: (rng() - 0.5) * 20,
+      x: (rng() - 0.5) * 25,
+      y: 5 + rng() * 18,
+      z: (rng() - 0.5) * 25,
     };
     group.add(p);
     parts.push({ mesh: p, vel });
@@ -686,17 +891,52 @@ function createExplosion(pos) {
 
   explosions.push({ group, core, parts, life: 1.5, age: 0 });
 
-  // Light flash
-  const exLight = new THREE.PointLight(0xff6600, 5, 40);
+  // Bright flash light
+  const exLight = new THREE.PointLight(0xff6600, 8, 50);
   exLight.position.set(pos.x, 4, pos.z);
   scene.add(exLight);
   muzzleFlashes.push({ light: exLight, life: 0.3 });
 }
 
+function createTearGasCloud(pos) {
+  // White smoke cloud
+  for (let i = 0; i < 12; i++) {
+    const size = 2 + rng() * 2;
+    const geo = new THREE.SphereGeometry(size, 8, 6);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xdddddd, transparent: true, opacity: 0.5 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(pos.x + (rng() - 0.5) * 5, 1 + rng() * 3, pos.z + (rng() - 0.5) * 5);
+    scene.add(mesh);
+    smokeParticles.push({ mesh, vy: 0.3 + rng() * 0.8, life: 6 + rng() * 4, isTearGas: true });
+  }
+  playHiss(pos.x, pos.z);
+}
+
+function createFire(pos) {
+  // Persistent fire — orange/red point light
+  const light = new THREE.PointLight(0xff6600, 3, 20);
+  light.position.set(pos.x, 2, pos.z);
+  scene.add(light);
+  fires.push({ light, life: 10 + rng() * 15, age: 0, x: pos.x, z: pos.z });
+
+  // Fire particles
+  for (let i = 0; i < 6; i++) {
+    const fGeo = new THREE.BoxGeometry(0.4, 0.6, 0.4);
+    const fMat = new THREE.MeshBasicMaterial({
+      color: [0xff4400, 0xff8800, 0xffaa00, 0xff2200][Math.floor(rng() * 4)],
+      transparent: true, opacity: 0.9
+    });
+    const f = new THREE.Mesh(fGeo, fMat);
+    f.position.set(pos.x + (rng() - 0.5) * 3, 0.5 + rng() * 2, pos.z + (rng() - 0.5) * 3);
+    scene.add(f);
+    smokeParticles.push({ mesh: f, vy: 0.5 + rng(), life: 3 + rng() * 4 });
+  }
+}
+
 function createSmoke(pos) {
   for (let i = 0; i < 5; i++) {
     const geo = new THREE.SphereGeometry(1.5 + rng(), 8, 6);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x444444, transparent: true, opacity: 0.4 });
+    const mat = new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.5 });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(pos.x + (rng() - 0.5) * 3, 1 + rng() * 2, pos.z + (rng() - 0.5) * 3);
     scene.add(mesh);
@@ -705,75 +945,93 @@ function createSmoke(pos) {
 }
 
 function createHitEffect(pos) {
-  const light = new THREE.PointLight(0xff0000, 4, 10);
+  const light = new THREE.PointLight(0xff0000, 5, 12);
   light.position.set(pos.x, 2, pos.z);
   scene.add(light);
   muzzleFlashes.push({ light, life: 0.1 });
 }
 
+// Arcing projectile (rock or molotov)
+function launchProjectile(from, to, type) {
+  const geo = new THREE.BoxGeometry(
+    type === 'molotov' ? 0.5 : 0.4,
+    type === 'molotov' ? 0.8 : 0.4,
+    type === 'molotov' ? 0.5 : 0.4
+  );
+  const color = type === 'molotov' ? 0xff6600 : 0x888888;
+  const mat = new THREE.MeshBasicMaterial({ color });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(from.x, 2, from.z);
+  scene.add(mesh);
+
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  const flightTime = dist / 30; // speed
+  const vy = dist * 0.15 + 5; // arc height
+
+  projectiles.push({
+    mesh, type,
+    startX: from.x, startZ: from.z,
+    endX: to.x, endZ: to.z,
+    vx: dx / flightTime,
+    vz: dz / flightTime,
+    vy: vy,
+    gravity: vy * 2 / flightTime,
+    age: 0,
+    flightTime,
+  });
+}
+
 function addKillFeedEntry(text) {
   killFeed.unshift({ text, age: 0 });
-  if (killFeed.length > 8) killFeed.pop();
+  if (killFeed.length > 10) killFeed.pop();
 }
 
 // =========================================================================
-// Camera Controls
-// =========================================================================
-let panOffset = { x: 0, z: 0 };
-let zoomLevel = 300;
-let isPanning = false;
-let panStart = { x: 0, y: 0 };
-
-renderer.domElement.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  zoomLevel = Math.max(30, Math.min(600, zoomLevel + e.deltaY * 0.3));
-}, { passive: false });
-
-renderer.domElement.addEventListener('mousedown', (e) => {
-  if (e.button === 2) { isPanning = true; panStart = { x: e.clientX, y: e.clientY }; }
-});
-renderer.domElement.addEventListener('mousemove', (e) => {
-  if (!isPanning) return;
-  const dx = e.clientX - panStart.x;
-  const dy = e.clientY - panStart.y;
-  panOffset.x -= dx * 0.5;
-  panOffset.z -= dy * 0.5;
-  panStart = { x: e.clientX, y: e.clientY };
-});
-renderer.domElement.addEventListener('mouseup', (e) => {
-  if (e.button === 2) isPanning = false;
-});
-renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
-
 // Keyboard
+// =========================================================================
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
-    combatMode = !combatMode;
+    riotMode = !riotMode;
     const banner = document.getElementById('combat-banner');
-    banner.textContent = combatMode ? 'COMBAT ENGAGED' : 'COMBAT DISENGAGED';
+    banner.textContent = riotMode ? 'RIOT IN PROGRESS' : 'RIOT DISPERSED';
     banner.classList.add('show');
-    setTimeout(() => banner.classList.remove('show'), 1500);
+    setTimeout(() => banner.classList.remove('show'), 2000);
 
-    if (combatMode) {
+    if (riotMode) {
       ensureAudio();
-      // Spawn initial forces
-      for (let i = 0; i < 8; i++) spawnHostile();
-      for (let i = 0; i < 6; i++) spawnDefender();
+      riotPhase = 'TENSION';
+      riotTimer = 0;
+      molotovCount = 0;
+      teargasCount = 0;
+      rockCount = 0;
+      arrestCount = 0;
+      injuryCount = 0;
+      spawnProtestors();
+      spawnPolice();
+      addKillFeedEntry('Protest gathering in central plaza');
     } else {
-      // Remove combat units
-      for (const h of hostiles) scene.remove(h.mesh);
-      for (const d of defenders) scene.remove(d.mesh);
-      hostiles.length = 0;
-      defenders.length = 0;
-      kills = 0;
+      // Remove riot units
+      for (const p of protestors) scene.remove(p.mesh);
+      for (const p of police) scene.remove(p.mesh);
+      protestors.length = 0;
+      police.length = 0;
+      riotPhase = 'PEACEFUL';
+      // Clear fires
+      for (const f of fires) scene.remove(f.light);
+      fires.length = 0;
     }
   }
   if (e.code === 'KeyC') {
     chaseCam = !chaseCam;
     if (chaseCam) {
-      const all = [...pedestrians.filter(p => p.alive), ...cars.filter(c => c.alive)];
+      controls.enabled = false;
+      const all = [...pedestrians.filter(p => p.alive), ...protestors.filter(p => p.alive), ...police.filter(p => p.alive)];
       chaseTarget = all.length > 0 ? all[Math.floor(rng() * all.length)] : null;
+    } else {
+      controls.enabled = true;
     }
   }
   if (e.code === 'KeyN') {
@@ -804,35 +1062,58 @@ function update(dt) {
   const isNight = nightMode || simTime < 6 || simTime > 20;
 
   // Day/night lighting
-  const dayFactor = isNight ? 0.15 : 1.0;
-  ambientLight.intensity = 0.1 + dayFactor * 0.4;
-  sunLight.intensity = dayFactor * 1.0;
-  hemiLight.intensity = 0.1 + dayFactor * 0.2;
-  scene.fog.density = isNight ? 0.005 : 0.002;
-  renderer.toneMappingExposure = isNight ? 0.8 : 1.2;
+  const dayFactor = isNight ? 0.2 : 1.0;
+  ambientLight.intensity = 0.3 + dayFactor * 0.4;
+  sunLight.intensity = dayFactor * 1.2;
+  hemiLight.intensity = 0.3 + dayFactor * 0.3;
+  scene.fog.density = isNight ? 0.004 : 0.0015;
+  renderer.toneMappingExposure = isNight ? 0.9 : 1.4;
 
   // Street lamps
   for (const lamp of streetLamps) {
-    lamp.light.intensity = isNight ? 1.2 : 0.1;
-    lamp.head.material.opacity = isNight ? 1.0 : 0.3;
+    lamp.light.intensity = isNight ? 1.5 : 0.2;
+    lamp.head.material.opacity = isNight ? 1.0 : 0.4;
   }
 
   // Update pedestrians
   for (const ped of pedestrians) {
     if (!ped.alive) continue;
     const p = ped.mesh.position;
+
+    // If riot, civilians near plaza flee
+    if (riotMode && !ped.fleeing) {
+      const distToPlaza = dist2d(p, { x: PLAZA_X, z: PLAZA_Z });
+      if (distToPlaza < 80 && riotPhase !== 'PEACEFUL') {
+        ped.fleeing = true;
+        ped.speed = 3 + rng() * 2;
+        // Flee to nearest building
+        if (buildings.length > 0) {
+          const bldg = buildings[Math.floor(rng() * buildings.length)];
+          ped.target = { x: bldg.x, z: bldg.z };
+        } else {
+          ped.target = edgeSpawnPos();
+        }
+        if (rng() < 0.15) addKillFeedEntry('Civilian fled to building');
+      }
+    }
+
     const dx = ped.target.x - p.x;
     const dz = ped.target.z - p.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < 2) {
-      ped.target = randomSidewalkPos();
+      if (ped.fleeing) {
+        ped.alive = false;
+        ped.mesh.visible = false;
+      } else {
+        ped.target = randomSidewalkPos();
+      }
     } else {
       const s = ped.speed * dt;
       p.x += (dx / dist) * s;
       p.z += (dz / dist) * s;
+      // Face direction
+      ped.mesh.rotation.y = Math.atan2(dx, dz);
     }
-    // Keep on sidewalk level
-    p.y = 1;
   }
 
   // Update cars
@@ -842,11 +1123,10 @@ function update(dt) {
 
     const g = car.group.position;
     if (car.pathIdx >= car.path.length) {
-      // New destination
       const dest = randomRoadPos();
       car.path = roadPathTo({ x: g.x, z: g.z }, dest);
       car.pathIdx = 0;
-      car.pauseTimer = 1.0 + rng() * 2.0; // Pause at intersection
+      car.pauseTimer = 1.0 + rng() * 2.0;
       continue;
     }
 
@@ -856,7 +1136,6 @@ function update(dt) {
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < 2) {
       car.pathIdx++;
-      // Random intersection pause
       if (car.pathIdx < car.path.length && rng() < 0.3) {
         car.pauseTimer = 1.0 + rng() * 2.0;
       }
@@ -864,147 +1143,252 @@ function update(dt) {
       const s = car.speed * dt;
       g.x += (dx / dist) * s;
       g.z += (dz / dist) * s;
-      // Face direction of travel
       car.group.rotation.y = Math.atan2(dx, dz) - Math.PI / 2;
     }
 
-    // Headlights
     car.headlight.intensity = isNight ? 2 : 0;
   }
 
-  // ---- Combat ----
-  if (combatMode) {
-    // Spawn more hostiles periodically
-    if (rng() < 0.01) spawnHostile();
+  // ---- RIOT ----
+  if (riotMode) {
+    riotTimer += dt;
 
-    // Update hostiles — advance toward city center
-    for (const h of hostiles) {
-      if (!h.alive) continue;
-      const p = h.mesh.position;
-      const dx = h.target.x - p.x;
-      const dz = h.target.z - p.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      if (dist < 5) {
-        h.target = { x: CITY_W / 2 + (rng() - 0.5) * 200, z: CITY_H / 2 + (rng() - 0.5) * 200 };
-      } else {
-        const s = h.speed * dt;
-        p.x += (dx / dist) * s;
-        p.z += (dz / dist) * s;
+    // Phase progression
+    if (riotPhase === 'TENSION' && riotTimer > 8) {
+      riotPhase = 'RIOT';
+      addKillFeedEntry('*** RIOT ERUPTED ***');
+    }
+    if (riotPhase === 'RIOT' && protestors.filter(p => p.alive && !p.arrested).length < 5) {
+      riotPhase = 'DISPERSAL';
+      addKillFeedEntry('Crowd dispersing');
+    }
+
+    // Update protestors
+    for (const pr of protestors) {
+      if (!pr.alive || pr.arrested) continue;
+      const p = pr.mesh.position;
+
+      if (pr.fleeing) {
+        // Flee away from police
+        const fleeDir = rng() < 0.5 ? 1 : -1;
+        const target = { x: p.x + fleeDir * 50, z: p.z + (rng() - 0.5) * 80 };
+        const dx = target.x - p.x;
+        const dz = target.z - p.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist > 1) {
+          const s = pr.speed * 1.5 * dt;
+          p.x += (dx / dist) * s;
+          p.z += (dz / dist) * s;
+          pr.mesh.rotation.y = Math.atan2(dx, dz);
+        }
+        // Leave the map
+        if (p.x < -10 || p.x > CITY_W + 10 || p.z < -10 || p.z > CITY_H + 10) {
+          pr.alive = false;
+          pr.mesh.visible = false;
+        }
+        continue;
       }
 
-      // Hostile fires at nearest defender
-      h.fireTimer -= dt;
-      if (h.fireTimer <= 0) {
-        h.fireTimer = 1.5 + rng() * 3;
-        let nearest = null, nearDist = Infinity;
-        for (const d of defenders) {
-          if (!d.alive) continue;
-          const dd = p.distanceTo(d.mesh.position);
-          if (dd < nearDist && dd < 80) { nearDist = dd; nearest = d; }
-        }
-        if (nearest) {
-          createTracer({ x: p.x, z: p.z }, { x: nearest.mesh.position.x, z: nearest.mesh.position.z }, MAGENTA);
-          createMuzzleFlash({ x: p.x, z: p.z });
-          playGunshot(p.x, p.z);
-          // Hit chance
-          if (rng() < 0.15) {
-            nearest.health -= 0.25;
-            createHitEffect({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
-            if (nearest.health <= 0) {
-              nearest.alive = false;
-              nearest.mesh.rotation.z = Math.PI / 2;
-              nearest.mesh.position.y = 0.5;
-              addKillFeedEntry(`Hostile eliminated defender`);
+      // Move toward target in plaza
+      const dx = pr.target.x - p.x;
+      const dz = pr.target.z - p.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 3) {
+        pr.target = { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 };
+      } else {
+        const s = pr.speed * dt;
+        p.x += (dx / dist) * s;
+        p.z += (dz / dist) * s;
+        pr.mesh.rotation.y = Math.atan2(dx, dz);
+      }
+
+      // Throw rocks and molotovs during RIOT phase
+      if (riotPhase === 'RIOT') {
+        pr.throwTimer -= dt;
+        if (pr.throwTimer <= 0) {
+          pr.throwTimer = 2 + rng() * 6;
+
+          // Find nearest police
+          let nearest = null, nearDist = Infinity;
+          for (const pol of police) {
+            if (!pol.alive) continue;
+            const dd = dist2d(p, pol.mesh.position);
+            if (dd < nearDist && dd < 60) { nearDist = dd; nearest = pol; }
+          }
+
+          if (nearest) {
+            const isMolotov = rng() < 0.2;
+            if (isMolotov) {
+              launchProjectile(
+                { x: p.x, z: p.z },
+                { x: nearest.mesh.position.x + (rng() - 0.5) * 10, z: nearest.mesh.position.z + (rng() - 0.5) * 10 },
+                'molotov'
+              );
+              molotovCount++;
+              addKillFeedEntry('Protestor threw molotov!');
+            } else {
+              launchProjectile(
+                { x: p.x, z: p.z },
+                { x: nearest.mesh.position.x + (rng() - 0.5) * 8, z: nearest.mesh.position.z + (rng() - 0.5) * 8 },
+                'rock'
+              );
+              rockCount++;
+              if (rng() < 0.3) addKillFeedEntry('Protestor threw rock');
+              // Rock hit chance
+              if (rng() < 0.1) {
+                nearest.health -= 0.1;
+                injuryCount++;
+                if (rng() < 0.3) addKillFeedEntry('Police officer hit by rock');
+              }
             }
           }
+        }
+
+        // Some protestors scatter randomly
+        if (rng() < 0.003) {
+          pr.fleeing = true;
+          pr.speed = 3 + rng() * 2;
         }
       }
     }
 
-    // Update defenders — engage nearest hostile
-    for (const d of defenders) {
-      if (!d.alive) continue;
-      const p = d.mesh.position;
+    // Update police
+    for (const pol of police) {
+      if (!pol.alive) continue;
+      const p = pol.mesh.position;
 
-      // Find nearest hostile
-      let nearest = null, nearDist = Infinity;
-      for (const h of hostiles) {
-        if (!h.alive) continue;
-        const dd = p.distanceTo(h.mesh.position);
-        if (dd < nearDist) { nearDist = dd; nearest = h; }
-      }
-
-      if (nearest && nearDist < 100) {
-        // Move toward engagement range
-        if (nearDist > 40) {
-          const dx = nearest.mesh.position.x - p.x;
-          const dz = nearest.mesh.position.z - p.z;
-          const dist = Math.sqrt(dx * dx + dz * dz);
-          const s = d.speed * dt;
+      if (pol.holdLine) {
+        // Hold formation, drift back to line
+        const dx = pol.lineX - p.x;
+        const dz = pol.lineZ - p.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist > 2) {
+          const s = pol.speed * 0.5 * dt;
           p.x += (dx / dist) * s;
           p.z += (dz / dist) * s;
         }
+        // Face the plaza
+        pol.mesh.rotation.y = Math.atan2(PLAZA_X - p.x, PLAZA_Z - p.z);
+      }
 
-        // Fire
-        d.fireTimer -= dt;
-        if (d.fireTimer <= 0) {
-          d.fireTimer = 0.8 + rng() * 2;
-          createTracer({ x: p.x, z: p.z }, { x: nearest.mesh.position.x, z: nearest.mesh.position.z }, CYAN);
-          createMuzzleFlash({ x: p.x, z: p.z });
-          playGunshot(p.x, p.z);
-          // Hit chance (defenders slightly better)
-          if (rng() < 0.2) {
-            nearest.health -= 0.35;
-            createHitEffect({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
-            if (nearest.health <= 0) {
-              nearest.alive = false;
-              nearest.mesh.rotation.z = Math.PI / 2;
-              nearest.mesh.position.y = 0.5;
-              kills++;
-              addKillFeedEntry(`Defender eliminated hostile`);
-              // Explosion on kill sometimes
-              if (rng() < 0.3) {
-                createExplosion({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
-                createSmoke({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
-                playExplosion(nearest.mesh.position.x, nearest.mesh.position.z);
+      // Fire tear gas and rubber bullets during RIOT
+      if (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') {
+        pol.fireTimer -= dt;
+        if (pol.fireTimer <= 0) {
+          pol.fireTimer = 2 + rng() * 5;
+
+          // Find nearest protestor
+          let nearest = null, nearDist = Infinity;
+          for (const pr of protestors) {
+            if (!pr.alive || pr.arrested || pr.fleeing) continue;
+            const dd = dist2d(p, pr.mesh.position);
+            if (dd < nearDist && dd < 80) { nearDist = dd; nearest = pr; }
+          }
+
+          if (nearest) {
+            const isTearGas = rng() < 0.25;
+            if (isTearGas) {
+              // Tear gas canister
+              const impactX = nearest.mesh.position.x + (rng() - 0.5) * 15;
+              const impactZ = nearest.mesh.position.z + (rng() - 0.5) * 15;
+              createTearGasCloud({ x: impactX, z: impactZ });
+              teargasCount++;
+              addKillFeedEntry('Police fired tear gas');
+
+              // Tear gas causes protestors nearby to scatter
+              for (const pr of protestors) {
+                if (!pr.alive || pr.arrested || pr.fleeing) continue;
+                const dd = dist2d(pr.mesh.position, { x: impactX, z: impactZ });
+                if (dd < 20 && rng() < 0.4) {
+                  pr.fleeing = true;
+                  pr.speed = 3 + rng() * 2;
+                }
+              }
+            } else {
+              // Rubber bullet — cyan tracer
+              createTracer(
+                { x: p.x, z: p.z },
+                { x: nearest.mesh.position.x, z: nearest.mesh.position.z },
+                CYAN, 0.25
+              );
+              createMuzzleFlash({ x: p.x, z: p.z });
+              playGunshot(p.x, p.z);
+
+              // Hit chance
+              if (rng() < 0.15) {
+                nearest.health -= 0.3;
+                createHitEffect({ x: nearest.mesh.position.x, z: nearest.mesh.position.z });
+                injuryCount++;
+
+                if (nearest.health <= 0) {
+                  // Arrested / incapacitated
+                  nearest.arrested = true;
+                  nearest.mesh.rotation.z = Math.PI / 2;
+                  nearest.mesh.position.y = -0.5;
+                  arrestCount++;
+                  addKillFeedEntry('Protestor arrested');
+                } else {
+                  // Hit but not down — might flee
+                  if (rng() < 0.5) {
+                    nearest.fleeing = true;
+                    nearest.speed = 3 + rng() * 2;
+                    addKillFeedEntry('Protestor hit, fleeing');
+                  }
+                }
               }
             }
           }
         }
       }
     }
+  }
 
-    // Occasional molotov from hostiles
-    if (rng() < 0.002 && hostiles.filter(h => h.alive).length > 0) {
-      const thrower = hostiles.filter(h => h.alive)[Math.floor(rng() * hostiles.filter(h => h.alive).length)];
-      if (thrower) {
-        const tp = thrower.mesh.position;
-        const impactX = tp.x + (rng() - 0.5) * 40;
-        const impactZ = tp.z + (rng() - 0.5) * 40;
-        createExplosion({ x: impactX, z: impactZ });
-        playExplosion(impactX, impactZ);
-        addKillFeedEntry(`Hostile threw molotov`);
+  // Update projectiles (arcing rocks/molotovs)
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const proj = projectiles[i];
+    proj.age += dt;
+    const t = proj.age;
 
-        // Fire particles at impact
-        for (let i = 0; i < 8; i++) {
-          const fGeo = new THREE.SphereGeometry(0.3, 6, 4);
-          const fMat = new THREE.MeshBasicMaterial({
-            color: [0xff4400, 0xff8800, 0xffaa00][Math.floor(rng() * 3)],
-            transparent: true, opacity: 0.8
-          });
-          const f = new THREE.Mesh(fGeo, fMat);
-          f.position.set(impactX + (rng() - 0.5) * 5, 0.5 + rng() * 2, impactZ + (rng() - 0.5) * 5);
-          scene.add(f);
-          smokeParticles.push({ mesh: f, vy: 0.5 + rng(), life: 2 + rng() * 3 });
-        }
+    proj.mesh.position.x = proj.startX + proj.vx * t;
+    proj.mesh.position.z = proj.startZ + proj.vz * t;
+    proj.mesh.position.y = 2 + proj.vy * t - 0.5 * proj.gravity * t * t;
+
+    // Spin
+    proj.mesh.rotation.x += dt * 5;
+    proj.mesh.rotation.z += dt * 3;
+
+    // Molotov trail
+    if (proj.type === 'molotov') {
+      if (rng() < 0.3) {
+        const tGeo = new THREE.BoxGeometry(0.15, 0.15, 0.15);
+        const tMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.8 });
+        const trail = new THREE.Mesh(tGeo, tMat);
+        trail.position.copy(proj.mesh.position);
+        scene.add(trail);
+        smokeParticles.push({ mesh: trail, vy: 1, life: 0.5 });
       }
+    }
+
+    // Impact
+    if (proj.mesh.position.y <= 0 || proj.age > proj.flightTime * 1.5) {
+      const impactPos = { x: proj.mesh.position.x, z: proj.mesh.position.z };
+      scene.remove(proj.mesh);
+
+      if (proj.type === 'molotov') {
+        createExplosion(impactPos);
+        createFire(impactPos);
+        createSmoke(impactPos);
+        playExplosion(impactPos.x, impactPos.z);
+      }
+
+      projectiles.splice(i, 1);
     }
   }
 
   // Update effects
   for (let i = tracers.length - 1; i >= 0; i--) {
     tracers[i].life -= dt;
-    tracers[i].line.material.opacity = Math.max(0, tracers[i].life / 0.15);
+    tracers[i].line.material.opacity = Math.max(0, tracers[i].life / tracers[i].maxLife);
     if (tracers[i].life <= 0) {
       scene.remove(tracers[i].line);
       tracers[i].line.geometry.dispose();
@@ -1025,14 +1409,17 @@ function update(dt) {
     const ex = explosions[i];
     ex.age += dt;
     const t = ex.age / ex.life;
-    ex.core.scale.setScalar(1 + t * 5);
+    ex.core.scale.setScalar(1 + t * 6);
     ex.core.material.opacity = Math.max(0, 1 - t);
     for (const p of ex.parts) {
       p.mesh.position.x += p.vel.x * dt;
       p.mesh.position.y += p.vel.y * dt;
       p.mesh.position.z += p.vel.z * dt;
-      p.vel.y -= 15 * dt; // gravity
+      p.vel.y -= 15 * dt;
       p.mesh.material.opacity = Math.max(0, 1 - t);
+      // Spin debris
+      p.mesh.rotation.x += dt * 3;
+      p.mesh.rotation.z += dt * 2;
     }
     if (ex.age >= ex.life) {
       scene.remove(ex.group);
@@ -1043,9 +1430,16 @@ function update(dt) {
   for (let i = smokeParticles.length - 1; i >= 0; i--) {
     const s = smokeParticles[i];
     s.mesh.position.y += s.vy * dt;
-    s.mesh.scale.multiplyScalar(1 + dt * 0.3);
+    if (s.isTearGas) {
+      // Tear gas expands more, drifts
+      s.mesh.scale.multiplyScalar(1 + dt * 0.15);
+      s.mesh.position.x += (rng() - 0.5) * dt * 2;
+      s.mesh.position.z += (rng() - 0.5) * dt * 2;
+    } else {
+      s.mesh.scale.multiplyScalar(1 + dt * 0.3);
+    }
     s.life -= dt;
-    s.mesh.material.opacity = Math.max(0, s.life * 0.15);
+    s.mesh.material.opacity = Math.max(0, s.life * 0.12);
     if (s.life <= 0) {
       scene.remove(s.mesh);
       s.mesh.geometry.dispose();
@@ -1054,26 +1448,40 @@ function update(dt) {
     }
   }
 
+  // Update persistent fires
+  for (let i = fires.length - 1; i >= 0; i--) {
+    const f = fires[i];
+    f.age += dt;
+    // Flicker
+    f.light.intensity = 2 + Math.sin(f.age * 10) * 1.5 + rng() * 0.5;
+    f.light.color.setHex(rng() < 0.3 ? 0xff4400 : 0xff8800);
+
+    // Spawn fire particles periodically
+    if (rng() < 0.05) {
+      const fGeo = new THREE.BoxGeometry(0.3, 0.5, 0.3);
+      const fMat = new THREE.MeshBasicMaterial({
+        color: [0xff4400, 0xff8800, 0xffaa00][Math.floor(rng() * 3)],
+        transparent: true, opacity: 0.8
+      });
+      const fm = new THREE.Mesh(fGeo, fMat);
+      fm.position.set(f.x + (rng() - 0.5) * 3, 0.5, f.z + (rng() - 0.5) * 3);
+      scene.add(fm);
+      smokeParticles.push({ mesh: fm, vy: 1 + rng() * 2, life: 1 + rng() * 2 });
+    }
+
+    if (f.age >= f.life) {
+      scene.remove(f.light);
+      fires.splice(i, 1);
+    }
+  }
+
   // Camera
   if (chaseCam && chaseTarget) {
-    const tp = chaseTarget.mesh ? chaseTarget.mesh.position : chaseTarget.group.position;
+    const tp = chaseTarget.mesh.position;
     camera.position.lerp(new THREE.Vector3(tp.x - 15, 20, tp.z + 15), 0.05);
     camera.lookAt(tp);
   } else {
-    const cx = CITY_W / 2 + panOffset.x;
-    const cz = CITY_H / 2 + panOffset.z;
-    camera.position.set(cx, zoomLevel, cz + zoomLevel * 0.6);
-    camera.lookAt(cx, 0, cz);
-  }
-
-  // Update audio listener position to match camera
-  if (audioCtx) {
-    const l = audioCtx.listener;
-    if (l.positionX) {
-      l.positionX.value = camera.position.x * 0.01;
-      l.positionY.value = camera.position.y * 0.01;
-      l.positionZ.value = camera.position.z * 0.01;
-    }
+    controls.update();
   }
 }
 
@@ -1088,21 +1496,36 @@ function updateHUD() {
 
   document.getElementById('civ-count').textContent =
     pedestrians.filter(p => p.alive).length + cars.filter(c => c.alive).length;
-  document.getElementById('def-count').textContent = defenders.filter(d => d.alive).length;
-  document.getElementById('host-count').textContent = hostiles.filter(h => h.alive).length;
-  document.getElementById('kill-count').textContent = kills;
+  document.getElementById('protestor-count').textContent = protestors.filter(p => p.alive && !p.arrested).length;
+  document.getElementById('police-count').textContent = police.filter(p => p.alive).length;
+  document.getElementById('arrest-count').textContent = arrestCount;
+
+  document.getElementById('molotov-count').textContent = molotovCount;
+  document.getElementById('teargas-count').textContent = teargasCount;
+  document.getElementById('rock-count').textContent = rockCount;
+  document.getElementById('injury-count').textContent = injuryCount;
+
+  // Phase indicator
+  const phaseEl = document.getElementById('phase-indicator');
+  phaseEl.textContent = riotPhase;
+  phaseEl.className = riotPhase === 'RIOT' ? 'riot' :
+                      riotPhase === 'TENSION' ? 'tension' :
+                      riotPhase === 'DISPERSAL' ? 'dispersal' : '';
 
   // Kill feed
   const feed = document.getElementById('kill-feed');
-  feed.innerHTML = killFeed.map((k, i) => {
+  feed.innerHTML = killFeed.map((k) => {
     k.age += 1 / 60;
     const cls = k.age > 5 ? 'kill-entry fade' : 'kill-entry';
-    const color = k.text.includes('Defender') ? '#00f0ff' : '#ff2a6d';
+    let color = '#fcee0a';
+    if (k.text.includes('Police')) color = '#00f0ff';
+    if (k.text.includes('Protestor')) color = '#05ffa1';
+    if (k.text.includes('molotov') || k.text.includes('RIOT')) color = '#ff2a6d';
+    if (k.text.includes('Civilian')) color = '#fcee0a';
     return `<div class="${cls}" style="color:${color}">${k.text}</div>`;
   }).join('');
 
-  // Remove old entries
-  while (killFeed.length > 0 && killFeed[killFeed.length - 1].age > 10) killFeed.pop();
+  while (killFeed.length > 0 && killFeed[killFeed.length - 1].age > 12) killFeed.pop();
 }
 
 // =========================================================================
@@ -1112,7 +1535,7 @@ function animate() {
   requestAnimationFrame(animate);
 
   const now = performance.now();
-  const dt = Math.min((now - lastTime) / 1000, 0.05); // cap at 50ms
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
 
   // FPS
