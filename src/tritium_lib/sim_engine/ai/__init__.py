@@ -97,6 +97,15 @@ from .rf_signatures import (
     VehicleRFProfile,
 )
 
+from .squad import (
+    MoralePropagation,
+    Order,
+    Squad,
+    SquadRole,
+    SquadState,
+    SquadTactics,
+)
+
 # NumPy-vectorized variants (optional — graceful fallback if numpy missing)
 try:
     from .steering_np import SteeringSystem, SpatialHash
@@ -170,4 +179,11 @@ __all__ = [
     "make_defender_tree",
     "make_sniper_tree",
     "make_squad_leader_tree",
+    # Squad coordination
+    "MoralePropagation",
+    "Order",
+    "Squad",
+    "SquadRole",
+    "SquadState",
+    "SquadTactics",
 ]
