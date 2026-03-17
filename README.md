@@ -16,6 +16,24 @@ the [Tritium](https://github.com/Valpatel/tritium) ecosystem.
 | `config` | Pydantic base settings class for service configuration |
 | `web` | Cyberpunk HTML theme engine and dashboard components |
 | `testing` | Visual regression checks and ESP32 device automation |
+| `sim_engine` | **Tactical simulation engine** — 110 files, 57K lines: combat AI, weapons, vehicles, naval, air, terrain, weather, crowds, destruction, medical, logistics, intel, scoring, campaigns, multiplayer, replay, economy, artillery, cyber warfare. Three.js-compatible. |
+
+## Sim Engine Demo
+
+Run a complete tactical simulation with 3D visualization:
+
+```bash
+./sim-demo.sh                    # Start demo (opens http://localhost:9090)
+./sim-demo.sh --list             # See all presets
+./sim-demo.sh --perf             # Run performance benchmark
+./sim-demo.sh --coverage         # Run module coverage report
+```
+
+Controls: `SPACE`=riot `N`=night `R`=rain `F`=fog `D`=debug `I`=intel `M`=minimap `K`=record `L`=playback `A`=airstrike `S`=sound `2`=split-view `P`=skip-phase `C`=chase-cam `Click`=inspect `ESC`=deselect
+
+Opens `http://localhost:8888` with a Three.js 3D view of the battle.
+
+Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_strike`
 
 ## Install
 
