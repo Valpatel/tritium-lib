@@ -13,6 +13,7 @@ Usage:
 """
 
 from .addon_base import AddonBase, AddonInfo
+from .addon_events import AddonEvent, AddonEventBus
 from .interfaces import (
     SensorAddon,
     ProcessorAddon,
@@ -24,9 +25,15 @@ from .interfaces import (
     ToolAddon,
 )
 from .manifest import AddonManifest, load_manifest, validate_manifest
+from .device_transport import DeviceTransport, LocalTransport, MQTTTransport
+from .subprocess_manager import ManagedProcess, SubprocessManager
+from .device_registry import DeviceRegistry, RegisteredDevice, DeviceState
+from .async_store import AsyncBaseStore
 
 __all__ = [
     "AddonBase",
+    "AddonEvent",
+    "AddonEventBus",
     "AddonInfo",
     "SensorAddon",
     "ProcessorAddon",
@@ -39,6 +46,15 @@ __all__ = [
     "AddonManifest",
     "load_manifest",
     "validate_manifest",
+    "DeviceTransport",
+    "LocalTransport",
+    "MQTTTransport",
+    "ManagedProcess",
+    "SubprocessManager",
+    "DeviceRegistry",
+    "RegisteredDevice",
+    "DeviceState",
+    "AsyncBaseStore",
 ]
 
 SDK_VERSION = "1.0.0"

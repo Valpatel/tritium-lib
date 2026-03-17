@@ -10,7 +10,9 @@ The addon loader calls these during enable/disable.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from .addon_events import AddonEvent, AddonEventBus
 
 
 @dataclass
@@ -53,6 +55,8 @@ class AddonBase:
         self._background_tasks: list = []
         self._mqtt_subscriptions: list = []
         self._event_subscriptions: list = []
+        self._addon_event_bus: AddonEventBus | None = None
+        self._addon_event_unsubs: list[Callable] = []
 
     async def register(self, app: Any) -> None:
         """Called when the addon is enabled.
@@ -102,7 +106,50 @@ class AddonBase:
                 unsub()
         self._event_subscriptions.clear()
 
+        # Unsubscribe addon events
+        for unsub in self._addon_event_unsubs:
+            unsub()
+        self._addon_event_unsubs.clear()
+
         self._registered = False
+
+    # ------------------------------------------------------------------
+    # Inter-addon event helpers
+    # ------------------------------------------------------------------
+
+    def set_event_bus(self, bus: AddonEventBus) -> None:
+        """Attach an :class:`AddonEventBus` to this addon."""
+        self._addon_event_bus = bus
+
+    def publish_addon_event(
+        self,
+        event_type: str,
+        data: dict,
+        device_id: str = "",
+    ) -> AddonEvent | None:
+        """Publish an addon event using ``self.info.id`` as the source.
+
+        Returns the created :class:`AddonEvent`, or ``None`` if no bus is set.
+        """
+        if self._addon_event_bus is None:
+            return None
+        return self._addon_event_bus.publish(
+            source_addon=self.info.id,
+            event_type=event_type,
+            data=data,
+            device_id=device_id,
+        )
+
+    def subscribe_addon_event(
+        self,
+        pattern: str,
+        callback: Callable[[AddonEvent], None],
+    ) -> None:
+        """Subscribe to addon events and track for cleanup on unregister."""
+        if self._addon_event_bus is None:
+            return
+        unsub = self._addon_event_bus.subscribe(pattern, callback)
+        self._addon_event_unsubs.append(unsub)
 
     def get_panels(self) -> list[dict]:
         """Return panel definitions for the frontend.
