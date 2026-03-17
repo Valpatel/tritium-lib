@@ -6,8 +6,20 @@
 Like the Meshtastic Web Flasher (flasher.meshtastic.org), this can:
 1. Detect the connected device (chip, board, current firmware)
 2. Download the latest official Meshtastic firmware from GitHub releases
-3. Flash the firmware via esptool.py
+3. Flash the firmware via esptool.py using the full multi-step process
 4. Verify the device boots with the new firmware
+
+The full flash process mirrors what the official flasher does:
+  Step 1: erase_flash (clean slate)
+  Step 2: write_flash 0x0 factory.bin (bootloader + app + partition table)
+  Step 3: write_flash {ota_offset} mt-esp32s3-ota.bin (OTA bootloader)
+  Step 4: write_flash {spiffs_offset} littlefs-{board}.bin (filesystem)
+
+For OTA-style updates (preserves settings):
+  write_flash 0x10000 update.bin (app partition only, no erase)
+
+The firmware zip contains a .mt.json metadata file with partition offsets,
+board info, and file checksums. We parse this to get correct offsets.
 
 Supports all Meshtastic ESP32 devices including:
 - T-LoRa Pager (ESP32-S3)
@@ -25,7 +37,9 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .base import (
@@ -47,7 +61,7 @@ FIRMWARE_CACHE_DIR = Path(os.environ.get(
     Path.home() / ".cache" / "tritium" / "firmware" / "meshtastic",
 ))
 
-# Board name mapping: hwModel string → firmware archive name
+# Board name mapping: hwModel string -> firmware archive name
 # The meshtastic library returns hwModel as a string like "TLORA_V2_1_1P6"
 # The firmware archive contains files named like "firmware-tlora-v2_1_1p6-2.5.19.5f8df68.bin"
 BOARD_FIRMWARE_MAP = {
@@ -76,7 +90,7 @@ BOARD_FIRMWARE_MAP = {
     "XIAO_ESP32C3": "xiao-esp32c3",
 }
 
-# Chip type → flash offset for merged Meshtastic firmware
+# Chip type -> flash offset for merged Meshtastic firmware
 MESHTASTIC_FLASH_OFFSETS = {
     "ESP32": "0x1000",
     "ESP32-S2": "0x1000",
@@ -84,6 +98,35 @@ MESHTASTIC_FLASH_OFFSETS = {
     "ESP32-C3": "0x0",
     "ESP32-C6": "0x0",
 }
+
+# Default partition offsets when .mt.json is not available
+DEFAULT_OTA_OFFSET = "0x260000"
+DEFAULT_SPIFFS_OFFSET = "0x300000"
+DEFAULT_APP_OFFSET = "0x10000"
+
+# ESP32-S3 boards that support USB DFU (1200bps reset trick)
+ESP32S3_BOARDS = {
+    "tlora-pager", "t-deck", "heltec-v3", "heltec-wsl-v3",
+    "station-g2", "unphone", "picomputer-s3", "t-watch-s3",
+    "nano-g2-ultra",
+}
+
+
+@dataclass
+class MeshtasticFirmwareFiles:
+    """All files extracted from a Meshtastic firmware zip."""
+    factory_bin: str = ""       # Full flash at 0x0 (fresh install)
+    update_bin: str = ""        # App only at 0x10000 (OTA update)
+    ota_bin: str = ""           # OTA bootloader (mt-esp32s3-ota.bin)
+    littlefs_bin: str = ""      # Filesystem partition
+    mt_json: str = ""           # Metadata with partition offsets
+    board: str = ""
+    version: str = ""
+
+    # Offsets parsed from .mt.json (or defaults)
+    ota_offset: str = DEFAULT_OTA_OFFSET
+    spiffs_offset: str = DEFAULT_SPIFFS_OFFSET
+    app_offset: str = DEFAULT_APP_OFFSET
 
 
 class MeshtasticFlasher(ESP32Flasher):
@@ -93,6 +136,9 @@ class MeshtasticFlasher(ESP32Flasher):
     - Meshtastic firmware version detection from the device
     - Automatic firmware download from GitHub releases
     - Board-specific firmware file selection
+    - Full multi-step flash process (erase + factory + OTA + littlefs)
+    - App-only update mode (preserves settings)
+    - DFU mode entry for ESP32-S3 boards
     - Version comparison for update detection
     """
 
@@ -165,14 +211,17 @@ class MeshtasticFlasher(ESP32Flasher):
     async def download_firmware(
         self, board: str = "", chip: str = "", version: str = "latest",
     ) -> str | None:
-        """Download Meshtastic firmware from GitHub releases.
+        """Download Meshtastic firmware zip from GitHub releases.
+
+        Downloads the full firmware zip (not just a single .bin) so we have
+        all partition files needed for a complete flash.
 
         Args:
             board: Board name (e.g., "tlora-pager", "tbeam").
             chip: Chip type for offset selection.
             version: Version tag (e.g., "v2.5.19.5f8df68") or "latest".
 
-        Returns local path to the downloaded .bin file, or None on failure.
+        Returns local path to the downloaded zip/bin file, or None on failure.
         """
         self._emit_progress(FlashStatus.DOWNLOADING, 0, "Fetching release info...")
 
@@ -214,14 +263,6 @@ class MeshtasticFlasher(ESP32Flasher):
 
             if downloaded:
                 self._emit_progress(FlashStatus.DOWNLOADING, 90, "Download complete")
-
-                # If it's a zip, extract the .bin file
-                if filename.endswith(".zip"):
-                    bin_path = await self._run_in_executor(
-                        self._extract_firmware_bin, str(cache_path), board,
-                    )
-                    return bin_path
-
                 return str(cache_path)
             else:
                 return None
@@ -244,26 +285,26 @@ class MeshtasticFlasher(ESP32Flasher):
 
     @staticmethod
     def _find_firmware_asset(assets: list[dict], board: str) -> dict | None:
-        """Find the firmware asset matching the board name."""
+        """Find the firmware asset matching the board name.
+
+        Prefers .zip over .bin since the zip contains all partition files
+        needed for a complete flash (factory, OTA, littlefs, metadata).
+        """
         board_lower = board.lower().replace("-", "").replace("_", "")
+        zip_match = None
+        bin_match = None
 
         for asset in assets:
             name = asset.get("name", "").lower()
-            # Meshtastic firmware files are named like:
-            # firmware-tlora-pager-2.5.19.5f8df68.bin
-            # or firmware-tlora-pager-2.5.19.5f8df68.zip
             name_clean = name.replace("-", "").replace("_", "")
-            if board_lower in name_clean and (name.endswith(".bin") or name.endswith(".zip")):
-                # Prefer .bin over .zip
-                return asset
+            if board_lower in name_clean:
+                if name.endswith(".zip"):
+                    zip_match = asset
+                elif name.endswith(".bin"):
+                    bin_match = asset
 
-        # Second pass: look for the zip archive containing all firmware
-        for asset in assets:
-            name = asset.get("name", "").lower()
-            if "firmware" in name and name.endswith(".zip") and board_lower in name.replace("-", "").replace("_", ""):
-                return asset
-
-        return None
+        # Prefer zip (has all partition files) over bare .bin
+        return zip_match or bin_match
 
     @staticmethod
     def _download_file_sync(url: str, dest_path: str) -> bool:
@@ -299,33 +340,213 @@ class MeshtasticFlasher(ESP32Flasher):
             return False
 
     @staticmethod
-    def _extract_firmware_bin(zip_path: str, board: str) -> str | None:
-        """Extract the .bin firmware file from a zip archive."""
+    def _extract_firmware_files(zip_path: str, board: str) -> MeshtasticFirmwareFiles:
+        """Extract ALL needed files from a Meshtastic firmware zip.
+
+        The zip typically contains:
+        - firmware-{board}-{ver}.factory.bin (full flash at 0x0)
+        - firmware-{board}-{ver}-update.bin (app only at 0x10000)
+        - mt-esp32s3-ota.bin or similar OTA bootloader
+        - littlefs-{board}-{ver}.bin (SPIFFS/LittleFS filesystem)
+        - firmware-{board}-{ver}.mt.json (metadata with offsets)
+        """
         import zipfile
         board_lower = board.lower()
+        result = MeshtasticFirmwareFiles(board=board)
+        extract_dir = Path(zip_path).parent
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                # Find the firmware .bin for this board
-                for name in zf.namelist():
-                    if board_lower in name.lower() and name.endswith(".bin"):
-                        extract_dir = Path(zip_path).parent
-                        zf.extract(name, extract_dir)
-                        return str(extract_dir / name)
+                names = zf.namelist()
 
-                # If no board-specific .bin, look for a merged firmware
-                for name in zf.namelist():
-                    if "firmware" in name.lower() and name.endswith(".bin"):
-                        extract_dir = Path(zip_path).parent
+                for name in names:
+                    name_lower = name.lower()
+                    basename = Path(name).name.lower()
+
+                    # .mt.json metadata file
+                    if basename.endswith(".mt.json") and board_lower in basename:
                         zf.extract(name, extract_dir)
-                        return str(extract_dir / name)
+                        result.mt_json = str(extract_dir / name)
+
+                    # Factory binary (full flash)
+                    elif ".factory.bin" in name_lower and board_lower in name_lower:
+                        zf.extract(name, extract_dir)
+                        result.factory_bin = str(extract_dir / name)
+
+                    # Update binary (app only)
+                    elif "-update.bin" in name_lower and board_lower in name_lower:
+                        zf.extract(name, extract_dir)
+                        result.update_bin = str(extract_dir / name)
+
+                    # OTA bootloader (mt-esp32s3-ota.bin, mt-esp32-ota.bin)
+                    elif basename.startswith("mt-") and "-ota.bin" in name_lower:
+                        zf.extract(name, extract_dir)
+                        result.ota_bin = str(extract_dir / name)
+
+                    # LittleFS filesystem
+                    elif "littlefs" in name_lower and name_lower.endswith(".bin"):
+                        if board_lower in name_lower or "littlefs-" in name_lower:
+                            zf.extract(name, extract_dir)
+                            result.littlefs_bin = str(extract_dir / name)
+
+                # Fallback: if no factory.bin found, look for any board .bin
+                if not result.factory_bin:
+                    for name in names:
+                        if (board_lower in name.lower()
+                                and name.lower().endswith(".bin")
+                                and "update" not in name.lower()
+                                and "littlefs" not in name.lower()
+                                and "ota" not in name.lower()):
+                            zf.extract(name, extract_dir)
+                            result.factory_bin = str(extract_dir / name)
+                            break
+
         except Exception as e:
             log.error(f"Failed to extract firmware from {zip_path}: {e}")
 
-        return None
+        return result
+
+    @staticmethod
+    def _extract_firmware_bin(zip_path: str, board: str) -> str | None:
+        """Extract the .bin firmware file from a zip archive.
+
+        Legacy method — returns just the factory .bin path.
+        For full multi-step flash, use _extract_firmware_files() instead.
+        """
+        files = MeshtasticFlasher._extract_firmware_files(zip_path, board)
+        return files.factory_bin or None
+
+    @staticmethod
+    def _parse_mt_json(json_path: str) -> dict:
+        """Parse a Meshtastic .mt.json metadata file.
+
+        The .mt.json contains partition offsets, file checksums, and board info.
+        Example structure:
+        {
+            "board": "tlora-pager",
+            "chip": "esp32s3",
+            "version": "2.5.19.5f8df68",
+            "partitions": {
+                "factory": {"offset": "0x0", "size": "0x1F0000"},
+                "ota": {"offset": "0x260000", "size": "0x10000"},
+                "spiffs": {"offset": "0x300000", "size": "0x100000"}
+            },
+            "files": {
+                "factory": {"name": "firmware-tlora-pager-2.5.19.factory.bin", "md5": "..."},
+                "ota": {"name": "mt-esp32s3-ota.bin", "md5": "..."},
+                "spiffs": {"name": "littlefs-tlora-pager-2.5.19.bin", "md5": "..."}
+            }
+        }
+
+        Returns a dict with keys: board, chip, version, partitions, files.
+        Returns empty dict on parse failure.
+        """
+        try:
+            with open(json_path, "r") as f:
+                data = json.load(f)
+            log.info(f"Parsed .mt.json: board={data.get('board')}, version={data.get('version')}")
+            return data
+        except Exception as e:
+            log.warning(f"Failed to parse .mt.json at {json_path}: {e}")
+            return {}
+
+    def _apply_mt_json_offsets(
+        self, fw_files: MeshtasticFirmwareFiles,
+    ) -> MeshtasticFirmwareFiles:
+        """Read offsets from .mt.json and apply them to firmware files."""
+        if not fw_files.mt_json or not Path(fw_files.mt_json).exists():
+            log.debug("No .mt.json found, using default partition offsets")
+            return fw_files
+
+        metadata = self._parse_mt_json(fw_files.mt_json)
+        if not metadata:
+            return fw_files
+
+        fw_files.version = metadata.get("version", "")
+
+        # Extract partition offsets
+        partitions = metadata.get("partitions", {})
+        if isinstance(partitions, dict):
+            ota_part = partitions.get("ota", {})
+            spiffs_part = partitions.get("spiffs", partitions.get("littlefs", {}))
+            app_part = partitions.get("app", partitions.get("factory", {}))
+
+            if isinstance(ota_part, dict) and "offset" in ota_part:
+                fw_files.ota_offset = ota_part["offset"]
+            if isinstance(spiffs_part, dict) and "offset" in spiffs_part:
+                fw_files.spiffs_offset = spiffs_part["offset"]
+            if isinstance(app_part, dict) and "offset" in app_part:
+                fw_files.app_offset = app_part["offset"]
+
+        log.info(
+            f"Partition offsets: ota={fw_files.ota_offset}, "
+            f"spiffs={fw_files.spiffs_offset}, app={fw_files.app_offset}"
+        )
+        return fw_files
+
+    async def _enter_dfu_mode(self, port: str = "") -> bool:
+        """Enter DFU mode on ESP32-S3 boards using the 1200bps reset trick.
+
+        Many ESP32-S3 boards with native USB support can be forced into
+        bootloader/DFU mode by opening the serial port at 1200 baud and
+        then closing it. This triggers the USB CDC ACM reset sequence that
+        the ROM bootloader recognizes.
+
+        Returns True if DFU entry was attempted (does not guarantee success).
+        """
+        target_port = port or self.port or self._auto_detect_port()
+        if not target_port:
+            log.warning("No port specified for DFU mode entry")
+            return False
+
+        log.info(f"Attempting 1200bps DFU reset on {target_port}...")
+        self._emit_progress(FlashStatus.DETECTING, 10, "Entering DFU mode...")
+
+        try:
+            result = await self._run_in_executor(
+                self._enter_dfu_sync, target_port,
+            )
+            return result
+        except Exception as e:
+            log.warning(f"DFU mode entry failed: {e}")
+            return False
+
+    @staticmethod
+    def _enter_dfu_sync(port: str) -> bool:
+        """Synchronous 1200bps reset trick."""
+        try:
+            import serial
+            # Open at 1200 baud, toggle DTR, close — triggers bootloader
+            ser = serial.Serial(port, 1200, timeout=1)
+            ser.dtr = False
+            time.sleep(0.1)
+            ser.dtr = True
+            time.sleep(0.1)
+            ser.dtr = False
+            ser.close()
+            # Give the board time to reset into bootloader
+            time.sleep(2.0)
+            log.info("1200bps DFU reset sent, waiting for bootloader...")
+            return True
+        except ImportError:
+            log.warning("pyserial not installed — cannot enter DFU mode")
+            return False
+        except Exception as e:
+            log.warning(f"1200bps reset failed: {e}")
+            return False
 
     async def flash_latest(self, **kwargs) -> FlashResult:
-        """Detect board, download latest Meshtastic firmware, and flash it."""
+        """Detect board, download latest Meshtastic firmware, and do full flash.
+
+        Full flash process (fresh install):
+          Step 1: erase_flash
+          Step 2: write_flash 0x0 factory.bin
+          Step 3: write_flash {ota_offset} mt-esp32s3-ota.bin
+          Step 4: write_flash {spiffs_offset} littlefs-{board}.bin
+
+        This replaces everything on the device including settings.
+        For preserving settings, use update_firmware() instead.
+        """
         detection = await self.detect()
         if not detection.detected:
             return FlashResult(
@@ -345,7 +566,11 @@ class MeshtasticFlasher(ESP32Flasher):
 
         log.info(f"Detected: {chip} board={board} fw={detection.firmware_version}")
 
-        # Download latest firmware
+        # Try DFU mode for ESP32-S3 boards
+        if board in ESP32S3_BOARDS:
+            await self._enter_dfu_mode(detection.port)
+
+        # Download firmware zip
         fw_path = await self.download_firmware(board=board, chip=chip)
         if not fw_path:
             return FlashResult(
@@ -354,17 +579,178 @@ class MeshtasticFlasher(ESP32Flasher):
                 port=detection.port,
             )
 
-        # Determine flash offset from chip type
-        flash_offset = MESHTASTIC_FLASH_OFFSETS.get(chip, "0x0")
+        # If we got a zip, extract all files and do multi-step flash
+        if fw_path.endswith(".zip"):
+            return await self._flash_full_from_zip(
+                fw_path, board, chip, detection.port, **kwargs,
+            )
 
-        # Flash it
+        # Fallback: single .bin flash (legacy behavior)
+        flash_offset = MESHTASTIC_FLASH_OFFSETS.get(chip, "0x0")
         return await self.flash(
             fw_path,
-            erase_all=kwargs.get("erase_all", True),  # Meshtastic recommends erase_all
+            erase_all=kwargs.get("erase_all", True),
             verify=kwargs.get("verify", True),
             flash_offset=flash_offset,
             chip=chip.lower().replace("-", ""),
         )
+
+    async def _flash_full_from_zip(
+        self,
+        zip_path: str,
+        board: str,
+        chip: str,
+        port: str,
+        **kwargs,
+    ) -> FlashResult:
+        """Full 4-step flash from a Meshtastic firmware zip.
+
+        Step 1: erase_flash
+        Step 2: write_flash 0x0 factory.bin
+        Step 3: write_flash {ota_offset} ota.bin (if present)
+        Step 4: write_flash {spiffs_offset} littlefs.bin (if present)
+        """
+        self._emit_progress(FlashStatus.WRITING, 5, "Extracting firmware files...")
+
+        # Extract all files from the zip
+        fw_files = await self._run_in_executor(
+            self._extract_firmware_files, zip_path, board,
+        )
+
+        if not fw_files.factory_bin:
+            return FlashResult(
+                success=False, status=FlashStatus.FAILED,
+                error=f"No factory.bin found in firmware zip for board '{board}'",
+                port=port,
+            )
+
+        # Parse .mt.json for partition offsets
+        fw_files = self._apply_mt_json_offsets(fw_files)
+
+        flash_offset = MESHTASTIC_FLASH_OFFSETS.get(chip, "0x0")
+        chip_key = chip.lower().replace("-", "")
+
+        # Build additional writes list
+        additional_writes: list[tuple[str, str]] = []
+        if fw_files.ota_bin and Path(fw_files.ota_bin).exists():
+            additional_writes.append((fw_files.ota_offset, fw_files.ota_bin))
+            log.info(f"OTA bootloader: {fw_files.ota_bin} at {fw_files.ota_offset}")
+        if fw_files.littlefs_bin and Path(fw_files.littlefs_bin).exists():
+            additional_writes.append((fw_files.spiffs_offset, fw_files.littlefs_bin))
+            log.info(f"LittleFS: {fw_files.littlefs_bin} at {fw_files.spiffs_offset}")
+
+        log.info(
+            f"Full flash: factory={fw_files.factory_bin} at {flash_offset}, "
+            f"{len(additional_writes)} additional partitions"
+        )
+
+        # Flash with erase + factory + additional partitions
+        result = await self.flash(
+            fw_files.factory_bin,
+            erase_all=kwargs.get("erase_all", True),
+            verify=kwargs.get("verify", True),
+            flash_offset=flash_offset,
+            chip=chip_key,
+            additional_writes=additional_writes if additional_writes else None,
+        )
+
+        if result.success and fw_files.version:
+            result.firmware_version = fw_files.version
+
+        return result
+
+    async def update_firmware(
+        self,
+        board: str = "",
+        chip: str = "",
+        version: str = "latest",
+        port: str = "",
+    ) -> FlashResult:
+        """App-only update — preserves device settings.
+
+        Writes only the app partition (update.bin at 0x10000). Does NOT erase
+        flash, so all device settings, channels, and node info are preserved.
+        Uses 115200 baud for reliability during app-only writes.
+
+        This is equivalent to the "Update" option in the Meshtastic web flasher,
+        as opposed to the "Full Install" option (flash_latest).
+
+        Args:
+            board: Board name (auto-detected if empty).
+            chip: Chip type (auto-detected if empty).
+            version: Version to download ("latest" or specific tag).
+            port: Serial port (auto-detected if empty).
+        """
+        # Auto-detect if needed
+        if not board or not chip:
+            detection = await self.detect()
+            if not detection.detected:
+                return FlashResult(
+                    success=False, status=FlashStatus.FAILED,
+                    error=f"No device detected: {detection.error}",
+                    port=port or self.port,
+                )
+            board = board or detection.board
+            chip = chip or detection.chip
+            port = port or detection.port
+
+        if not board:
+            return FlashResult(
+                success=False, status=FlashStatus.FAILED,
+                error="Could not determine board type for update.",
+                port=port,
+            )
+
+        log.info(f"App-only update: board={board}, chip={chip}")
+
+        # Try DFU mode for ESP32-S3 boards
+        if board in ESP32S3_BOARDS:
+            await self._enter_dfu_mode(port)
+
+        # Download firmware
+        fw_path = await self.download_firmware(board=board, chip=chip, version=version)
+        if not fw_path:
+            return FlashResult(
+                success=False, status=FlashStatus.FAILED,
+                error=f"Failed to download firmware for {board}",
+                port=port,
+            )
+
+        # Extract update.bin from zip
+        update_bin = None
+        if fw_path.endswith(".zip"):
+            fw_files = await self._run_in_executor(
+                self._extract_firmware_files, fw_path, board,
+            )
+            fw_files = self._apply_mt_json_offsets(fw_files)
+            update_bin = fw_files.update_bin
+            app_offset = fw_files.app_offset
+        else:
+            # Bare .bin — assume it's the update binary
+            update_bin = fw_path
+            app_offset = DEFAULT_APP_OFFSET
+
+        if not update_bin or not Path(update_bin).exists():
+            return FlashResult(
+                success=False, status=FlashStatus.FAILED,
+                error="No update.bin found in firmware package. Use flash_latest() for full install.",
+                port=port,
+            )
+
+        chip_key = chip.lower().replace("-", "")
+        log.info(f"Writing update.bin at {app_offset} (baud 115200, no erase)")
+
+        # Flash at 115200 baud, no erase, app partition only
+        result = await self.flash(
+            update_bin,
+            erase_all=False,
+            verify=True,
+            flash_offset=app_offset,
+            chip=chip_key,
+            baud_override=115200,
+        )
+
+        return result
 
     async def flash_with_meshtastic_cli(self, firmware_path: str = "") -> FlashResult:
         """Flash using the `meshtastic` CLI tool instead of esptool.
@@ -386,7 +772,6 @@ class MeshtasticFlasher(ESP32Flasher):
             )
 
         import subprocess
-        import time
 
         cmd = [self._meshtastic_cli, "--port", port]
         if firmware_path:

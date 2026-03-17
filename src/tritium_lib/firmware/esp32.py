@@ -162,8 +162,10 @@ class ESP32Flasher(FirmwareFlasher):
         verify: bool = True,
         flash_offset: str = "",
         chip: str = "",
+        additional_writes: list[tuple[str, str]] | None = None,
+        baud_override: int = 0,
     ) -> FlashResult:
-        """Flash a .bin file to the ESP32.
+        """Flash a .bin file to the ESP32, with optional additional partition writes.
 
         Args:
             firmware_path: Path to firmware .bin file.
@@ -171,6 +173,10 @@ class ESP32Flasher(FirmwareFlasher):
             verify: Verify after writing.
             flash_offset: Override flash offset (e.g., "0x0" for ESP32-S3).
             chip: Override chip type (e.g., "esp32s3").
+            additional_writes: List of (offset, file_path) tuples for extra
+                partitions to write after the main firmware. Example:
+                [("0x260000", "/path/to/ota.bin"), ("0x300000", "/path/to/fs.bin")]
+            baud_override: Override baud rate for this flash only (0 = use default).
         """
         if not self._esptool_path:
             return FlashResult(
@@ -185,6 +191,15 @@ class ESP32Flasher(FirmwareFlasher):
                 error=f"Firmware file not found: {firmware_path}",
             )
 
+        # Validate additional writes exist
+        if additional_writes:
+            for offset, path in additional_writes:
+                if not Path(path).exists():
+                    return FlashResult(
+                        success=False, status=FlashStatus.FAILED,
+                        error=f"Additional write file not found: {path}",
+                    )
+
         port = self.port or self._auto_detect_port()
         if not port:
             return FlashResult(
@@ -197,14 +212,38 @@ class ESP32Flasher(FirmwareFlasher):
             chip_key = (chip or "").lower().replace("-", "")
             flash_offset = CHIP_FLASH_OFFSETS.get(chip_key, "0x0")
 
+        baud = baud_override if baud_override > 0 else self.baud
+
         start = time.monotonic()
         self._emit_progress(FlashStatus.WRITING, 0, f"Flashing {fw_path.name}...")
 
         try:
             result = await self._run_in_executor(
-                self._flash_sync, self._esptool_path, port, self.baud,
+                self._flash_sync, self._esptool_path, port, baud,
                 str(fw_path), erase_all, verify, flash_offset, chip,
             )
+
+            # Write additional partitions if main write succeeded
+            if result.success and additional_writes:
+                total_extra = len(additional_writes)
+                for i, (offset, path) in enumerate(additional_writes):
+                    pct = 50 + (50 * i // total_extra)
+                    self._emit_progress(
+                        FlashStatus.WRITING, pct,
+                        f"Writing {Path(path).name} at {offset} ({i+1}/{total_extra})...",
+                    )
+                    extra_result = await self._run_in_executor(
+                        self._flash_sync, self._esptool_path, port, baud,
+                        path, False, verify, offset, chip,
+                    )
+                    if not extra_result.success:
+                        result.success = False
+                        result.status = FlashStatus.FAILED
+                        result.error = (
+                            f"Additional write at {offset} failed: {extra_result.error}"
+                        )
+                        break
+
             result.duration_s = time.monotonic() - start
             result.port = port
             result.firmware_file = str(fw_path)
