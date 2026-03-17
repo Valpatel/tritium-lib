@@ -94,8 +94,8 @@ class AddonEventBus:
                     cb(event)
 
         # Forward to the wrapped EventBus if available.
-        if self._event_bus is not None and hasattr(self._event_bus, "emit"):
-            self._event_bus.emit(topic, event.to_dict())
+        if self._event_bus is not None and hasattr(self._event_bus, "publish"):
+            self._event_bus.publish(topic, event.to_dict())
 
         return event
 

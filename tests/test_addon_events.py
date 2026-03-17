@@ -150,7 +150,7 @@ class TestAddonEventBus:
             def __init__(self):
                 self.emitted = []
 
-            def emit(self, topic, data):
+            def publish(self, topic, data):
                 self.emitted.append((topic, data))
 
         fake = FakeEventBus()
