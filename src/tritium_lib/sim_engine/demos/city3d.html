@@ -491,6 +491,7 @@ import { updateHUD, drawMinimap, updateCompass, drawFPSGraph } from './city3d/hu
 import { ensureAudio, playGunshot, playHiss, playExplosion, playSiren, playCrash, playHorn, initAmbientAudio, updateAmbientAudio } from './city3d/audio.js';
 import { setupInputHandlers } from './city3d/input.js';
 import { captureReplayFrame, applyReplayFrame, toggleRecording, togglePlayback, stopPlayback, setPlaybackSpeed, seekPlayback, updatePlaybackHUD, updateRecordingTimer } from './city3d/replay.js';
+import { initInspect, updateInspect, dismissInspect } from './city3d/inspect.js';
 
 // =========================================================================
 // Initialize all modules
@@ -576,7 +577,7 @@ setupInputHandlers({
     }
   },
   onDeselect: () => {
-    // TODO: deselect AI panel unit
+    dismissInspect();
   },
   onArtillery: () => {
     // TODO: trigger artillery
@@ -585,6 +586,9 @@ setupInputHandlers({
     // TODO: advance campaign phase
   },
 });
+
+// Initialize click-to-inspect identity panel
+initInspect();
 
 // =========================================================================
 // Main animation loop
@@ -669,6 +673,7 @@ function animate() {
     updateStatusEffects(0.25);
     drawMinimap();
     updateRecordingTimer();
+    updateInspect();
     hudTimer = 0;
   }
 
