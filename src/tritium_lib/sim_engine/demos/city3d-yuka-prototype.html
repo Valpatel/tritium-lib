@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<!--
+  City3D Yuka.js NavMesh Prototype
+  Created by Matthew Valancy
+  Copyright 2026 Valpatel Software LLC
+  Licensed under AGPL-3.0
+
+  Demonstrates: NavMesh pathfinding, steering behaviors, state machines
+  Press SPACE to trigger protest mode (5 NPCs converge on plaza)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>City3D — Yuka.js NavMesh Prototype</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 10px; left: 10px; color: #00f0ff; font-size: 13px;
+    background: rgba(10,10,15,0.85); padding: 10px 14px; border: 1px solid #00f0ff33;
+    border-radius: 4px; pointer-events: none; line-height: 1.6;
+  }
+  #hud .label { color: #05ffa1; }
+  #hud .warn { color: #fcee0a; }
+  #controls {
+    position: fixed; bottom: 10px; left: 10px; color: #00f0ff88; font-size: 11px;
+    pointer-events: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/",
+    "yuka": "https://unpkg.com/yuka@0.7.8/build/yuka.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<div id="controls">[SPACE] Trigger protest &nbsp; [D] Toggle debug mesh &nbsp; [R] Reset</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as YUKA from 'yuka';
+
+// === City grid constants (matches city3d) ===
+const BLOCK_W = 60, BLOCK_H = 50, ROAD_W = 16;
+const GRID_COLS = 8, GRID_ROWS = 6;
+const CITY_W = GRID_COLS * (BLOCK_W + ROAD_W) + ROAD_W;
+const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
+const CENTER_COL = 4, CENTER_ROW = 3;
+
+// Plaza bounds (single center block area)
+const PLAZA_X = CENTER_COL * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+const PLAZA_Z = CENTER_ROW * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+
+// === Three.js setup ===
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a0f);
+scene.fog = new THREE.Fog(0x0a0a0f, 300, 600);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 1000);
+camera.position.set(CITY_W / 2, 200, CITY_H + 100);
+camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(CITY_W / 2, 0, CITY_H / 2);
+controls.maxPolarAngle = Math.PI / 2.1;
+controls.update();
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x334455, 0.6));
+const sun = new THREE.DirectionalLight(0xffeedd, 1.2);
+sun.position.set(CITY_W / 2, 150, CITY_H / 3);
+sun.castShadow = true;
+sun.shadow.camera.left = -CITY_W / 2;
+sun.shadow.camera.right = CITY_W / 2;
+sun.shadow.camera.top = CITY_H / 2;
+sun.shadow.camera.bottom = -CITY_H / 2;
+scene.add(sun);
+
+// === Build city geometry ===
+// Ground plane (dark asphalt)
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(CITY_W + 40, CITY_H + 40),
+  new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(CITY_W / 2, -0.05, CITY_H / 2);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Road surface (slightly lighter)
+function addRoad(x, z, w, h) {
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 })
+  );
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(x, 0.01, z);
+  scene.add(m);
+}
+
+// Horizontal roads
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+  addRoad(CITY_W / 2, z, CITY_W, ROAD_W);
+}
+// Vertical roads
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+  addRoad(x, CITY_H / 2, ROAD_W, CITY_H);
+}
+
+// Buildings
+const buildingMat = new THREE.MeshStandardMaterial({ color: 0x334455, roughness: 0.7 });
+const buildings = [];
+
+for (let row = 0; row < GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+    const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+
+    if (col === CENTER_COL && row === CENTER_ROW) {
+      // Plaza — fountain
+      const plaza = new THREE.Mesh(
+        new THREE.PlaneGeometry(BLOCK_W - 4, BLOCK_H - 4),
+        new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.6 })
+      );
+      plaza.rotation.x = -Math.PI / 2;
+      plaza.position.set(bx, 0.06, bz);
+      scene.add(plaza);
+
+      const fount = new THREE.Mesh(
+        new THREE.CylinderGeometry(3, 4, 1.5, 12),
+        new THREE.MeshStandardMaterial({ color: 0x556666 })
+      );
+      fount.position.set(bx, 0.75, bz);
+      scene.add(fount);
+      continue;
+    }
+
+    // 1-3 buildings per block
+    const count = 1 + Math.floor(Math.random() * 3);
+    for (let b = 0; b < count; b++) {
+      const bw = 8 + Math.random() * 20;
+      const bh = 6 + Math.random() * 35;
+      const bd = 8 + Math.random() * 16;
+      const ox = (Math.random() - 0.5) * (BLOCK_W - bw - 4);
+      const oz = (Math.random() - 0.5) * (BLOCK_H - bd - 4);
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(bw, bh, bd),
+        buildingMat
+      );
+      mesh.position.set(bx + ox, bh / 2, bz + oz);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      buildings.push(mesh);
+    }
+  }
+}
+
+// === Yuka EntityManager ===
+const entityManager = new YUKA.EntityManager();
+const time = new YUKA.Time();
+
+// === Build NavMesh from walkable polygons ===
+// Yuka NavMesh expects polygons as arrays of YUKA.Vector3 (CCW winding in XZ)
+function rect(x1, z1, x2, z2) {
+  // Return YUKA.Polygon with CCW contour for a rectangle in XZ plane (y=0)
+  const poly = new YUKA.Polygon();
+  poly.fromContour([
+    new YUKA.Vector3(x1, 0, z1),
+    new YUKA.Vector3(x2, 0, z1),
+    new YUKA.Vector3(x2, 0, z2),
+    new YUKA.Vector3(x1, 0, z2),
+  ]);
+  return poly;
+}
+
+const walkablePolygons = [];
+
+// Horizontal road segments (between intersections)
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const zTop = row * (BLOCK_H + ROAD_W);
+  const zBot = zTop + ROAD_W;
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const xLeft = col * (BLOCK_W + ROAD_W);
+    const xRight = xLeft + ROAD_W;
+    // Intersection square
+    walkablePolygons.push(rect(xLeft, zTop, xRight, zBot));
+  }
+  // Road segments between intersections
+  for (let col = 0; col < GRID_COLS; col++) {
+    const xLeft = col * (BLOCK_W + ROAD_W) + ROAD_W;
+    const xRight = xLeft + BLOCK_W;
+    walkablePolygons.push(rect(xLeft, zTop, xRight, zBot));
+  }
+}
+
+// Vertical road segments (between intersections)
+for (let col = 0; col <= GRID_COLS; col++) {
+  const xLeft = col * (BLOCK_W + ROAD_W);
+  const xRight = xLeft + ROAD_W;
+  for (let row = 0; row < GRID_ROWS; row++) {
+    const zTop = row * (BLOCK_H + ROAD_W) + ROAD_W;
+    const zBot = zTop + BLOCK_H;
+    walkablePolygons.push(rect(xLeft, zTop, xRight, zBot));
+  }
+}
+
+// Plaza (walkable open area)
+const plazaX1 = CENTER_COL * (BLOCK_W + ROAD_W) + ROAD_W;
+const plazaZ1 = CENTER_ROW * (BLOCK_H + ROAD_W) + ROAD_W;
+const plazaX2 = plazaX1 + BLOCK_W;
+const plazaZ2 = plazaZ1 + BLOCK_H;
+walkablePolygons.push(rect(plazaX1, plazaZ1, plazaX2, plazaZ2));
+
+// Build the NavMesh
+const navMesh = new YUKA.NavMesh();
+navMesh.fromPolygons(walkablePolygons);
+
+// === Debug NavMesh overlay ===
+let debugMeshVisible = true;
+const debugGroup = new THREE.Group();
+scene.add(debugGroup);
+
+function getPolyVerts(poly) {
+  const verts = [];
+  let edge = poly.edge;
+  do { verts.push(edge.vertex); edge = edge.next; } while (edge !== poly.edge);
+  return verts;
+}
+for (const poly of walkablePolygons) {
+  const verts = getPolyVerts(poly);
+  const shape = new THREE.Shape();
+  shape.moveTo(verts[0].x, verts[0].z);
+  for (let i = 1; i < verts.length; i++) shape.lineTo(verts[i].x, verts[i].z);
+  shape.lineTo(verts[0].x, verts[0].z);
+  const geo = new THREE.ShapeGeometry(shape);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0x05ffa1, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false
+  }));
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.y = 0.15;
+  debugGroup.add(mesh);
+}
+
+// === NPC + Vehicle management ===
+const NPC_COLORS = { pedestrian: 0x05ffa1, police: 0x00a0ff, hostile: 0xff2a6d };
+const CAR_COLOR = 0xfcee0a;
+const npcs = [];
+const cars = [];
+const pathLines = [];
+
+// States
+const STATE = { IDLE: 0, WALK_TO: 1, AT_DESTINATION: 2, PROTEST: 3 };
+
+function randomRoadPoint() {
+  // Pick a random point on the road network
+  const isHoriz = Math.random() < 0.5;
+  if (isHoriz) {
+    const row = Math.floor(Math.random() * (GRID_ROWS + 1));
+    const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
+    const x = ROAD_W + Math.random() * (CITY_W - 2 * ROAD_W);
+    return new YUKA.Vector3(x, 0, z);
+  } else {
+    const col = Math.floor(Math.random() * (GRID_COLS + 1));
+    const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
+    const z = ROAD_W + Math.random() * (CITY_H - 2 * ROAD_W);
+    return new YUKA.Vector3(x, 0, z);
+  }
+}
+
+function findNavPath(from, to) {
+  try {
+    const path = navMesh.findPath(from, to);
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+function createPathLine(color) {
+  const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 });
+  const geo = new THREE.BufferGeometry();
+  const line = new THREE.Line(geo, mat);
+  line.frustumCulled = false;
+  scene.add(line);
+  return line;
+}
+
+function updatePathLine(line, points) {
+  if (!points || points.length === 0) {
+    line.geometry.setFromPoints([]);
+    return;
+  }
+  const pts = points.map(p => new THREE.Vector3(p.x, 0.3, p.z));
+  line.geometry.dispose();
+  line.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+}
+
+// Spawn pedestrian NPCs
+function spawnNPC(type, hasStateMachine) {
+  const vehicle = new YUKA.Vehicle();
+  const start = randomRoadPoint();
+  vehicle.position.copy(start);
+  vehicle.maxSpeed = 2.5;
+  vehicle.maxForce = 8;
+  vehicle.updateNeighborhood = false;
+
+  // Three.js mesh
+  const color = NPC_COLORS[type] || NPC_COLORS.pedestrian;
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 2.5, 1),
+    new THREE.MeshStandardMaterial({ color })
+  );
+  mesh.position.set(start.x, 1.25, start.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+
+  vehicle.setRenderComponent(mesh, (entity, renderComponent) => {
+    renderComponent.position.set(entity.position.x, 1.25, entity.position.z);
+    const dir = entity.getDirection(new YUKA.Vector3());
+    if (dir.squaredLength() > 0.001) {
+      renderComponent.lookAt(
+        entity.position.x + dir.x,
+        1.25,
+        entity.position.z + dir.z
+      );
+    }
+  });
+
+  const followPath = new YUKA.FollowPathBehavior();
+  followPath.active = false;
+  vehicle.steering.add(followPath);
+
+  const wander = new YUKA.WanderBehavior();
+  wander.radius = 2;
+  wander.distance = 4;
+  wander.jitter = 10;
+  wander.active = false;
+  vehicle.steering.add(wander);
+
+  entityManager.add(vehicle);
+
+  const npc = {
+    vehicle, mesh, followPath, wander, type,
+    state: STATE.IDLE,
+    stateTimer: 0,
+    moveTime: 0, // time spent in current movement (prevents instant arrival)
+    currentPath: null,
+    pathLine: createPathLine(color),
+    hasStateMachine: !!hasStateMachine,
+    protestMode: false,
+  };
+
+  // Start with a destination
+  assignNewDestination(npc);
+  npcs.push(npc);
+  return npc;
+}
+
+function assignNewDestination(npc, target) {
+  const dest = target || randomRoadPoint();
+  const path = findNavPath(
+    new YUKA.Vector3(npc.vehicle.position.x, 0, npc.vehicle.position.z),
+    dest
+  );
+
+  if (path && path.length > 1) {
+    npc.followPath.path = new YUKA.Path();
+    for (const p of path) npc.followPath.path.add(p);
+    npc.followPath.active = true;
+    npc.wander.active = false;
+    npc.currentPath = path;
+    npc.moveTime = 0;
+    npc.state = STATE.WALK_TO;
+    updatePathLine(npc.pathLine, path);
+  } else {
+    npc.followPath.active = false;
+    npc.wander.active = true;
+    npc.state = STATE.IDLE;
+    npc.stateTimer = 1;
+    updatePathLine(npc.pathLine, []);
+  }
+}
+
+// Spawn cars (faster, follow road paths)
+function spawnCar() {
+  const vehicle = new YUKA.Vehicle();
+  const start = randomRoadPoint();
+  vehicle.position.copy(start);
+  vehicle.maxSpeed = 12;
+  vehicle.maxForce = 15;
+  vehicle.updateNeighborhood = false;
+
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(4, 1.5, 2),
+    new THREE.MeshStandardMaterial({ color: CAR_COLOR })
+  );
+  mesh.position.set(start.x, 0.75, start.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+
+  vehicle.setRenderComponent(mesh, (entity, renderComponent) => {
+    renderComponent.position.set(entity.position.x, 0.75, entity.position.z);
+    const dir = entity.getDirection(new YUKA.Vector3());
+    if (dir.squaredLength() > 0.001) {
+      renderComponent.lookAt(
+        entity.position.x + dir.x,
+        0.75,
+        entity.position.z + dir.z
+      );
+    }
+  });
+
+  const followPath = new YUKA.FollowPathBehavior();
+  followPath.active = false;
+  vehicle.steering.add(followPath);
+
+  entityManager.add(vehicle);
+
+  const car = { vehicle, mesh, followPath, currentPath: null, pathLine: createPathLine(CAR_COLOR), stateTimer: 0 };
+  assignCarDestination(car);
+  cars.push(car);
+  return car;
+}
+
+function assignCarDestination(car) {
+  const dest = randomRoadPoint();
+  const path = findNavPath(
+    new YUKA.Vector3(car.vehicle.position.x, 0, car.vehicle.position.z),
+    dest
+  );
+  if (path && path.length > 1) {
+    car.followPath.path = new YUKA.Path();
+    for (const p of path) car.followPath.path.add(p);
+    car.followPath.active = true;
+    car.currentPath = path;
+    car.stateTimer = 0;
+    updatePathLine(car.pathLine, path);
+  } else {
+    car.stateTimer = 1;
+    updatePathLine(car.pathLine, []);
+  }
+}
+
+// === Spawn entities ===
+// 15 regular pedestrians
+for (let i = 0; i < 15; i++) spawnNPC('pedestrian', false);
+// 5 state-machine NPCs (3 pedestrian, 1 police, 1 hostile)
+const smNPCs = [];
+smNPCs.push(spawnNPC('pedestrian', true));
+smNPCs.push(spawnNPC('pedestrian', true));
+smNPCs.push(spawnNPC('pedestrian', true));
+smNPCs.push(spawnNPC('police', true));
+smNPCs.push(spawnNPC('hostile', true));
+// 5 cars
+for (let i = 0; i < 5; i++) spawnCar();
+
+// === State machine update for special NPCs ===
+function updateNPCState(npc, dt) {
+  const pos = npc.vehicle.position;
+  const speed = npc.vehicle.velocity.length();
+
+  switch (npc.state) {
+    case STATE.IDLE:
+      npc.followPath.active = false;
+      npc.wander.active = true;
+      npc.vehicle.maxSpeed = 0.8;
+      npc.stateTimer -= dt;
+      if (npc.stateTimer <= 0) {
+        if (npc.protestMode) {
+          // Head to plaza
+          npc.vehicle.maxSpeed = 3;
+          const px = PLAZA_X + (Math.random() - 0.5) * 30;
+          const pz = PLAZA_Z + (Math.random() - 0.5) * 20;
+          assignNewDestination(npc, new YUKA.Vector3(px, 0, pz));
+          npc.state = STATE.PROTEST;
+        } else {
+          npc.vehicle.maxSpeed = 2.5;
+          assignNewDestination(npc);
+        }
+      }
+      break;
+
+    case STATE.WALK_TO:
+      npc.moveTime += dt;
+      if (npc.moveTime > 0.5 && speed < 0.1 && npc.followPath.active) {
+        // Arrived (moveTime guard prevents instant-arrival on first frame)
+        npc.state = STATE.AT_DESTINATION;
+        npc.stateTimer = 2 + Math.random() * 3;
+        npc.followPath.active = false;
+        npc.wander.active = false;
+        updatePathLine(npc.pathLine, []);
+      }
+      break;
+
+    case STATE.AT_DESTINATION:
+      npc.wander.active = true;
+      npc.vehicle.maxSpeed = 0.5;
+      npc.stateTimer -= dt;
+      if (npc.stateTimer <= 0) {
+        npc.state = STATE.IDLE;
+        npc.stateTimer = 0.5;
+        npc.wander.active = false;
+      }
+      break;
+
+    case STATE.PROTEST:
+      npc.moveTime += dt;
+      if (npc.moveTime > 0.5 && speed < 0.1 && npc.followPath.active) {
+        // At plaza — mill around
+        npc.followPath.active = false;
+        npc.wander.active = true;
+        npc.vehicle.maxSpeed = 1.2;
+      }
+      // If no longer in protest mode, transition back
+      if (!npc.protestMode) {
+        npc.state = STATE.IDLE;
+        npc.stateTimer = 1;
+        npc.wander.active = false;
+      }
+      break;
+  }
+}
+
+// Simple NPC update (non-state-machine)
+function updateSimpleNPC(npc, dt) {
+  npc.moveTime += dt;
+  const speed = npc.vehicle.velocity.length();
+  if (npc.moveTime > 0.5 && speed < 0.1 && npc.followPath.active) {
+    npc.stateTimer += dt;
+    if (npc.stateTimer > 2) {
+      npc.stateTimer = 0;
+      assignNewDestination(npc);
+    }
+  } else if (speed >= 0.1) {
+    npc.stateTimer = 0;
+  }
+}
+
+// Car update
+function updateCar(car, dt) {
+  const speed = car.vehicle.velocity.length();
+  if (speed < 0.1 && car.followPath.active) {
+    car.stateTimer += dt;
+    if (car.stateTimer > 0.5) {
+      car.stateTimer = 0;
+      assignCarDestination(car);
+    }
+  }
+}
+
+// === Input ===
+let protestActive = false;
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    protestActive = !protestActive;
+    smNPCs.forEach(npc => { npc.protestMode = protestActive; });
+  }
+  if (e.code === 'KeyD') {
+    debugMeshVisible = !debugMeshVisible;
+    debugGroup.visible = debugMeshVisible;
+  }
+  if (e.code === 'KeyR') {
+    // Reset all NPCs
+    npcs.forEach(npc => {
+      npc.state = STATE.IDLE;
+      npc.stateTimer = 0;
+      npc.protestMode = false;
+      assignNewDestination(npc);
+    });
+    protestActive = false;
+  }
+});
+
+// === HUD ===
+const hudEl = document.getElementById('hud');
+let frameCount = 0, fps = 0, lastFPSTime = performance.now();
+
+function updateHUD() {
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFPSTime > 1000) {
+    fps = frameCount;
+    frameCount = 0;
+    lastFPSTime = now;
+  }
+
+  const stateNames = ['IDLE', 'WALK_TO', 'AT_DEST', 'PROTEST'];
+  const smStatus = smNPCs.map((n, i) =>
+    `  ${n.type.padEnd(10)} ${stateNames[n.state]}`
+  ).join('\n');
+
+  hudEl.innerHTML = `
+<span class="label">YUKA NAVMESH PROTOTYPE</span>
+<span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
+<span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
+<span class="label">NavMesh polys:</span> ${walkablePolygons.length}
+<span class="label">Protest:</span> ${protestActive ? '<span class="warn">ACTIVE</span>' : 'off'}
+<span class="label">State machines:</span>
+${smStatus}
+  `.trim().replace(/\n/g, '<br>');
+}
+
+// === Animation loop ===
+function animate() {
+  requestAnimationFrame(animate);
+
+  const delta = time.update().getDelta();
+  const dt = Math.min(delta, 0.1); // cap delta
+
+  // Update NPCs
+  for (const npc of npcs) {
+    if (npc.hasStateMachine) {
+      updateNPCState(npc, dt);
+    } else {
+      updateSimpleNPC(npc, dt);
+    }
+  }
+
+  // Update cars
+  for (const car of cars) {
+    updateCar(car, dt);
+  }
+
+  // Update yuka entity manager (drives steering behaviors)
+  entityManager.update(delta);
+
+  controls.update();
+  renderer.render(scene, camera);
+  updateHUD();
+}
+
+animate();
+
+// Resize handler
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+console.log(`[Yuka Prototype] City: ${CITY_W}x${CITY_H}, NavMesh: ${walkablePolygons.length} polys, NPCs: ${npcs.length}, Cars: ${cars.length}`);
+</script>
+</body>
+</html>
