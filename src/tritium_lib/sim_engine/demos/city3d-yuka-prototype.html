@@ -235,31 +235,52 @@ let debugMeshVisible = true;
 const debugGroup = new THREE.Group();
 scene.add(debugGroup);
 
-function getPolyVerts(poly) {
-  const verts = [];
-  let edge = poly.edge;
-  do { verts.push(edge.vertex); edge = edge.next; } while (edge !== poly.edge);
-  return verts;
+// Store raw rect data alongside yuka polygons for debug visualization
+const debugRects = [];
+
+function addDebugRect(x1, z1, x2, z2) {
+  debugRects.push({ x1, z1, x2, z2 });
 }
-for (const poly of walkablePolygons) {
-  const verts = getPolyVerts(poly);
-  const shape = new THREE.Shape();
-  shape.moveTo(verts[0].x, verts[0].z);
-  for (let i = 1; i < verts.length; i++) shape.lineTo(verts[i].x, verts[i].z);
-  shape.lineTo(verts[0].x, verts[0].z);
-  const geo = new THREE.ShapeGeometry(shape);
+
+// Rebuild debug rects from the same grid logic used for NavMesh
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const zTop = row * (BLOCK_H + ROAD_W);
+  const zBot = zTop + ROAD_W;
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const xLeft = col * (BLOCK_W + ROAD_W);
+    addDebugRect(xLeft, zTop, xLeft + ROAD_W, zBot);
+  }
+  for (let col = 0; col < GRID_COLS; col++) {
+    const xLeft = col * (BLOCK_W + ROAD_W) + ROAD_W;
+    addDebugRect(xLeft, zTop, xLeft + BLOCK_W, zBot);
+  }
+}
+for (let col = 0; col <= GRID_COLS; col++) {
+  const xLeft = col * (BLOCK_W + ROAD_W);
+  for (let row = 0; row < GRID_ROWS; row++) {
+    const zTop = row * (BLOCK_H + ROAD_W) + ROAD_W;
+    addDebugRect(xLeft, zTop, xLeft + ROAD_W, zTop + BLOCK_H);
+  }
+}
+addDebugRect(plazaX1, plazaZ1, plazaX2, plazaZ2);
+
+// Build debug meshes directly from rect coordinates (bypass yuka vertex extraction)
+for (const r of debugRects) {
+  const w = r.x2 - r.x1;
+  const h = r.z2 - r.z1;
+  const geo = new THREE.PlaneGeometry(w, h);
   const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    color: 0x05ffa1, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false
+    color: 0x05ffa1, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false
   }));
   mesh.rotation.x = -Math.PI / 2;
-  mesh.position.y = 0.2;
+  mesh.position.set(r.x1 + w / 2, 0.2, r.z1 + h / 2);
   debugGroup.add(mesh);
-  // Wireframe border for each polygon
+  // Wireframe
   const edgeGeo = new THREE.EdgesGeometry(geo);
-  const edgeMesh = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x05ffa1, linewidth: 1 }));
-  edgeMesh.rotation.x = -Math.PI / 2;
-  edgeMesh.position.y = 0.25;
-  debugGroup.add(edgeMesh);
+  const edgeLine = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x05ffa1 }));
+  edgeLine.rotation.x = -Math.PI / 2;
+  edgeLine.position.set(r.x1 + w / 2, 0.25, r.z1 + h / 2);
+  debugGroup.add(edgeLine);
 }
 
 // === NPC + Vehicle management ===
