@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .addon_events import AddonEvent, AddonEventBus
+from .geo_layer import AddonGeoLayer
 
 
 @dataclass
@@ -178,6 +179,19 @@ class AddonBase:
 
         Returns:
             List of layer definition dicts.
+        """
+        return []
+
+    def get_geojson_layers(self) -> list[AddonGeoLayer]:
+        """Return GeoJSON layer definitions for the tactical map.
+
+        Override to provide GeoJSON layers. Each :class:`AddonGeoLayer`
+        describes an API endpoint that returns a GeoJSON FeatureCollection.
+        The frontend will poll these endpoints at the specified refresh
+        interval and render the features on the map.
+
+        Returns:
+            List of :class:`AddonGeoLayer` instances.
         """
         return []
 

@@ -13,6 +13,7 @@ Usage:
 """
 
 from .addon_base import AddonBase, AddonInfo
+from .geo_layer import AddonGeoLayer
 from .addon_events import AddonEvent, AddonEventBus
 from .interfaces import (
     SensorAddon,
@@ -36,6 +37,7 @@ __all__ = [
     "AddonBase",
     "AddonEvent",
     "AddonEventBus",
+    "AddonGeoLayer",
     "AddonInfo",
     "SensorAddon",
     "ProcessorAddon",
