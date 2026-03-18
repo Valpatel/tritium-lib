@@ -728,6 +728,24 @@ function simTick(dt) {
       // Simplified — full logic in monolith
     }
 
+    // Idle pause: count down before picking new destination
+    if (ped.idleTimer > 0) {
+      ped.idleTimer -= dt;
+      ped.rotY += (ped.idleRotSpeed || 0) * dt;
+      if (ped.idleTimer <= 0) {
+        const dest = randomSidewalkPos();
+        const wps = planPedPath({ x: ped.x, z: ped.z }, dest);
+        ped.target = wps[0];
+        ped.waypoints = wps.slice(1);
+      } else {
+        if (ped.alive) {
+          updatePersonInstance(ped.slot, ped.x, 0, ped.z, ped.rotY, ped.bodyColor, ped.headColor, ped.scale);
+          needsPersonUpdate = true;
+        }
+        continue;
+      }
+    }
+
     const dx = ped.target.x - ped.x;
     const dz = ped.target.z - ped.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
@@ -738,10 +756,10 @@ function simTick(dt) {
       } else if (ped.waypoints && ped.waypoints.length > 0) {
         ped.target = ped.waypoints.shift();
       } else {
-        const dest = randomSidewalkPos();
-        const wps = planPedPath({ x: ped.x, z: ped.z }, dest);
-        ped.target = wps[0];
-        ped.waypoints = wps.slice(1);
+        // Pause 2-5 seconds before picking new destination
+        ped.idleTimer = 2 + Math.random() * 3;
+        ped.idleRotSpeed = (Math.random() - 0.5) * 1.2;
+        continue;
       }
     } else {
       const s = ped.speed * dt;
@@ -751,10 +769,13 @@ function simTick(dt) {
       ped.x = resolved.x;
       ped.z = resolved.z;
       ped.rotY = Math.atan2(dx, dz);
+      // Walk bob
+      ped.walkBob = (ped.walkBob || 0) + dt * ped.speed * 3;
     }
 
     if (ped.alive) {
-      updatePersonInstance(ped.slot, ped.x, 0, ped.z, ped.rotY, ped.bodyColor, ped.headColor, ped.scale);
+      const bobY = ped.walkBob ? Math.sin(ped.walkBob) * 0.2 : 0;
+      updatePersonInstance(ped.slot, ped.x, bobY, ped.z, ped.rotY, ped.bodyColor, ped.headColor, ped.scale);
       needsPersonUpdate = true;
     }
   }
