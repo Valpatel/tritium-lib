@@ -3214,11 +3214,14 @@ for (let i = 0; i < NUM_PEDESTRIANS; i++) {
     bodyColor: COLOR_CIVILIAN,
     headColor,
     scale: 1.0,
-    speed: 1.5 + rng() * 1.5,
+    speed: (1.5 + rng() * 1.5) * (0.8 + rng() * 0.4), // ±20% individual variation
     target: wps[0],
     waypoints: wps.slice(1),
     alive: true,
     fleeing: false,
+    walkBob: rng() * Math.PI * 2, // random walk cycle phase
+    idleTimer: 0, // countdown when pausing at destination
+    idleRotSpeed: 0, // slow look-around rotation during idle
   });
 }
 
@@ -5119,6 +5122,27 @@ function update(dt) {
       ped.target.z = snapped.z;
     }
 
+    // Idle pause: count down before picking new destination
+    if (ped.idleTimer > 0) {
+      ped.idleTimer -= dt;
+      // Slowly rotate (looking around) during idle
+      ped.rotY += (ped.idleRotSpeed || 0) * dt;
+      if (ped.idleTimer <= 0) {
+        // Idle done — pick new path
+        const dest = randomSidewalkPos();
+        const wps = planPedPath({ x: ped.x, z: ped.z }, dest);
+        ped.target = wps[0];
+        ped.waypoints = wps.slice(1);
+        ped.idleTimer = 0;
+      } else {
+        if (ped.alive) {
+          updatePersonInstance(ped.slot, ped.x, 0, ped.z, ped.rotY, ped.bodyColor, ped.headColor, ped.scale);
+          needsPersonUpdate = true;
+        }
+        continue;
+      }
+    }
+
     const dx = ped.target.x - ped.x;
     const dz = ped.target.z - ped.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
@@ -5129,10 +5153,10 @@ function update(dt) {
       } else if (ped.waypoints && ped.waypoints.length > 0) {
         ped.target = ped.waypoints.shift();
       } else {
-        const dest = randomSidewalkPos();
-        const wps = planPedPath({ x: ped.x, z: ped.z }, dest);
-        ped.target = wps[0];
-        ped.waypoints = wps.slice(1);
+        // Pause 2-5 seconds before picking new destination (idle behavior)
+        ped.idleTimer = 2 + rng() * 3;
+        ped.idleRotSpeed = (rng() - 0.5) * 1.2; // slow random look-around
+        continue;
       }
     } else {
       const s = ped.speed * dt;
@@ -5143,10 +5167,13 @@ function update(dt) {
       ped.x = resolved.x;
       ped.z = resolved.z;
       ped.rotY = Math.atan2(dx, dz);
+      // Walk bob — oscillate Y by ±0.2 based on distance traveled
+      ped.walkBob = (ped.walkBob || 0) + dt * ped.speed * 3;
     }
 
     if (ped.alive) {
-      updatePersonInstance(ped.slot, ped.x, 0, ped.z, ped.rotY, ped.bodyColor, ped.headColor, ped.scale);
+      const pedBobY = (ped.walkBob !== undefined) ? Math.sin(ped.walkBob) * 0.2 : 0;
+      updatePersonInstance(ped.slot, ped.x, pedBobY, ped.z, ped.rotY, ped.bodyColor, ped.headColor, ped.scale);
       needsPersonUpdate = true;
     }
   }
@@ -5323,9 +5350,11 @@ function update(dt) {
       }
     }
 
-    // Render person if visible
+    // Render person if visible (with walk bob)
     if (cd.visible && cd.alive) {
-      updatePersonInstance(cd.personSlot, cd.x, 0, cd.z, cd.rotY, cd.bodyColor, cd.headColor, cd.scale);
+      cd.walkBob = (cd.walkBob || 0) + dt * cd.speed * 3;
+      const cdBobY = Math.sin(cd.walkBob) * 0.2;
+      updatePersonInstance(cd.personSlot, cd.x, cdBobY, cd.z, cd.rotY, cd.bodyColor, cd.headColor, cd.scale);
       needsPersonUpdate = true;
     }
     // Park car when not moving — face along the nearest road
@@ -5477,6 +5506,7 @@ function update(dt) {
               speed: 1.5 + rng() * 1.5,
               target: _tw[0], waypoints: _tw.slice(1),
               alive: true, fleeing: false,
+              walkBob: rng() * Math.PI * 2, idleTimer: 0, idleRotSpeed: 0,
             });
           }
         }
@@ -5606,7 +5636,17 @@ function update(dt) {
       const collMult = checkVehicleCollision(car, car.x, car.z, car.horizontal, car.dir);
       // Barricade blocking
       const barMult = isBlockedByBarricade(car.x, car.z, 5) ? 0 : 1.0;
-      const speedMult = Math.min(collMult, barMult);
+      // Pedestrian awareness — slow down when pedestrian is ahead within 10 units
+      let pedMult = 1.0;
+      for (const ped of pedestrians) {
+        if (!ped.alive) continue;
+        const pdx = ped.x - car.x, pdz = ped.z - car.z;
+        const ahead = car.horizontal ? pdx * car.dir : pdz * car.dir;
+        const lateral = car.horizontal ? Math.abs(pdz) : Math.abs(pdx);
+        if (ahead > 0 && ahead < 10 && lateral < 3) { pedMult = Math.min(pedMult, ahead / 10); break; }
+      }
+      car._pedBraking = pedMult < 0.8; // store for brake light display
+      const speedMult = Math.min(collMult, barMult, pedMult);
 
       // Stuck detection: if hard-stopped (speedMult === 0) for > 3s, teleport
       if (speedMult === 0) {
@@ -5671,8 +5711,8 @@ function update(dt) {
     car.rotY += diff * Math.min(1, dt * 5); // smooth turn at 5 rad/s
     const rotY = car.rotY;
 
-    // Brake lights: bright red when stopped or collision-slowing
-    const braking = car.pauseTimer > 0 || (car.stuckTimer > 0);
+    // Brake lights: bright red when stopped, collision-slowing, or yielding to pedestrians
+    const braking = car.pauseTimer > 0 || car.stuckTimer > 0 || car._pedBraking;
     carTLMesh.setColorAt(car.idx * 2, braking ? _tlBrake : _tlDefault);
     carTLMesh.setColorAt(car.idx * 2 + 1, braking ? _tlBrake : _tlDefault);
     // Turn signals: flash one headlight orange before/during turns
@@ -6053,15 +6093,16 @@ function update(dt) {
         addKillFeedEntry(CHANT_MESSAGES[Math.floor(rng() * CHANT_MESSAGES.length)]);
       }
 
-      // Protestors cluster tighter during tension
+      // Protestors cluster tighter during tension — radius shrinks over time
+      const clusterRadius = Math.max(5, 15 - tensionBuildupTimer * 1.2);
       for (const pr of protestors) {
         if (!pr.alive || pr.arrested || pr.fleeing || !pr.arrivedAtPlaza) continue;
-        // Pull toward center of crowd
+        // Pull toward center of crowd with shrinking radius
         const dx = PLAZA_X - pr.x;
         const dz = PLAZA_Z - pr.z;
         const d = Math.sqrt(dx * dx + dz * dz);
-        if (d > 8) {
-          pr.target = { x: PLAZA_X + (rng() - 0.5) * 15, z: PLAZA_Z + (rng() - 0.5) * 15 };
+        if (d > clusterRadius * 0.6) {
+          pr.target = { x: PLAZA_X + (rng() - 0.5) * clusterRadius, z: PLAZA_Z + (rng() - 0.5) * clusterRadius };
         }
         // Slow speed increase represents agitation
         pr.speed = Math.min((pr.baseSpeed || 2) * 1.5, pr.speed + 0.02 * dt);
@@ -6208,6 +6249,14 @@ function update(dt) {
       const isMoving = pr.speed > 0.5 && !pr.stunnedTimer;
       const bobY = isMoving ? Math.sin(pr.walkBob) * 0.15 : 0;
 
+      // Throw wind-up animation: scale boost that decays
+      if (pr.throwWindup > 0) {
+        pr.throwWindup -= dt;
+        pr.scale = 1.1 + pr.throwWindup * 0.5; // brief scale-up during wind-up
+      } else if (pr.throwWindup !== undefined) {
+        pr.scale = 1.1; // restore normal scale
+      }
+
       // STUNNED status effect: cannot move for duration
       if (pr.stunnedTimer > 0) {
         updatePersonInstance(pr.slot, pr.x, bobY, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
@@ -6350,6 +6399,8 @@ function update(dt) {
             if (pr.stunnedTimer > 0) {
               // STUNNED: cannot throw, just stand still
             } else {
+              // Wind-up animation: briefly scale up when throwing
+              pr.throwWindup = 0.3;
               const wantMolotov = rng() < 0.2;
               // Supply check: only throw molotov if supply > 0
               if (wantMolotov && supplyMolotovs > 0) {
@@ -6835,11 +6886,11 @@ function update(dt) {
 
       if (proj.type === 'molotov') {
         createFire(impactPos); // fire already capped at 6
-        // Reduced explosion: fewer particles than before
-        for (let ep = 0; ep < 6; ep++) {
-          spawnParticle(impactPos.x, 1, impactPos.z,
-            (rng()-0.5)*15, 3+rng()*10, (rng()-0.5)*15,
-            0.3+rng()*0.4, [0xff4400,0xff8800,0xffaa00][Math.floor(rng()*3)], 0.6+rng()*0.3);
+        // Molotov impact explosion — larger fire particles with longer life
+        for (let ep = 0; ep < 10; ep++) {
+          spawnParticle(impactPos.x + (rng()-0.5)*4, 0.5 + rng(), impactPos.z + (rng()-0.5)*4,
+            (rng()-0.5)*12, 2+rng()*8, (rng()-0.5)*12,
+            0.5+rng()*0.8, [0xff4400,0xff8800,0xffaa00,0xff2200][Math.floor(rng()*4)], 1.0+rng()*1.5);
         }
         playExplosion(impactPos.x, impactPos.z);
         // Damage nearby barricades
@@ -7656,9 +7707,15 @@ requestAnimationFrame(animate);
   // ---- Traffic light phase + visual update (2fps via fpsTimer) ----
   trafficPhase += dt;
   if (frameCount % 30 === 0) {
+    // Traffic light colors: green, yellow (last 1.5s before switch), red
+    const cyclePos = trafficPhase % (TRAFFIC_CYCLE * 2); // full cycle position
+    const hGreen = cyclePos < TRAFFIC_CYCLE;
+    const yellowZone = (cyclePos % TRAFFIC_CYCLE) > (TRAFFIC_CYCLE - 1.5);
     for (let i = 0; i < intersections.length; i++) {
-      const g = isGreen(intersections[i], true); // true = horizontal green this phase
-      trafficLightMesh.setColorAt(i, _tlColor.set(g ? 0x00ff00 : 0xff0000));
+      const g = isGreen(intersections[i], true);
+      let tlc = g ? 0x00ff00 : 0xff0000;
+      if (g && yellowZone) tlc = 0xffaa00; // yellow warning before red
+      trafficLightMesh.setColorAt(i, _tlColor.set(tlc));
     }
     if (trafficLightMesh.instanceColor) trafficLightMesh.instanceColor.needsUpdate = true;
     // Update 4 nearest point lights to camera
@@ -7667,7 +7724,10 @@ requestAnimationFrame(animate);
     for (let j = 0; j < 4; j++) {
       const si = sorted[j]; const p = intersections[si.i];
       const g = isGreen(p, true);
-      tlLights[j].color.set(g ? 0x00ff00 : 0xff0000);
+      const yZone = (cyclePos % TRAFFIC_CYCLE) > (TRAFFIC_CYCLE - 1.5);
+      let lightColor = g ? 0x00ff00 : 0xff0000;
+      if (g && yZone) lightColor = 0xffaa00;
+      tlLights[j].color.set(lightColor);
       tlLights[j].position.set(p.x + ROAD_W / 2, 4, p.z + ROAD_W / 2);
     }
   }
