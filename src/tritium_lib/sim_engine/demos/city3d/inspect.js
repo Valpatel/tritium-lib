@@ -11,7 +11,7 @@
 
 import * as THREE from 'three';
 import { state, _color } from './config.js';
-import { buildIdentity } from '../../../js/sim/identity.js';
+import { buildIdentity } from '../js/sim/identity.js';
 
 // =========================================================================
 // Identity Cache — computed once per entity, stored for reuse
