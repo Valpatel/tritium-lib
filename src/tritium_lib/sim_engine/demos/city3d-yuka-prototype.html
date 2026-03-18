@@ -6,7 +6,10 @@
   Licensed under AGPL-3.0
 
   Demonstrates: NavMesh pathfinding, steering behaviors, state machines
-  Press SPACE to trigger protest mode (5 NPCs converge on plaza)
+  Infrastructure: sidewalks, crosswalks, lanes, traffic lights, building entries, zone types
+  Press SPACE to trigger protest mode (NPCs march in street)
+  Press D to toggle debug mesh overlay
+  Press R to reset all entities
 -->
 <html lang="en">
 <head>
@@ -23,6 +26,7 @@
   }
   #hud .label { color: #05ffa1; }
   #hud .warn { color: #fcee0a; }
+  #hud .zone { color: #ff2a6d; }
   #controls {
     position: fixed; bottom: 10px; left: 10px; color: #00f0ff88; font-size: 11px;
     pointer-events: none;
@@ -40,24 +44,78 @@
 </head>
 <body>
 <div id="hud"></div>
-<div id="controls">[SPACE] Trigger protest &nbsp; [D] Toggle debug mesh &nbsp; [R] Reset</div>
+<div id="controls">[SPACE] Protest mode &nbsp; [D] Debug mesh &nbsp; [R] Reset &nbsp; [L] Traffic lights</div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as YUKA from 'yuka';
 
-// === City grid constants (matches city3d) ===
+// ============================================================
+// CITY GRID CONSTANTS
+// ============================================================
 const BLOCK_W = 60, BLOCK_H = 50, ROAD_W = 16;
 const GRID_COLS = 8, GRID_ROWS = 6;
 const CITY_W = GRID_COLS * (BLOCK_W + ROAD_W) + ROAD_W;
 const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
 const CENTER_COL = 4, CENTER_ROW = 3;
 
-// Plaza bounds (single center block area)
+// Road structure dimensions
+const SIDEWALK_W = 2;       // sidewalk width on each side
+const CURB_W = 0.15;        // visual curb thickness
+const LANE_W = 3;           // single lane width
+const NUM_LANES = 2;        // lanes per direction
+const ROAD_SURFACE_W = LANE_W * NUM_LANES * 2; // 12m driving surface
+const CROSSWALK_W = 3;      // crosswalk strip width
+
+// Heights (Y)
+const Y_ROAD = 0.01;
+const Y_SIDEWALK = 0.06;
+const Y_CURB = 0.08;
+const Y_CROSSWALK = 0.02;
+const Y_LANE_MARK = 0.015;
+const Y_DEBUG = 0.2;
+
+// Plaza center
 const PLAZA_X = CENTER_COL * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
 const PLAZA_Z = CENTER_ROW * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
 
-// === Three.js setup ===
+// ============================================================
+// ZONE TYPES
+// ============================================================
+const ZONE_TYPES = ['residential', 'commercial', 'office', 'park', 'civic', 'parking'];
+const ZONE_COLORS = {
+  residential: 0x8B7355,
+  commercial: 0x556677,
+  office: 0x667788,
+  civic: 0x557788,
+  park: 0x2a5a2a,
+  parking: 0x555555,
+  plaza: 0x666666,
+};
+
+// Procedural zone assignment per block
+const blockZones = [];
+const seededRandom = ((seed) => {
+  let s = seed;
+  return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+})(42);
+
+for (let row = 0; row < GRID_ROWS; row++) {
+  blockZones[row] = [];
+  for (let col = 0; col < GRID_COLS; col++) {
+    if (col === CENTER_COL && row === CENTER_ROW) {
+      blockZones[row][col] = 'plaza';
+    } else if (row === 0 || row === GRID_ROWS - 1 || col === 0 || col === GRID_COLS - 1) {
+      blockZones[row][col] = 'residential';
+    } else {
+      blockZones[row][col] = ZONE_TYPES[Math.floor(seededRandom() * ZONE_TYPES.length)];
+    }
+  }
+}
+
+// ============================================================
+// THREE.JS SETUP
+// ============================================================
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -88,8 +146,9 @@ sun.shadow.camera.top = CITY_H / 2;
 sun.shadow.camera.bottom = -CITY_H / 2;
 scene.add(sun);
 
-// === Build city geometry ===
-// Ground plane (dark asphalt)
+// ============================================================
+// CITY GEOMETRY — GROUND
+// ============================================================
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(CITY_W + 40, CITY_H + 40),
   new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 })
@@ -99,85 +158,386 @@ ground.position.set(CITY_W / 2, -0.05, CITY_H / 2);
 ground.receiveShadow = true;
 scene.add(ground);
 
-// Road surface (slightly lighter)
-function addRoad(x, z, w, h) {
-  const m = new THREE.Mesh(
-    new THREE.PlaneGeometry(w, h),
-    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 })
-  );
-  m.rotation.x = -Math.PI / 2;
-  m.position.set(x, 0.01, z);
-  scene.add(m);
+// ============================================================
+// HELPER: create flat rectangle in scene
+// ============================================================
+function addFlatRect(x, z, w, h, y, color, opts = {}) {
+  const mat = new THREE.MeshStandardMaterial({
+    color, roughness: opts.roughness || 0.8,
+    ...(opts.transparent ? { transparent: true, opacity: opts.opacity || 0.5 } : {})
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, y, z);
+  if (opts.receiveShadow !== false) mesh.receiveShadow = true;
+  scene.add(mesh);
+  return mesh;
 }
 
-// Horizontal roads
+// ============================================================
+// ROAD SURFACES, SIDEWALKS, CURBS, LANE MARKINGS, CROSSWALKS
+// ============================================================
+const intersections = []; // {x, z, col, row} for traffic light placement
+
+// Helper: road center for a given row/col
+function hRoadZ(row) { return row * (BLOCK_H + ROAD_W) + ROAD_W / 2; }
+function vRoadX(col) { return col * (BLOCK_W + ROAD_W) + ROAD_W / 2; }
+
+// Draw a road segment with lanes, sidewalks, curbs, and lane markings
+function drawRoadSegment(cx, cz, length, isHorizontal) {
+  // Road surface (dark asphalt)
+  const rw = isHorizontal ? length : ROAD_SURFACE_W;
+  const rh = isHorizontal ? ROAD_SURFACE_W : length;
+  addFlatRect(cx, cz, rw, rh, Y_ROAD, 0x2a2a2a);
+
+  // Sidewalks (slightly raised, lighter)
+  const sw = isHorizontal ? length : SIDEWALK_W;
+  const sh = isHorizontal ? SIDEWALK_W : length;
+  const offset = ROAD_SURFACE_W / 2 + SIDEWALK_W / 2;
+
+  if (isHorizontal) {
+    addFlatRect(cx, cz - offset, sw, sh, Y_SIDEWALK, 0x444444);
+    addFlatRect(cx, cz + offset, sw, sh, Y_SIDEWALK, 0x444444);
+    // Curbs
+    addFlatRect(cx, cz - ROAD_SURFACE_W / 2 - CURB_W / 2, length, CURB_W, Y_CURB, 0x666666);
+    addFlatRect(cx, cz + ROAD_SURFACE_W / 2 + CURB_W / 2, length, CURB_W, Y_CURB, 0x666666);
+  } else {
+    addFlatRect(cx - offset, cz, sw, sh, Y_SIDEWALK, 0x444444);
+    addFlatRect(cx + offset, cz, sw, sh, Y_SIDEWALK, 0x444444);
+    // Curbs
+    addFlatRect(cx - ROAD_SURFACE_W / 2 - CURB_W / 2, cz, CURB_W, length, Y_CURB, 0x666666);
+    addFlatRect(cx + ROAD_SURFACE_W / 2 + CURB_W / 2, cz, CURB_W, length, Y_CURB, 0x666666);
+  }
+
+  // Lane markings
+  const DASH_LEN = 2, DASH_GAP = 3, DASH_W_VIS = 0.15;
+  const numDashes = Math.floor(length / (DASH_LEN + DASH_GAP));
+
+  for (let d = 0; d < numDashes; d++) {
+    const t = -length / 2 + (d + 0.5) * (DASH_LEN + DASH_GAP);
+
+    // Center line (yellow dashed) — between directions
+    if (isHorizontal) {
+      addFlatRect(cx + t, cz, DASH_LEN, DASH_W_VIS, Y_LANE_MARK, 0xccaa00);
+    } else {
+      addFlatRect(cx, cz + t, DASH_W_VIS, DASH_LEN, Y_LANE_MARK, 0xccaa00);
+    }
+
+    // White dashed between same-direction lanes
+    const laneOffset = LANE_W; // between lane 1 and lane 2 in each direction
+    if (isHorizontal) {
+      addFlatRect(cx + t, cz - laneOffset, DASH_LEN, DASH_W_VIS, Y_LANE_MARK, 0xaaaaaa);
+      addFlatRect(cx + t, cz + laneOffset, DASH_LEN, DASH_W_VIS, Y_LANE_MARK, 0xaaaaaa);
+    } else {
+      addFlatRect(cx - laneOffset, cz + t, DASH_W_VIS, DASH_LEN, Y_LANE_MARK, 0xaaaaaa);
+      addFlatRect(cx + laneOffset, cz + t, DASH_W_VIS, DASH_LEN, Y_LANE_MARK, 0xaaaaaa);
+    }
+  }
+
+  // White solid edge lines
+  if (isHorizontal) {
+    addFlatRect(cx, cz - ROAD_SURFACE_W / 2 + DASH_W_VIS, length, DASH_W_VIS, Y_LANE_MARK, 0xffffff);
+    addFlatRect(cx, cz + ROAD_SURFACE_W / 2 - DASH_W_VIS, length, DASH_W_VIS, Y_LANE_MARK, 0xffffff);
+  } else {
+    addFlatRect(cx - ROAD_SURFACE_W / 2 + DASH_W_VIS, cz, DASH_W_VIS, length, Y_LANE_MARK, 0xffffff);
+    addFlatRect(cx + ROAD_SURFACE_W / 2 - DASH_W_VIS, cz, DASH_W_VIS, length, Y_LANE_MARK, 0xffffff);
+  }
+}
+
+// Horizontal roads (segments between intersections)
 for (let row = 0; row <= GRID_ROWS; row++) {
-  const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
-  addRoad(CITY_W / 2, z, CITY_W, ROAD_W);
-}
-// Vertical roads
-for (let col = 0; col <= GRID_COLS; col++) {
-  const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
-  addRoad(x, CITY_H / 2, ROAD_W, CITY_H);
+  const z = hRoadZ(row);
+  for (let col = 0; col < GRID_COLS; col++) {
+    const x1 = col * (BLOCK_W + ROAD_W) + ROAD_W;
+    const x2 = x1 + BLOCK_W;
+    drawRoadSegment((x1 + x2) / 2, z, BLOCK_W, true);
+  }
 }
 
-// Buildings
-const buildingMat = new THREE.MeshStandardMaterial({ color: 0x334455, roughness: 0.7 });
+// Vertical roads (segments between intersections)
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = vRoadX(col);
+  for (let row = 0; row < GRID_ROWS; row++) {
+    const z1 = row * (BLOCK_H + ROAD_W) + ROAD_W;
+    const z2 = z1 + BLOCK_H;
+    drawRoadSegment(x, (z1 + z2) / 2, BLOCK_H, false);
+  }
+}
+
+// Intersections — asphalt square + crosswalks
+for (let row = 0; row <= GRID_ROWS; row++) {
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const ix = vRoadX(col);
+    const iz = hRoadZ(row);
+    intersections.push({ x: ix, z: iz, col, row });
+
+    // Intersection asphalt
+    addFlatRect(ix, iz, ROAD_W, ROAD_W, Y_ROAD, 0x2a2a2a);
+
+    // Sidewalk corner pads (the small squares at intersection corners)
+    const cornerOff = ROAD_SURFACE_W / 2 + SIDEWALK_W / 2;
+    addFlatRect(ix - cornerOff, iz - cornerOff, SIDEWALK_W, SIDEWALK_W, Y_SIDEWALK, 0x444444);
+    addFlatRect(ix + cornerOff, iz - cornerOff, SIDEWALK_W, SIDEWALK_W, Y_SIDEWALK, 0x444444);
+    addFlatRect(ix - cornerOff, iz + cornerOff, SIDEWALK_W, SIDEWALK_W, Y_SIDEWALK, 0x444444);
+    addFlatRect(ix + cornerOff, iz + cornerOff, SIDEWALK_W, SIDEWALK_W, Y_SIDEWALK, 0x444444);
+
+    // 4 crosswalks at each intersection (N, S, E, W)
+    const crossOff = ROAD_SURFACE_W / 2 + CROSSWALK_W / 2 - 0.5;
+    // North/South crosswalks (cross the horizontal road)
+    if (row > 0 || true) {
+      drawCrosswalk(ix, iz - crossOff, ROAD_SURFACE_W, CROSSWALK_W, true);
+      drawCrosswalk(ix, iz + crossOff, ROAD_SURFACE_W, CROSSWALK_W, true);
+    }
+    // East/West crosswalks (cross the vertical road)
+    if (col > 0 || true) {
+      drawCrosswalk(ix - crossOff, iz, CROSSWALK_W, ROAD_SURFACE_W, false);
+      drawCrosswalk(ix + crossOff, iz, CROSSWALK_W, ROAD_SURFACE_W, false);
+    }
+  }
+}
+
+function drawCrosswalk(cx, cz, w, h, isHorizontal) {
+  // White stripes
+  const stripeCount = isHorizontal ? Math.floor(w / 1.5) : Math.floor(h / 1.5);
+  const stripeW = 0.6;
+  for (let i = 0; i < stripeCount; i++) {
+    const t = -((stripeCount - 1) * 1.5) / 2 + i * 1.5;
+    if (isHorizontal) {
+      addFlatRect(cx + t, cz, stripeW, h, Y_CROSSWALK, 0xdddddd);
+    } else {
+      addFlatRect(cx, cz + t, w, stripeW, Y_CROSSWALK, 0xdddddd);
+    }
+  }
+}
+
+// ============================================================
+// TRAFFIC LIGHTS
+// ============================================================
+const trafficLights = []; // {intersection, meshN, meshS, meshE, meshW, phase, timer}
+
+const TL_GREEN = 0x00ff44;
+const TL_YELLOW = 0xffcc00;
+const TL_RED = 0xff2200;
+const TL_CYCLE = { GREEN: 30, YELLOW: 3, ALL_RED: 2 };
+
+function createTrafficLightPole(x, y, z) {
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.15, 3, 6),
+    new THREE.MeshStandardMaterial({ color: 0x333333 })
+  );
+  pole.position.set(x, 1.5, z);
+  scene.add(pole);
+
+  const light = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.5, 0.5),
+    new THREE.MeshStandardMaterial({ color: TL_RED, emissive: TL_RED, emissiveIntensity: 0.5 })
+  );
+  light.position.set(x, 3.2, z);
+  scene.add(light);
+  return light;
+}
+
+for (const inter of intersections) {
+  const off = ROAD_SURFACE_W / 2 + SIDEWALK_W + 0.3;
+  const tl = {
+    intersection: inter,
+    // Lights at the 4 corners controlling each direction
+    meshNS_a: createTrafficLightPole(inter.x - off, 0, inter.z - off),
+    meshNS_b: createTrafficLightPole(inter.x + off, 0, inter.z + off),
+    meshEW_a: createTrafficLightPole(inter.x + off, 0, inter.z - off),
+    meshEW_b: createTrafficLightPole(inter.x - off, 0, inter.z + off),
+    phase: 'NS_GREEN', // NS_GREEN, NS_YELLOW, ALL_RED_1, EW_GREEN, EW_YELLOW, ALL_RED_2
+    timer: TL_CYCLE.GREEN + seededRandom() * 10, // stagger start
+    nsGreen: true,
+  };
+  trafficLights.push(tl);
+}
+
+function setLightColor(mesh, color) {
+  mesh.material.color.setHex(color);
+  mesh.material.emissive.setHex(color);
+}
+
+function updateTrafficLights(dt) {
+  for (const tl of trafficLights) {
+    tl.timer -= dt;
+    if (tl.timer <= 0) {
+      switch (tl.phase) {
+        case 'NS_GREEN':
+          tl.phase = 'NS_YELLOW'; tl.timer = TL_CYCLE.YELLOW; break;
+        case 'NS_YELLOW':
+          tl.phase = 'ALL_RED_1'; tl.timer = TL_CYCLE.ALL_RED; break;
+        case 'ALL_RED_1':
+          tl.phase = 'EW_GREEN'; tl.timer = TL_CYCLE.GREEN; tl.nsGreen = false; break;
+        case 'EW_GREEN':
+          tl.phase = 'EW_YELLOW'; tl.timer = TL_CYCLE.YELLOW; break;
+        case 'EW_YELLOW':
+          tl.phase = 'ALL_RED_2'; tl.timer = TL_CYCLE.ALL_RED; break;
+        case 'ALL_RED_2':
+          tl.phase = 'NS_GREEN'; tl.timer = TL_CYCLE.GREEN; tl.nsGreen = true; break;
+      }
+    }
+
+    // Set colors based on phase
+    let nsColor = TL_RED, ewColor = TL_RED;
+    switch (tl.phase) {
+      case 'NS_GREEN': nsColor = TL_GREEN; break;
+      case 'NS_YELLOW': nsColor = TL_YELLOW; break;
+      case 'EW_GREEN': ewColor = TL_GREEN; break;
+      case 'EW_YELLOW': ewColor = TL_YELLOW; break;
+    }
+    setLightColor(tl.meshNS_a, nsColor);
+    setLightColor(tl.meshNS_b, nsColor);
+    setLightColor(tl.meshEW_a, ewColor);
+    setLightColor(tl.meshEW_b, ewColor);
+  }
+}
+
+// Check if a car approaching an intersection should stop
+function shouldCarStop(carPos, carDir) {
+  for (const tl of trafficLights) {
+    const dx = tl.intersection.x - carPos.x;
+    const dz = tl.intersection.z - carPos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist > 20 || dist < 2) continue; // only check nearby intersections
+
+    // Determine travel direction
+    const isNS = Math.abs(carDir.z) > Math.abs(carDir.x);
+    if (isNS && !tl.nsGreen) return dist < 12;
+    if (!isNS && tl.nsGreen) return dist < 12;
+  }
+  return false;
+}
+
+// ============================================================
+// BUILDINGS + ENTRIES + ZONES
+// ============================================================
 const buildings = [];
+const buildingEntries = []; // {x, z, blockRow, blockCol, zone}
 
 for (let row = 0; row < GRID_ROWS; row++) {
   for (let col = 0; col < GRID_COLS; col++) {
     const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
     const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+    const zone = blockZones[row][col];
+    const zoneColor = ZONE_COLORS[zone] || 0x334455;
 
-    if (col === CENTER_COL && row === CENTER_ROW) {
-      // Plaza — fountain
-      const plaza = new THREE.Mesh(
-        new THREE.PlaneGeometry(BLOCK_W - 4, BLOCK_H - 4),
-        new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.6 })
-      );
-      plaza.rotation.x = -Math.PI / 2;
-      plaza.position.set(bx, 0.06, bz);
-      scene.add(plaza);
-
+    if (zone === 'plaza') {
+      // Plaza ground
+      addFlatRect(bx, bz, BLOCK_W - 4, BLOCK_H - 4, Y_SIDEWALK, 0x555555, { roughness: 0.6 });
+      // Fountain
       const fount = new THREE.Mesh(
         new THREE.CylinderGeometry(3, 4, 1.5, 12),
         new THREE.MeshStandardMaterial({ color: 0x556666 })
       );
       fount.position.set(bx, 0.75, bz);
       scene.add(fount);
+      // Plaza is walkable — entry points on all sides
+      for (let side = 0; side < 4; side++) {
+        const ex = bx + [0, 0, -BLOCK_W / 2, BLOCK_W / 2][side];
+        const ez = bz + [-BLOCK_H / 2, BLOCK_H / 2, 0, 0][side];
+        buildingEntries.push({ x: ex, z: ez, blockRow: row, blockCol: col, zone });
+      }
       continue;
     }
 
-    // 1-3 buildings per block
-    const count = 1 + Math.floor(Math.random() * 3);
+    if (zone === 'park') {
+      // Green ground, trees, no buildings
+      addFlatRect(bx, bz, BLOCK_W - 2, BLOCK_H - 2, Y_SIDEWALK, 0x2a5a2a, { roughness: 0.95 });
+      // A few trees
+      const treeCount = 4 + Math.floor(seededRandom() * 6);
+      for (let t = 0; t < treeCount; t++) {
+        const tx = bx + (seededRandom() - 0.5) * (BLOCK_W - 8);
+        const tz = bz + (seededRandom() - 0.5) * (BLOCK_H - 8);
+        const trunk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.3, 0.4, 3, 6),
+          new THREE.MeshStandardMaterial({ color: 0x4a3520 })
+        );
+        trunk.position.set(tx, 1.5, tz);
+        scene.add(trunk);
+        const canopy = new THREE.Mesh(
+          new THREE.SphereGeometry(2 + seededRandom() * 1.5, 8, 6),
+          new THREE.MeshStandardMaterial({ color: 0x228833 })
+        );
+        canopy.position.set(tx, 4 + seededRandom(), tz);
+        canopy.castShadow = true;
+        scene.add(canopy);
+      }
+      // Park entries
+      buildingEntries.push({ x: bx, z: bz - BLOCK_H / 2, blockRow: row, blockCol: col, zone });
+      buildingEntries.push({ x: bx, z: bz + BLOCK_H / 2, blockRow: row, blockCol: col, zone });
+      continue;
+    }
+
+    // Regular block — 1-3 buildings
+    const buildingMat = new THREE.MeshStandardMaterial({ color: zoneColor, roughness: 0.7 });
+    const count = 1 + Math.floor(seededRandom() * 3);
     for (let b = 0; b < count; b++) {
-      const bw = 8 + Math.random() * 20;
-      const bh = 6 + Math.random() * 35;
-      const bd = 8 + Math.random() * 16;
-      const ox = (Math.random() - 0.5) * (BLOCK_W - bw - 4);
-      const oz = (Math.random() - 0.5) * (BLOCK_H - bd - 4);
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(bw, bh, bd),
-        buildingMat
-      );
+      const bw = 8 + seededRandom() * 20;
+      const bh = zone === 'office' ? 12 + seededRandom() * 30 : 6 + seededRandom() * 25;
+      const bd = 8 + seededRandom() * 16;
+      const ox = (seededRandom() - 0.5) * (BLOCK_W - bw - 4);
+      const oz = (seededRandom() - 0.5) * (BLOCK_H - bd - 4);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), buildingMat);
       mesh.position.set(bx + ox, bh / 2, bz + oz);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       scene.add(mesh);
-      buildings.push(mesh);
+      buildings.push({ mesh, zone, bx: bx + ox, bz: bz + oz, bw, bd });
+
+      // Door (colored rectangle on face nearest to road)
+      const doorColor = zone === 'commercial' ? 0x00aaff : zone === 'civic' ? 0x00f0ff : 0x886644;
+      const doorMat = new THREE.MeshStandardMaterial({ color: doorColor, emissive: doorColor, emissiveIntensity: 0.3 });
+
+      // Pick face closest to block edge (nearest sidewalk)
+      const distToLeft = (bx + ox) - (col * (BLOCK_W + ROAD_W) + ROAD_W);
+      const distToRight = (col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W) - (bx + ox);
+      const distToTop = (bz + oz) - (row * (BLOCK_H + ROAD_W) + ROAD_W);
+      const distToBot = (row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H) - (bz + oz);
+      const minDist = Math.min(distToLeft, distToRight, distToTop, distToBot);
+
+      let doorX, doorZ;
+      const door = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 2.5), doorMat);
+      if (minDist === distToLeft) {
+        doorX = bx + ox - bw / 2 - 0.01;
+        doorZ = bz + oz;
+        door.position.set(doorX, 1.25, doorZ);
+        door.rotation.y = -Math.PI / 2;
+        doorX -= SIDEWALK_W;
+      } else if (minDist === distToRight) {
+        doorX = bx + ox + bw / 2 + 0.01;
+        doorZ = bz + oz;
+        door.position.set(doorX, 1.25, doorZ);
+        door.rotation.y = Math.PI / 2;
+        doorX += SIDEWALK_W;
+      } else if (minDist === distToTop) {
+        doorX = bx + ox;
+        doorZ = bz + oz - bd / 2 - 0.01;
+        door.position.set(doorX, 1.25, doorZ);
+        doorZ -= SIDEWALK_W;
+      } else {
+        doorX = bx + ox;
+        doorZ = bz + oz + bd / 2 + 0.01;
+        door.position.set(doorX, 1.25, doorZ);
+        door.rotation.y = Math.PI;
+        doorZ += SIDEWALK_W;
+      }
+      scene.add(door);
+      buildingEntries.push({ x: doorX, z: doorZ, blockRow: row, blockCol: col, zone });
     }
   }
 }
 
-// === Yuka EntityManager ===
+// ============================================================
+// YUKA ENTITY MANAGER
+// ============================================================
 const entityManager = new YUKA.EntityManager();
 const time = new YUKA.Time();
 
-// === Build NavMesh from walkable polygons ===
-// Yuka NavMesh expects polygons as arrays of YUKA.Vector3 (CCW winding in XZ)
+// ============================================================
+// NAVMESH — SEPARATE PEDESTRIAN AND ROAD MESHES
+// ============================================================
 function rect(x1, z1, x2, z2) {
-  // Return YUKA.Polygon with CCW contour for a rectangle in XZ plane (y=0)
   const poly = new YUKA.Polygon();
   poly.fromContour([
     new YUKA.Vector3(x1, 0, z1),
@@ -188,131 +548,221 @@ function rect(x1, z1, x2, z2) {
   return poly;
 }
 
-const walkablePolygons = [];
+// --- Pedestrian NavMesh: sidewalks + crosswalks + plaza + building entries ---
+const pedPolygons = [];
+const roadPolygons = [];
+const debugPedRects = [];
+const debugRoadRects = [];
 
-// Horizontal road segments (between intersections)
+function addPedRect(x1, z1, x2, z2) {
+  pedPolygons.push(rect(x1, z1, x2, z2));
+  debugPedRects.push({ x1, z1, x2, z2 });
+}
+function addRoadRect(x1, z1, x2, z2) {
+  roadPolygons.push(rect(x1, z1, x2, z2));
+  debugRoadRects.push({ x1, z1, x2, z2 });
+}
+
+// Horizontal road sidewalks (between intersections)
 for (let row = 0; row <= GRID_ROWS; row++) {
-  const zTop = row * (BLOCK_H + ROAD_W);
-  const zBot = zTop + ROAD_W;
-  for (let col = 0; col <= GRID_COLS; col++) {
-    const xLeft = col * (BLOCK_W + ROAD_W);
-    const xRight = xLeft + ROAD_W;
-    // Intersection square
-    walkablePolygons.push(rect(xLeft, zTop, xRight, zBot));
-  }
-  // Road segments between intersections
+  const roadCenterZ = hRoadZ(row);
+  const swTopZ1 = roadCenterZ - ROAD_SURFACE_W / 2 - SIDEWALK_W;
+  const swTopZ2 = roadCenterZ - ROAD_SURFACE_W / 2;
+  const swBotZ1 = roadCenterZ + ROAD_SURFACE_W / 2;
+  const swBotZ2 = roadCenterZ + ROAD_SURFACE_W / 2 + SIDEWALK_W;
+
   for (let col = 0; col < GRID_COLS; col++) {
-    const xLeft = col * (BLOCK_W + ROAD_W) + ROAD_W;
-    const xRight = xLeft + BLOCK_W;
-    walkablePolygons.push(rect(xLeft, zTop, xRight, zBot));
+    const x1 = col * (BLOCK_W + ROAD_W) + ROAD_W;
+    const x2 = x1 + BLOCK_W;
+    addPedRect(x1, swTopZ1, x2, swTopZ2); // north sidewalk
+    addPedRect(x1, swBotZ1, x2, swBotZ2); // south sidewalk
+
+    // Road lanes for cars
+    addRoadRect(x1, roadCenterZ - ROAD_SURFACE_W / 2, x2, roadCenterZ + ROAD_SURFACE_W / 2);
   }
 }
 
-// Vertical road segments (between intersections)
+// Vertical road sidewalks (between intersections)
 for (let col = 0; col <= GRID_COLS; col++) {
-  const xLeft = col * (BLOCK_W + ROAD_W);
-  const xRight = xLeft + ROAD_W;
+  const roadCenterX = vRoadX(col);
+  const swLeftX1 = roadCenterX - ROAD_SURFACE_W / 2 - SIDEWALK_W;
+  const swLeftX2 = roadCenterX - ROAD_SURFACE_W / 2;
+  const swRightX1 = roadCenterX + ROAD_SURFACE_W / 2;
+  const swRightX2 = roadCenterX + ROAD_SURFACE_W / 2 + SIDEWALK_W;
+
   for (let row = 0; row < GRID_ROWS; row++) {
-    const zTop = row * (BLOCK_H + ROAD_W) + ROAD_W;
-    const zBot = zTop + BLOCK_H;
-    walkablePolygons.push(rect(xLeft, zTop, xRight, zBot));
+    const z1 = row * (BLOCK_H + ROAD_W) + ROAD_W;
+    const z2 = z1 + BLOCK_H;
+    addPedRect(swLeftX1, z1, swLeftX2, z2);  // west sidewalk
+    addPedRect(swRightX1, z1, swRightX2, z2); // east sidewalk
+
+    // Road lanes for cars
+    addRoadRect(roadCenterX - ROAD_SURFACE_W / 2, z1, roadCenterX + ROAD_SURFACE_W / 2, z2);
   }
 }
 
-// Plaza (walkable open area)
+// Intersection crosswalks + corner pads + intersection road surface
+for (let row = 0; row <= GRID_ROWS; row++) {
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const ix = vRoadX(col);
+    const iz = hRoadZ(row);
+    const halfRoad = ROAD_SURFACE_W / 2;
+
+    // Corner sidewalk pads (pedestrian)
+    const cOff = halfRoad + SIDEWALK_W / 2;
+    addPedRect(ix - halfRoad - SIDEWALK_W, iz - halfRoad - SIDEWALK_W,
+               ix - halfRoad, iz - halfRoad);
+    addPedRect(ix + halfRoad, iz - halfRoad - SIDEWALK_W,
+               ix + halfRoad + SIDEWALK_W, iz - halfRoad);
+    addPedRect(ix - halfRoad - SIDEWALK_W, iz + halfRoad,
+               ix - halfRoad, iz + halfRoad + SIDEWALK_W);
+    addPedRect(ix + halfRoad, iz + halfRoad,
+               ix + halfRoad + SIDEWALK_W, iz + halfRoad + SIDEWALK_W);
+
+    // Crosswalks (pedestrian can cross here)
+    // North crosswalk
+    addPedRect(ix - halfRoad, iz - halfRoad - CROSSWALK_W, ix + halfRoad, iz - halfRoad);
+    // South crosswalk
+    addPedRect(ix - halfRoad, iz + halfRoad, ix + halfRoad, iz + halfRoad + CROSSWALK_W);
+    // West crosswalk
+    addPedRect(ix - halfRoad - CROSSWALK_W, iz - halfRoad, ix - halfRoad, iz + halfRoad);
+    // East crosswalk
+    addPedRect(ix + halfRoad, iz - halfRoad, ix + halfRoad + CROSSWALK_W, iz + halfRoad);
+
+    // Intersection road surface (cars drive through)
+    addRoadRect(ix - halfRoad, iz - halfRoad, ix + halfRoad, iz + halfRoad);
+  }
+}
+
+// Plaza (pedestrian walkable)
 const plazaX1 = CENTER_COL * (BLOCK_W + ROAD_W) + ROAD_W;
 const plazaZ1 = CENTER_ROW * (BLOCK_H + ROAD_W) + ROAD_W;
 const plazaX2 = plazaX1 + BLOCK_W;
 const plazaZ2 = plazaZ1 + BLOCK_H;
-walkablePolygons.push(rect(plazaX1, plazaZ1, plazaX2, plazaZ2));
+addPedRect(plazaX1, plazaZ1, plazaX2, plazaZ2);
 
-// Build the NavMesh
-const navMesh = new YUKA.NavMesh();
-navMesh.fromPolygons(walkablePolygons);
+// Park blocks (pedestrian walkable)
+for (let row = 0; row < GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    if (blockZones[row][col] === 'park') {
+      const px1 = col * (BLOCK_W + ROAD_W) + ROAD_W;
+      const pz1 = row * (BLOCK_H + ROAD_W) + ROAD_W;
+      addPedRect(px1, pz1, px1 + BLOCK_W, pz1 + BLOCK_H);
+    }
+  }
+}
 
-// === Debug NavMesh overlay ===
-let debugMeshVisible = true;
+// Build the two NavMeshes
+const pedNavMesh = new YUKA.NavMesh();
+pedNavMesh.fromPolygons(pedPolygons);
+
+const roadNavMesh = new YUKA.NavMesh();
+roadNavMesh.fromPolygons(roadPolygons);
+
+// Combined NavMesh for protest mode (pedestrians can walk anywhere)
+const allPolygons = [];
+for (const p of pedPolygons) {
+  const poly = new YUKA.Polygon();
+  poly.fromContour([...p.contour]);
+  allPolygons.push(poly);
+}
+for (const p of roadPolygons) {
+  const poly = new YUKA.Polygon();
+  poly.fromContour([...p.contour]);
+  allPolygons.push(poly);
+}
+const combinedNavMesh = new YUKA.NavMesh();
+combinedNavMesh.fromPolygons(allPolygons);
+
+// ============================================================
+// DEBUG NAVMESH OVERLAY
+// ============================================================
+let debugMeshVisible = false;
 const debugGroup = new THREE.Group();
+debugGroup.visible = debugMeshVisible;
 scene.add(debugGroup);
 
-// Store raw rect data alongside yuka polygons for debug visualization
-const debugRects = [];
+function addDebugRects(rects, color) {
+  for (const r of rects) {
+    const w = r.x2 - r.x1;
+    const h = r.z2 - r.z1;
+    const geo = new THREE.PlaneGeometry(w, h);
+    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false
+    }));
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(r.x1 + w / 2, Y_DEBUG, r.z1 + h / 2);
+    debugGroup.add(mesh);
 
-function addDebugRect(x1, z1, x2, z2) {
-  debugRects.push({ x1, z1, x2, z2 });
-}
-
-// Rebuild debug rects from the same grid logic used for NavMesh
-for (let row = 0; row <= GRID_ROWS; row++) {
-  const zTop = row * (BLOCK_H + ROAD_W);
-  const zBot = zTop + ROAD_W;
-  for (let col = 0; col <= GRID_COLS; col++) {
-    const xLeft = col * (BLOCK_W + ROAD_W);
-    addDebugRect(xLeft, zTop, xLeft + ROAD_W, zBot);
-  }
-  for (let col = 0; col < GRID_COLS; col++) {
-    const xLeft = col * (BLOCK_W + ROAD_W) + ROAD_W;
-    addDebugRect(xLeft, zTop, xLeft + BLOCK_W, zBot);
-  }
-}
-for (let col = 0; col <= GRID_COLS; col++) {
-  const xLeft = col * (BLOCK_W + ROAD_W);
-  for (let row = 0; row < GRID_ROWS; row++) {
-    const zTop = row * (BLOCK_H + ROAD_W) + ROAD_W;
-    addDebugRect(xLeft, zTop, xLeft + ROAD_W, zTop + BLOCK_H);
+    const edge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geo),
+      new THREE.LineBasicMaterial({ color })
+    );
+    edge.rotation.x = -Math.PI / 2;
+    edge.position.set(r.x1 + w / 2, Y_DEBUG + 0.05, r.z1 + h / 2);
+    debugGroup.add(edge);
   }
 }
-addDebugRect(plazaX1, plazaZ1, plazaX2, plazaZ2);
 
-// Build debug meshes directly from rect coordinates (bypass yuka vertex extraction)
-for (const r of debugRects) {
-  const w = r.x2 - r.x1;
-  const h = r.z2 - r.z1;
-  const geo = new THREE.PlaneGeometry(w, h);
-  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    color: 0x05ffa1, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false
-  }));
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set(r.x1 + w / 2, 0.2, r.z1 + h / 2);
-  debugGroup.add(mesh);
-  // Wireframe
-  const edgeGeo = new THREE.EdgesGeometry(geo);
-  const edgeLine = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x05ffa1 }));
-  edgeLine.rotation.x = -Math.PI / 2;
-  edgeLine.position.set(r.x1 + w / 2, 0.25, r.z1 + h / 2);
-  debugGroup.add(edgeLine);
-}
+addDebugRects(debugPedRects, 0x05ffa1);   // green = pedestrian
+addDebugRects(debugRoadRects, 0xfcee0a);  // yellow = road
 
-// === NPC + Vehicle management ===
+// ============================================================
+// NPC + VEHICLE MANAGEMENT
+// ============================================================
 const NPC_COLORS = { pedestrian: 0x05ffa1, police: 0x00a0ff, hostile: 0xff2a6d };
 const CAR_COLOR = 0xfcee0a;
 const npcs = [];
 const cars = [];
-const pathLines = [];
-
-// States
 const STATE = { IDLE: 0, WALK_TO: 1, AT_DESTINATION: 2, PROTEST: 3 };
 
-function randomRoadPoint() {
-  // Pick a random point on the road network
-  const isHoriz = Math.random() < 0.5;
-  if (isHoriz) {
-    const row = Math.floor(Math.random() * (GRID_ROWS + 1));
-    const z = row * (BLOCK_H + ROAD_W) + ROAD_W / 2;
-    const x = ROAD_W + Math.random() * (CITY_W - 2 * ROAD_W);
-    return new YUKA.Vector3(x, 0, z);
-  } else {
-    const col = Math.floor(Math.random() * (GRID_COLS + 1));
-    const x = col * (BLOCK_W + ROAD_W) + ROAD_W / 2;
-    const z = ROAD_W + Math.random() * (CITY_H - 2 * ROAD_W);
-    return new YUKA.Vector3(x, 0, z);
-  }
+// --- Point generation helpers ---
+function randomSidewalkPoint() {
+  // Pick a random point on a sidewalk
+  const r = debugPedRects[Math.floor(Math.random() * debugPedRects.length)];
+  return new YUKA.Vector3(
+    r.x1 + Math.random() * (r.x2 - r.x1),
+    0,
+    r.z1 + Math.random() * (r.z2 - r.z1)
+  );
 }
 
-function findNavPath(from, to) {
+function randomRoadPoint() {
+  const r = debugRoadRects[Math.floor(Math.random() * debugRoadRects.length)];
+  return new YUKA.Vector3(
+    r.x1 + Math.random() * (r.x2 - r.x1),
+    0,
+    r.z1 + Math.random() * (r.z2 - r.z1)
+  );
+}
+
+function randomLanePoint() {
+  // Pick a point in a specific lane (right side of road)
+  const r = debugRoadRects[Math.floor(Math.random() * debugRoadRects.length)];
+  const w = r.x2 - r.x1;
+  const h = r.z2 - r.z1;
+  const isHoriz = w > h;
+  let x, z;
+  if (isHoriz) {
+    x = r.x1 + Math.random() * w;
+    // Right-side lanes: offset from center toward positive Z
+    z = (r.z1 + r.z2) / 2 + LANE_W * (0.5 + Math.random());
+  } else {
+    z = r.z1 + Math.random() * h;
+    x = (r.x1 + r.x2) / 2 + LANE_W * (0.5 + Math.random());
+  }
+  return new YUKA.Vector3(x, 0, z);
+}
+
+function randomBuildingEntry() {
+  if (buildingEntries.length === 0) return randomSidewalkPoint();
+  const e = buildingEntries[Math.floor(Math.random() * buildingEntries.length)];
+  return new YUKA.Vector3(e.x, 0, e.z);
+}
+
+function findNavPath(from, to, mesh) {
   try {
-    const path = navMesh.findPath(from, to);
-    return path;
+    return mesh.findPath(from, to);
   } catch {
     return null;
   }
@@ -337,33 +787,40 @@ function updatePathLine(line, points) {
   line.geometry = new THREE.BufferGeometry().setFromPoints(pts);
 }
 
-// Spawn pedestrian NPCs
+// ============================================================
+// SPAWN PEDESTRIAN NPCs
+// ============================================================
 function spawnNPC(type, hasStateMachine) {
   const vehicle = new YUKA.Vehicle();
-  const start = randomRoadPoint();
+  const start = randomSidewalkPoint();
   vehicle.position.copy(start);
   vehicle.maxSpeed = 2.5;
   vehicle.maxForce = 8;
   vehicle.updateNeighborhood = false;
 
-  // Three.js mesh
   const color = NPC_COLORS[type] || NPC_COLORS.pedestrian;
   const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(1, 2.5, 1),
+    new THREE.BoxGeometry(0.8, 2.2, 0.8),
     new THREE.MeshStandardMaterial({ color })
   );
-  mesh.position.set(start.x, 1.25, start.z);
+  mesh.position.set(start.x, 1.1, start.z);
   mesh.castShadow = true;
   scene.add(mesh);
 
+  // Head
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.35, 8, 6),
+    new THREE.MeshStandardMaterial({ color })
+  );
+  head.position.y = 1.45;
+  mesh.add(head);
+
   vehicle.setRenderComponent(mesh, (entity, renderComponent) => {
-    renderComponent.position.set(entity.position.x, 1.25, entity.position.z);
+    renderComponent.position.set(entity.position.x, 1.1, entity.position.z);
     const dir = entity.getDirection(new YUKA.Vector3());
     if (dir.squaredLength() > 0.001) {
       renderComponent.lookAt(
-        entity.position.x + dir.x,
-        1.25,
-        entity.position.z + dir.z
+        entity.position.x + dir.x, 1.1, entity.position.z + dir.z
       );
     }
   });
@@ -383,26 +840,24 @@ function spawnNPC(type, hasStateMachine) {
 
   const npc = {
     vehicle, mesh, followPath, wander, type,
-    state: STATE.IDLE,
-    stateTimer: 0,
-    moveTime: 0, // time spent in current movement (prevents instant arrival)
+    state: STATE.IDLE, stateTimer: 0, moveTime: 0,
     currentPath: null,
     pathLine: createPathLine(color),
     hasStateMachine: !!hasStateMachine,
     protestMode: false,
   };
 
-  // Start with a destination
-  assignNewDestination(npc);
+  assignNPCDestination(npc);
   npcs.push(npc);
   return npc;
 }
 
-function assignNewDestination(npc, target) {
-  const dest = target || randomRoadPoint();
+function assignNPCDestination(npc, target) {
+  const dest = target || (Math.random() < 0.4 ? randomBuildingEntry() : randomSidewalkPoint());
+  const mesh = npc.protestMode ? combinedNavMesh : pedNavMesh;
   const path = findNavPath(
     new YUKA.Vector3(npc.vehicle.position.x, 0, npc.vehicle.position.z),
-    dest
+    dest, mesh
   );
 
   if (path && path.length > 1) {
@@ -423,7 +878,9 @@ function assignNewDestination(npc, target) {
   }
 }
 
-// Spawn cars (faster, follow road paths)
+// ============================================================
+// SPAWN CARS
+// ============================================================
 function spawnCar() {
   const vehicle = new YUKA.Vehicle();
   const start = randomRoadPoint();
@@ -432,22 +889,35 @@ function spawnCar() {
   vehicle.maxForce = 15;
   vehicle.updateNeighborhood = false;
 
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(4, 1.5, 2),
-    new THREE.MeshStandardMaterial({ color: CAR_COLOR })
-  );
-  mesh.position.set(start.x, 0.75, start.z);
-  mesh.castShadow = true;
-  scene.add(mesh);
+  const bodyColor = [0xfcee0a, 0xff4444, 0x4488ff, 0x44ff44, 0xffffff, 0x888888][Math.floor(Math.random() * 6)];
+  const group = new THREE.Group();
 
-  vehicle.setRenderComponent(mesh, (entity, renderComponent) => {
-    renderComponent.position.set(entity.position.x, 0.75, entity.position.z);
+  // Car body
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(4, 1.2, 2),
+    new THREE.MeshStandardMaterial({ color: bodyColor })
+  );
+  body.position.y = 0.6;
+  group.add(body);
+
+  // Cabin
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(2, 0.8, 1.6),
+    new THREE.MeshStandardMaterial({ color: 0x222233 })
+  );
+  cabin.position.set(-0.3, 1.3, 0);
+  group.add(cabin);
+
+  group.position.set(start.x, 0, start.z);
+  group.castShadow = true;
+  scene.add(group);
+
+  vehicle.setRenderComponent(group, (entity, renderComponent) => {
+    renderComponent.position.set(entity.position.x, 0, entity.position.z);
     const dir = entity.getDirection(new YUKA.Vector3());
     if (dir.squaredLength() > 0.001) {
       renderComponent.lookAt(
-        entity.position.x + dir.x,
-        0.75,
-        entity.position.z + dir.z
+        entity.position.x + dir.x, 0, entity.position.z + dir.z
       );
     }
   });
@@ -458,17 +928,22 @@ function spawnCar() {
 
   entityManager.add(vehicle);
 
-  const car = { vehicle, mesh, followPath, currentPath: null, pathLine: createPathLine(CAR_COLOR), stateTimer: 0 };
+  const car = {
+    vehicle, mesh: group, followPath,
+    currentPath: null, pathLine: createPathLine(bodyColor),
+    stateTimer: 0, stopped: false, stopTimer: 0,
+    savedMaxSpeed: 12,
+  };
   assignCarDestination(car);
   cars.push(car);
   return car;
 }
 
 function assignCarDestination(car) {
-  const dest = randomRoadPoint();
+  const dest = randomLanePoint();
   const path = findNavPath(
     new YUKA.Vector3(car.vehicle.position.x, 0, car.vehicle.position.z),
-    dest
+    dest, roadNavMesh
   );
   if (path && path.length > 1) {
     car.followPath.path = new YUKA.Path();
@@ -483,7 +958,9 @@ function assignCarDestination(car) {
   }
 }
 
-// === Spawn entities ===
+// ============================================================
+// SPAWN ENTITIES
+// ============================================================
 // 15 regular pedestrians
 for (let i = 0; i < 15; i++) spawnNPC('pedestrian', false);
 // 5 state-machine NPCs (3 pedestrian, 1 police, 1 hostile)
@@ -493,12 +970,13 @@ smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('hostile', true));
-// 5 cars
-for (let i = 0; i < 5; i++) spawnCar();
+// 8 cars
+for (let i = 0; i < 8; i++) spawnCar();
 
-// === State machine update for special NPCs ===
+// ============================================================
+// STATE MACHINE UPDATE — SPECIAL NPCs
+// ============================================================
 function updateNPCState(npc, dt) {
-  const pos = npc.vehicle.position;
   const speed = npc.vehicle.velocity.length();
 
   switch (npc.state) {
@@ -509,15 +987,14 @@ function updateNPCState(npc, dt) {
       npc.stateTimer -= dt;
       if (npc.stateTimer <= 0) {
         if (npc.protestMode) {
-          // Head to plaza
           npc.vehicle.maxSpeed = 3;
           const px = PLAZA_X + (Math.random() - 0.5) * 30;
           const pz = PLAZA_Z + (Math.random() - 0.5) * 20;
-          assignNewDestination(npc, new YUKA.Vector3(px, 0, pz));
+          assignNPCDestination(npc, new YUKA.Vector3(px, 0, pz));
           npc.state = STATE.PROTEST;
         } else {
           npc.vehicle.maxSpeed = 2.5;
-          assignNewDestination(npc);
+          assignNPCDestination(npc);
         }
       }
       break;
@@ -525,7 +1002,6 @@ function updateNPCState(npc, dt) {
     case STATE.WALK_TO:
       npc.moveTime += dt;
       if (npc.moveTime > 0.5 && speed < 0.1 && npc.followPath.active) {
-        // Arrived (moveTime guard prevents instant-arrival on first frame)
         npc.state = STATE.AT_DESTINATION;
         npc.stateTimer = 2 + Math.random() * 3;
         npc.followPath.active = false;
@@ -548,12 +1024,10 @@ function updateNPCState(npc, dt) {
     case STATE.PROTEST:
       npc.moveTime += dt;
       if (npc.moveTime > 0.5 && speed < 0.1 && npc.followPath.active) {
-        // At plaza — mill around
         npc.followPath.active = false;
         npc.wander.active = true;
         npc.vehicle.maxSpeed = 1.2;
       }
-      // If no longer in protest mode, transition back
       if (!npc.protestMode) {
         npc.state = STATE.IDLE;
         npc.stateTimer = 1;
@@ -571,17 +1045,30 @@ function updateSimpleNPC(npc, dt) {
     npc.stateTimer += dt;
     if (npc.stateTimer > 2) {
       npc.stateTimer = 0;
-      assignNewDestination(npc);
+      assignNPCDestination(npc);
     }
   } else if (speed >= 0.1) {
     npc.stateTimer = 0;
   }
 }
 
-// Car update
+// Car update with traffic light stops
 function updateCar(car, dt) {
   const speed = car.vehicle.velocity.length();
-  if (speed < 0.1 && car.followPath.active) {
+  const dir = car.vehicle.getDirection(new YUKA.Vector3());
+
+  // Traffic light check
+  const mustStop = shouldCarStop(car.vehicle.position, dir);
+  if (mustStop && !car.stopped) {
+    car.stopped = true;
+    car.savedMaxSpeed = car.vehicle.maxSpeed;
+    car.vehicle.maxSpeed = 0;
+  } else if (!mustStop && car.stopped) {
+    car.stopped = false;
+    car.vehicle.maxSpeed = car.savedMaxSpeed;
+  }
+
+  if (speed < 0.1 && car.followPath.active && !car.stopped) {
     car.stateTimer += dt;
     if (car.stateTimer > 0.5) {
       car.stateTimer = 0;
@@ -590,8 +1077,12 @@ function updateCar(car, dt) {
   }
 }
 
-// === Input ===
+// ============================================================
+// INPUT
+// ============================================================
 let protestActive = false;
+let showTrafficLights = true;
+
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
@@ -602,19 +1093,29 @@ document.addEventListener('keydown', (e) => {
     debugMeshVisible = !debugMeshVisible;
     debugGroup.visible = debugMeshVisible;
   }
+  if (e.code === 'KeyL') {
+    showTrafficLights = !showTrafficLights;
+    for (const tl of trafficLights) {
+      tl.meshNS_a.visible = showTrafficLights;
+      tl.meshNS_b.visible = showTrafficLights;
+      tl.meshEW_a.visible = showTrafficLights;
+      tl.meshEW_b.visible = showTrafficLights;
+    }
+  }
   if (e.code === 'KeyR') {
-    // Reset all NPCs
     npcs.forEach(npc => {
       npc.state = STATE.IDLE;
       npc.stateTimer = 0;
       npc.protestMode = false;
-      assignNewDestination(npc);
+      assignNPCDestination(npc);
     });
     protestActive = false;
   }
 });
 
-// === HUD ===
+// ============================================================
+// HUD
+// ============================================================
 const hudEl = document.getElementById('hud');
 let frameCount = 0, fps = 0, lastFPSTime = performance.now();
 
@@ -628,27 +1129,39 @@ function updateHUD() {
   }
 
   const stateNames = ['IDLE', 'WALK_TO', 'AT_DEST', 'PROTEST'];
-  const smStatus = smNPCs.map((n, i) =>
+  const smStatus = smNPCs.map(n =>
     `  ${n.type.padEnd(10)} ${stateNames[n.state]}`
   ).join('\n');
 
+  // Count zones
+  const zoneCounts = {};
+  for (const row of blockZones) for (const z of row) zoneCounts[z] = (zoneCounts[z] || 0) + 1;
+  const zoneStr = Object.entries(zoneCounts).map(([k, v]) => `${k}:${v}`).join(' ');
+
   hudEl.innerHTML = `
-<span class="label">YUKA NAVMESH PROTOTYPE</span>
+<span class="label">YUKA NAVMESH PROTOTYPE v2</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
 <span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
-<span class="label">NavMesh polys:</span> ${walkablePolygons.length}
-<span class="label">Protest:</span> ${protestActive ? '<span class="warn">ACTIVE</span>' : 'off'}
+<span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road NavMesh:</span> ${roadPolygons.length} polys
+<span class="label">Building entries:</span> ${buildingEntries.length} &nbsp; <span class="label">Intersections:</span> ${intersections.length}
+<span class="label">Protest:</span> ${protestActive ? '<span class="warn">ACTIVE — NPCs march in street</span>' : 'off'}
+<span class="zone">Zones:</span> ${zoneStr}
 <span class="label">State machines:</span>
 ${smStatus}
   `.trim().replace(/\n/g, '<br>');
 }
 
-// === Animation loop ===
+// ============================================================
+// ANIMATION LOOP
+// ============================================================
 function animate() {
   requestAnimationFrame(animate);
 
   const delta = time.update().getDelta();
-  const dt = Math.min(delta, 0.1); // cap delta
+  const dt = Math.min(delta, 0.1);
+
+  // Update traffic lights
+  updateTrafficLights(dt);
 
   // Update NPCs
   for (const npc of npcs) {
@@ -664,7 +1177,7 @@ function animate() {
     updateCar(car, dt);
   }
 
-  // Update yuka entity manager (drives steering behaviors)
+  // Update yuka entity manager
   entityManager.update(delta);
 
   controls.update();
@@ -681,7 +1194,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-console.log(`[Yuka Prototype] City: ${CITY_W}x${CITY_H}, NavMesh: ${walkablePolygons.length} polys, NPCs: ${npcs.length}, Cars: ${cars.length}`);
+console.log(`[Yuka Prototype v2] City: ${CITY_W}x${CITY_H}, Ped NavMesh: ${pedPolygons.length} polys, Road NavMesh: ${roadPolygons.length} polys, NPCs: ${npcs.length}, Cars: ${cars.length}, Entries: ${buildingEntries.length}, Intersections: ${intersections.length}`);
 </script>
 </body>
 </html>
