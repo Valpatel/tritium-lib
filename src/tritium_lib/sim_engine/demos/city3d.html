@@ -475,8 +475,6 @@ if (typeof THREE === 'undefined' || typeof THREE.Scene !== 'function') {
 }
 console.log('[CITY3D MODULAR] Three.js loaded:', THREE.REVISION);
 
-try {
-
 // =========================================================================
 // Import existing city3d/ modules (Phase 1 extraction — fully working)
 // =========================================================================
@@ -791,14 +789,7 @@ function simTick(dt) {
 console.log('[CITY3D MODULAR] Initialized. Modules loaded from city3d/ + js/sim/ + js/render/');
 animate();
 
-} catch(e) {
-  console.error('[CITY3D MODULAR] Fatal init error:', e);
-  document.body.innerHTML = '<div style="color:#ff2a6d;padding:40px;font-family:monospace;font-size:16px;background:#0a0a0f;min-height:100vh">'
-    + '<h1 style="color:#00f0ff">City3D Modular Init Error</h1>'
-    + '<p style="color:#fcee0a;margin:12px 0">The 3D scene failed to initialize:</p>'
-    + '<pre style="color:#ff2a6d;background:#12121a;padding:16px;border-radius:4px;overflow:auto;max-width:90vw">'
-    + e.message + '\n\n' + (e.stack || '') + '</pre></div>';
-}
+// Error display handled by window 'error' listener at top of script
 </script>
 </body>
 </html>
