@@ -249,11 +249,17 @@ for (const poly of walkablePolygons) {
   shape.lineTo(verts[0].x, verts[0].z);
   const geo = new THREE.ShapeGeometry(shape);
   const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    color: 0x05ffa1, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false
+    color: 0x05ffa1, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false
   }));
   mesh.rotation.x = -Math.PI / 2;
-  mesh.position.y = 0.15;
+  mesh.position.y = 0.2;
   debugGroup.add(mesh);
+  // Wireframe border for each polygon
+  const edgeGeo = new THREE.EdgesGeometry(geo);
+  const edgeMesh = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0x05ffa1, linewidth: 1 }));
+  edgeMesh.rotation.x = -Math.PI / 2;
+  edgeMesh.position.y = 0.25;
+  debugGroup.add(edgeMesh);
 }
 
 // === NPC + Vehicle management ===
