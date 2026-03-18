@@ -43,6 +43,7 @@ canvas { display: block; }
 #phase-indicator.riot { color: #ff2a6d; text-shadow: 0 0 12px #ff2a6d88; }
 #phase-indicator.tension { color: #fcee0a; text-shadow: 0 0 8px #fcee0a88; }
 #phase-indicator.dispersal { color: #00f0ff; text-shadow: 0 0 8px #00f0ff88; }
+#phase-indicator.gathering { color: #05ffa1; text-shadow: 0 0 8px #05ffa188; }
 
 #campaign-phase { font-size:14px;font-weight:bold;margin-top:2px;padding:2px 8px;border-radius:3px;display:none; }
 #campaign-phase.phase1 { background:#05ffa122;color:#05ffa1; }
@@ -545,6 +546,24 @@ let simTime = 8.0;
 let riotPhase = 'PEACEFUL';
 let riotTimer = 0;
 
+// Gathering phase state — protestors walk to plaza before riot
+let gatheringPhase = 'NONE'; // NONE, MARCHING, MILLING, TENSION_BUILDUP
+let gatheringTimer = 0;
+let gatheringArrivedCount = 0;
+let gatheringChantTimer = 0;
+let firstRockThrown = false;
+let tensionBuildupTimer = 0;
+const CHANT_MESSAGES = [
+  'CROWD: *chanting slogans*',
+  'CROWD: *rhythmic chanting*',
+  'CROWD: *voices rising*',
+  'CROWD: *megaphone speech*',
+  'CROWD: *drums beating*',
+  'CROWD: "No justice, no peace!"',
+  'CROWD: *crowd roars in unison*',
+  'CROWD: *whistles blowing*',
+];
+
 // Campaign Progression (demonstrates campaign.py + scenario.py)
 let campaignPhase = 0; let campaignTimer = 0; let campaignComplete = false;
 const CAMPAIGN_PHASES = [null,
@@ -790,6 +809,22 @@ const narrationTemplates = {
     '<span class="callsign">ALPHA TEAM:</span> <span class="alert">BREACH</span> Building at grid {grid}. Clearing in progress.',
     '<span class="callsign">BRAVO-1:</span> <span class="alert">FLASHBANG</span> deployed grid {grid}. Entry team moving.',
   ],
+  crowd_gathering: [
+    '<span class="callsign">DISPATCH:</span> <span class="info">Reports of groups converging on Central Plaza.</span> Monitor situation.',
+    '<span class="callsign">AIR-1:</span> Multiple groups moving toward plaza from all directions. Estimating {n} total.',
+  ],
+  crowd_assembled: [
+    '<span class="callsign">AIR-1:</span> Crowd assembled at Central Plaza. Approximately {n} individuals. Signs visible.',
+    '<span class="callsign">COMMAND:</span> <span class="info">Crowd has gathered.</span> Holding positions. Monitor for escalation.',
+  ],
+  tension_rising: [
+    '<span class="callsign">ALPHA-1:</span> Crowd getting agitated. Chanting intensifying. <span class="alert">Tensions rising.</span>',
+    '<span class="callsign">BRAVO-2:</span> <span class="alert">Hostile posture</span> from crowd elements. Recommend readiness.',
+  ],
+  first_rock: [
+    '<span class="callsign">ALPHA-3:</span> <span class="alert">CONTACT!</span> First projectile thrown! Repeat, we are taking fire!',
+    '<span class="callsign">DISPATCH:</span> <span class="alert">10-10 ESCALATION</span> First rock thrown at police line!',
+  ],
 };
 
 function formatGrid(x, z) {
@@ -924,12 +959,19 @@ let soundtrackState = 'PEACEFUL';
 
 function updateSoundtrackState() {
   let newState;
-  switch (riotPhase) {
-    case 'PEACEFUL': newState = 'PEACEFUL'; break;
-    case 'TENSION':  newState = 'TENSION'; break;
-    case 'RIOT':     newState = 'COMBAT'; break;
-    case 'DISPERSAL': newState = 'AFTERMATH'; break;
-    default: newState = 'PEACEFUL';
+  // Factor in gathering phase for soundtrack
+  if (gatheringPhase === 'MARCHING' || gatheringPhase === 'MILLING') {
+    newState = 'PEACEFUL';
+  } else if (gatheringPhase === 'TENSION_BUILDUP') {
+    newState = 'TENSION';
+  } else {
+    switch (riotPhase) {
+      case 'PEACEFUL': newState = 'PEACEFUL'; break;
+      case 'TENSION':  newState = 'TENSION'; break;
+      case 'RIOT':     newState = 'COMBAT'; break;
+      case 'DISPERSAL': newState = 'AFTERMATH'; break;
+      default: newState = 'PEACEFUL';
+    }
   }
   soundtrackState = newState;
 
@@ -1225,6 +1267,27 @@ function playHorn() {
   o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.15);
 }
 
+function playCrowdRoar() {
+  const ctx = ensureAudio();
+  const dur = 2.5;
+  const bufSize = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) {
+    const t = i / ctx.sampleRate;
+    const env = Math.min(t * 2, 1) * Math.exp(-Math.max(0, t - 1.5) * 2);
+    const low = Math.sin(2 * Math.PI * 120 * t + Math.sin(2 * Math.PI * 3 * t) * 4);
+    const mid = Math.sin(2 * Math.PI * 250 * t + Math.sin(2 * Math.PI * 7 * t) * 2);
+    data[i] = ((Math.random() * 2 - 1) * 0.6 + low * 0.25 + mid * 0.15) * env * 0.2;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 400; bp.Q.value = 0.5;
+  const gain = ctx.createGain(); gain.gain.value = 0.12;
+  src.connect(bp).connect(gain).connect(ctx.destination);
+  src.start();
+}
+
 // =========================================================================
 // Ambient City Soundscape (demonstrates audio/spatial.py + soundtrack.py)
 // =========================================================================
@@ -1259,7 +1322,17 @@ function updateAmbientAudio(dt) {
   const dayVol = (simTime > 7 && simTime < 20) ? 0.04 : 0.015;
   ambientGain.gain.linearRampToValueAtTime(dayVol, (audioCtx ? audioCtx.currentTime : 0) + 0.1);
   const isRiot = riotPhase === 'RIOT';
-  const crowdVol = isRiot ? Math.min(0.06, protestors.length * 0.003) : 0;
+  // Gradual crowd noise: starts low during gathering, builds during tension, full during riot
+  let crowdVol = 0;
+  if (isRiot) crowdVol = Math.min(0.06, protestors.length * 0.003);
+  else if (gatheringPhase === 'TENSION_BUILDUP') crowdVol = Math.min(0.04, protestors.length * 0.002);
+  else if (gatheringPhase === 'MILLING') crowdVol = Math.min(0.02, protestors.length * 0.001);
+  else if (gatheringPhase === 'MARCHING') crowdVol = 0.005;
+  // Modulate crowd filter — angrier = higher frequency
+  if (crowdFilter) {
+    const targetFreq = isRiot ? 500 : (gatheringPhase === 'TENSION_BUILDUP') ? 400 : 300;
+    crowdFilter.frequency.linearRampToValueAtTime(targetFreq, (audioCtx.currentTime) + 0.5);
+  }
   crowdGain.gain.linearRampToValueAtTime(crowdVol, (audioCtx.currentTime) + 0.1);
   const rVol = rainActive ? 0.035 : 0;
   rainGain.gain.linearRampToValueAtTime(rVol, (audioCtx.currentTime) + 0.1);
@@ -2146,6 +2219,24 @@ const shieldMesh = new THREE.InstancedMesh(shieldGeo, shieldMat, MAX_SHIELDS);
 shieldMesh.castShadow = false; // PERF: dynamic objects skip shadow pass
 shieldMesh.count = 0;
 scene.add(shieldMesh);
+
+// Protest sign instances — stick + sign face for ~40% of protestors
+const MAX_SIGNS = Math.ceil(NUM_PROTESTORS * 0.5);
+const signStickGeo = new THREE.BoxGeometry(0.1, 2.5, 0.1);
+const signStickMat = new THREE.MeshStandardMaterial({ color: 0x8B6914, roughness: 0.9 });
+const signStickMesh = new THREE.InstancedMesh(signStickGeo, signStickMat, MAX_SIGNS);
+signStickMesh.castShadow = false;
+signStickMesh.count = 0;
+scene.add(signStickMesh);
+
+const signFaceGeo = new THREE.BoxGeometry(1.4, 0.9, 0.05);
+const signFaceMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.7 });
+const signFaceMesh = new THREE.InstancedMesh(signFaceGeo, signFaceMat, MAX_SIGNS);
+signFaceMesh.castShadow = false;
+signFaceMesh.count = 0;
+scene.add(signFaceMesh);
+
+let signIdx = 0;
 
 // =========================================================================
 // Squad Formation Line (demonstrates squad.py, formations.py)
@@ -3479,11 +3570,18 @@ for (let i = 0; i < NUM_TAXIS; i++) {
 // Riot Units
 // =========================================================================
 function spawnProtestors() {
+  signIdx = 0;
   for (let i = 0; i < NUM_PROTESTORS; i++) {
-    const angle = rng() * Math.PI * 2;
-    const radius = rng() * 20;
-    const x = PLAZA_X + Math.cos(angle) * radius;
-    const z = PLAZA_Z + Math.sin(angle) * radius;
+    // Spawn at random city edge positions (sidewalks near edges)
+    const spawnPos = randomSidewalkPos();
+    // Bias spawns toward edges of the city
+    if (rng() < 0.5) {
+      if (rng() < 0.5) spawnPos.x = ROAD_W / 2 + SIDEWALK_W / 2 + rng() * 30;
+      else spawnPos.x = CITY_W - ROAD_W / 2 - SIDEWALK_W / 2 - rng() * 30;
+    } else {
+      if (rng() < 0.5) spawnPos.z = ROAD_W / 2 + SIDEWALK_W / 2 + rng() * 30;
+      else spawnPos.z = CITY_H - ROAD_W / 2 - SIDEWALK_W / 2 - rng() * 30;
+    }
     const headColor = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
     const slot = allocPersonSlot();
 
@@ -3494,14 +3592,28 @@ function spawnProtestors() {
       ringMesh.count = ringIdx;
     }
 
+    // Protest sign — ~40% of protestors carry signs
+    let mySignIdx = -1;
+    const hasSign = rng() < 0.4 && signIdx < MAX_SIGNS;
+    if (hasSign) {
+      mySignIdx = signIdx++;
+      signStickMesh.count = signIdx;
+      signFaceMesh.count = signIdx;
+    }
+
+    // Plan path from spawn to plaza area
+    const plazaDest = { x: PLAZA_X + (rng() - 0.5) * 30, z: PLAZA_Z + (rng() - 0.5) * 30 };
+    const marchWps = planPedPath(spawnPos, plazaDest);
+
     protestors.push({
-      slot, myRingIdx,
-      x, z, y: 0, rotY: 0,
+      slot, myRingIdx, mySignIdx,
+      x: spawnPos.x, z: spawnPos.z, y: 0, rotY: 0,
       bodyColor: COLOR_PROTESTOR,
       headColor,
       ringColor: MAGENTA,
       scale: 1.1,
-      speed: 1.5 + rng() * 2,
+      speed: 1.2 + rng() * 1.0, // slower march speed
+      baseSpeed: 1.2 + rng() * 1.0,
       alive: true,
       health: 1.0,
       morale: 0.8,
@@ -3512,9 +3624,20 @@ function spawnProtestors() {
       stunnedTimer: 0,
       aggression: 0.0,
       panicFlash: 0,
-      target: { x: PLAZA_X + (rng() - 0.5) * 40, z: PLAZA_Z + (rng() - 0.5) * 40 },
+      hasSign,
+      signDropped: false,
+      arrivedAtPlaza: false,
+      marchWaypoints: marchWps.slice(1),
+      target: marchWps[0] || plazaDest,
+      walkBob: rng() * Math.PI * 2, // random walk cycle phase
     });
   }
+  gatheringPhase = 'MARCHING';
+  gatheringTimer = 0;
+  gatheringArrivedCount = 0;
+  gatheringChantTimer = 0;
+  firstRockThrown = false;
+  tensionBuildupTimer = 0;
 }
 
 function spawnPolice() {
@@ -4625,13 +4748,13 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     riotMode = !riotMode;
     const banner = document.getElementById('combat-banner');
-    banner.textContent = riotMode ? 'RIOT IN PROGRESS' : 'RIOT DISPERSED';
+    banner.textContent = riotMode ? 'PROTEST GATHERING' : 'RIOT DISPERSED';
     banner.classList.add('show');
     setTimeout(() => banner.classList.remove('show'), 2000);
 
     if (riotMode) {
       ensureAudio();
-      riotPhase = 'TENSION';
+      riotPhase = 'PEACEFUL'; // Start peaceful — gathering phase handles escalation
       artilleryTriggered = false; artilleryPhase = 'IDLE';
       riotTimer = 0;
       // Start campaign Phase 1: Morning Protest
@@ -4654,7 +4777,7 @@ document.addEventListener('keydown', (e) => {
       // Reset status effects
       activeEffects.length = 0;
       effectsCount = 0;
-      spawnProtestors();
+      spawnProtestors(); // Spawns at city edges, will march to plaza
       spawnPolice();
       spawnBarricades();
       createHelicopter();
@@ -4663,7 +4786,7 @@ document.addEventListener('keydown', (e) => {
         obj.objectiveStatus = 'active';
         obj.objectiveColor = 0xfcee0a; // yellow = active
       }
-      addKillFeedEntry('Protest gathering in central plaza');
+      addKillFeedEntry('Reports of protestors gathering across the city');
       addKillFeedEntry('Police barricades deployed');
       addKillFeedEntry('Police helicopter deployed');
       addNarration('riot_start');
@@ -4729,10 +4852,14 @@ document.addEventListener('keydown', (e) => {
         hideInjuredMarker(entry.marker);
       }
       injuredOnGround.length = 0;
-      // Reset rings, shields, and barricades
+      // Reset rings, shields, signs, and barricades
       ringMesh.count = 0;
       ringIdx = 0;
       shieldMesh.count = 0;
+      signStickMesh.count = 0;
+      signFaceMesh.count = 0;
+      signIdx = 0;
+      gatheringPhase = 'NONE';
       barricades.length = 0;
       barricadeMesh.count = 0;
       barricadeMesh.instanceMatrix.needsUpdate = true;
@@ -4811,6 +4938,17 @@ document.addEventListener('keydown', (e) => {
 
 function advanceCampaignPhase() {
   if (campaignComplete || campaignPhase === 0) return;
+  // Skip gathering if manually advancing phases
+  if (gatheringPhase !== 'NONE' && gatheringPhase !== 'RIOT_TRIGGERED') {
+    gatheringPhase = 'RIOT_TRIGGERED';
+    firstRockThrown = true;
+    for (const pr of protestors) {
+      if (pr.alive && !pr.arrested) {
+        pr.arrivedAtPlaza = true;
+        pr.speed = 1.5 + rng() * 2;
+      }
+    }
+  }
   if (campaignPhase < 3) {
     campaignPhase++;
     campaignTimer = 0;
@@ -5842,17 +5980,156 @@ function update(dt) {
     if (campaignPhase === 1 && campaignTimer >= 60) { advanceCampaignPhase(); }
     if (campaignPhase === 3 && protestors.filter(p => p.alive && !p.arrested).length === 0) { showCampaignOverlay(); }
 
-    // Phase progression
-    if (riotPhase === 'TENSION' && riotTimer > 8) {
+    // ---- GATHERING PHASE SYSTEM ----
+    if (gatheringPhase === 'MARCHING' || gatheringPhase === 'MILLING') {
+      gatheringTimer += dt;
+      gatheringChantTimer += dt;
+
+      // Count how many protestors have reached the plaza area
+      gatheringArrivedCount = 0;
+      for (const pr of protestors) {
+        if (!pr.alive || pr.arrested) continue;
+        const dToPlaza = dist2d(pr, { x: PLAZA_X, z: PLAZA_Z });
+        if (dToPlaza < 35) {
+          if (!pr.arrivedAtPlaza) {
+            pr.arrivedAtPlaza = true;
+          }
+          gatheringArrivedCount++;
+        }
+      }
+
+      const aliveProtestors = protestors.filter(p => p.alive && !p.arrested).length;
+      const arrivalRatio = aliveProtestors > 0 ? gatheringArrivedCount / aliveProtestors : 0;
+
+      if (gatheringPhase === 'MARCHING') {
+        // Narrate the gathering
+        if (gatheringTimer > 3 && gatheringTimer < 3.1) {
+          addNarration('crowd_gathering', { n: aliveProtestors });
+        }
+
+        // Transition to MILLING when 70% have arrived
+        if (arrivalRatio >= 0.7) {
+          gatheringPhase = 'MILLING';
+          gatheringTimer = 0;
+          addKillFeedEntry('Protestors assembling in central plaza');
+          addNarration('crowd_assembled', { n: gatheringArrivedCount });
+        }
+      }
+
+      if (gatheringPhase === 'MILLING') {
+        // Periodic chanting messages
+        if (gatheringChantTimer > 3 + rng() * 2) {
+          gatheringChantTimer = 0;
+          addKillFeedEntry(CHANT_MESSAGES[Math.floor(rng() * CHANT_MESSAGES.length)]);
+        }
+
+        // After milling for ~10 seconds, transition to TENSION
+        if (gatheringTimer > 10) {
+          gatheringPhase = 'TENSION_BUILDUP';
+          gatheringTimer = 0;
+          riotPhase = 'TENSION';
+          addKillFeedEntry('Crowd mood shifting... tensions rising');
+          addNarration('tension_rising');
+          // Camera cinematic zoom during tension
+          if (controls) {
+            const camDist = camera.position.distanceTo(controls.target);
+            if (camDist > 120) {
+              // Smoothly zoom camera closer to plaza
+              const dir = new THREE.Vector3().subVectors(controls.target, camera.position).normalize();
+              camera.position.addScaledVector(dir, camDist * 0.3);
+            }
+          }
+        }
+      }
+    }
+
+    if (gatheringPhase === 'TENSION_BUILDUP') {
+      tensionBuildupTimer += dt;
+      gatheringChantTimer += dt;
+
+      // More frequent, angrier chanting
+      if (gatheringChantTimer > 2) {
+        gatheringChantTimer = 0;
+        addKillFeedEntry(CHANT_MESSAGES[Math.floor(rng() * CHANT_MESSAGES.length)]);
+      }
+
+      // Protestors cluster tighter during tension
+      for (const pr of protestors) {
+        if (!pr.alive || pr.arrested || pr.fleeing || !pr.arrivedAtPlaza) continue;
+        // Pull toward center of crowd
+        const dx = PLAZA_X - pr.x;
+        const dz = PLAZA_Z - pr.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d > 8) {
+          pr.target = { x: PLAZA_X + (rng() - 0.5) * 15, z: PLAZA_Z + (rng() - 0.5) * 15 };
+        }
+        // Slow speed increase represents agitation
+        pr.speed = Math.min((pr.baseSpeed || 2) * 1.5, pr.speed + 0.02 * dt);
+      }
+
+      // After ~8 seconds of tension: THE FIRST ROCK
+      if (tensionBuildupTimer > 8 && !firstRockThrown) {
+        firstRockThrown = true;
+        gatheringPhase = 'RIOT_TRIGGERED';
+
+        // Find the most aggressive protestor to throw first rock
+        let thrower = null;
+        for (const pr of protestors) {
+          if (pr.alive && !pr.arrested && pr.arrivedAtPlaza) { thrower = pr; break; }
+        }
+
+        // Dramatic pause — banner flash
+        const banner = document.getElementById('combat-banner');
+        banner.textContent = 'RIOT ERUPTED';
+        banner.classList.add('show');
+        setTimeout(() => banner.classList.remove('show'), 3000);
+
+        // Throw the first rock
+        if (thrower) {
+          const nearestPol = police.find(p => p.alive);
+          if (nearestPol) {
+            launchProjectile(
+              { x: thrower.x, z: thrower.z },
+              { x: nearestPol.x + (rng() - 0.5) * 5, z: nearestPol.z + (rng() - 0.5) * 5 },
+              'rock'
+            );
+            rockCount++;
+          }
+          thrower.aggression = 0.5;
+        }
+
+        addKillFeedEntry('*** FIRST ROCK THROWN — RIOT ERUPTED ***');
+        addNarration('first_rock');
+        playCrowdRoar();
+
+        // Drop signs for many protestors
+        for (const pr of protestors) {
+          if (pr.hasSign && !pr.signDropped && rng() < 0.5) {
+            pr.signDropped = true;
+          }
+        }
+
+        // Transition to full RIOT phase
+        riotPhase = 'RIOT';
+        if (campaignPhase === 1) { advanceCampaignPhase(); }
+
+        // Boost all protestor speeds for riot
+        for (const pr of protestors) {
+          if (pr.alive && !pr.arrested) {
+            pr.speed = 1.5 + rng() * 2;
+            pr.aggression = Math.min(1.0, pr.aggression + 0.2);
+          }
+        }
+      }
+    }
+
     // Supply convoy timer — spawn every 60s during RIOT phase
     if (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') {
       supplyConvoyTimer += dt;
       if (supplyConvoyTimer >= 60) { supplyConvoyTimer = 0; spawnSupplyConvoy(); }
     }
-      riotPhase = 'RIOT';
-      addKillFeedEntry('*** RIOT ERUPTED ***');
-      if (campaignPhase === 1) { advanceCampaignPhase(); } // escalation triggers phase 2
-    }
+
+    // DISPERSAL transition
     if (riotPhase === 'RIOT' && protestors.filter(p => p.alive && !p.arrested).length < 5) {
       riotPhase = 'DISPERSAL';
       addKillFeedEntry('Crowd dispersing');
@@ -5926,9 +6203,14 @@ function update(dt) {
       const baseColor = pr.panicFlash > 0 ? 0xfcee0a : aggressionColor;
       const prDisplayColor = healthTint(moraleColor(baseColor, pr.morale), pr.health);
 
+      // Walking bob animation — oscillate Y position
+      pr.walkBob = (pr.walkBob || 0) + dt * pr.speed * 3;
+      const isMoving = pr.speed > 0.5 && !pr.stunnedTimer;
+      const bobY = isMoving ? Math.sin(pr.walkBob) * 0.15 : 0;
+
       // STUNNED status effect: cannot move for duration
       if (pr.stunnedTimer > 0) {
-        updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
+        updatePersonInstance(pr.slot, pr.x, bobY, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
         continue;
       }
 
@@ -5943,6 +6225,8 @@ function update(dt) {
             z: pr.z + (awayZ / awayLen) * 80 + (rng() - 0.5) * 30,
           };
         }
+        // Drop sign when fleeing
+        if (pr.hasSign && !pr.signDropped) pr.signDropped = true;
         const target = pr.fleeTarget;
         const dx = target.x - pr.x;
         const dz = target.z - pr.z;
@@ -5960,7 +6244,54 @@ function update(dt) {
           pr.alive = false;
           hidePersonInstance(pr.slot);
         }
-        if (pr.alive) updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
+        if (pr.alive) updatePersonInstance(pr.slot, pr.x, bobY, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
+        continue;
+      }
+
+      // ---- MARCHING PHASE: follow waypoints to plaza ----
+      if ((gatheringPhase === 'MARCHING' || gatheringPhase === 'MILLING') && !pr.arrivedAtPlaza) {
+        // Follow march waypoints using road pathfinding
+        const dx = pr.target.x - pr.x;
+        const dz = pr.target.z - pr.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 2) {
+          if (pr.marchWaypoints && pr.marchWaypoints.length > 0) {
+            pr.target = pr.marchWaypoints.shift();
+          } else {
+            // Arrived at plaza destination
+            pr.arrivedAtPlaza = true;
+          }
+        } else {
+          const s = pr.speed * dt;
+          let newX = pr.x + (dx / dist) * s;
+          let newZ = pr.z + (dz / dist) * s;
+          const resolved = resolveCollision(pr.x, pr.z, newX, newZ);
+          pr.x = resolved.x;
+          pr.z = resolved.z;
+          pr.rotY = Math.atan2(dx, dz);
+        }
+        updatePersonInstance(pr.slot, pr.x, bobY, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
+        continue;
+      }
+
+      // ---- MILLING PHASE: slow wander within plaza ----
+      if (gatheringPhase === 'MILLING' && pr.arrivedAtPlaza) {
+        const dx = pr.target.x - pr.x;
+        const dz = pr.target.z - pr.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 2) {
+          // Pick a new nearby random point within the plaza
+          pr.target = { x: PLAZA_X + (rng() - 0.5) * 25, z: PLAZA_Z + (rng() - 0.5) * 25 };
+        } else {
+          const s = pr.speed * 0.4 * dt; // slow milling speed
+          let newX = pr.x + (dx / dist) * s;
+          let newZ = pr.z + (dz / dist) * s;
+          const resolved = resolveCollision(pr.x, pr.z, newX, newZ);
+          pr.x = resolved.x;
+          pr.z = resolved.z;
+          pr.rotY = Math.atan2(dx, dz);
+        }
+        updatePersonInstance(pr.slot, pr.x, bobY, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
         continue;
       }
 
@@ -5988,7 +6319,7 @@ function update(dt) {
         pr.rotY = Math.atan2(dx, dz);
       }
 
-      updatePersonInstance(pr.slot, pr.x, 0, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
+      updatePersonInstance(pr.slot, pr.x, bobY, pr.z, pr.rotY, prDisplayColor, pr.headColor, pr.scale);
 
       // Throw rocks and molotovs during RIOT phase
       if (riotPhase === 'RIOT') {
@@ -6004,6 +6335,8 @@ function update(dt) {
         if (pr.throwTimer <= 0) {
           pr.throwTimer = (4 + rng() * 10) * (1 - pr.aggression * 0.5); // aggression speeds throwing
           pr.aggression = Math.min(1.0, pr.aggression + 0.1); // throwing boosts own aggression
+          // Drop protest sign when throwing (hands are busy)
+          if (pr.hasSign && !pr.signDropped) pr.signDropped = true;
 
           let nearest = null, nearDist = Infinity;
           for (const pol of police) {
@@ -6276,6 +6609,47 @@ function update(dt) {
     }
     if (shieldMesh.count > 0) {
       shieldMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // Update protest signs — sticks and sign faces above protestors
+    for (const pr of protestors) {
+      if (pr.mySignIdx >= 0 && pr.alive && !pr.arrested && pr.hasSign && !pr.signDropped) {
+        const s = pr.scale * PERSON_SCALE;
+        const signBaseY = BODY_H * s + HEAD_SIZE * s + 0.2; // above head
+        const bobY = Math.sin(pr.walkBob || 0) * 0.15;
+        // Stick — from hand to above head
+        _euler.set(0, pr.rotY, 0);
+        _quat.setFromEuler(_euler);
+        _pos.set(pr.x + Math.sin(pr.rotY) * 0.3, signBaseY + bobY, pr.z + Math.cos(pr.rotY) * 0.3);
+        _scale.set(1, 1, 1);
+        _mat4.compose(_pos, _quat, _scale);
+        signStickMesh.setMatrixAt(pr.mySignIdx, _mat4);
+        // Sign face — at top of stick
+        const signY = signBaseY + 1.3 + bobY;
+        _pos.set(pr.x + Math.sin(pr.rotY) * 0.3, signY, pr.z + Math.cos(pr.rotY) * 0.3);
+        // Sign sways slightly
+        const sway = Math.sin((pr.walkBob || 0) * 0.7 + pr.mySignIdx) * 0.1;
+        _euler.set(sway, pr.rotY, 0);
+        _quat.setFromEuler(_euler);
+        _mat4.compose(_pos, _quat, _scale);
+        signFaceMesh.setMatrixAt(pr.mySignIdx, _mat4);
+        // Color: green during peaceful/gathering, red during riot
+        const signColor = (riotPhase === 'RIOT' || riotPhase === 'DISPERSAL') ? 0xffaaaa : 0xaaffaa;
+        signFaceMesh.setColorAt(pr.mySignIdx, _color.set(signColor));
+      } else if (pr.mySignIdx >= 0) {
+        // Hide sign (dropped or person dead)
+        _pos.set(0, -100, 0);
+        _quat.identity();
+        _scale.set(0, 0, 0);
+        _mat4.compose(_pos, _quat, _scale);
+        signStickMesh.setMatrixAt(pr.mySignIdx, _mat4);
+        signFaceMesh.setMatrixAt(pr.mySignIdx, _mat4);
+      }
+    }
+    if (signStickMesh.count > 0) {
+      signStickMesh.instanceMatrix.needsUpdate = true;
+      signFaceMesh.instanceMatrix.needsUpdate = true;
+      if (signFaceMesh.instanceColor) signFaceMesh.instanceColor.needsUpdate = true;
     }
   }
 
@@ -6627,10 +7001,16 @@ function updateHUD() {
   updateArtilleryStrike(0.25); // HUD updates at 4fps = 0.25s intervals
 
   const phaseEl = document.getElementById('phase-indicator');
-  phaseEl.textContent = riotPhase;
+  // Show gathering sub-phase in the HUD
+  let phaseText = riotPhase;
+  if (riotMode && gatheringPhase === 'MARCHING') phaseText = 'GATHERING';
+  else if (riotMode && gatheringPhase === 'MILLING') phaseText = 'ASSEMBLING';
+  else if (riotMode && gatheringPhase === 'TENSION_BUILDUP') phaseText = 'TENSION';
+  phaseEl.textContent = phaseText;
   phaseEl.className = riotPhase === 'RIOT' ? 'riot' :
-                      riotPhase === 'TENSION' ? 'tension' :
-                      riotPhase === 'DISPERSAL' ? 'dispersal' : '';
+                      (riotPhase === 'TENSION' || gatheringPhase === 'TENSION_BUILDUP') ? 'tension' :
+                      riotPhase === 'DISPERSAL' ? 'dispersal' :
+                      (gatheringPhase === 'MARCHING' || gatheringPhase === 'MILLING') ? 'gathering' : '';
 
   // Campaign phase HUD
   const cpEl = document.getElementById('campaign-phase');
