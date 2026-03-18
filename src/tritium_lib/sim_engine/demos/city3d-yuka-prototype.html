@@ -553,10 +553,12 @@ const pedPolygons = [];
 const roadPolygons = [];
 const debugPedRects = [];
 const debugRoadRects = [];
+const sidewalkOnlyRects = []; // ONLY sidewalks — not crosswalks, not plaza
 
-function addPedRect(x1, z1, x2, z2) {
+function addPedRect(x1, z1, x2, z2, isSidewalk = false) {
   pedPolygons.push(rect(x1, z1, x2, z2));
   debugPedRects.push({ x1, z1, x2, z2 });
+  if (isSidewalk) sidewalkOnlyRects.push({ x1, z1, x2, z2 });
 }
 function addRoadRect(x1, z1, x2, z2) {
   roadPolygons.push(rect(x1, z1, x2, z2));
@@ -574,8 +576,8 @@ for (let row = 0; row <= GRID_ROWS; row++) {
   for (let col = 0; col < GRID_COLS; col++) {
     const x1 = col * (BLOCK_W + ROAD_W) + ROAD_W;
     const x2 = x1 + BLOCK_W;
-    addPedRect(x1, swTopZ1, x2, swTopZ2); // north sidewalk
-    addPedRect(x1, swBotZ1, x2, swBotZ2); // south sidewalk
+    addPedRect(x1, swTopZ1, x2, swTopZ2, true); // north sidewalk
+    addPedRect(x1, swBotZ1, x2, swBotZ2, true); // south sidewalk
 
     // Road lanes for cars
     addRoadRect(x1, roadCenterZ - ROAD_SURFACE_W / 2, x2, roadCenterZ + ROAD_SURFACE_W / 2);
@@ -593,8 +595,8 @@ for (let col = 0; col <= GRID_COLS; col++) {
   for (let row = 0; row < GRID_ROWS; row++) {
     const z1 = row * (BLOCK_H + ROAD_W) + ROAD_W;
     const z2 = z1 + BLOCK_H;
-    addPedRect(swLeftX1, z1, swLeftX2, z2);  // west sidewalk
-    addPedRect(swRightX1, z1, swRightX2, z2); // east sidewalk
+    addPedRect(swLeftX1, z1, swLeftX2, z2, true);  // west sidewalk
+    addPedRect(swRightX1, z1, swRightX2, z2, true); // east sidewalk
 
     // Road lanes for cars
     addRoadRect(roadCenterX - ROAD_SURFACE_W / 2, z1, roadCenterX + ROAD_SURFACE_W / 2, z2);
@@ -711,8 +713,9 @@ const STATE = { IDLE: 0, WALK_TO: 1, AT_DESTINATION: 2, PROTEST: 3 };
 
 // --- Point generation helpers ---
 function randomSidewalkPoint() {
-  // Pick a random point on a sidewalk
-  const r = debugPedRects[Math.floor(Math.random() * debugPedRects.length)];
+  // Pick a random point on a SIDEWALK only (not crosswalk, not plaza)
+  const rects = sidewalkOnlyRects.length > 0 ? sidewalkOnlyRects : debugPedRects;
+  const r = rects[Math.floor(Math.random() * rects.length)];
   return new YUKA.Vector3(
     r.x1 + Math.random() * (r.x2 - r.x1),
     0,
