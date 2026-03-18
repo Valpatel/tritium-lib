@@ -13,8 +13,11 @@ Usage:
 """
 
 from .addon_base import AddonBase, AddonInfo
+from .config_loader import AddonConfig
+from .context import AddonContext
 from .geo_layer import AddonGeoLayer
 from .addon_events import AddonEvent, AddonEventBus
+from .protocols import IEventBus, IMQTTClient, IRouterHandler, ITargetTracker
 from .interfaces import (
     SensorAddon,
     ProcessorAddon,
@@ -35,10 +38,16 @@ from .runner_mqtt import RunnerMQTTClient
 
 __all__ = [
     "AddonBase",
+    "AddonConfig",
+    "AddonContext",
     "AddonEvent",
     "AddonEventBus",
     "AddonGeoLayer",
     "AddonInfo",
+    "IEventBus",
+    "IMQTTClient",
+    "IRouterHandler",
+    "ITargetTracker",
     "SensorAddon",
     "ProcessorAddon",
     "AggregatorAddon",

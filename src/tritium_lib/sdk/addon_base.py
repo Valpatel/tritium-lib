@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .addon_events import AddonEvent, AddonEventBus
+from .context import AddonContext
 from .geo_layer import AddonGeoLayer
+from .protocols import IEventBus, IMQTTClient, ITargetTracker
 
 
 @dataclass
@@ -58,8 +60,11 @@ class AddonBase:
         self._event_subscriptions: list = []
         self._addon_event_bus: AddonEventBus | None = None
         self._addon_event_unsubs: list[Callable] = []
+        self._context: AddonContext | None = None
 
-    async def register(self, app: Any) -> None:
+    async def register(
+        self, app: Any = None, *, context: AddonContext | None = None
+    ) -> None:
         """Called when the addon is enabled.
 
         Override this to:
@@ -70,14 +75,15 @@ class AddonBase:
         - Initialize hardware connections
 
         Args:
-            app: The Tritium application context. Provides:
-                - app.event_bus: EventBus for pub/sub
-                - app.mqtt: MQTT client (if available)
-                - app.database_url: Database connection string
-                - app.include_router: Add FastAPI routes
-                - app.config: Application configuration
+            app: Legacy — the raw application context.  Deprecated; use *context*.
+            context: :class:`AddonContext` with all dependencies injected.
         """
         self._registered = True
+        if context is not None:
+            self._context = context
+            # Wire up addon event bus if provided
+            if context.addon_event_bus:
+                self.set_event_bus(context.addon_event_bus)
 
     async def unregister(self, app: Any) -> None:
         """Called when the addon is disabled.
@@ -113,6 +119,35 @@ class AddonBase:
         self._addon_event_unsubs.clear()
 
         self._registered = False
+
+    # ------------------------------------------------------------------
+    # Context convenience properties
+    # ------------------------------------------------------------------
+
+    @property
+    def context(self) -> AddonContext | None:
+        """The :class:`AddonContext` set during register(), if any."""
+        return self._context
+
+    @property
+    def target_tracker(self) -> ITargetTracker | None:
+        """Shortcut to the target tracker from the addon context."""
+        return self._context.target_tracker if self._context else None
+
+    @property
+    def event_bus(self) -> IEventBus | None:
+        """Shortcut to the event bus from the addon context."""
+        return self._context.event_bus if self._context else None
+
+    @property
+    def mqtt_client(self) -> IMQTTClient | None:
+        """Shortcut to the MQTT client from the addon context."""
+        return self._context.mqtt_client if self._context else None
+
+    @property
+    def site_id(self) -> str:
+        """Shortcut to the site ID from the addon context."""
+        return self._context.site_id if self._context else "home"
 
     # ------------------------------------------------------------------
     # Inter-addon event helpers
