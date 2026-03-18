@@ -29,6 +29,8 @@ from .device_transport import DeviceTransport, LocalTransport, MQTTTransport
 from .subprocess_manager import ManagedProcess, SubprocessManager
 from .device_registry import DeviceRegistry, RegisteredDevice, DeviceState
 from .async_store import AsyncBaseStore
+from .runner_base import BaseRunner
+from .runner_mqtt import RunnerMQTTClient
 
 __all__ = [
     "AddonBase",
@@ -55,6 +57,8 @@ __all__ = [
     "RegisteredDevice",
     "DeviceState",
     "AsyncBaseStore",
+    "BaseRunner",
+    "RunnerMQTTClient",
 ]
 
 SDK_VERSION = "1.0.0"
