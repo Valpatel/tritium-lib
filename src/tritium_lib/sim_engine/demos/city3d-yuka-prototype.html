@@ -660,19 +660,12 @@ const roadNavMesh = new YUKA.NavMesh();
 roadNavMesh.fromPolygons(roadPolygons);
 
 // Combined NavMesh for protest mode (pedestrians can walk anywhere)
-const allPolygons = [];
-for (const p of pedPolygons) {
-  const poly = new YUKA.Polygon();
-  poly.fromContour([...p.contour]);
-  allPolygons.push(poly);
-}
-for (const p of roadPolygons) {
-  const poly = new YUKA.Polygon();
-  poly.fromContour([...p.contour]);
-  allPolygons.push(poly);
-}
+// Rebuild from raw rects since yuka Polygons don't expose contour after fromContour()
+const allCombinedPolygons = [];
+for (const r of debugPedRects) allCombinedPolygons.push(rect(r.x1, r.z1, r.x2, r.z2));
+for (const r of debugRoadRects) allCombinedPolygons.push(rect(r.x1, r.z1, r.x2, r.z2));
 const combinedNavMesh = new YUKA.NavMesh();
-combinedNavMesh.fromPolygons(allPolygons);
+combinedNavMesh.fromPolygons(allCombinedPolygons);
 
 // ============================================================
 // DEBUG NAVMESH OVERLAY
