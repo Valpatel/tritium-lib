@@ -48,3 +48,17 @@ class IRouterHandler(Protocol):
         prefix: str = "",
         tags: list[str] | None = None,
     ) -> None: ...
+
+
+@runtime_checkable
+class ICommander(Protocol):
+    """Protocol for commander implementations.
+
+    Amy is one; others can be swapped in.  Any commander must provide
+    status inspection, asset dispatch, narration, and situational awareness.
+    """
+
+    def get_status(self) -> dict: ...
+    def dispatch(self, target_id: str, waypoints: list) -> bool: ...
+    def narrate(self, message: str) -> None: ...
+    def get_situation(self) -> dict: ...
