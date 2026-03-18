@@ -1,0 +1,314 @@
+# Created by Matthew Valancy
+# Copyright 2026 Valpatel Software LLC
+# Licensed under Apache-2.0 — see LICENSE for details.
+"""Base class for all Tritium addons.
+
+Every addon subclasses AddonBase and implements register/unregister.
+The addon loader calls these during enable/disable.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+from .addon_events import AddonEvent, AddonEventBus
+from .context import AddonContext
+from .geo_layer import AddonGeoLayer
+from .protocols import IEventBus, IMQTTClient, ITargetTracker
+
+
+@dataclass
+class AddonInfo:
+    """Static metadata about an addon."""
+    id: str
+    name: str
+    version: str = "0.0.0"
+    description: str = ""
+    author: str = ""
+    license: str = "AGPL-3.0"
+    category: str = "system"  # Which consolidated window to join
+    icon: str = ""
+    min_sdk_version: str = "1.0.0"
+
+
+_UNSET = object()  # Sentinel for "property not overridden"
+
+
+class AddonBase:
+    """Base class for all Tritium addons.
+
+    Subclass this and implement register() and unregister().
+
+    Example::
+
+        class MyAddon(AddonBase):
+            info = AddonInfo(id="my-addon", name="My Addon", version="1.0.0")
+
+            async def register(self, app):
+                # Wire up routes, start services, subscribe to events
+                pass
+
+            async def unregister(self, app):
+                # Clean shutdown, close connections, unsubscribe
+                pass
+    """
+
+    info: AddonInfo = AddonInfo(id="unknown", name="Unknown")
+
+    def __init__(self):
+        self._registered = False
+        self._background_tasks: list = []
+        self._mqtt_subscriptions: list = []
+        self._event_subscriptions: list = []
+        self._addon_event_bus: AddonEventBus | None = None
+        self._addon_event_unsubs: list[Callable] = []
+        self._context: AddonContext | None = None
+
+    async def register(
+        self, app: Any = None, *, context: AddonContext | None = None
+    ) -> None:
+        """Called when the addon is enabled.
+
+        Override this to:
+        - Add FastAPI routes (app.include_router)
+        - Start background tasks
+        - Subscribe to MQTT topics
+        - Subscribe to event bus events
+        - Initialize hardware connections
+
+        Args:
+            app: Legacy — the raw application context.  Deprecated; use *context*.
+            context: :class:`AddonContext` with all dependencies injected.
+        """
+        self._registered = True
+        if context is not None:
+            self._context = context
+            # Wire up addon event bus if provided
+            if context.addon_event_bus:
+                self.set_event_bus(context.addon_event_bus)
+
+    async def unregister(self, app: Any) -> None:
+        """Called when the addon is disabled.
+
+        Override this to clean up everything register() set up.
+        MUST be safe to call even if register() partially failed.
+        MUST complete within 10 seconds.
+
+        Args:
+            app: Same application context as register().
+        """
+        # Cancel background tasks
+        for task in self._background_tasks:
+            if hasattr(task, 'cancel'):
+                task.cancel()
+        self._background_tasks.clear()
+
+        # Unsubscribe MQTT
+        for unsub in self._mqtt_subscriptions:
+            if callable(unsub):
+                unsub()
+        self._mqtt_subscriptions.clear()
+
+        # Unsubscribe events
+        for unsub in self._event_subscriptions:
+            if callable(unsub):
+                unsub()
+        self._event_subscriptions.clear()
+
+        # Unsubscribe addon events
+        for unsub in self._addon_event_unsubs:
+            unsub()
+        self._addon_event_unsubs.clear()
+
+        self._registered = False
+
+    # ------------------------------------------------------------------
+    # Context convenience properties
+    # ------------------------------------------------------------------
+
+    @property
+    def context(self) -> AddonContext | None:
+        """The :class:`AddonContext` set during register(), if any."""
+        return self._context
+
+    @property
+    def target_tracker(self) -> ITargetTracker | None:
+        """Shortcut to the target tracker from the addon context.
+
+        Supports direct assignment for legacy addons that set
+        ``self.target_tracker = ...`` in their ``register()`` method.
+        """
+        override = self.__dict__.get('_target_tracker', _UNSET)
+        if override is not _UNSET:
+            return override
+        return self._context.target_tracker if self._context else None
+
+    @target_tracker.setter
+    def target_tracker(self, value: ITargetTracker | None) -> None:
+        self.__dict__['_target_tracker'] = value
+
+    @property
+    def event_bus(self) -> IEventBus | None:
+        """Shortcut to the event bus from the addon context.
+
+        Supports direct assignment for legacy addons.
+        """
+        override = self.__dict__.get('_event_bus_override', _UNSET)
+        if override is not _UNSET:
+            return override
+        return self._context.event_bus if self._context else None
+
+    @event_bus.setter
+    def event_bus(self, value: IEventBus | None) -> None:
+        self.__dict__['_event_bus_override'] = value
+
+    @property
+    def mqtt_client(self) -> IMQTTClient | None:
+        """Shortcut to the MQTT client from the addon context.
+
+        Supports direct assignment for legacy addons.
+        """
+        override = self.__dict__.get('_mqtt_client_override', _UNSET)
+        if override is not _UNSET:
+            return override
+        return self._context.mqtt_client if self._context else None
+
+    @mqtt_client.setter
+    def mqtt_client(self, value: IMQTTClient | None) -> None:
+        self.__dict__['_mqtt_client_override'] = value
+
+    @property
+    def site_id(self) -> str:
+        """Shortcut to the site ID from the addon context.
+
+        Supports direct assignment for legacy addons.
+        """
+        override = self.__dict__.get('_site_id_override', _UNSET)
+        if override is not _UNSET:
+            return override
+        return self._context.site_id if self._context else "home"
+
+    @site_id.setter
+    def site_id(self, value: str) -> None:
+        self.__dict__['_site_id_override'] = value
+
+    # ------------------------------------------------------------------
+    # Inter-addon event helpers
+    # ------------------------------------------------------------------
+
+    def set_event_bus(self, bus: AddonEventBus) -> None:
+        """Attach an :class:`AddonEventBus` to this addon."""
+        self._addon_event_bus = bus
+
+    def publish_addon_event(
+        self,
+        event_type: str,
+        data: dict,
+        device_id: str = "",
+    ) -> AddonEvent | None:
+        """Publish an addon event using ``self.info.id`` as the source.
+
+        Returns the created :class:`AddonEvent`, or ``None`` if no bus is set.
+        """
+        if self._addon_event_bus is None:
+            return None
+        return self._addon_event_bus.publish(
+            source_addon=self.info.id,
+            event_type=event_type,
+            data=data,
+            device_id=device_id,
+        )
+
+    def subscribe_addon_event(
+        self,
+        pattern: str,
+        callback: Callable[[AddonEvent], None],
+    ) -> None:
+        """Subscribe to addon events and track for cleanup on unregister."""
+        if self._addon_event_bus is None:
+            return
+        unsub = self._addon_event_bus.subscribe(pattern, callback)
+        self._addon_event_unsubs.append(unsub)
+
+    def get_panels(self) -> list[dict]:
+        """Return panel definitions for the frontend.
+
+        Override to provide panels. Each panel dict has:
+        - id: unique panel ID
+        - title: display title
+        - file: JS module path (relative to addon's frontend/ dir)
+        - category: which consolidated window (default: self.info.category)
+        - tab_order: position within window (default: 99)
+
+        Returns:
+            List of panel definition dicts.
+        """
+        return []
+
+    def get_layers(self) -> list[dict]:
+        """Return map layer definitions.
+
+        Override to provide layers. Each layer dict has:
+        - id: unique layer ID
+        - label: display label
+        - category: which layer category
+        - color: hex color for swatch
+        - key: state key for toggle (default: 'show' + capitalized id)
+
+        Returns:
+            List of layer definition dicts.
+        """
+        return []
+
+    def get_geojson_layers(self) -> list[AddonGeoLayer]:
+        """Return GeoJSON layer definitions for the tactical map.
+
+        Override to provide GeoJSON layers. Each :class:`AddonGeoLayer`
+        describes an API endpoint that returns a GeoJSON FeatureCollection.
+        The frontend will poll these endpoints at the specified refresh
+        interval and render the features on the map.
+
+        Returns:
+            List of :class:`AddonGeoLayer` instances.
+        """
+        return []
+
+    def get_context_menu_items(self) -> list[dict]:
+        """Return context menu items for the map right-click menu.
+
+        Each item has:
+        - label: display text
+        - action: event name to emit
+        - when: condition expression (e.g., "target.source == 'mesh'")
+
+        Returns:
+            List of context menu item dicts.
+        """
+        return []
+
+    def get_shortcuts(self) -> list[dict]:
+        """Return keyboard shortcut bindings.
+
+        Each binding has:
+        - key: key combo (e.g., "Shift+M")
+        - action: event name to emit
+        - description: human-readable description
+
+        Returns:
+            List of shortcut binding dicts.
+        """
+        return []
+
+    def health_check(self) -> dict:
+        """Return addon health status.
+
+        Override to provide addon-specific health checks.
+
+        Returns:
+            Dict with 'status' ('ok', 'degraded', 'error') and optional 'detail'.
+        """
+        return {"status": "ok" if self._registered else "not_registered"}
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__} id={self.info.id} v={self.info.version}>"

@@ -732,6 +732,11 @@ from .sdr import (
     RFSignal,
     SpectrumScan,
 )
+from .position_anchor import (
+    DetectionEdge,
+    FusedPositionEstimate,
+    PositionAnchor,
+)
 
 __all__ = [
     # Deployment
@@ -1372,4 +1377,8 @@ __all__ = [
     "Modulation",
     "RFSignal",
     "SpectrumScan",
+    # Position anchoring & sensor fusion
+    "DetectionEdge",
+    "FusedPositionEstimate",
+    "PositionAnchor",
 ]

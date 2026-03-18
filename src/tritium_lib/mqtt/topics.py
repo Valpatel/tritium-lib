@@ -56,6 +56,10 @@ _DEVICE_TOPIC_RE = re.compile(
     r"^tritium/devices/(?P<device_id>[^/]+)/(?P<message_type>.+)$"
 )
 
+_SITE_TOPIC_RE = re.compile(
+    r"^tritium/(?P<site>[^/]+)/(?P<domain>[^/]+)/(?P<device_id>[^/]+)/(?P<data_type>.+)$"
+)
+
 
 @dataclass
 class ParsedTopic:
@@ -63,6 +67,10 @@ class ParsedTopic:
     device_id: str
     message_type: str
     sensor_type: Optional[str] = None
+    # Site-scoped fields (populated by parse_site_topic)
+    site: Optional[str] = None
+    domain: Optional[str] = None
+    data_type: Optional[str] = None
 
 
 def parse_topic(topic: str) -> Optional[ParsedTopic]:
@@ -90,6 +98,34 @@ def parse_topic(topic: str) -> Optional[ParsedTopic]:
         device_id=device_id,
         message_type=message_type,
         sensor_type=sensor_type,
+    )
+
+
+def parse_site_topic(topic: str) -> Optional[ParsedTopic]:
+    """Parse a site-scoped Tritium topic.
+
+    Handles topics of the form: tritium/{site}/{domain}/{device_id}/{data_type}
+
+    Returns None if the topic doesn't match the site-scoped pattern.
+
+    Examples:
+        >>> parse_site_topic("tritium/home/sdr/hackrf-01/spectrum")
+        ParsedTopic(device_id='hackrf-01', message_type='sdr/spectrum',
+                    site='home', domain='sdr', data_type='spectrum')
+    """
+    m = _SITE_TOPIC_RE.match(topic)
+    if not m:
+        return None
+    site = m.group("site")
+    domain = m.group("domain")
+    device_id = m.group("device_id")
+    data_type = m.group("data_type")
+    return ParsedTopic(
+        device_id=device_id,
+        message_type=f"{domain}/{data_type}",
+        site=site,
+        domain=domain,
+        data_type=data_type,
     )
 
 
@@ -222,3 +258,52 @@ class TritiumTopics:
 
     def all_meshtastic(self) -> str:
         return f"{self.prefix}/meshtastic/+/#"
+
+    # --- Meshtastic extended topics ---
+
+    def meshtastic_status(self, device_id: str) -> str:
+        """Topic for Meshtastic bridge device status."""
+        return f"{self.prefix}/meshtastic/{device_id}/status"
+
+    def meshtastic_position(self, device_id: str) -> str:
+        """Topic for Meshtastic node position updates."""
+        return f"{self.prefix}/meshtastic/{device_id}/position"
+
+    # --- SDR topics ---
+
+    def sdr_spectrum(self, device_id: str) -> str:
+        """Topic for SDR spectrum data from a device."""
+        return f"{self.prefix}/sdr/{device_id}/spectrum"
+
+    def sdr_status(self, device_id: str) -> str:
+        """Topic for SDR device status."""
+        return f"{self.prefix}/sdr/{device_id}/status"
+
+    def sdr_command(self, device_id: str) -> str:
+        """Topic for commands sent to an SDR device."""
+        return f"{self.prefix}/sdr/{device_id}/command"
+
+    def all_sdr(self) -> str:
+        """Wildcard subscription for all SDR device topics."""
+        return f"{self.prefix}/sdr/+/#"
+
+    # --- Generic addon device topics ---
+
+    def addon_device(self, domain: str, device_id: str, data_type: str) -> str:
+        """Generic topic for any addon domain device.
+
+        Follows the standard pattern: tritium/{site}/{domain}/{device_id}/{data_type}
+        """
+        return f"{self.prefix}/{domain}/{device_id}/{data_type}"
+
+    def addon_device_status(self, domain: str, device_id: str) -> str:
+        """Status topic for a generic addon device."""
+        return self.addon_device(domain, device_id, "status")
+
+    def addon_device_command(self, domain: str, device_id: str) -> str:
+        """Command topic for a generic addon device."""
+        return self.addon_device(domain, device_id, "command")
+
+    def all_addon_domain(self, domain: str) -> str:
+        """Wildcard subscription for all devices in an addon domain."""
+        return f"{self.prefix}/{domain}/+/#"
