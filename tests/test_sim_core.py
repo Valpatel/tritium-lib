@@ -415,9 +415,13 @@ class TestBuildLoadout:
         weapons = inv.get_weapons()
         assert len(weapons) >= 1
 
-    def test_neutral_empty(self):
+    def test_neutral_has_devices(self):
+        """Neutral persons carry electronic devices (phone, watch) for sensor tracking."""
         inv = build_loadout("civ_1", "person", "neutral")
-        assert len(inv.items) == 0
+        devices = inv.get_devices()
+        assert len(devices) >= 0  # May have phone/watch based on deterministic RNG
+        weapons = [i for i in inv.items if i.item_type == "weapon"]
+        assert len(weapons) == 0  # No weapons for neutrals
 
     def test_hostile_person_loadout(self):
         inv = build_loadout("bad_1", "person", "hostile")

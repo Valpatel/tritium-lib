@@ -530,8 +530,9 @@ def build_loadout(
     """
     inv = UnitInventory(owner_id=target_id)
 
-    # Non-combatants get empty inventory
+    # Non-combatants get devices only (no weapons)
     if alliance == "neutral":
+        _add_civilian_devices(inv, target_id, asset_type)
         return inv
     if asset_type in ("animal", "vehicle") and alliance != "hostile":
         return inv
@@ -571,6 +572,7 @@ def build_loadout(
             inv.add_item(_make_item_from_catalog("drone_gun", f"{target_id}_gun"))
         else:
             inv.add_item(_make_item_from_catalog("nerf_pistol", f"{target_id}_pistol"))
+        _add_civilian_devices(inv, target_id, asset_type)
         return inv
 
     # --- Friendly loadouts ---
@@ -607,7 +609,88 @@ def build_loadout(
     else:
         inv.add_item(_make_item_from_catalog("nerf_blaster", f"{target_id}_blaster"))
 
+    # All entities get civilian devices (phone, watch, car sensors)
+    _add_civilian_devices(inv, target_id, asset_type)
+
     return inv
+
+
+def _add_civilian_devices(inv: UnitInventory, target_id: str, asset_type: str) -> None:
+    """Add personal electronic devices to any entity's inventory.
+
+    These devices emit detectable RF signatures (BLE, WiFi) that sensors
+    can pick up — bridging the simulation into the real tracking pipeline.
+    """
+    import hashlib
+
+    # Deterministic RNG from target_id
+    h = int(hashlib.md5(target_id.encode()).hexdigest(), 16)
+    def _rng():
+        nonlocal h
+        h = (h * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        return (h >> 33) / (2**31)
+
+    _PHONE_MODELS = [
+        "iPhone 15 Pro", "iPhone 14", "iPhone SE",
+        "Samsung Galaxy S24", "Samsung Galaxy A54",
+        "Google Pixel 8", "Google Pixel 7a",
+        "OnePlus 12", "Motorola Edge",
+    ]
+    _WATCH_MODELS = [
+        "Apple Watch Series 9", "Apple Watch SE",
+        "Samsung Galaxy Watch 6", "Fitbit Charge 6",
+        "Garmin Venu 3",
+    ]
+
+    def _mac(prefix=""):
+        octets = [int(_rng() * 256) for _ in range(6)]
+        # Set locally administered bit
+        octets[0] = (octets[0] | 0x02) & 0xFE
+        return ":".join(f"{b:02X}" for b in octets)
+
+    if asset_type in ("person", "instigator", "rioter", "civilian"):
+        # 80% have a phone
+        if _rng() < 0.8:
+            model = _PHONE_MODELS[int(_rng() * len(_PHONE_MODELS))]
+            inv.add_item(InventoryItem(
+                item_id=f"{target_id}_phone",
+                item_type="device",
+                name=model,
+                device_class="phone",
+                device_model=model,
+                ble_mac=_mac(),
+                wifi_mac=_mac(),
+                tx_power_dbm=-40,
+                always_on=True,
+            ))
+        # 30% have a smartwatch
+        if _rng() < 0.3:
+            model = _WATCH_MODELS[int(_rng() * len(_WATCH_MODELS))]
+            inv.add_item(InventoryItem(
+                item_id=f"{target_id}_watch",
+                item_type="device",
+                name=model,
+                device_class="smartwatch",
+                device_model=model,
+                ble_mac=_mac(),
+                tx_power_dbm=-50,
+                always_on=True,
+            ))
+
+    elif asset_type in ("vehicle", "hostile_vehicle"):
+        # Cars have TPMS sensors (4 per vehicle)
+        for i in range(4):
+            inv.add_item(InventoryItem(
+                item_id=f"{target_id}_tpms_{i}",
+                item_type="device",
+                name=f"TPMS Sensor {i+1}",
+                device_class="tpms",
+                device_model="TPMS 315MHz",
+                ble_mac=_mac(),
+                tx_power_dbm=-20,
+                always_on=False,
+                adv_interval_ms=60000,  # transmits once per minute
+            ))
 
 
 # ---------------------------------------------------------------------------
