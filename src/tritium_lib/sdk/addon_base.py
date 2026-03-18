@@ -32,6 +32,9 @@ class AddonInfo:
     min_sdk_version: str = "1.0.0"
 
 
+_UNSET = object()  # Sentinel for "property not overridden"
+
+
 class AddonBase:
     """Base class for all Tritium addons.
 
@@ -131,23 +134,64 @@ class AddonBase:
 
     @property
     def target_tracker(self) -> ITargetTracker | None:
-        """Shortcut to the target tracker from the addon context."""
+        """Shortcut to the target tracker from the addon context.
+
+        Supports direct assignment for legacy addons that set
+        ``self.target_tracker = ...`` in their ``register()`` method.
+        """
+        override = self.__dict__.get('_target_tracker', _UNSET)
+        if override is not _UNSET:
+            return override
         return self._context.target_tracker if self._context else None
+
+    @target_tracker.setter
+    def target_tracker(self, value: ITargetTracker | None) -> None:
+        self.__dict__['_target_tracker'] = value
 
     @property
     def event_bus(self) -> IEventBus | None:
-        """Shortcut to the event bus from the addon context."""
+        """Shortcut to the event bus from the addon context.
+
+        Supports direct assignment for legacy addons.
+        """
+        override = self.__dict__.get('_event_bus_override', _UNSET)
+        if override is not _UNSET:
+            return override
         return self._context.event_bus if self._context else None
+
+    @event_bus.setter
+    def event_bus(self, value: IEventBus | None) -> None:
+        self.__dict__['_event_bus_override'] = value
 
     @property
     def mqtt_client(self) -> IMQTTClient | None:
-        """Shortcut to the MQTT client from the addon context."""
+        """Shortcut to the MQTT client from the addon context.
+
+        Supports direct assignment for legacy addons.
+        """
+        override = self.__dict__.get('_mqtt_client_override', _UNSET)
+        if override is not _UNSET:
+            return override
         return self._context.mqtt_client if self._context else None
+
+    @mqtt_client.setter
+    def mqtt_client(self, value: IMQTTClient | None) -> None:
+        self.__dict__['_mqtt_client_override'] = value
 
     @property
     def site_id(self) -> str:
-        """Shortcut to the site ID from the addon context."""
+        """Shortcut to the site ID from the addon context.
+
+        Supports direct assignment for legacy addons.
+        """
+        override = self.__dict__.get('_site_id_override', _UNSET)
+        if override is not _UNSET:
+            return override
         return self._context.site_id if self._context else "home"
+
+    @site_id.setter
+    def site_id(self, value: str) -> None:
+        self.__dict__['_site_id_override'] = value
 
     # ------------------------------------------------------------------
     # Inter-addon event helpers
