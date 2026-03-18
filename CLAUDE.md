@@ -16,7 +16,7 @@ Common code library for the entire Tritium ecosystem. Used by tritium-edge (firm
 
 | Package | What | Key Files |
 |---------|------|-----------|
-| `models` | 116+ Pydantic models (device, firmware, mesh, BLE, CoT, alerts, topology, diagnostics, sensor, transport) | `src/tritium_lib/models/` |
+| `models` | 100 Pydantic models (device, firmware, mesh, BLE, CoT, alerts, topology, diagnostics, sensor, transport) | `src/tritium_lib/models/` |
 | `events` | Thread-safe and async pub/sub event bus | `src/tritium_lib/events/bus.py` |
 | `mqtt` | MQTT topic hierarchy `tritium/{site}/{domain}/{device}/{type}` | `src/tritium_lib/mqtt/topics.py` |
 | `auth` | JWT token creation/decoding, API key management | `src/tritium_lib/auth/jwt.py` |
@@ -31,13 +31,17 @@ Common code library for the entire Tritium ecosystem. Used by tritium-edge (firm
 | `data` | JSON lookup tables for BLE, WiFi, OUI fingerprinting (11 databases) | `src/tritium_lib/data/` |
 | `web` | Cyberpunk HTML theme engine and dashboard components | `src/tritium_lib/web/` |
 | `testing` | Visual regression checks and ESP32 device automation | `src/tritium_lib/testing/` |
+| `sdk` | Addon SDK — AddonBase, AddonContext, DeviceRegistry, protocols, BaseRunner, GeoJSON layers | `src/tritium_lib/sdk/` |
+| `intelligence` | Position estimator, RL metrics, fusion metrics | `src/tritium_lib/intelligence/` |
+| `firmware` | FirmwareFlasher base, ESP32Flasher, MeshtasticFlasher | `src/tritium_lib/firmware/` |
+| `sdr` | SDRDevice base, SDRInfo, SweepResult | `src/tritium_lib/sdr/` |
 
 ## Directory Structure
 
 ```
 tritium-lib/
 ├── src/tritium_lib/
-│   ├── models/          # 116+ Pydantic models (THE canonical data contracts)
+│   ├── models/          # 100 Pydantic models (THE canonical data contracts)
 │   │   ├── device.py    # DeviceInfo, DeviceStatus, HeartbeatPayload
 │   │   ├── firmware.py  # FirmwareVersion, OTARequest
 │   │   ├── mesh.py      # MeshPeer, MeshMessage
