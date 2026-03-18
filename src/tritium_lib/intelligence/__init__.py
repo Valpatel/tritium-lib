@@ -56,6 +56,11 @@ from tritium_lib.intelligence.rl_metrics import (
     RLMetrics,
     TrainingSnapshot,
 )
+from tritium_lib.intelligence.position_estimator import (
+    estimate_from_multiple_anchors,
+    estimate_from_single_anchor,
+    rssi_to_distance as fusion_rssi_to_distance,
+)
 from tritium_lib.intelligence.threat_model import (
     DEFAULT_SIGNAL_WEIGHTS,
     THREAT_THRESHOLDS,
@@ -101,4 +106,8 @@ __all__ = [
     "TrainingExample",
     "TrainingSnapshot",
     "score_to_threat_level",
+    # Position estimation (sensor fusion)
+    "estimate_from_multiple_anchors",
+    "estimate_from_single_anchor",
+    "fusion_rssi_to_distance",
 ]
