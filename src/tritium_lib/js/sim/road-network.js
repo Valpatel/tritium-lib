@@ -329,21 +329,23 @@ export class RoadNetwork {
         const exitU = toIsForward ? 0 : toEdge.length;
         const exit = this._roadToWorldSimple(toEdge, toLane, exitU);
 
-        // Control point: for a clean arc, place it at the corner where
-        // the entry tangent extended meets the exit tangent extended.
-        // For a grid city this is approximately the L-shaped corner.
-        // Simple approach: use the point that shares one coordinate with entry
-        // and the other with exit (the "corner" of the L-turn).
+        // For turns: the control point is the corner where the entry tangent
+        // and exit tangent intersect. For perpendicular grid roads this is simply:
+        // (entry.x extended along entry direction, entry.z extended along exit direction)
+        // i.e., the L-corner that makes entry→corner→exit a right angle.
         if (turnType === 'right' || turnType === 'left') {
-            // For horizontal→vertical or vertical→horizontal turns,
-            // the corner point is (entry.x, exit.z) or (exit.x, entry.z)
-            // depending on which creates the correct arc direction.
-            // Test both and pick the one closer to intersection center.
-            const c1 = { x: entry.x, z: exit.z };
-            const c2 = { x: exit.x, z: entry.z };
-            const d1 = (c1.x - node.x) ** 2 + (c1.z - node.z) ** 2;
-            const d2 = (c2.x - node.x) ** 2 + (c2.z - node.z) ** 2;
-            return d1 < d2 ? c1 : c2;
+            // The corner point: take one coordinate from entry, the other from exit.
+            // For perpendicular roads, one of these combinations creates the correct
+            // 90° arc. The right one is: extend entry straight, then turn to meet exit.
+            // That means: if entry is moving horizontally, keep entry.z but use exit.x
+            //             if entry is moving vertically, keep entry.x but use exit.z
+            if (fromEdge.horizontal) {
+                // Entry moves in X, so extend X from entry, use Z from exit
+                return { x: exit.x, z: entry.z };
+            } else {
+                // Entry moves in Z, so extend Z from entry, use X from exit
+                return { x: entry.x, z: exit.z };
+            }
         }
 
         return { x: node.x, z: node.z };
