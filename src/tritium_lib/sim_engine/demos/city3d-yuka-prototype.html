@@ -174,9 +174,28 @@ ground.receiveShadow = true;
 scene.add(ground);
 
 // ============================================================
-// HELPER: create flat rectangle in scene
+// HELPER: create flat rectangle — batched by color for performance
 // ============================================================
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const _flatRectBatches = {}; // color → [geometry, ...]
+let _batchingEnabled = true;
+
 function addFlatRect(x, z, w, h, y, color, opts = {}) {
+  if (_batchingEnabled && !opts.transparent) {
+    // Batch: collect geometry for later merging
+    const key = `${color}_${y.toFixed(3)}_${opts.roughness || 0.8}`;
+    if (!_flatRectBatches[key]) {
+      _flatRectBatches[key] = { geos: [], color, y, roughness: opts.roughness || 0.8 };
+    }
+    const geo = new THREE.PlaneGeometry(w, h);
+    // Apply rotation and position to geometry directly
+    geo.rotateX(-Math.PI / 2);
+    geo.translate(x, y, z);
+    _flatRectBatches[key].geos.push(geo);
+    return null; // no mesh returned during batching
+  }
+  // Fallback for transparent or non-batched
   const mat = new THREE.MeshStandardMaterial({
     color, roughness: opts.roughness || 0.8,
     ...(opts.transparent ? { transparent: true, opacity: opts.opacity || 0.5 } : {})
@@ -187,6 +206,28 @@ function addFlatRect(x, z, w, h, y, color, opts = {}) {
   if (opts.receiveShadow !== false) mesh.receiveShadow = true;
   scene.add(mesh);
   return mesh;
+}
+
+// Call after all static geometry is created to merge batches
+function flushFlatRectBatches() {
+  let mergedCount = 0;
+  for (const key in _flatRectBatches) {
+    const batch = _flatRectBatches[key];
+    if (batch.geos.length === 0) continue;
+    const merged = mergeGeometries(batch.geos, false);
+    if (!merged) continue;
+    const mat = new THREE.MeshStandardMaterial({ color: batch.color, roughness: batch.roughness });
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.receiveShadow = true;
+    if (batch.isBuilding) mesh.castShadow = true;
+    scene.add(mesh);
+    mergedCount += batch.geos.length;
+    // Dispose individual geometries
+    for (const g of batch.geos) g.dispose();
+  }
+  console.log(`[Perf] Merged ${mergedCount} geometries into ${Object.keys(_flatRectBatches).length} batches`);
+  // Clear batches for next round
+  for (const key in _flatRectBatches) delete _flatRectBatches[key];
 }
 
 // ============================================================
@@ -324,6 +365,9 @@ function drawCrosswalk(cx, cz, w, h, isHorizontal) {
     }
   }
 }
+
+// Flush all batched road/sidewalk/crosswalk geometry into merged meshes
+flushFlatRectBatches();
 
 // ============================================================
 // ROAD GRAPH — directed graph for vehicle lane following
@@ -736,8 +780,7 @@ for (let row = 0; row < GRID_ROWS; row++) {
       continue;
     }
 
-    // Regular block — 1-3 buildings
-    const buildingMat = new THREE.MeshStandardMaterial({ color: zoneColor, roughness: 0.7 });
+    // Regular block — 1-3 buildings (collect for batch merging)
     const count = 1 + Math.floor(seededRandom() * 3);
     for (let b = 0; b < count; b++) {
       const bw = 8 + seededRandom() * 20;
@@ -745,12 +788,13 @@ for (let row = 0; row < GRID_ROWS; row++) {
       const bd = 8 + seededRandom() * 16;
       const ox = (seededRandom() - 0.5) * (BLOCK_W - bw - 4);
       const oz = (seededRandom() - 0.5) * (BLOCK_H - bd - 4);
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), buildingMat);
-      mesh.position.set(bx + ox, bh / 2, bz + oz);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      scene.add(mesh);
-      buildings.push({ mesh, zone, bx: bx + ox, bz: bz + oz, bw, bd });
+      // Batch building geometry by zone color
+      const bKey = `bldg_${zoneColor}`;
+      if (!_flatRectBatches[bKey]) _flatRectBatches[bKey] = { geos: [], color: zoneColor, y: 0, roughness: 0.7, isBuilding: true };
+      const bGeo = new THREE.BoxGeometry(bw, bh, bd);
+      bGeo.translate(bx + ox, bh / 2, bz + oz);
+      _flatRectBatches[bKey].geos.push(bGeo);
+      buildings.push({ zone, bx: bx + ox, bz: bz + oz, bw, bd });
 
       // Door (colored rectangle on face nearest to road)
       const doorColor = zone === 'commercial' ? 0x00aaff : zone === 'civic' ? 0x00f0ff : 0x886644;
@@ -814,6 +858,9 @@ for (let row = 0; row < GRID_ROWS; row++) {
     }
   }
 }
+
+// Flush building batches (second pass — trees, doors, garages still individual)
+flushFlatRectBatches();
 
 // ============================================================
 // YUKA ENTITY MANAGER
@@ -2070,30 +2117,33 @@ function animate() {
   // Update yuka entity manager
   entityManager.update(delta);
 
-  // Clamp NPCs to pedestrian NavMesh (prevent walking through buildings)
-  const _clampResult = new YUKA.Vector3();
-  for (const npc of npcs) {
-    const pos = npc.vehicle.position;
-    const mesh = npc.protestMode ? combinedNavMesh : pedNavMesh;
-    try {
-      mesh.clampMovement(pos, pos, _clampResult);
-      pos.copy(_clampResult);
-    } catch(e) { /* outside navmesh entirely, leave as-is */ }
+  // Clamp NPCs to pedestrian NavMesh every 3rd frame (expensive operation)
+  if (frameCount % 3 === 0) {
+    const _clampResult = new YUKA.Vector3();
+    for (const npc of npcs) {
+      const pos = npc.vehicle.position;
+      const mesh = npc.protestMode ? combinedNavMesh : pedNavMesh;
+      try {
+        mesh.clampMovement(pos, pos, _clampResult);
+        pos.copy(_clampResult);
+      } catch(e) { /* outside navmesh entirely */ }
+    }
   }
-  // Simple separation force: push NPCs apart to prevent overlapping
-  for (let i = 0; i < npcs.length; i++) {
-    const a = npcs[i].vehicle.position;
-    for (let j = i + 1; j < npcs.length; j++) {
-      const b = npcs[j].vehicle.position;
-      const dx = a.x - b.x, dz = a.z - b.z;
-      const distSq = dx * dx + dz * dz;
-      const minDist = 1.2; // minimum distance between NPCs
-      if (distSq < minDist * minDist && distSq > 0.001) {
-        const dist = Math.sqrt(distSq);
-        const push = (minDist - dist) * 0.5;
-        const nx = dx / dist, nz = dz / dist;
-        a.x += nx * push; a.z += nz * push;
-        b.x -= nx * push; b.z -= nz * push;
+  // Separation force every 5th frame
+  if (frameCount % 5 === 0) {
+    for (let i = 0; i < npcs.length; i++) {
+      const a = npcs[i].vehicle.position;
+      for (let j = i + 1; j < npcs.length; j++) {
+        const b = npcs[j].vehicle.position;
+        const dx = a.x - b.x, dz = a.z - b.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < 1.44 && distSq > 0.001) { // 1.2² = 1.44
+          const dist = Math.sqrt(distSq);
+          const push = (1.2 - dist) * 0.5;
+          const nx = dx / dist, nz = dz / dist;
+          a.x += nx * push; a.z += nz * push;
+          b.x -= nx * push; b.z -= nz * push;
+        }
       }
     }
   }
@@ -2129,7 +2179,8 @@ window.__city3d = {
   entityManager, smNPCs, simClock, scheduleExec, protestEngine, sensorBridge,
   get state() { return { protestActive, debugMeshVisible, showTrafficLights, simTime: simClock.getTimeString() }; },
   sidewalkOnlyRects, debugPedRects, blockZones,
-  CITY_W, CITY_H, PLAZA_X, PLAZA_Z,
+  CITY_W, CITY_H, PLAZA_X, PLAZA_Z, scene, renderer,
+  get renderInfo() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, geometries: i.memory.geometries, textures: i.memory.textures }; },
 };
 </script>
 </body>
