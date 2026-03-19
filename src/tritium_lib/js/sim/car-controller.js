@@ -382,6 +382,8 @@ export function resolveOverlaps(cars) {
     // Hard collision prevention: push overlapping cars apart
     // Uses spatial hash for O(n*k) instead of O(n²)
     for (const car of cars) {
+        // Skip cars in turns — heading changes rapidly, false collisions
+        if (car.inTurn) continue;
         const nearby = spatialHash.getNearby(car.worldX, car.worldZ);
         for (const other of nearby) {
             if (other === car) continue;
