@@ -82,7 +82,9 @@ export class InstancedCarRenderer {
             mesh.receiveShadow = true;
             mesh.frustumCulled = false;
 
+            // Initialize all instance colors to white (visible) — zeros = black = invisible
             const colors = new Float32Array(this.maxCars * 3);
+            for (let i = 0; i < this.maxCars * 3; i++) colors[i] = 1.0;
             mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
 
             for (let i = 0; i < this.maxCars; i++) mesh.setMatrixAt(i, hideMatrix);
