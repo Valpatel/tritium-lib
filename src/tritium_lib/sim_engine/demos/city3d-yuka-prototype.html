@@ -553,41 +553,39 @@ function addRoadRect(x1, z1, x2, z2) {
   debugRoadRects.push({ x1, z1, x2, z2 });
 }
 
-// Horizontal road sidewalks (between intersections)
+// Horizontal road segments — from intersection edge to intersection edge
+// Uses ROAD_W for z range so they match intersection rects exactly
 for (let row = 0; row <= GRID_ROWS; row++) {
   const roadCenterZ = hRoadZ(row);
-  const swTopZ1 = roadCenterZ - ROAD_SURFACE_W / 2 - SIDEWALK_W;
-  const swTopZ2 = roadCenterZ - ROAD_SURFACE_W / 2;
-  const swBotZ1 = roadCenterZ + ROAD_SURFACE_W / 2;
-  const swBotZ2 = roadCenterZ + ROAD_SURFACE_W / 2 + SIDEWALK_W;
+  const zTop = roadCenterZ - ROAD_W / 2;
+  const zBot = roadCenterZ + ROAD_W / 2;
 
   for (let col = 0; col < GRID_COLS; col++) {
-    const x1 = col * (BLOCK_W + ROAD_W) + ROAD_W;
-    const x2 = x1 + BLOCK_W;
-    addPedRect(x1, swTopZ1, x2, swTopZ2, true); // north sidewalk
-    addPedRect(x1, swBotZ1, x2, swBotZ2, true); // south sidewalk
-
-    // Road lanes for cars
-    addRoadRect(x1, roadCenterZ - ROAD_SURFACE_W / 2, x2, roadCenterZ + ROAD_SURFACE_W / 2);
+    // Segment between intersection col and col+1
+    const x1 = vRoadX(col) + ROAD_W / 2;     // right edge of left intersection
+    const x2 = vRoadX(col + 1) - ROAD_W / 2; // left edge of right intersection
+    if (x2 > x1) {
+      addPedRect(x1, zTop, x2, zTop + SIDEWALK_W, true);  // north sidewalk
+      addPedRect(x1, zBot - SIDEWALK_W, x2, zBot, true);  // south sidewalk
+      addRoadRect(x1, zTop, x2, zBot);  // road surface (full ROAD_W height)
+    }
   }
 }
 
-// Vertical road sidewalks (between intersections)
+// Vertical road segments — from intersection edge to intersection edge
 for (let col = 0; col <= GRID_COLS; col++) {
   const roadCenterX = vRoadX(col);
-  const swLeftX1 = roadCenterX - ROAD_SURFACE_W / 2 - SIDEWALK_W;
-  const swLeftX2 = roadCenterX - ROAD_SURFACE_W / 2;
-  const swRightX1 = roadCenterX + ROAD_SURFACE_W / 2;
-  const swRightX2 = roadCenterX + ROAD_SURFACE_W / 2 + SIDEWALK_W;
+  const xLeft = roadCenterX - ROAD_W / 2;
+  const xRight = roadCenterX + ROAD_W / 2;
 
   for (let row = 0; row < GRID_ROWS; row++) {
-    const z1 = row * (BLOCK_H + ROAD_W) + ROAD_W;
-    const z2 = z1 + BLOCK_H;
-    addPedRect(swLeftX1, z1, swLeftX2, z2, true);  // west sidewalk
-    addPedRect(swRightX1, z1, swRightX2, z2, true); // east sidewalk
-
-    // Road lanes for cars
-    addRoadRect(roadCenterX - ROAD_SURFACE_W / 2, z1, roadCenterX + ROAD_SURFACE_W / 2, z2);
+    const z1 = hRoadZ(row) + ROAD_W / 2;     // bottom edge of top intersection
+    const z2 = hRoadZ(row + 1) - ROAD_W / 2; // top edge of bottom intersection
+    if (z2 > z1) {
+      addPedRect(xLeft, z1, xLeft + SIDEWALK_W, z2, true);  // west sidewalk
+      addPedRect(xRight - SIDEWALK_W, z1, xRight, z2, true); // east sidewalk
+      addRoadRect(xLeft, z1, xRight, z2);  // road surface (full ROAD_W width)
+    }
   }
 }
 
@@ -596,30 +594,26 @@ for (let row = 0; row <= GRID_ROWS; row++) {
   for (let col = 0; col <= GRID_COLS; col++) {
     const ix = vRoadX(col);
     const iz = hRoadZ(row);
-    const halfRoad = ROAD_SURFACE_W / 2;
+    const halfRoad = ROAD_W / 2; // Use full road corridor width so rects connect
 
     // Corner sidewalk pads (pedestrian)
-    const cOff = halfRoad + SIDEWALK_W / 2;
-    addPedRect(ix - halfRoad - SIDEWALK_W, iz - halfRoad - SIDEWALK_W,
-               ix - halfRoad, iz - halfRoad);
-    addPedRect(ix + halfRoad, iz - halfRoad - SIDEWALK_W,
-               ix + halfRoad + SIDEWALK_W, iz - halfRoad);
-    addPedRect(ix - halfRoad - SIDEWALK_W, iz + halfRoad,
-               ix - halfRoad, iz + halfRoad + SIDEWALK_W);
-    addPedRect(ix + halfRoad, iz + halfRoad,
-               ix + halfRoad + SIDEWALK_W, iz + halfRoad + SIDEWALK_W);
+    addPedRect(ix - halfRoad, iz - halfRoad,
+               ix - halfRoad + SIDEWALK_W, iz - halfRoad + SIDEWALK_W);
+    addPedRect(ix + halfRoad - SIDEWALK_W, iz - halfRoad,
+               ix + halfRoad, iz - halfRoad + SIDEWALK_W);
+    addPedRect(ix - halfRoad, iz + halfRoad - SIDEWALK_W,
+               ix - halfRoad + SIDEWALK_W, iz + halfRoad);
+    addPedRect(ix + halfRoad - SIDEWALK_W, iz + halfRoad - SIDEWALK_W,
+               ix + halfRoad, iz + halfRoad);
 
     // Crosswalks (pedestrian can cross here)
-    // North crosswalk
-    addPedRect(ix - halfRoad, iz - halfRoad - CROSSWALK_W, ix + halfRoad, iz - halfRoad);
-    // South crosswalk
-    addPedRect(ix - halfRoad, iz + halfRoad, ix + halfRoad, iz + halfRoad + CROSSWALK_W);
-    // West crosswalk
-    addPedRect(ix - halfRoad - CROSSWALK_W, iz - halfRoad, ix - halfRoad, iz + halfRoad);
-    // East crosswalk
-    addPedRect(ix + halfRoad, iz - halfRoad, ix + halfRoad + CROSSWALK_W, iz + halfRoad);
+    const cHalf = ROAD_SURFACE_W / 2;
+    addPedRect(ix - cHalf, iz - halfRoad, ix + cHalf, iz - halfRoad + CROSSWALK_W);
+    addPedRect(ix - cHalf, iz + halfRoad - CROSSWALK_W, ix + cHalf, iz + halfRoad);
+    addPedRect(ix - halfRoad, iz - cHalf, ix - halfRoad + CROSSWALK_W, iz + cHalf);
+    addPedRect(ix + halfRoad - CROSSWALK_W, iz - cHalf, ix + halfRoad, iz + cHalf);
 
-    // Intersection road surface (cars drive through)
+    // Intersection road surface — use full ROAD_W so it connects to road segments
     addRoadRect(ix - halfRoad, iz - halfRoad, ix + halfRoad, iz + halfRoad);
   }
 }
@@ -1182,6 +1176,16 @@ window.addEventListener('resize', () => {
 });
 
 console.log(`[Yuka Prototype v2] City: ${CITY_W}x${CITY_H}, Ped NavMesh: ${pedPolygons.length} polys, Road NavMesh: ${roadPolygons.length} polys, NPCs: ${npcs.length}, Cars: ${cars.length}, Entries: ${buildingEntries.length}, Intersections: ${intersections.length}`);
+
+// Expose state for external debugging/testing
+window.__city3d = {
+  npcs, cars, buildings, buildingEntries, intersections, trafficLights,
+  pedNavMesh, roadNavMesh, combinedNavMesh,
+  entityManager, smNPCs,
+  get state() { return { protestActive, debugMeshVisible, showTrafficLights }; },
+  sidewalkOnlyRects, debugPedRects, debugRoadRects, blockZones,
+  CITY_W, CITY_H, PLAZA_X, PLAZA_Z,
+};
 </script>
 </body>
 </html>
