@@ -1735,14 +1735,11 @@ for (const car of cars) {
 
         // Hide individual mesh (instanced mesh replaces it)
         if (car.mesh) car.mesh.visible = false;
-        // Also hide route/trajectory/pulse for instanced cars (LOD handles)
-        // Keep them for the first 5 cars as "featured" with full visuals
-        if (cars.indexOf(car) >= 5) {
-            if (car.routeLine) car.routeLine.visible = false;
-            if (car.trajectoryLine) car.trajectoryLine.visible = false;
-            if (car.pulseDot) car.pulseDot.visible = false;
-            if (car.pathLine) car.pathLine.visible = false;
-        }
+        // Hide all individual car visuals (instanced mesh handles rendering)
+        if (car.routeLine) car.routeLine.visible = false;
+        if (car.trajectoryLine) car.trajectoryLine.visible = false;
+        if (car.pulseDot) car.pulseDot.visible = false;
+        if (car.pathLine) car.pathLine.visible = false;
     }
 }
 
@@ -2596,6 +2593,8 @@ function animate() {
 
   for (const car of cars) {
     if (!car.useNewSystem || !car.path) continue;
+    // Skip instanced cars (no individual visual objects)
+    if (car.useInstanced) continue;
 
     // Route line
     if (car.routeLine) {

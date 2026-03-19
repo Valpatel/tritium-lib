@@ -410,7 +410,11 @@ export function resolveOverlaps(cars) {
  * @param {number} [laneOffset] - Distance from road center to lane center
  * @returns {Object} Car state object
  */
-export function createCar(roadNetwork, laneOffset = 3) {
+export function createCar(roadNetwork, laneWidth = 3) {
+    // Lane center offsets from road center (right-hand traffic):
+    // Inner lane: 0.5 * laneWidth = 1.5m from center
+    // Outer lane: 1.5 * laneWidth = 4.5m from center
+    const laneOffset = (Math.random() < 0.5 ? 0.5 : 1.5) * laneWidth;
     // Pick random starting edge and position
     const nodeIds = Object.keys(roadNetwork.nodes);
     const startId = nodeIds[Math.floor(Math.random() * nodeIds.length)];
