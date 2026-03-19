@@ -224,26 +224,114 @@ if (crosswalkGeos.length) {
   scene.add(new THREE.Mesh(m, new THREE.MeshBasicMaterial({ color: 0xffffff })));
 }
 
-// Simple block buildings
-const buildMat = new THREE.MeshStandardMaterial({ color: 0x667788, roughness: 0.7 });
+// Sidewalks (raised, lighter color) — batched
+const sidewalkGeos = [];
+const SW = 2; // sidewalk width
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = hRoadZ(row);
+  for (const side of [-1, 1]) {
+    const g = new THREE.PlaneGeometry(CITY_W, SW);
+    g.rotateX(-Math.PI / 2);
+    g.translate(CITY_W / 2, 0.05, z + side * (ROAD_W / 2 - SW / 2 + 0.5));
+    sidewalkGeos.push(g);
+  }
+}
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = vRoadX(col);
+  for (const side of [-1, 1]) {
+    const g = new THREE.PlaneGeometry(SW, CITY_H);
+    g.rotateX(-Math.PI / 2);
+    g.translate(x + side * (ROAD_W / 2 - SW / 2 + 0.5), 0.05, CITY_H / 2);
+    sidewalkGeos.push(g);
+  }
+}
+if (sidewalkGeos.length) {
+  scene.add(new THREE.Mesh(mergeGeometries(sidewalkGeos, false), new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.9 })));
+}
+
+// Buildings with zone-based variety
+const ZONE_COLORS = {
+  residential: 0x8B7355, commercial: 0x556677, office: 0x667788,
+  civic: 0x557788, park: 0x2a5a2a, parking: 0x444444,
+};
+const ZONES = ['residential', 'commercial', 'office', 'residential', 'civic', 'residential'];
 const seeded = ((s) => () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; })(42);
+const buildGeos = {}; // color → [geos] for batching
+
+// Instanced trees (1 draw call for all trunks, 1 for all canopies)
+const treePositions = [];
 
 for (let row = 0; row < GRID_ROWS; row++) {
   for (let col = 0; col < GRID_COLS; col++) {
     const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
     const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
-    const h = 5 + seeded() * 30;
-    const w = 15 + seeded() * 25;
-    const d = 15 + seeded() * 20;
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), buildMat);
-    mesh.position.set(bx, h / 2, bz);
-    mesh.castShadow = true;
-    scene.add(mesh);
+    const zone = (col === 4 && row === 3) ? 'park' : ZONES[Math.floor(seeded() * ZONES.length)];
+    const zoneColor = ZONE_COLORS[zone] || 0x667788;
 
-    // Building entry (on south side)
-    buildingEntries.push({ x: bx, z: bz + BLOCK_H / 2 - 2, blockRow: row, blockCol: col });
-    buildingEntries.push({ x: bx, z: bz - BLOCK_H / 2 + 2, blockRow: row, blockCol: col });
+    if (zone === 'park') {
+      // Green ground + instanced trees
+      const pg = new THREE.PlaneGeometry(BLOCK_W - 2, BLOCK_H - 2);
+      pg.rotateX(-Math.PI / 2); pg.translate(bx, 0.04, bz);
+      scene.add(new THREE.Mesh(pg, new THREE.MeshStandardMaterial({ color: 0x2a5a2a })));
+      for (let t = 0; t < 6; t++) {
+        treePositions.push({
+          x: bx + (seeded() - 0.5) * (BLOCK_W - 8),
+          z: bz + (seeded() - 0.5) * (BLOCK_H - 8),
+          r: 1.5 + seeded() * 1.5, h: 3.5 + seeded(),
+        });
+      }
+    } else {
+      // 1-2 buildings per block
+      const count = 1 + Math.floor(seeded() * 2);
+      for (let b = 0; b < count; b++) {
+        const h = zone === 'office' ? 12 + seeded() * 30 : 5 + seeded() * 20;
+        const w = 10 + seeded() * 25;
+        const d = 10 + seeded() * 18;
+        const ox = (seeded() - 0.5) * (BLOCK_W - w - 4);
+        const oz = (seeded() - 0.5) * (BLOCK_H - d - 4);
+        const key = zoneColor;
+        if (!buildGeos[key]) buildGeos[key] = [];
+        const bg = new THREE.BoxGeometry(w, h, d);
+        bg.translate(bx + ox, h / 2, bz + oz);
+        buildGeos[key].push(bg);
+      }
+    }
+
+    buildingEntries.push({ x: bx, z: bz + BLOCK_H / 2 - 2, blockRow: row, blockCol: col, zone });
+    buildingEntries.push({ x: bx, z: bz - BLOCK_H / 2 + 2, blockRow: row, blockCol: col, zone });
   }
+}
+
+// Batch buildings by zone color
+for (const [colorKey, geos] of Object.entries(buildGeos)) {
+  if (geos.length === 0) continue;
+  const merged = mergeGeometries(geos, false);
+  const mat = new THREE.MeshStandardMaterial({ color: parseInt(colorKey), roughness: 0.7 });
+  const mesh = new THREE.Mesh(merged, mat);
+  mesh.castShadow = true;
+  scene.add(mesh);
+}
+
+// Instanced trees (2 draw calls total)
+if (treePositions.length > 0) {
+  const trunkGeo = new THREE.CylinderGeometry(0.3, 0.4, 3, 6);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3520 });
+  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treePositions.length);
+  const canopyGeo = new THREE.SphereGeometry(1, 8, 6);
+  const canopyMat = new THREE.MeshStandardMaterial({ color: 0x228833 });
+  const canopyMesh = new THREE.InstancedMesh(canopyGeo, canopyMat, treePositions.length);
+  const dm = new THREE.Object3D();
+  for (let i = 0; i < treePositions.length; i++) {
+    const t = treePositions[i];
+    dm.position.set(t.x, 1.5, t.z); dm.scale.set(1,1,1); dm.updateMatrix();
+    trunkMesh.setMatrixAt(i, dm.matrix);
+    dm.position.set(t.x, t.h, t.z); dm.scale.set(t.r, t.r, t.r); dm.updateMatrix();
+    canopyMesh.setMatrixAt(i, dm.matrix);
+  }
+  trunkMesh.instanceMatrix.needsUpdate = true;
+  canopyMesh.instanceMatrix.needsUpdate = true;
+  trunkMesh.castShadow = true; canopyMesh.castShadow = true;
+  scene.add(trunkMesh); scene.add(canopyMesh);
 }
 
 // ============================================================
