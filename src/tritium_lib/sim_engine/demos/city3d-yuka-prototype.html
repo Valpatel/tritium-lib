@@ -1627,7 +1627,7 @@ for (let i = 0; i < 18; i++) spawnCar('sedan');
 spawnCar('police');
 spawnCar('ambulance');
 
-// Initialize CarPath for each car (new continuous path system)
+// Initialize CarPath + switch to instanced rendering for ALL cars
 for (const car of cars) {
     const carState = createCar(modularRoadNetwork, LANE_W);
     if (carState) {
@@ -1640,12 +1640,24 @@ for (const car of cars) {
         car.route = carState.route;
         car.routeIndex = carState.routeIndex;
         car.destination = carState.destination;
-        car.useNewSystem = true; // flag to use new tick
-        // Sync mesh to initial position
-        const pos = car.path.getPosition(car.d);
-        const heading = car.path.getHeading(car.d);
-        car.mesh.position.set(pos.x, 0, pos.z);
-        car.mesh.rotation.y = heading;
+        car.useNewSystem = true;
+
+        // Register with instanced renderer (color from car mesh body)
+        const type = car.vehicleType === 'police' ? 'police' :
+                     car.vehicleType === 'ambulance' ? 'ambulance' : 'sedan';
+        car.instanceHandle = instancedCars.addCar(type, car.bodyColor || 0x888888);
+        car.useInstanced = true;
+
+        // Hide individual mesh (instanced mesh replaces it)
+        if (car.mesh) car.mesh.visible = false;
+        // Also hide route/trajectory/pulse for instanced cars (LOD handles)
+        // Keep them for the first 5 cars as "featured" with full visuals
+        if (cars.indexOf(car) >= 5) {
+            if (car.routeLine) car.routeLine.visible = false;
+            if (car.trajectoryLine) car.trajectoryLine.visible = false;
+            if (car.pulseDot) car.pulseDot.visible = false;
+            if (car.pathLine) car.pathLine.visible = false;
+        }
     }
 }
 
