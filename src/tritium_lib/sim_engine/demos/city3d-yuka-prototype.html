@@ -1343,13 +1343,15 @@ function spawnCar() {
 // ============================================================
 // SPAWN ENTITIES
 // ============================================================
-// 15 regular pedestrians
-for (let i = 0; i < 15; i++) spawnNPC('pedestrian', false);
-// 5 state-machine NPCs (3 pedestrian, 1 police, 1 hostile)
+// 25 regular pedestrians
+for (let i = 0; i < 25; i++) spawnNPC('pedestrian', false);
+// 7 state-machine NPCs (4 pedestrian, 2 police, 1 hostile)
 const smNPCs = [];
 smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('pedestrian', true));
+smNPCs.push(spawnNPC('pedestrian', true));
+smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('hostile', true));
 // 20 cars for realistic traffic density
@@ -1868,6 +1870,23 @@ function animate() {
       mesh.clampMovement(pos, pos, _clampResult);
       pos.copy(_clampResult);
     } catch(e) { /* outside navmesh entirely, leave as-is */ }
+  }
+  // Simple separation force: push NPCs apart to prevent overlapping
+  for (let i = 0; i < npcs.length; i++) {
+    const a = npcs[i].vehicle.position;
+    for (let j = i + 1; j < npcs.length; j++) {
+      const b = npcs[j].vehicle.position;
+      const dx = a.x - b.x, dz = a.z - b.z;
+      const distSq = dx * dx + dz * dz;
+      const minDist = 1.2; // minimum distance between NPCs
+      if (distSq < minDist * minDist && distSq > 0.001) {
+        const dist = Math.sqrt(distSq);
+        const push = (minDist - dist) * 0.5;
+        const nx = dx / dist, nz = dz / dist;
+        a.x += nx * push; a.z += nz * push;
+        b.x -= nx * push; b.z -= nz * push;
+      }
+    }
   }
   // Cars use road graph lane following — no NavMesh clamping needed
 
