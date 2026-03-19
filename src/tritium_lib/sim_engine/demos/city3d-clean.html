@@ -136,6 +136,94 @@ for (let col = 0; col <= GRID_COLS; col++) {
   scene.add(new THREE.Mesh(geo, roadMat));
 }
 
+// Intersection squares
+for (let row = 0; row <= GRID_ROWS; row++) {
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const ix = vRoadX(col), iz = hRoadZ(row);
+    const geo = new THREE.PlaneGeometry(ROAD_W, ROAD_W);
+    geo.rotateX(-Math.PI / 2);
+    geo.translate(ix, 0.01, iz);
+    scene.add(new THREE.Mesh(geo, roadMat));
+  }
+}
+
+// Lane markings (batched into merged geometry)
+const yellowGeos = [], whiteGeos = [], crosswalkGeos = [];
+const DASH = 2, GAP = 3, MW = 0.15;
+
+// Horizontal road markings
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = hRoadZ(row);
+  for (let col = 0; col < GRID_COLS; col++) {
+    const x1 = vRoadX(col) + ROAD_W / 2;
+    const x2 = vRoadX(col + 1) - ROAD_W / 2;
+    const segLen = x2 - x1;
+    const nDash = Math.floor(segLen / (DASH + GAP));
+    for (let d = 0; d < nDash; d++) {
+      const cx = x1 + (d + 0.5) * (DASH + GAP);
+      // Center yellow
+      const yg = new THREE.PlaneGeometry(DASH, MW); yg.rotateX(-Math.PI / 2); yg.translate(cx, 0.015, z);
+      yellowGeos.push(yg);
+      // White between lanes
+      const wg1 = new THREE.PlaneGeometry(DASH, MW); wg1.rotateX(-Math.PI / 2); wg1.translate(cx, 0.015, z - LANE_W);
+      const wg2 = new THREE.PlaneGeometry(DASH, MW); wg2.rotateX(-Math.PI / 2); wg2.translate(cx, 0.015, z + LANE_W);
+      whiteGeos.push(wg1, wg2);
+    }
+  }
+}
+
+// Vertical road markings
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = vRoadX(col);
+  for (let row = 0; row < GRID_ROWS; row++) {
+    const z1 = hRoadZ(row) + ROAD_W / 2;
+    const z2 = hRoadZ(row + 1) - ROAD_W / 2;
+    const segLen = z2 - z1;
+    const nDash = Math.floor(segLen / (DASH + GAP));
+    for (let d = 0; d < nDash; d++) {
+      const cz = z1 + (d + 0.5) * (DASH + GAP);
+      const yg = new THREE.PlaneGeometry(MW, DASH); yg.rotateX(-Math.PI / 2); yg.translate(x, 0.015, cz);
+      yellowGeos.push(yg);
+      const wg1 = new THREE.PlaneGeometry(MW, DASH); wg1.rotateX(-Math.PI / 2); wg1.translate(x - LANE_W, 0.015, cz);
+      const wg2 = new THREE.PlaneGeometry(MW, DASH); wg2.rotateX(-Math.PI / 2); wg2.translate(x + LANE_W, 0.015, cz);
+      whiteGeos.push(wg1, wg2);
+    }
+  }
+}
+
+// Crosswalks at intersections
+for (let row = 0; row <= GRID_ROWS; row++) {
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const ix = vRoadX(col), iz = hRoadZ(row);
+    const cw = 3; // crosswalk width
+    // 4 crosswalks per intersection (N, S, E, W)
+    for (const [dx, dz, isH] of [[0, -(ROAD_W/2-1), true], [0, ROAD_W/2-1, true], [-(ROAD_W/2-1), 0, false], [ROAD_W/2-1, 0, false]]) {
+      for (let s = -3; s <= 3; s++) {
+        const sg = isH
+          ? new THREE.PlaneGeometry(1.2, 0.4)
+          : new THREE.PlaneGeometry(0.4, 1.2);
+        sg.rotateX(-Math.PI / 2);
+        sg.translate(ix + dx + (isH ? s * 1.5 : 0), 0.02, iz + dz + (isH ? 0 : s * 1.5));
+        crosswalkGeos.push(sg);
+      }
+    }
+  }
+}
+
+// Merge and add
+if (yellowGeos.length) {
+  const m = mergeGeometries(yellowGeos, false);
+  scene.add(new THREE.Mesh(m, new THREE.MeshBasicMaterial({ color: 0xccaa00 })));
+}
+if (whiteGeos.length) {
+  const m = mergeGeometries(whiteGeos, false);
+  scene.add(new THREE.Mesh(m, new THREE.MeshBasicMaterial({ color: 0xdddddd })));
+}
+if (crosswalkGeos.length) {
+  const m = mergeGeometries(crosswalkGeos, false);
+  scene.add(new THREE.Mesh(m, new THREE.MeshBasicMaterial({ color: 0xffffff })));
+}
+
 // Simple block buildings
 const buildMat = new THREE.MeshStandardMaterial({ color: 0x667788, roughness: 0.7 });
 const seeded = ((s) => () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; })(42);
