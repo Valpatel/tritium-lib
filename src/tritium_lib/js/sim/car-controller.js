@@ -111,7 +111,7 @@ export function tickCar(car, dt, allCars, pedestrians, trafficCtrl, roadNetwork)
 
     // 4. Update speed and advance along path
     const newSpeed = Math.max(0, car.speed + car.acc * dt);
-    car.d += newSpeed * dt + 0.5 * car.acc * dt * dt;
+    car.d = Math.max(0, car.d + newSpeed * dt + 0.5 * car.acc * dt * dt);
     car.speed = newSpeed;
 
     // 5. Derive world position and heading from path
@@ -224,6 +224,10 @@ function findNextRedSignalGap(car, trafficCtrl) {
     const fwdX = Math.sin(heading);
     const fwdZ = Math.cos(heading);
 
+    // Only check the NEAREST intersection ahead (not all of them)
+    let nearestDot = Infinity;
+    let nearestNode = null;
+
     for (let i = 0; i < path.intersections.length; i++) {
         const node = path.intersections[i];
         if (!node || !node.id) continue;
@@ -232,27 +236,34 @@ function findNextRedSignalGap(car, trafficCtrl) {
         const dz = node.z - car.worldZ;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < 5 || dist > 80) continue;
+        // Skip too close (already in intersection) or too far
+        if (dist < 5 || dist > 60) continue;
 
+        // Must be ahead
         const dot = dx * fwdX + dz * fwdZ;
         if (dot <= 0) continue;
 
-        // Check signal: support both TrafficControllerManager and prototype's isGreenForApproach
-        const approachDir = getApproachDirection(car.worldX, car.worldZ, node.x, node.z);
-        let isGreen = true;
-
-        if (trafficCtrl.getController) {
-            // TrafficControllerManager API
-            const ctrl = trafficCtrl.getController(node.id);
-            if (ctrl) isGreen = ctrl.isGreen(approachDir);
-        } else if (trafficCtrl.isGreenForApproach) {
-            // Prototype's function-based API
-            isGreen = trafficCtrl.isGreenForApproach(node.id, approachDir);
+        if (dot < nearestDot) {
+            nearestDot = dot;
+            nearestNode = node;
         }
+    }
 
-        if (!isGreen) {
-            return Math.max(0.5, dot - 5);
-        }
+    if (!nearestNode) return Infinity;
+
+    // Check signal state for the nearest intersection only
+    const approachDir = getApproachDirection(car.worldX, car.worldZ, nearestNode.x, nearestNode.z);
+    let isGreen = true;
+
+    if (trafficCtrl.getController) {
+        const ctrl = trafficCtrl.getController(nearestNode.id);
+        if (ctrl) isGreen = ctrl.isGreen(approachDir);
+    } else if (trafficCtrl.isGreenForApproach) {
+        isGreen = trafficCtrl.isGreenForApproach(nearestNode.id, approachDir);
+    }
+
+    if (!isGreen) {
+        return Math.max(0.5, nearestDot - 5);
     }
 
     return Infinity;
@@ -368,26 +379,21 @@ function planNewRoute(car, roadNetwork) {
  * @param {Array} cars - All vehicles
  */
 export function resolveOverlaps(cars) {
-    for (let i = 0; i < cars.length; i++) {
-        for (let j = i + 1; j < cars.length; j++) {
-            const a = cars[i], b = cars[j];
-            const dx = b.worldX - a.worldX;
-            const dz = b.worldZ - a.worldZ;
+    // Use spatial hash for O(n*k) instead of O(n²)
+    for (const car of cars) {
+        if (car.speed < 0.01) continue; // don't push stopped cars
+        const nearby = spatialHash.getNearby(car.worldX, car.worldZ);
+        for (const other of nearby) {
+            if (other === car) continue;
+            const dx = other.worldX - car.worldX;
+            const dz = other.worldZ - car.worldZ;
             const distSq = dx * dx + dz * dz;
-            const minDist = ((a.length || 4) + (b.length || 4)) / 2;
-            const minDistSq = minDist * minDist;
-
-            if (distSq < minDistSq && distSq > 0.01) {
+            if (distSq < 9 && distSq > 0.01) { // 3m threshold
+                // Don't push d negative — just skip
                 const dist = Math.sqrt(distSq);
-                const push = (minDist - dist) * 0.15; // gentle push
-                // Push the follower back, leader forward
-                if (a.d > b.d) {
-                    a.d += push * 0.5;
-                    b.d -= push * 0.5;
-                } else {
-                    a.d -= push * 0.5;
-                    b.d += push * 0.5;
-                }
+                const push = (3 - dist) * 0.1;
+                car.d = Math.max(0, car.d - push);
+                other.d = Math.max(0, other.d + push);
             }
         }
     }
@@ -419,9 +425,9 @@ export function createCar(roadNetwork, laneOffset = 3) {
 
     // Build initial path with 3+ segments ahead
     const route = [startNode, nextNode];
-    // Extend path 6+ intersections ahead for visible route
+    // Extend path 4 intersections ahead (more added dynamically as car drives)
     let currNode = nextNode, prevNode = startNode;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 4; i++) {
         const next = pickRandomNextNode(roadNetwork, currNode, prevNode);
         if (!next) break;
         route.push(next);
@@ -431,13 +437,17 @@ export function createCar(roadNetwork, laneOffset = 3) {
 
     const path = buildPathFromRoute(route, laneOffset, 8);
 
-    // Place car at a random position along the first straight
-    const startD = 5 + Math.random() * Math.min(30, path.totalLength * 0.3);
+    // Place car at a well-spaced position (use global counter to distribute)
+    if (!createCar._counter) createCar._counter = 0;
+    createCar._counter++;
+    // Spread cars evenly across the path length using golden ratio for even distribution
+    const golden = 0.618033988749895;
+    const startD = 5 + ((createCar._counter * golden) % 1) * Math.min(path.totalLength * 0.6, 200);
 
     return {
         path,
         d: startD,
-        speed: 2 + Math.random() * 4,
+        speed: 5 + Math.random() * 5, // start with decent speed so IDM doesn't gridlock
         acc: 0,
         idmParams: {
             ...IDM_DEFAULTS,

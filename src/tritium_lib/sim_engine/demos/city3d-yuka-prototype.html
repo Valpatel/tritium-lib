@@ -2263,7 +2263,7 @@ function updateCar(car, dt) {
 let protestActive = false;
 let vizLOD = 0; // adaptive visual quality: 0=full, 1=reduced, 2=minimal
 let showPaths = true; // P key toggles route/trajectory/pulse visibility
-let _carsToSpawn = 0; // queued cars to spawn gradually
+let _carsToSpawn = 0; // set after init
 let showTrafficLights = true;
 let showCarDebug = false;
 const carDebugEl = document.getElementById('car-debug');
@@ -2358,7 +2358,7 @@ function updateHUD() {
   hudEl.innerHTML = `
 <span class="label">CITY3D v5 — ${simClock.getTimeString()} Day ${simClock.getDay()} LOD:${vizLOD} Paths:${showPaths ? 'ON' : 'OFF'}</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
-<span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
+<span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length} (${cars.filter(c => c.speed < 0.5).length} stopped)
 <span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
 <span class="label">Building entries:</span> ${buildingEntries.length} &nbsp; <span class="label">Intersections:</span> ${intersections.length}
 <span class="label">Protest:</span> ${protestActive ? `<span class="warn">${protestEngine.currentPhase} (${protestEngine.getDebugInfo().active} active, ${protestEngine.getDebugInfo().arrested} arrested)</span>` : 'off [SPACE to start]'}
@@ -2394,6 +2394,26 @@ function updateCarDebug() {
 // ============================================================
 // ANIMATION LOOP
 // ============================================================
+// Spawn one instanced car (used by gradual spawner)
+const _spawnColors = [0xfcee0a, 0xff4444, 0x4488ff, 0x44ff44, 0xffffff, 0x888888, 0xff8844, 0x44ffff];
+function _spawnOneCar() {
+  const carState = createCar(modularRoadNetwork, LANE_W);
+  if (!carState) return;
+  const color = _spawnColors[Math.floor(Math.random() * _spawnColors.length)];
+  const handle = instancedCars.addCar('sedan', color);
+  carState.instanceHandle = handle;
+  carState.useNewSystem = true;
+  carState.useInstanced = true;
+  carState.id = 'icar_' + cars.length;
+  carState.mesh = null;
+  carState.vehicle = { position: { x: 0, z: 0, set() {} } };
+  carState.routeLine = null;
+  carState.trajectoryLine = null;
+  carState.pulseDot = null;
+  carState.pathLine = null;
+  cars.push(carState);
+}
+
 function animate() {
   requestAnimationFrame(animate);
 
@@ -2403,11 +2423,13 @@ function animate() {
   // Update sim clock
   simClock.tick(dt);
 
-  // Gradual car spawning (5 per frame to avoid freeze)
+  // Gradual car spawning — spawn as many as we can within 3ms budget per frame
   if (_carsToSpawn > 0) {
-    const batch = Math.min(5, _carsToSpawn);
-    window.__city3d.addCars(batch);
-    _carsToSpawn -= batch;
+    const spawnStart = performance.now();
+    while (_carsToSpawn > 0 && (performance.now() - spawnStart) < 3) {
+      _spawnOneCar();
+      _carsToSpawn--;
+    }
   }
 
   // Check NPC schedule transitions (every ~1 second of real time)
@@ -2508,16 +2530,14 @@ function animate() {
   const pedPositions = npcs.map(n => ({ x: n.vehicle.position.x, z: n.vehicle.position.z, speed: n.vehicle.velocity.length() }));
   for (const car of cars) {
     if (car.useNewSystem && car.path) {
-      tickCar(car, dt, cars, pedPositions, { trafficLights, isGreenForApproach, intersections: roadGraph.nodes }, modularRoadNetwork);
+      tickCar(car, dt, cars, pedPositions, null, modularRoadNetwork); // TODO: re-enable traffic lights after fixing false positives
       // Sync rendering
       if (car.useInstanced && car.instanceHandle >= 0) {
-        // Update instanced mesh transform
         instancedCars.updateCar(car.instanceHandle, car.worldX, car.worldZ, car.worldHeading);
       } else if (car.mesh) {
         car.mesh.position.set(car.worldX, 0, car.worldZ);
         car.mesh.rotation.y = car.worldHeading;
       }
-      if (car.vehicle?.position?.set) car.vehicle.position.set(car.worldX, 0, car.worldZ);
     } else {
       updateCar(car, dt); // fallback to old system
     }
@@ -2625,7 +2645,7 @@ function animate() {
   // Tick sensor bridge (generates BLE sightings + camera detections)
   sensorBridge.tick(dt,
     npcs.map(n => ({ id: n.id, x: n.vehicle.position.x, z: n.vehicle.position.z, bleMac: n.bleMac, type: n.type })),
-    cars.map(c => ({ id: c.id, x: c.mesh.position.x, z: c.mesh.position.z, tpmsId: c.tpmsId, vehicleType: c.vehicleType }))
+    cars.map(c => ({ id: c.id, x: c.worldX || c.mesh?.position?.x || 0, z: c.worldZ || c.mesh?.position?.z || 0, tpmsId: c.tpmsId, vehicleType: c.vehicleType }))
   );
 
   controls.update();
@@ -2635,6 +2655,10 @@ function animate() {
 }
 
 animate();
+
+// Start spawning cars after 2 seconds (let the page render first)
+// 200 active driving cars + parked cars for visual density
+setTimeout(() => { _carsToSpawn = 180; }, 2000);
 
 // Resize handler
 window.addEventListener('resize', () => {
