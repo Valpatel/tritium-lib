@@ -70,13 +70,16 @@ function createPedGeometry() {
 }
 
 function createBeamGeometry() {
-    // Cone: apex(narrow) at car, base(wide) ahead = headlight spread
-    // ConeGeometry apex at +Y. rotateX(-PI/2): apex → -Z (car), base → +Z (forward)
+    // Headlight beam: narrow at car, wide ahead
+    // ConeGeometry: apex at +Y, base at -Y
+    // rotateX(PI/2): apex → +Z (ahead), base → -Z (at car) — VISUALLY: wide near car, narrow far
+    // rotateX(-PI/2): apex → -Z (at car), base → +Z (ahead) — VISUALLY: narrow near car, wide far
+    // User says beams look flipped, so try PI/2 (original rotation):
     const l = new THREE.ConeGeometry(2.0, 12, 4);
-    l.rotateX(-Math.PI / 2);
+    l.rotateX(Math.PI / 2);
     l.translate(0.5, 0.3, 8);
     const r = new THREE.ConeGeometry(2.0, 12, 4);
-    r.rotateX(-Math.PI / 2);
+    r.rotateX(Math.PI / 2);
     r.translate(-0.5, 0.3, 8);
     return mergeGeometries([l, r], false);
 }
