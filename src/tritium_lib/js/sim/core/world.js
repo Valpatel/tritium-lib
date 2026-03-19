@@ -362,11 +362,11 @@ export class World {
                     const dot = dx * fwdX + dz * fwdZ;
 
                     if (dot > 0) {
-                        // Other is ahead — this car must brake and back up
-                        car.speed = Math.max(0, car.speed - overlap * 3);
-                        car.d = Math.max(0, car.d - overlap * 0.5);
+                        // Other is ahead — back up along path, gentle speed reduction
+                        car.d = Math.max(0, car.d - overlap * 0.3);
+                        car.speed = Math.max(0, car.speed * 0.95); // 5% speed loss per overlap frame
                     } else {
-                        // Other is behind — nudge forward slightly
+                        // Other is behind — nudge forward
                         car.d += overlap * 0.1;
                     }
                 }
