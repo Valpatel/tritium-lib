@@ -67,6 +67,7 @@ import { SensorBridge, generateBleMac, generateTpmsId } from './js/sim/sensor-br
 import { computeWeather } from './js/sim/weather.js';
 import { createCar, tickCar, resolveOverlaps, rebuildSpatialHash } from './js/sim/car-controller.js';
 import { InstancedCarRenderer } from './js/sim/instanced-cars.js';
+import { createPedestrian, tickPedestrian, assignGoal, assignRandomGoal, InstancedPedRenderer } from './js/sim/ped-controller.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -956,6 +957,19 @@ if (_treePositions.length > 0) {
 // ============================================================
 const entityManager = new YUKA.EntityManager();
 const instancedCars = new InstancedCarRenderer(scene, 5000);
+const instancedPeds = new InstancedPedRenderer(scene, 500);
+
+// New pedestrian system (parallel to old yuka NPCs for now)
+const peds = []; // array of ped state objects from createPedestrian()
+const PED_COLORS = {
+    resident: 0x44aa66,  // green
+    worker: 0x4488cc,    // blue
+    student: 0xccaa44,   // yellow
+    police: 0x2244ff,    // bright blue
+    shopkeeper: 0xcc6644, // brown
+    jogger: 0xff6644,    // orange
+};
+
 const time = new YUKA.Time();
 
 // ============================================================
@@ -1746,6 +1760,31 @@ for (const car of cars) {
 }
 
 // ============================================================
+// CREATE INSTANCED PEDESTRIANS (new system alongside old yuka NPCs)
+// ============================================================
+{
+  const roles = ['resident', 'worker', 'worker', 'student', 'shopkeeper', 'jogger'];
+  for (let i = 0; i < 50; i++) {
+    // Random sidewalk position
+    const blockCol = Math.floor(Math.random() * GRID_COLS);
+    const blockRow = Math.floor(Math.random() * GRID_ROWS);
+    const bx = blockCol * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+    const bz = blockRow * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+    // Offset to nearby sidewalk
+    const side = Math.floor(Math.random() * 4);
+    const sx = bx + [0, 0, -BLOCK_W/2 - SIDEWALK_W, BLOCK_W/2 + SIDEWALK_W][side];
+    const sz = bz + [-BLOCK_H/2 - SIDEWALK_W, BLOCK_H/2 + SIDEWALK_W, 0, 0][side];
+
+    const role = roles[Math.floor(Math.random() * roles.length)];
+    const ped = createPedestrian(sx, sz, 'ped_' + i, role);
+    ped.meshIndex = instancedPeds.addPed(PED_COLORS[role] || 0x44aa66);
+    assignRandomGoal(ped, 60);
+    peds.push(ped);
+  }
+  console.log(`[Peds] Created ${peds.length} instanced pedestrians`);
+}
+
+// ============================================================
 // SIM CLOCK & SCHEDULE EXECUTOR
 // ============================================================
 const simClock = new SimClock(7.0, 1.0); // Start at 7:00am, 1 sim-minute per real second
@@ -2357,7 +2396,7 @@ function updateHUD() {
   hudEl.innerHTML = `
 <span class="label">CITY3D v5 — ${simClock.getTimeString()} Day ${simClock.getDay()} LOD:${vizLOD} Paths:${showPaths ? 'ON' : 'OFF'}</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
-<span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length} (${cars.filter(c => c.speed < 0.5).length} stopped)
+<span class="label">Pedestrians:</span> ${peds.length} (${peds.filter(p => p.knockedDown).length} down) &nbsp; <span class="label">Cars:</span> ${cars.length} (${cars.filter(c => c.speed < 0.5).length} stopped)
 <span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
 <span class="label">Building entries:</span> ${buildingEntries.length} &nbsp; <span class="label">Intersections:</span> ${intersections.length}
 <span class="label">Protest:</span> ${protestActive ? `<span class="warn">${protestEngine.currentPhase} (${protestEngine.getDebugInfo().active} active, ${protestEngine.getDebugInfo().arrested} arrested)</span>` : 'off [SPACE to start]'}
@@ -2543,6 +2582,24 @@ function animate() {
   }
   // Flush instanced mesh updates to GPU
   instancedCars.flush();
+
+  // Update instanced pedestrians
+  const carDataForPeds = cars.map(c => ({
+    worldX: c.worldX, worldZ: c.worldZ,
+    speed: c.speed, worldHeading: c.worldHeading, length: c.length || 4
+  }));
+  for (const ped of peds) {
+    tickPedestrian(ped, dt, peds, carDataForPeds);
+    // Reassign goal when reached
+    if (ped.goalReached && !ped.knockedDown) {
+      assignRandomGoal(ped, 80);
+    }
+    // Update instanced mesh
+    if (ped.meshIndex >= 0) {
+      instancedPeds.updatePed(ped.meshIndex, ped);
+    }
+  }
+  instancedPeds.flush();
   // Weather system: sky color, lighting, fog from tritium-lib weather module
   const weather = computeWeather({
     simTime: simClock.getHour(),
