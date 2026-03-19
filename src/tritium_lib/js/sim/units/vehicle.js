@@ -28,10 +28,10 @@ export class Vehicle extends GroundUnit {
     constructor(config = {}) {
         super({ type: 'vehicle', length: 5, width: 2.5, height: 1.6, ...config });
 
-        // IDM parameters (per-vehicle variation)
-        this.idmParams = { ...IDM_DEFAULTS, ...(config.idm || {}) };
+        // IDM parameters — tighter following for city driving
+        this.idmParams = { ...IDM_DEFAULTS, T: 0.8, s0: 1.5, ...(config.idm || {}) };
         if (!config.idm?.v0) {
-            this.idmParams.v0 = 8 + Math.random() * 5; // 8-13 m/s
+            this.idmParams.v0 = 8 + Math.random() * 5;
         }
 
         // Lane offset from road center
@@ -56,9 +56,10 @@ export class Vehicle extends GroundUnit {
         // IDM acceleration
         let acc = idmAcceleration(this.speed, leader.gap, leader.speed, this.idmParams);
 
-        // NEVER stop in curves (intersections) — maintain minimum 4 m/s
-        if (this.inCurve) {
-            if (leader.gap > 3) acc = Math.max(acc, 0.5); // gentle acceleration through intersection
+        // NEVER stop in curves (intersections)
+        if (this.inCurve && leader.gap > 3) {
+            acc = Math.max(acc, 1.5); // strong push through intersection
+            if (this.speed < 3) this.speed = 3; // force minimum speed in curves
         }
 
         // Aggressive driving: if stopped too long, force through
