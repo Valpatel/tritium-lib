@@ -320,34 +320,24 @@ const TL_YELLOW = 0xffcc00;
 const TL_RED = 0xff2200;
 const TL_CYCLE = { GREEN: 30, YELLOW: 3, ALL_RED: 2 };
 
-function createTrafficLightPole(x, y, z) {
-  const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.15, 0.15, 3, 6),
-    new THREE.MeshStandardMaterial({ color: 0x333333 })
-  );
-  pole.position.set(x, 1.5, z);
-  scene.add(pole);
-
+function createFloatingLight(x, z, color) {
   const light = new THREE.Mesh(
-    new THREE.BoxGeometry(0.5, 0.5, 0.5),
-    new THREE.MeshStandardMaterial({ color: TL_RED, emissive: TL_RED, emissiveIntensity: 0.5 })
+    new THREE.SphereGeometry(0.6, 8, 6),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.8 })
   );
-  light.position.set(x, 3.2, z);
+  light.position.set(x, 8, z);
   scene.add(light);
   return light;
 }
 
 for (const inter of intersections) {
-  const off = ROAD_SURFACE_W / 2 + SIDEWALK_W + 0.3;
   const tl = {
     intersection: inter,
-    // Lights at the 4 corners controlling each direction
-    meshNS_a: createTrafficLightPole(inter.x - off, 0, inter.z - off),
-    meshNS_b: createTrafficLightPole(inter.x + off, 0, inter.z + off),
-    meshEW_a: createTrafficLightPole(inter.x + off, 0, inter.z - off),
-    meshEW_b: createTrafficLightPole(inter.x - off, 0, inter.z + off),
-    phase: 'NS_GREEN', // NS_GREEN, NS_YELLOW, ALL_RED_1, EW_GREEN, EW_YELLOW, ALL_RED_2
-    timer: TL_CYCLE.GREEN + seededRandom() * 10, // stagger start
+    // Two floating lights above intersection — one for NS, one for EW
+    meshNS: createFloatingLight(inter.x - 2, inter.z, TL_GREEN),
+    meshEW: createFloatingLight(inter.x + 2, inter.z, TL_RED),
+    phase: 'NS_GREEN',
+    timer: TL_CYCLE.GREEN + seededRandom() * 10,
     nsGreen: true,
   };
   trafficLights.push(tl);
@@ -386,10 +376,8 @@ function updateTrafficLights(dt) {
       case 'EW_GREEN': ewColor = TL_GREEN; break;
       case 'EW_YELLOW': ewColor = TL_YELLOW; break;
     }
-    setLightColor(tl.meshNS_a, nsColor);
-    setLightColor(tl.meshNS_b, nsColor);
-    setLightColor(tl.meshEW_a, ewColor);
-    setLightColor(tl.meshEW_b, ewColor);
+    setLightColor(tl.meshNS, nsColor);
+    setLightColor(tl.meshEW, ewColor);
   }
 }
 
@@ -936,22 +924,27 @@ function spawnCar() {
 }
 
 function assignCarDestination(car) {
-  const dest = randomLanePoint();
-  const path = findNavPath(
-    new YUKA.Vector3(car.vehicle.position.x, 0, car.vehicle.position.z),
-    dest, roadNavMesh
-  );
-  if (path && path.length > 1) {
+  // Try multiple destinations if pathfinding fails
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const dest = randomLanePoint();
+    const from = new YUKA.Vector3(car.vehicle.position.x, 0, car.vehicle.position.z);
+    const path = findNavPath(from, dest, roadNavMesh);
+    if (path && path.length > 1) {
     car.followPath.path = new YUKA.Path();
     for (const p of path) car.followPath.path.add(p);
     car.followPath.active = true;
     car.currentPath = path;
     car.stateTimer = 0;
-    updatePathLine(car.pathLine, path);
-  } else {
-    car.stateTimer = 1;
-    updatePathLine(car.pathLine, []);
+      updatePathLine(car.pathLine, path);
+      return;
+    }
   }
+  // All attempts failed — teleport to a road point and try again next tick
+  const fallback = randomRoadPoint();
+  car.vehicle.position.copy(fallback);
+  car.mesh.position.set(fallback.x, 0, fallback.z);
+  car.stateTimer = 0.5;
+  updatePathLine(car.pathLine, []);
 }
 
 // ============================================================
@@ -1092,10 +1085,8 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyL') {
     showTrafficLights = !showTrafficLights;
     for (const tl of trafficLights) {
-      tl.meshNS_a.visible = showTrafficLights;
-      tl.meshNS_b.visible = showTrafficLights;
-      tl.meshEW_a.visible = showTrafficLights;
-      tl.meshEW_b.visible = showTrafficLights;
+      tl.meshNS.visible = showTrafficLights;
+      tl.meshEW.visible = showTrafficLights;
     }
   }
   if (e.code === 'KeyR') {
