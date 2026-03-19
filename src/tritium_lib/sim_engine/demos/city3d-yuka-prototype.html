@@ -382,15 +382,23 @@ function updateTrafficLights(dt) {
 }
 
 // Check if a car approaching an intersection should stop
-function shouldCarStop(carPos, carDir) {
+function shouldCarStop(carPos, carDir, carVehicle) {
+  // Use heading direction if velocity is zero (car is stopped)
+  let dirX = carDir.x, dirZ = carDir.z;
+  if (Math.abs(dirX) < 0.01 && Math.abs(dirZ) < 0.01 && carVehicle) {
+    const heading = carVehicle.getDirection(new YUKA.Vector3());
+    dirX = heading.x;
+    dirZ = heading.z;
+  }
+
   for (const tl of trafficLights) {
     const dx = tl.intersection.x - carPos.x;
     const dz = tl.intersection.z - carPos.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist > 20 || dist < 2) continue; // only check nearby intersections
+    if (dist > 20 || dist < 2) continue;
 
-    // Determine travel direction
-    const isNS = Math.abs(carDir.z) > Math.abs(carDir.x);
+    // Determine travel direction from velocity or heading
+    const isNS = Math.abs(dirZ) > Math.abs(dirX);
     if (isNS && !tl.nsGreen) return dist < 12;
     if (!isNS && tl.nsGreen) return dist < 12;
   }
@@ -706,30 +714,25 @@ function randomSidewalkPoint() {
 }
 
 function randomRoadPoint() {
-  const r = debugRoadRects[Math.floor(Math.random() * debugRoadRects.length)];
-  return new YUKA.Vector3(
-    r.x1 + Math.random() * (r.x2 - r.x1),
-    0,
-    r.z1 + Math.random() * (r.z2 - r.z1)
-  );
+  // Pick a point on a road centerline (not in overlap zones)
+  if (Math.random() < 0.5) {
+    // Horizontal road
+    const row = Math.floor(Math.random() * (GRID_ROWS + 1));
+    const z = hRoadZ(row);
+    const x = ROAD_W + Math.random() * (CITY_W - ROAD_W * 2);
+    return new YUKA.Vector3(x, 0, z);
+  } else {
+    // Vertical road
+    const col = Math.floor(Math.random() * (GRID_COLS + 1));
+    const x = vRoadX(col);
+    const z = ROAD_W + Math.random() * (CITY_H - ROAD_W * 2);
+    return new YUKA.Vector3(x, 0, z);
+  }
 }
 
 function randomLanePoint() {
-  // Pick a point in a specific lane (right side of road)
-  const r = debugRoadRects[Math.floor(Math.random() * debugRoadRects.length)];
-  const w = r.x2 - r.x1;
-  const h = r.z2 - r.z1;
-  const isHoriz = w > h;
-  let x, z;
-  if (isHoriz) {
-    x = r.x1 + Math.random() * w;
-    // Right-side lanes: offset from center toward positive Z
-    z = (r.z1 + r.z2) / 2 + LANE_W * (0.5 + Math.random());
-  } else {
-    z = r.z1 + Math.random() * h;
-    x = (r.x1 + r.x2) / 2 + LANE_W * (0.5 + Math.random());
-  }
-  return new YUKA.Vector3(x, 0, z);
+  // Pick a point on a road centerline for destination
+  return randomRoadPoint();
 }
 
 function randomBuildingEntry() {
@@ -1040,15 +1043,33 @@ function updateCar(car, dt) {
   const speed = car.vehicle.velocity.length();
   const dir = car.vehicle.getDirection(new YUKA.Vector3());
 
-  // Traffic light check
-  const mustStop = shouldCarStop(car.vehicle.position, dir);
-  if (mustStop && !car.stopped) {
-    car.stopped = true;
-    car.savedMaxSpeed = car.vehicle.maxSpeed;
-    car.vehicle.maxSpeed = 0;
-  } else if (!mustStop && car.stopped) {
-    car.stopped = false;
-    car.vehicle.maxSpeed = car.savedMaxSpeed;
+  // Traffic light check — only when moving, release when light changes
+  if (!car.stopped) {
+    const mustStop = shouldCarStop(car.vehicle.position, dir, car.vehicle);
+    if (mustStop) {
+      car.stopped = true;
+      car.stoppedDir = { x: dir.x, z: dir.z }; // remember direction when we stopped
+      car.savedMaxSpeed = car.vehicle.maxSpeed;
+      car.vehicle.maxSpeed = 0;
+    }
+  } else {
+    // Check if we should release — use stored direction from when we stopped
+    const checkDir = car.stoppedDir || dir;
+    const _d = { x: checkDir.x, z: checkDir.z };
+    let canGo = true;
+    for (const tl of trafficLights) {
+      const dx = tl.intersection.x - car.vehicle.position.x;
+      const dz = tl.intersection.z - car.vehicle.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist > 20 || dist < 2) continue;
+      const isNS = Math.abs(_d.z) > Math.abs(_d.x);
+      if (isNS && !tl.nsGreen) { canGo = false; break; }
+      if (!isNS && tl.nsGreen) { canGo = false; break; }
+    }
+    if (canGo) {
+      car.stopped = false;
+      car.vehicle.maxSpeed = car.savedMaxSpeed || 12;
+    }
   }
 
   if (speed < 0.1 && car.followPath.active && !car.stopped) {
