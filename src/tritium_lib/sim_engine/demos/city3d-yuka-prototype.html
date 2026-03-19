@@ -1415,7 +1415,7 @@ function updateCarTrajectory(car) {
   car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
 }
 
-// Update route visualization
+// Update route visualization — follows roads, not straight lines through buildings
 function updateCarRouteLine(car) {
   if (!car.routeLine) return;
 
@@ -1423,11 +1423,32 @@ function updateCarRouteLine(car) {
   // Start from current position
   points.push(new THREE.Vector3(car.mesh.position.x, 0.3, car.mesh.position.z));
 
-  if (car.route && car.route.length > 0) {
-    // Add each intersection node along the remaining route
+  if (car.route && car.route.length > 0 && modularRoadNetwork) {
+    // For each edge in the route, add points along the road centerline
+    let prevNodeId = null;
+    const isForward = car.lane < (car.road?.numLanesPerDir || 2);
+    prevNodeId = isForward ? car.road?.to : car.road?.from;
+
     for (let i = car.routeIndex || 0; i < car.route.length; i++) {
-      const node = modularRoadNetwork?.nodes[car.route[i].nodeId];
-      if (node) points.push(new THREE.Vector3(node.x, 0.3, node.z));
+      const step = car.route[i];
+      const edge = step.edge;
+      if (!edge) continue;
+
+      // Add the start and end of this road edge (following the road)
+      const fromNode = modularRoadNetwork.nodes[edge.from];
+      const toNode = modularRoadNetwork.nodes[edge.to];
+      if (fromNode && toNode) {
+        // Add road midpoint to follow road geometry
+        const midX = (edge.ax + edge.bx) / 2;
+        const midZ = (edge.az + edge.bz) / 2;
+        points.push(new THREE.Vector3(midX, 0.3, midZ));
+
+        // Add destination node
+        const destNode = modularRoadNetwork.nodes[step.nodeId];
+        if (destNode) {
+          points.push(new THREE.Vector3(destNode.x, 0.3, destNode.z));
+        }
+      }
     }
   }
 
