@@ -103,8 +103,22 @@ export class GroundUnit {
         this.pitch = this.path.getPitch(this.d);
         this.inCurve = this.path.isInCurve(this.d);
 
-        // 6. Trim old path behind
+        // 6. Trim old path and waypoints behind
         this.path.trimBefore(this.d - 20);
+        // Remove waypoints clearly behind the car (keeps only 2 behind for direction calc)
+        while (this.path.waypoints.length > 3) {
+            const wp = this.path.waypoints[0];
+            if (!wp) { this.path.waypoints.shift(); continue; }
+            const dx = wp.x - this.x, dz = wp.z - this.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            const fwdX = Math.sin(this.heading), fwdZ = Math.cos(this.heading);
+            const dot = dx * fwdX + dz * fwdZ;
+            if (dot < -10) { // clearly behind by 10m+
+                this.path.waypoints.shift();
+            } else {
+                break;
+            }
+        }
     }
 
     /**
