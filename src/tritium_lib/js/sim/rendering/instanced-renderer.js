@@ -101,6 +101,7 @@ export class InstancedRenderer {
         if (!mt || index < 0 || index >= mt.count) return;
 
         this.dummy.position.set(x, y, z);
+        this.dummy.rotation.order = 'YXZ'; // heading first, then pitch in car's local frame
         this.dummy.rotation.set(pitch, heading, roll);
         this.dummy.scale.set(1, 1, scaleZ);
         this.dummy.updateMatrix();
