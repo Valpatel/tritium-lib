@@ -38,26 +38,26 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // ============================================================
 
 function createCarGeometry() {
-    const body = new THREE.BoxGeometry(2.5, 1.6, 5.0);
-    body.translate(0, 0.8, 0);
-    const cabin = new THREE.BoxGeometry(2.0, 1.0, 2.5);
-    cabin.translate(0, 2.1, -0.1);
+    const body = new THREE.BoxGeometry(1.8, 1.4, 4.5); // realistic car width
+    body.translate(0, 0.7, 0);
+    const cabin = new THREE.BoxGeometry(1.5, 0.9, 2.2);
+    cabin.translate(0, 1.8, -0.1);
     return mergeGeometries([body, cabin], false) || body;
 }
 
 function createHeadlightGeometry() {
-    const l = new THREE.BoxGeometry(0.5, 0.4, 0.3);
-    l.translate(0.6, 0.5, 2.6);
-    const r = new THREE.BoxGeometry(0.5, 0.4, 0.3);
-    r.translate(-0.6, 0.5, 2.6);
+    const l = new THREE.BoxGeometry(0.35, 0.3, 0.2);
+    l.translate(0.5, 0.45, 2.3);
+    const r = new THREE.BoxGeometry(0.35, 0.3, 0.2);
+    r.translate(-0.5, 0.45, 2.3);
     return mergeGeometries([l, r], false);
 }
 
 function createTaillightGeometry() {
-    const l = new THREE.BoxGeometry(0.45, 0.35, 0.25);
-    l.translate(0.6, 0.5, -2.6);
-    const r = new THREE.BoxGeometry(0.45, 0.35, 0.25);
-    r.translate(-0.6, 0.5, -2.6);
+    const l = new THREE.BoxGeometry(0.3, 0.25, 0.15);
+    l.translate(0.5, 0.45, -2.3);
+    const r = new THREE.BoxGeometry(0.3, 0.25, 0.15);
+    r.translate(-0.5, 0.45, -2.3);
     return mergeGeometries([l, r], false);
 }
 
@@ -72,9 +72,9 @@ function createPedGeometry() {
 function createBeamGeometry() {
     // Headlight beam with gradient: bright at car, dim at far end
     function makeBeamCone(offsetX) {
-        const geo = new THREE.ConeGeometry(2.5, 12, 6);
+        const geo = new THREE.ConeGeometry(2.0, 10, 6);
         geo.rotateX(-Math.PI / 2);
-        geo.translate(offsetX, 0.3, 8.5);
+        geo.translate(offsetX, 0.25, 7.5);
 
         // Vertex color gradient: bright near car, dim far (RGB, no alpha)
         const pos = geo.attributes.position;

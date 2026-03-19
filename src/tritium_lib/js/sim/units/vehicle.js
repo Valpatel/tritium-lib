@@ -26,7 +26,7 @@ export class Vehicle extends GroundUnit {
      * @param {boolean} [config.isEmergency] - Emergency vehicle (ignores red lights)
      */
     constructor(config = {}) {
-        super({ type: 'vehicle', length: 5, width: 2.5, height: 1.6, ...config });
+        super({ type: 'vehicle', length: 4.5, width: 1.8, height: 1.4, ...config });
 
         // IDM parameters — tighter following for city driving
         this.idmParams = { ...IDM_DEFAULTS, T: 0.8, s0: 1.5, ...(config.idm || {}) };
@@ -242,7 +242,7 @@ export class Car extends Vehicle {
     constructor(config = {}) {
         super({
             type: 'car',
-            length: 5.0, width: 2.5, height: 1.6,
+            length: 4.5, width: 1.8, height: 1.4,
             idm: { v0: 8 + Math.random() * 5, a: 1.4, b: 2.0, s0: 2, T: 1.5 },
             ...config,
         });
