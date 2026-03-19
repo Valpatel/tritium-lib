@@ -2554,8 +2554,9 @@ function animate() {
   const skyC = new THREE.Color(weather.skyColor);
   scene.background.copy(skyC);
   scene.fog.color.copy(skyC);
-  scene.fog.near = 1 / weather.fogDensity * 0.3;
-  scene.fog.far = 1 / weather.fogDensity;
+  // Fog: distant enough to see full city during day, closer at night
+  scene.fog.near = weather.isNight ? 200 : 500;
+  scene.fog.far = weather.isNight ? 600 : 1500;
 
   // Find ambient light (first Light child in scene)
   if (!window._ambientLight) {
