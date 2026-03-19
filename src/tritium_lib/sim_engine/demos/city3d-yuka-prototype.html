@@ -1323,34 +1323,36 @@ function assignCarRoute(car) {
   car.mesh.rotation.y = world.angle;
 }
 
-// Plan a Dijkstra route from current position to a random destination
+// Plan a Dijkstra route from current position to a nearby destination (2-5 blocks)
 function planCarRoute(car) {
   if (!modularRoadNetwork) { car.route = []; return; }
 
   const isForward = car.lane < (car.road.numLanesPerDir || 2);
   const currentNodeId = isForward ? car.road.to : car.road.from;
+  const cn = modularRoadNetwork.nodes[currentNodeId];
+  if (!cn) { car.route = []; return; }
 
-  // Pick random destination node (at least 3 edges away)
+  // Pick a destination: any interior intersection, 2+ blocks away
   const nodeIds = Object.keys(modularRoadNetwork.nodes);
-  let destNodeId;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    destNodeId = nodeIds[Math.floor(Math.random() * nodeIds.length)];
-    if (destNodeId !== currentNodeId) {
-      const dn = modularRoadNetwork.nodes[destNodeId];
-      const cn = modularRoadNetwork.nodes[currentNodeId];
-      if (dn && cn) {
-        const dist = Math.abs(dn.x - cn.x) + Math.abs(dn.z - cn.z);
-        if (dist > 100) break; // at least ~2 blocks away
-      }
-    }
-  }
+  let bestDest = null;
 
-  car.destination = destNodeId;
-  car.route = modularRoadNetwork.findPath(currentNodeId, destNodeId);
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const candidateId = nodeIds[Math.floor(Math.random() * nodeIds.length)];
+    if (candidateId === currentNodeId) continue;
+    const dn = modularRoadNetwork.nodes[candidateId];
+    if (!dn) continue;
+    const dist = Math.abs(dn.x - cn.x) + Math.abs(dn.z - cn.z);
+    if (dist < 60) continue; // at least 1 block away
+    bestDest = candidateId;
+    break;
+  }
+  if (!bestDest) bestDest = nodeIds[Math.floor(Math.random() * nodeIds.length)];
+
+  car.destination = bestDest;
+  car.route = modularRoadNetwork.findPath(currentNodeId, bestDest);
   car.routeIndex = 0;
   car.routeReplanTimer = 0;
 
-  // Update route visualization (dotted line to destination)
   updateCarRouteLine(car);
 }
 
@@ -1416,44 +1418,44 @@ function updateCarTrajectory(car) {
   car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
 }
 
-// Update route visualization — follows roads, not straight lines through buildings
+// Update route visualization — trace each road edge exactly (no shortcuts through blocks)
 function updateCarRouteLine(car) {
   if (!car.routeLine) return;
 
   const points = [];
-  // Start from current position
   points.push(new THREE.Vector3(car.mesh.position.x, 0.3, car.mesh.position.z));
 
   if (car.route && car.route.length > 0 && modularRoadNetwork) {
-    // For each edge in the route, add points along the road centerline
-    let prevNodeId = null;
+    // Track which node we're coming from
     const isForward = car.lane < (car.road?.numLanesPerDir || 2);
-    prevNodeId = isForward ? car.road?.to : car.road?.from;
+    let prevNodeId = isForward ? car.road?.to : car.road?.from;
 
     for (let i = car.routeIndex || 0; i < car.route.length; i++) {
       const step = car.route[i];
       const edge = step.edge;
       if (!edge) continue;
 
-      // Add the start and end of this road edge (following the road)
+      // Each edge goes from node 'from' to node 'to'
+      // We need to trace it in the correct direction based on which node we're at
       const fromNode = modularRoadNetwork.nodes[edge.from];
       const toNode = modularRoadNetwork.nodes[edge.to];
-      if (fromNode && toNode) {
-        // Add road midpoint to follow road geometry
-        const midX = (edge.ax + edge.bx) / 2;
-        const midZ = (edge.az + edge.bz) / 2;
-        points.push(new THREE.Vector3(midX, 0.3, midZ));
+      if (!fromNode || !toNode) continue;
 
-        // Add destination node
-        const destNode = modularRoadNetwork.nodes[step.nodeId];
-        if (destNode) {
-          points.push(new THREE.Vector3(destNode.x, 0.3, destNode.z));
-        }
+      // Add the edge's start point (the node we're coming FROM on this edge)
+      if (prevNodeId === edge.from) {
+        // We travel from→to: add from point then to point
+        points.push(new THREE.Vector3(fromNode.x, 0.3, fromNode.z));
+        points.push(new THREE.Vector3(toNode.x, 0.3, toNode.z));
+        prevNodeId = edge.to;
+      } else {
+        // We travel to→from: add to point then from point
+        points.push(new THREE.Vector3(toNode.x, 0.3, toNode.z));
+        points.push(new THREE.Vector3(fromNode.x, 0.3, fromNode.z));
+        prevNodeId = edge.from;
       }
     }
   }
 
-  // Need at least 2 points for a line
   if (points.length < 2) {
     points.push(new THREE.Vector3(points[0].x, -10, points[0].z));
   }
