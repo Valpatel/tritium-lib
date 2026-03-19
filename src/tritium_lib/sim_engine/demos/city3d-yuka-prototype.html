@@ -791,6 +791,26 @@ for (let row = 0; row < GRID_ROWS; row++) {
       scene.add(door);
       buildingEntries.push({ x: doorX, z: doorZ, blockRow: row, blockCol: col, zone });
     }
+
+    // Underground garage entrance (dark ramp on south side of block)
+    if (zone !== 'parking') {
+      const garageX = bx - BLOCK_W / 4 + seededRandom() * (BLOCK_W / 2);
+      const garageZ = bz + BLOCK_H / 2 - 1;
+      // Ramp (dark sloped rectangle)
+      const rampGeo = new THREE.PlaneGeometry(4, 3);
+      const rampMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+      const ramp = new THREE.Mesh(rampGeo, rampMat);
+      ramp.rotation.x = -Math.PI / 2.5; // sloped
+      ramp.position.set(garageX, 0.3, garageZ);
+      scene.add(ramp);
+      // "P" sign
+      const pSign = new THREE.Mesh(
+        new THREE.BoxGeometry(1.5, 1.5, 0.1),
+        new THREE.MeshStandardMaterial({ color: 0x0055cc, emissive: 0x0044aa, emissiveIntensity: 0.3 })
+      );
+      pSign.position.set(garageX + 2.5, 2, garageZ);
+      scene.add(pSign);
+    }
   }
 }
 
@@ -1252,18 +1272,21 @@ function assignCarRoute(car) {
   car.mesh.rotation.y = world.angle;
 }
 
-function spawnCar() {
+function spawnCar(vehicleType = 'sedan') {
   const vehicle = new YUKA.Vehicle();
   vehicle.maxSpeed = 12;
   vehicle.maxForce = 15;
   vehicle.updateNeighborhood = false;
 
-  const bodyColor = [0xfcee0a, 0xff4444, 0x4488ff, 0x44ff44, 0xffffff, 0x888888][Math.floor(Math.random() * 6)];
+  const isEmergency = vehicleType === 'police' || vehicleType === 'ambulance';
+  const bodyColor = vehicleType === 'police' ? 0x1155ff :
+                    vehicleType === 'ambulance' ? 0xffffff :
+                    [0xfcee0a, 0xff4444, 0x4488ff, 0x44ff44, 0xffffff, 0x888888][Math.floor(Math.random() * 6)];
   const group = new THREE.Group();
 
   // Car body — long axis along Z (THREE.js forward), width along X
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(2, 1.2, 4),
+    new THREE.BoxGeometry(2, 1.2, vehicleType === 'ambulance' ? 5 : 4),
     new THREE.MeshStandardMaterial({ color: bodyColor })
   );
   body.position.y = 0.6;
@@ -1272,10 +1295,26 @@ function spawnCar() {
   // Cabin
   const cabin = new THREE.Mesh(
     new THREE.BoxGeometry(1.6, 0.8, 2),
-    new THREE.MeshStandardMaterial({ color: 0x222233 })
+    new THREE.MeshStandardMaterial({ color: vehicleType === 'police' ? 0x111122 : 0x222233 })
   );
   cabin.position.set(-0.3, 1.3, 0);
   group.add(cabin);
+
+  // Emergency lights on roof (red + blue alternating)
+  if (isEmergency) {
+    const sirenL = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 0.25, 0.6),
+      new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.5 })
+    );
+    sirenL.position.set(0.3, 1.8, 0.2);
+    group.add(sirenL);
+    const sirenR = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 0.25, 0.6),
+      new THREE.MeshStandardMaterial({ color: 0x0044ff, emissive: 0x0044ff, emissiveIntensity: 0.5 })
+    );
+    sirenR.position.set(-0.3, 1.8, 0.2);
+    group.add(sirenR);
+  }
 
   // Headlights (front = +Z)
   const hlMat = new THREE.MeshStandardMaterial({ color: 0xffffcc, emissive: 0xffffcc, emissiveIntensity: 0.3 });
@@ -1321,20 +1360,24 @@ function spawnCar() {
 
   entityManager.add(vehicle);
 
+  const emergencyIdm = { ...IDM_DEFAULTS, v0: 18, a: 2.5, b: 3.0, T: 1.2 };
   const car = {
     id: `car_${cars.length}`,
+    vehicleType,
+    isEmergency,
     vehicle, mesh: group,
     pathLine: createPathLine(bodyColor),
     // IDM state — set by assignCarRoute
     road: null, lane: 0, u: 0, speed: 0, acc: 0,
     gap: Infinity, leader: null,
-    desiredSpeed: 10, length: 4,
-    idmParams: { ...IDM_DEFAULTS },
+    desiredSpeed: isEmergency ? 16 : 10, length: vehicleType === 'ambulance' ? 5 : 4,
+    idmParams: isEmergency ? emergencyIdm : { ...IDM_DEFAULTS },
     turningState: null,
     brakeLightsOn: false,
     stuckTimer: 0,
     laneChangeState: null,
-    mobilParams: { ...MOBIL_DEFAULTS, politeness: 0.2 + Math.random() * 0.3 },
+    mobilParams: { ...MOBIL_DEFAULTS, politeness: isEmergency ? 0.05 : (0.2 + Math.random() * 0.3) },
+    sirenActive: isEmergency, // emergency vehicles always have siren on
   };
 
   assignCarRoute(car);
@@ -1356,8 +1399,10 @@ smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('hostile', true));
-// 20 cars for realistic traffic density
-for (let i = 0; i < 20; i++) spawnCar();
+// 20 cars for realistic traffic density (including 2 emergency vehicles)
+for (let i = 0; i < 18; i++) spawnCar('sedan');
+spawnCar('police');
+spawnCar('ambulance');
 
 // ============================================================
 // SIM CLOCK & SCHEDULE EXECUTOR
@@ -1664,7 +1709,8 @@ function updateCar(car, dt) {
 
   // Normal driving on a road segment
   // Combine real cars and virtual stop cars for leader finding
-  const allCars = cars.concat(virtualStopCars);
+  // Emergency vehicles ignore virtual obstacles (run red lights)
+  const allCars = car.isEmergency ? cars : cars.concat(virtualStopCars);
 
   // Find leader: car ahead in same lane, same road, with higher u
   const { leader, gap } = findLeaderCustom(car, allCars);
@@ -1766,6 +1812,18 @@ function updateCar(car, dt) {
     tsChildren[1].material.emissiveIntensity = rightOn ? 1.0 : 0; // FR
     tsChildren[2].material.emissiveIntensity = leftOn ? 1.0 : 0;  // RL
     tsChildren[3].material.emissiveIntensity = rightOn ? 1.0 : 0; // RR
+  }
+
+  // Emergency siren light animation (red/blue alternating)
+  if (car.isEmergency && car.sirenActive) {
+    const sirenPhase = Math.sin(performance.now() * 0.015) > 0; // ~3Hz flash
+    // Siren meshes are after turn signals: children[10] = red, children[11] = blue
+    const sirenL = car.mesh.children[10];
+    const sirenR = car.mesh.children[11];
+    if (sirenL && sirenR) {
+      sirenL.material.emissiveIntensity = sirenPhase ? 1.5 : 0.1;
+      sirenR.material.emissiveIntensity = sirenPhase ? 0.1 : 1.5;
+    }
   }
 
   // Update path debug line
