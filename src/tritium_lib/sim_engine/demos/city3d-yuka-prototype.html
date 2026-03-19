@@ -60,6 +60,7 @@ import * as YUKA from 'yuka';
 import { idmAcceleration, ballisticUpdate, roadToWorld, findLeader, IDM_DEFAULTS } from './js/sim/idm.js';
 import { RoadNetwork, bezierPosition, bezierTangent, tangentToAngle } from './js/sim/road-network.js';
 import { TrafficControllerManager } from './js/sim/traffic-controller.js';
+import { decideLaneChange, createLaneChangeState, updateLaneChange, MOBIL_DEFAULTS } from './js/sim/mobil.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -1330,6 +1331,8 @@ function spawnCar() {
     turningState: null,
     brakeLightsOn: false,
     stuckTimer: 0,
+    laneChangeState: null,
+    mobilParams: { ...MOBIL_DEFAULTS, politeness: 0.2 + Math.random() * 0.3 },
   };
 
   assignCarRoute(car);
@@ -1627,6 +1630,23 @@ function updateCar(car, dt) {
   // Brake lights
   car.brakeLightsOn = car.acc < -0.5;
 
+  // MOBIL lane change (only if not already changing, not turning, not close to intersection)
+  if (!car.laneChangeState && !car.turningState && car.road && car.u < car.road.length - 30) {
+    const laneChangeResult = decideLaneChange(car, allCars, car.mobilParams);
+    if (laneChangeResult.direction && laneChangeResult.targetLane !== null) {
+      car.laneChangeState = createLaneChangeState(car.lane, laneChangeResult.targetLane, 2.0);
+    }
+  }
+
+  // Update lane change animation
+  if (car.laneChangeState) {
+    const lcResult = updateLaneChange(car.laneChangeState, dt);
+    if (lcResult.complete) {
+      car.lane = car.laneChangeState.toLane;
+      car.laneChangeState = null;
+    }
+  }
+
   // Ballistic update
   const updated = ballisticUpdate(car.u, car.speed, car.acc, dt);
   car.u = updated.u;
@@ -1654,7 +1674,13 @@ function updateCar(car, dt) {
   // Derive world position and orientation from road coordinates
   const isForward = car.lane < (car.road.numLanesPerDir || 2);
   const roadU = isForward ? car.u : (car.road.length - car.u);
-  const world = roadToWorld(car.road, car.lane, roadU);
+  // During lane change, interpolate between lanes for smooth lateral movement
+  let effectiveLane = car.lane;
+  if (car.laneChangeState && car.laneChangeState.active) {
+    const smoothT = 0.5 - 0.5 * Math.cos(car.laneChangeState.t * Math.PI);
+    effectiveLane = car.laneChangeState.fromLane + (car.laneChangeState.toLane - car.laneChangeState.fromLane) * smoothT;
+  }
+  const world = roadToWorld(car.road, effectiveLane, roadU);
   car.vehicle.position.set(world.x, 0, world.z);
   car.mesh.position.set(world.x, 0, world.z);
   car.mesh.rotation.y = world.angle;
