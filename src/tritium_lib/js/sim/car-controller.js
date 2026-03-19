@@ -109,13 +109,19 @@ export function tickCar(car, dt, allCars, pedestrians, trafficCtrl, roadNetwork)
     // 3. IDM acceleration
     car.acc = idmAcceleration(car.speed, leader.gap, leader.speed, car.idmParams);
 
-    // During turns, don't brake for false positives — maintain minimum speed
-    if (car.inTurn && car.acc < 0 && leader.gap > 3) {
-        car.acc = Math.max(car.acc, 0); // don't brake during turns unless very close
+    // During turns: don't brake for distant false positives, maintain minimum turn speed
+    if (car.inTurn) {
+        if (car.acc < 0 && leader.gap > 4) {
+            car.acc = Math.max(car.acc, 0);
+        }
     }
 
     // 4. Update speed and advance along path
-    const newSpeed = Math.max(0, car.speed + car.acc * dt);
+    let newSpeed = Math.max(0, car.speed + car.acc * dt);
+    // Minimum speed during turns to prevent stopping inside intersections
+    if (car.inTurn && leader.gap > 4) {
+        newSpeed = Math.max(newSpeed, 3.0);
+    }
     car.d = Math.max(0, car.d + newSpeed * dt + 0.5 * car.acc * dt * dt);
     car.speed = newSpeed;
 

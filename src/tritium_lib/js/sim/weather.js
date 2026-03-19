@@ -14,14 +14,16 @@
  * Returns a plain integer color (e.g., 0x88aacc).
  */
 export function getSkyColorHex(hour) {
-  if (hour >= 7 && hour < 17) return 0x88aacc;
-  if (hour >= 19 || hour < 5) return 0x0a0a0f;
-  // Dawn/dusk transitions return interpolated values
-  // These are approximations — the renderer can do smooth lerp if needed
-  if (hour >= 5 && hour < 6) return lerpColor(0x0a0a2e, 0xff8844, hour - 5);
-  if (hour >= 6 && hour < 7) return lerpColor(0xff8844, 0x4488cc, hour - 6);
-  if (hour >= 17 && hour < 18) return lerpColor(0x4488cc, 0xff6622, hour - 17);
-  return lerpColor(0xff6622, 0x2a1a3e, hour - 18);
+  if (hour >= 8 && hour < 17) return 0x87CEEB;       // day: sky blue
+  if (hour >= 21 || hour < 4) return 0x0a0a18;       // night: dark blue-black
+  // Dawn (4-8): dark → warm peach → blue
+  if (hour >= 4 && hour < 5.5) return lerpColor(0x0a0a18, 0x1a1a3e, (hour - 4) / 1.5);
+  if (hour >= 5.5 && hour < 6.5) return lerpColor(0x1a1a3e, 0xc4956a, (hour - 5.5));
+  if (hour >= 6.5 && hour < 8) return lerpColor(0xc4956a, 0x87CEEB, (hour - 6.5) / 1.5);
+  // Dusk (17-21): blue → warm peach → deep blue → dark
+  if (hour >= 17 && hour < 18.5) return lerpColor(0x87CEEB, 0xc4856a, (hour - 17) / 1.5);
+  if (hour >= 18.5 && hour < 19.5) return lerpColor(0xc4856a, 0x3a2a4e, (hour - 18.5));
+  return lerpColor(0x3a2a4e, 0x0a0a18, (hour - 19.5) / 1.5);
 }
 
 /**

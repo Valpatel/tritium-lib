@@ -593,9 +593,10 @@ function buildInstancedTrafficLights() {
 
   // Bulbs: 3 InstancedMeshes (R, Y, G) with per-instance color
   const bulbGeo = new THREE.SphereGeometry(0.2, 6, 4);
-  const bulbMatR = new THREE.MeshStandardMaterial({ color: 0xff2200, emissive: 0xff2200, emissiveIntensity: 0.5 });
-  const bulbMatY = new THREE.MeshStandardMaterial({ color: 0xffcc00, emissive: 0xffcc00, emissiveIntensity: 0.5 });
-  const bulbMatG = new THREE.MeshStandardMaterial({ color: 0x00ff44, emissive: 0x00ff44, emissiveIntensity: 0.5 });
+  // MeshBasicMaterial so instanceColor directly controls visible color (no emissive needed)
+  const bulbMatR = new THREE.MeshBasicMaterial({ color: 0xff2200 });
+  const bulbMatY = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
+  const bulbMatG = new THREE.MeshBasicMaterial({ color: 0x00ff44 });
   _tlRedInstance = new THREE.InstancedMesh(bulbGeo, bulbMatR, n);
   _tlYellowInstance = new THREE.InstancedMesh(bulbGeo, bulbMatY, n);
   _tlGreenInstance = new THREE.InstancedMesh(bulbGeo, bulbMatG, n);
@@ -1736,11 +1737,11 @@ for (const car of cars) {
 
         // Hide individual mesh (instanced mesh replaces it)
         if (car.mesh) car.mesh.visible = false;
-        // Hide all individual car visuals (instanced mesh handles rendering)
-        if (car.routeLine) car.routeLine.visible = false;
-        if (car.trajectoryLine) car.trajectoryLine.visible = false;
-        if (car.pulseDot) car.pulseDot.visible = false;
-        if (car.pathLine) car.pathLine.visible = false;
+        // Remove all individual car visuals from scene (instanced mesh handles rendering)
+        if (car.routeLine) { scene.remove(car.routeLine); car.routeLine = null; }
+        if (car.trajectoryLine) { scene.remove(car.trajectoryLine); car.trajectoryLine = null; }
+        if (car.pulseDot) { scene.remove(car.pulseDot); car.pulseDot = null; }
+        if (car.pathLine) { scene.remove(car.pathLine); car.pathLine = null; }
     }
 }
 
