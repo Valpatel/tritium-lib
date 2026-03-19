@@ -2527,7 +2527,7 @@ function animate() {
   const pedPositions = npcs.map(n => ({ x: n.vehicle.position.x, z: n.vehicle.position.z, speed: n.vehicle.velocity.length() }));
   for (const car of cars) {
     if (car.useNewSystem && car.path) {
-      tickCar(car, dt, cars, pedPositions, null, modularRoadNetwork); // TODO: re-enable traffic lights after fixing false positives
+      tickCar(car, dt, cars, pedPositions, null, modularRoadNetwork);
       // Sync rendering
       if (car.useInstanced && car.instanceHandle >= 0) {
         instancedCars.updateCar(car.instanceHandle, car.worldX, car.worldZ, car.worldHeading);

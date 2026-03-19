@@ -108,8 +108,6 @@ export function tickCar(car, dt, allCars, pedestrians, trafficCtrl, roadNetwork)
 
     // 3. IDM acceleration
     car.acc = idmAcceleration(car.speed, leader.gap, leader.speed, car.idmParams);
-    // Debug: store IDM inputs for inspection
-    car._debugLeader = { gap: leader.gap, speed: leader.speed };
 
     // 4. Update speed and advance along path
     const newSpeed = Math.max(0, car.speed + car.acc * dt);
