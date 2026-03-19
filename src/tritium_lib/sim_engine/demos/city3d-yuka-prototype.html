@@ -2497,6 +2497,22 @@ window.__city3d = {
   get state() { return { protestActive, debugMeshVisible, showTrafficLights, simTime: simClock.getTimeString() }; },
   sidewalkOnlyRects, debugPedRects, blockZones,
   CITY_W, CITY_H, PLAZA_X, PLAZA_Z, scene, renderer,
+  // Benchmark: spawn more cars at runtime
+  addCars(n) {
+    for (let i = 0; i < n; i++) {
+      const c = spawnCar('sedan');
+      const carState = createCar(modularRoadNetwork, LANE_W);
+      if (carState) {
+        Object.assign(c, { path: carState.path, d: carState.d, laneOffset: carState.laneOffset,
+          worldX: carState.worldX, worldZ: carState.worldZ, worldHeading: carState.worldHeading,
+          route: carState.route, routeIndex: carState.routeIndex, destination: carState.destination,
+          useNewSystem: true });
+        const pos = c.path.getPosition(c.d);
+        c.mesh.position.set(pos.x, 0, pos.z);
+      }
+    }
+    return cars.length;
+  },
   get renderInfo() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, geometries: i.memory.geometries, textures: i.memory.textures }; },
 };
 </script>
