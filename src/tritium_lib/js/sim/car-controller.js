@@ -189,7 +189,7 @@ export function findEffectiveLeader(car, allCars, pedestrians, trafficCtrl) {
         if (dot <= 0) continue;
 
         const lateral = Math.abs(-dx * fwdZ + dz * fwdX);
-        if (lateral > 3) continue; // wider margin for pedestrians
+        if (lateral > 1.5) continue; // only brake for peds actually ON the road, not on sidewalk
 
         const gap = Math.max(0.5, dot - (car.length || 4) / 2 - 0.5);
         if (gap < bestGap) {
@@ -379,21 +379,30 @@ function planNewRoute(car, roadNetwork) {
  * @param {Array} cars - All vehicles
  */
 export function resolveOverlaps(cars) {
-    // Use spatial hash for O(n*k) instead of O(n²)
+    // Hard collision prevention: push overlapping cars apart
+    // Uses spatial hash for O(n*k) instead of O(n²)
     for (const car of cars) {
-        if (car.speed < 0.01) continue; // don't push stopped cars
         const nearby = spatialHash.getNearby(car.worldX, car.worldZ);
         for (const other of nearby) {
             if (other === car) continue;
             const dx = other.worldX - car.worldX;
             const dz = other.worldZ - car.worldZ;
             const distSq = dx * dx + dz * dz;
-            if (distSq < 9 && distSq > 0.01) { // 3m threshold
-                // Don't push d negative — just skip
+            const minDist = 3.0; // slightly less than car length for visual clearance
+            if (distSq < minDist * minDist && distSq > 0.01) {
                 const dist = Math.sqrt(distSq);
-                const push = (3 - dist) * 0.1;
-                car.d = Math.max(0, car.d - push);
-                other.d = Math.max(0, other.d + push);
+                const overlap = minDist - dist;
+                // Gently push the rear car back along its path
+                const heading = car.path ? car.path.getHeading(car.d) : 0;
+                const fwdX = Math.sin(heading), fwdZ = Math.cos(heading);
+                const dot = dx * fwdX + dz * fwdZ;
+                if (dot > 0) {
+                    // Other is ahead — nudge this car back slightly
+                    car.d = Math.max(0, car.d - overlap * 0.15);
+                } else {
+                    // Other is behind — nudge this car forward slightly
+                    car.d += overlap * 0.05;
+                }
             }
         }
     }

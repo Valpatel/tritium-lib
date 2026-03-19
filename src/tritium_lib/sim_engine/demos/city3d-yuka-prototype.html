@@ -2541,6 +2541,9 @@ function animate() {
   }
   // Flush instanced mesh updates to GPU
   instancedCars.flush();
+  // Day/night headlights
+  const isNight = !simClock.isDaytime();
+  instancedCars.setHeadlightIntensity(isNight ? 0.8 : 0.1);
   // Resolve visual overlaps
   if (frameCount % 5 === 0) resolveOverlaps(cars);
 

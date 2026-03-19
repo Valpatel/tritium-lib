@@ -50,20 +50,25 @@ export class InstancedCarRenderer {
         this.dummy = new THREE.Object3D();
         this.totalCount = 0;
 
+        this.headlightMesh = null;  // shared across all types
+        this.taillightMesh = null;
+        this.brakeLightMesh = null;  // same as taillight but brighter when braking
         this._initMeshes();
     }
 
     _initMeshes() {
+        const hideMatrix = new THREE.Matrix4().makeTranslation(0, -1000, 0);
+
         for (const [type, info] of Object.entries(CAR_TYPES)) {
             // Body geometry (box)
             const bodyGeo = new THREE.BoxGeometry(info.w, info.h, info.l);
-            bodyGeo.translate(0, info.h / 2, 0); // pivot at bottom center
+            bodyGeo.translate(0, info.h / 2, 0);
 
             // Cabin on top
             const cabinGeo = new THREE.BoxGeometry(info.w * 0.8, info.cabinH, info.cabinL);
             cabinGeo.translate(0, info.h + info.cabinH / 2, -info.l * 0.05);
 
-            // Merge body + cabin into single geometry (one material)
+            // Merge body + cabin
             const mergedGeo = mergeGeometries([bodyGeo, cabinGeo], false) || bodyGeo;
 
             const mat = new THREE.MeshStandardMaterial({
@@ -72,24 +77,49 @@ export class InstancedCarRenderer {
             });
 
             const mesh = new THREE.InstancedMesh(mergedGeo, mat, this.maxCars);
-            mesh.count = 0; // start with 0 visible instances
+            mesh.count = 0;
             mesh.castShadow = true;
             mesh.receiveShadow = true;
 
-            // Per-instance color
             const colors = new Float32Array(this.maxCars * 3);
             mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
 
-            // Hide all instances initially (move far away)
-            const hideMatrix = new THREE.Matrix4().makeTranslation(0, -1000, 0);
-            for (let i = 0; i < this.maxCars; i++) {
-                mesh.setMatrixAt(i, hideMatrix);
-            }
+            for (let i = 0; i < this.maxCars; i++) mesh.setMatrixAt(i, hideMatrix);
             mesh.instanceMatrix.needsUpdate = true;
 
             this.scene.add(mesh);
             this.instances[type] = { mesh, count: 0 };
         }
+
+        // Shared headlights (2 white spheres at front of each car, merged into one geo)
+        const hlGeoL = new THREE.SphereGeometry(0.15, 4, 3);
+        hlGeoL.translate(0.7, 0.5, 2.0); // front-left
+        const hlGeoR = new THREE.SphereGeometry(0.15, 4, 3);
+        hlGeoR.translate(-0.7, 0.5, 2.0); // front-right
+        const hlMerged = mergeGeometries([hlGeoL, hlGeoR], false);
+        const hlMat = new THREE.MeshStandardMaterial({
+            color: 0xffffcc, emissive: 0xffffcc, emissiveIntensity: 0.4,
+        });
+        this.headlightMesh = new THREE.InstancedMesh(hlMerged, hlMat, this.maxCars);
+        this.headlightMesh.count = 0;
+        for (let i = 0; i < this.maxCars; i++) this.headlightMesh.setMatrixAt(i, hideMatrix);
+        this.headlightMesh.instanceMatrix.needsUpdate = true;
+        this.scene.add(this.headlightMesh);
+
+        // Shared taillights (2 red spheres at rear)
+        const tlGeoL = new THREE.SphereGeometry(0.12, 4, 3);
+        tlGeoL.translate(0.7, 0.5, -2.0); // rear-left
+        const tlGeoR = new THREE.SphereGeometry(0.12, 4, 3);
+        tlGeoR.translate(-0.7, 0.5, -2.0); // rear-right
+        const tlMerged = mergeGeometries([tlGeoL, tlGeoR], false);
+        const tlMat = new THREE.MeshStandardMaterial({
+            color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.3,
+        });
+        this.taillightMesh = new THREE.InstancedMesh(tlMerged, tlMat, this.maxCars);
+        this.taillightMesh.count = 0;
+        for (let i = 0; i < this.maxCars; i++) this.taillightMesh.setMatrixAt(i, hideMatrix);
+        this.taillightMesh.instanceMatrix.needsUpdate = true;
+        this.scene.add(this.taillightMesh);
     }
 
     /**
@@ -114,11 +144,19 @@ export class InstancedCarRenderer {
             inst.mesh.instanceColor.needsUpdate = true;
         }
 
-        const handle = this.totalCount;
-        this.carData.push({ type, typeIndex: index });
+        // Also allocate headlight + taillight instances
+        const globalIdx = this.totalCount;
+        if (this.headlightMesh) {
+            this.headlightMesh.count = globalIdx + 1;
+        }
+        if (this.taillightMesh) {
+            this.taillightMesh.count = globalIdx + 1;
+        }
+
+        this.carData.push({ type, typeIndex: index, globalIndex: globalIdx });
         this.totalCount++;
 
-        return handle;
+        return globalIdx;
     }
 
     /**
@@ -129,15 +167,26 @@ export class InstancedCarRenderer {
      * @param {number} z - World Z
      * @param {number} heading - Rotation Y (radians)
      */
-    updateCar(handle, x, z, heading) {
+    updateCar(handle, x, z, heading, braking = false) {
         const data = this.carData[handle];
         if (!data) return;
 
-        const inst = this.instances[data.type];
         this.dummy.position.set(x, 0, z);
         this.dummy.rotation.set(0, heading, 0);
         this.dummy.updateMatrix();
+
+        // Body
+        const inst = this.instances[data.type];
         inst.mesh.setMatrixAt(data.typeIndex, this.dummy.matrix);
+
+        // Headlights + taillights follow the same transform
+        const gi = data.globalIndex;
+        if (this.headlightMesh) {
+            this.headlightMesh.setMatrixAt(gi, this.dummy.matrix);
+        }
+        if (this.taillightMesh) {
+            this.taillightMesh.setMatrixAt(gi, this.dummy.matrix);
+        }
     }
 
     /**
@@ -146,6 +195,29 @@ export class InstancedCarRenderer {
     flush() {
         for (const key in this.instances) {
             this.instances[key].mesh.instanceMatrix.needsUpdate = true;
+        }
+        if (this.headlightMesh) this.headlightMesh.instanceMatrix.needsUpdate = true;
+        if (this.taillightMesh) this.taillightMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    /**
+     * Set headlight brightness (day/night toggle).
+     * @param {number} intensity - 0 = off (day), 0.8 = on (night)
+     */
+    setHeadlightIntensity(intensity) {
+        if (this.headlightMesh) {
+            this.headlightMesh.material.emissiveIntensity = intensity;
+        }
+    }
+
+    /**
+     * Set taillight brightness for brake lights.
+     * Call with 0.8 for braking, 0.3 for normal.
+     * @param {number} intensity
+     */
+    setTaillightIntensity(intensity) {
+        if (this.taillightMesh) {
+            this.taillightMesh.material.emissiveIntensity = intensity;
         }
     }
 
