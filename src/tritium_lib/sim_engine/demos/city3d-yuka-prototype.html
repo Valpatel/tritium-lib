@@ -64,6 +64,7 @@ import { decideLaneChange, createLaneChangeState, updateLaneChange, MOBIL_DEFAUL
 import { SimClock, ScheduleExecutor } from './js/sim/schedule-executor.js';
 import { ProtestEngine } from './js/sim/protest-engine.js';
 import { SensorBridge, generateBleMac, generateTpmsId } from './js/sim/sensor-bridge.js';
+import { createCar, tickCar, resolveOverlaps } from './js/sim/car-controller.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -1364,19 +1365,17 @@ function createRouteLine() {
   ]);
   const line = new THREE.Line(geo, mat);
   line.computeLineDistances();
-  line.visible = false; // hidden until debug mode
   scene.add(line);
   return line;
 }
 
-// Create short-term trajectory line (yellow, hidden until debug mode)
+// Create short-term trajectory line (yellow)
 function createTrajectoryLine() {
   const mat = new THREE.LineBasicMaterial({ color: 0xfcee0a, transparent: true, opacity: 0.6 });
   const geo = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(0, -10, 0), new THREE.Vector3(0, -10, 0)
   ]);
   const line = new THREE.Line(geo, mat);
-  line.visible = false;
   scene.add(line);
   return line;
 }
@@ -1598,10 +1597,32 @@ smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('hostile', true));
-// 20 cars for realistic traffic density (including 2 emergency vehicles)
+// 20 cars — use new CarPath-based system
 for (let i = 0; i < 18; i++) spawnCar('sedan');
 spawnCar('police');
 spawnCar('ambulance');
+
+// Initialize CarPath for each car (new continuous path system)
+for (const car of cars) {
+    const carState = createCar(modularRoadNetwork, LANE_W);
+    if (carState) {
+        car.path = carState.path;
+        car.d = carState.d;
+        car.laneOffset = carState.laneOffset;
+        car.worldX = carState.worldX;
+        car.worldZ = carState.worldZ;
+        car.worldHeading = carState.worldHeading;
+        car.route = carState.route;
+        car.routeIndex = carState.routeIndex;
+        car.destination = carState.destination;
+        car.useNewSystem = true; // flag to use new tick
+        // Sync mesh to initial position
+        const pos = car.path.getPosition(car.d);
+        const heading = car.path.getHeading(car.d);
+        car.mesh.position.set(pos.x, 0, pos.z);
+        car.mesh.rotation.y = heading;
+    }
+}
 
 // ============================================================
 // SIM CLOCK & SCHEDULE EXECUTOR
@@ -2205,15 +2226,19 @@ function updateCarDebug() {
   if (!showCarDebug) return;
   const lines = ['CAR DEBUG (C to toggle)', ''];
   for (const car of cars) {
-    const roadId = car.road ? `${car.road.horizontal ? 'h' : 'v'}_${car.road.from}_${car.road.to}` : 'none';
-    const leaderStr = car.leader ? (car.leader.id || (car.leader.isVirtual ? 'RED_LIGHT' : '?')) : 'none';
-    const gapStr = car.gap === Infinity ? 'INF' : car.gap.toFixed(1);
-    const turnStr = car.turningState ? `TURN:${car.turningState.turnType}(${(car.turningState.t*100).toFixed(0)}%)` : '';
-    const brakeStr = car.brakeLightsOn ? ' [BRAKE]' : '';
-    const stuckStr = (car.stuckTimer || 0) > 5 ? ` STUCK:${car.stuckTimer.toFixed(0)}s` : '';
-    lines.push(
-      `${car.id}: road=${roadId} lane=${car.lane} u=${car.u.toFixed(1)}/${(car.road ? car.road.length : 0).toFixed(0)} v=${car.speed.toFixed(1)} acc=${car.acc.toFixed(2)} gap=${gapStr} leader=${leaderStr}${brakeStr}${stuckStr} ${turnStr}`
-    );
+    if (car.useNewSystem) {
+      const brakeStr = car.brakeLightsOn ? ' [BRAKE]' : '';
+      const turnStr = car.inTurn ? ' TURN' : '';
+      const destStr = car.destination ? ` dest:${car.destination}` : '';
+      lines.push(
+        `${car.id}: d=${car.d.toFixed(1)} v=${car.speed.toFixed(1)} acc=${car.acc.toFixed(2)} path=${car.path?.totalLength?.toFixed(0)||0}m${brakeStr}${turnStr}${destStr}`
+      );
+    } else {
+      const roadId = car.road ? `${car.road.horizontal ? 'h' : 'v'}_${car.road.from}_${car.road.to}` : 'none';
+      lines.push(
+        `${car.id}: road=${roadId} lane=${car.lane} u=${car.u?.toFixed(1)} v=${car.speed.toFixed(1)} acc=${car.acc.toFixed(2)} [OLD]`
+      );
+    }
   }
   lines.push('');
   lines.push(`Virtual stops: ${virtualStopCars.length}`);
@@ -2318,10 +2343,21 @@ function animate() {
     }
   }
 
-  // Update cars
+  // Update cars — use new CarPath system
+  const pedPositions = npcs.map(n => ({ x: n.vehicle.position.x, z: n.vehicle.position.z, speed: n.vehicle.velocity.length() }));
   for (const car of cars) {
-    updateCar(car, dt);
+    if (car.useNewSystem && car.path) {
+      tickCar(car, dt, cars, pedPositions, null, modularRoadNetwork);
+      // Sync Three.js mesh from CarPath position
+      car.mesh.position.set(car.worldX, 0, car.worldZ);
+      car.mesh.rotation.y = car.worldHeading;
+      car.vehicle.position.set(car.worldX, 0, car.worldZ);
+    } else {
+      updateCar(car, dt); // fallback to old system
+    }
   }
+  // Resolve visual overlaps
+  if (frameCount % 5 === 0) resolveOverlaps(cars);
 
   // Update yuka entity manager
   entityManager.update(delta);
@@ -2357,6 +2393,30 @@ function animate() {
     }
   }
   // Cars use road graph lane following — no NavMesh clamping needed
+
+  // Update route visualization from CarPath (every 30 frames)
+  if (frameCount % 30 === 0) {
+    for (const car of cars) {
+      if (car.useNewSystem && car.path && car.routeLine) {
+        const points = car.path.sample(car.d, car.path.totalLength, 5)
+          .map(p => new THREE.Vector3(p.x, 0.3, p.z));
+        if (points.length >= 2) {
+          car.routeLine.geometry.dispose();
+          car.routeLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
+          car.routeLine.computeLineDistances();
+        }
+      }
+      // Trajectory: next 20m
+      if (car.useNewSystem && car.path && car.trajectoryLine) {
+        const trajPoints = car.path.sample(car.d, Math.min(car.d + 20, car.path.totalLength), 2)
+          .map(p => new THREE.Vector3(p.x, 0.4, p.z));
+        if (trajPoints.length >= 2) {
+          car.trajectoryLine.geometry.dispose();
+          car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(trajPoints);
+        }
+      }
+    }
+  }
 
   // Tick sensor bridge (generates BLE sightings + camera detections)
   sensorBridge.tick(dt,
