@@ -31,6 +31,13 @@
     position: fixed; bottom: 10px; left: 10px; color: #00f0ff88; font-size: 11px;
     pointer-events: none;
   }
+  #car-debug {
+    position: fixed; top: 10px; right: 10px; color: #fcee0a; font-size: 11px;
+    background: rgba(10,10,15,0.92); padding: 10px 14px; border: 1px solid #fcee0a33;
+    border-radius: 4px; pointer-events: none; line-height: 1.5;
+    font-family: 'Courier New', monospace; white-space: pre; display: none;
+    max-height: 90vh; overflow-y: auto;
+  }
 </style>
 <script type="importmap">
 {
@@ -44,11 +51,13 @@
 </head>
 <body>
 <div id="hud"></div>
-<div id="controls">[SPACE] Protest mode &nbsp; [D] Debug mesh &nbsp; [R] Reset &nbsp; [L] Traffic lights</div>
+<div id="car-debug"></div>
+<div id="controls">[SPACE] Protest mode &nbsp; [D] Debug mesh &nbsp; [R] Reset &nbsp; [L] Traffic lights &nbsp; [C] Car debug</div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as YUKA from 'yuka';
+import { idmAcceleration, ballisticUpdate, roadToWorld, findLeader, IDM_DEFAULTS } from './js/sim/idm.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -418,6 +427,29 @@ function addRoadGraphDebug() {
 addRoadGraphDebug();
 
 // ============================================================
+// AUGMENT ROAD EDGES FOR IDM — add ax,az,bx,bz,length,numLanesPerDir,laneWidth
+// ============================================================
+for (const edge of roadGraph.edges) {
+  if (edge.horizontal) {
+    edge.ax = edge.x1;
+    edge.az = edge.centerZ;
+    edge.bx = edge.x2;
+    edge.bz = edge.centerZ;
+  } else {
+    edge.ax = edge.centerX;
+    edge.az = edge.z1;
+    edge.bx = edge.centerX;
+    edge.bz = edge.z2;
+  }
+  edge.length = Math.sqrt((edge.bx - edge.ax) ** 2 + (edge.bz - edge.az) ** 2);
+  edge.numLanesPerDir = 2;
+  edge.laneWidth = LANE_W;
+}
+
+// Build traffic light lookup by intersection ID for fast access
+const tlByIntersection = {};
+
+// ============================================================
 // TRAFFIC LIGHTS — proper per-intersection controllers
 // ============================================================
 const TL_GREEN = 0x00ff44;
@@ -568,6 +600,7 @@ for (const id in roadGraph.nodes) {
   }
 
   trafficLights.push(tl);
+  tlByIntersection[node.id] = tl;
 }
 
 function updateTrafficLights(dt) {
@@ -1164,22 +1197,28 @@ function edgeParameter(edge, x, z) {
   }
 }
 
-// Assign initial route to a car
+// Assign initial route to a car (IDM-based)
 function assignCarRoute(car) {
   const spawn = randomEdgeLanePosition();
-  car.currentEdge = spawn.edge;
-  car.laneIndex = spawn.laneIndex;
-  car.laneDir = spawn.edge.lanes[spawn.laneIndex].dir;
-  car.t = edgeParameter(spawn.edge, spawn.pos.x, spawn.pos.z);
-  car.speed = 8 + Math.random() * 6;  // 8-14 m/s
-  car.maxSpeed = car.speed;
-  car.stopped = false;
-  car.stopTimer = 0;
+  car.road = spawn.edge;
+  car.lane = spawn.laneIndex;
+  // u = distance traveled in direction of travel (0..road.length)
+  car.u = spawn.edge.length * (0.2 + Math.random() * 0.6);
+  car.speed = 2 + Math.random() * 4; // start slow, IDM will accelerate
+  car.acc = 0;
+  car.gap = Infinity;
+  car.leader = null;
+  car.desiredSpeed = 10 + Math.random() * 4;
+  car.idmParams = { ...IDM_DEFAULTS, v0: car.desiredSpeed };
+  car.length = 4;
 
-  // Snap car to lane position
-  const p = lanePosition(car.currentEdge, car.laneIndex, car.t);
-  car.vehicle.position.set(p.x, 0, p.z);
-  car.mesh.position.set(p.x, 0, p.z);
+  // Snap car to lane position via roadToWorld
+  const isForward = car.lane < (car.road.numLanesPerDir || 2);
+  const roadU = isForward ? car.u : (car.road.length - car.u);
+  const world = roadToWorld(car.road, car.lane, roadU);
+  car.vehicle.position.set(world.x, 0, world.z);
+  car.mesh.position.set(world.x, 0, world.z);
+  car.mesh.rotation.y = world.angle;
 }
 
 function spawnCar() {
@@ -1237,18 +1276,17 @@ function spawnCar() {
   entityManager.add(vehicle);
 
   const car = {
+    id: `car_${cars.length}`,
     vehicle, mesh: group,
     pathLine: createPathLine(bodyColor),
-    // Lane following state
-    currentEdge: null, laneIndex: 0, laneDir: 1,
-    t: 0.5, speed: 10, maxSpeed: 10,
-    stopped: false, stopTimer: 0,
-    prevX: 0, prevZ: 0,  // for rotation smoothing
+    // IDM state — set by assignCarRoute
+    road: null, lane: 0, u: 0, speed: 0, acc: 0,
+    gap: Infinity, leader: null,
+    desiredSpeed: 10, length: 4,
+    idmParams: { ...IDM_DEFAULTS },
   };
 
   assignCarRoute(car);
-  car.prevX = car.vehicle.position.x;
-  car.prevZ = car.vehicle.position.z;
   cars.push(car);
   return car;
 }
@@ -1347,127 +1385,159 @@ function updateSimpleNPC(npc, dt) {
   }
 }
 
-// Car update with traffic light stops
-// Car update: lane following along road graph edges
+// ============================================================
+// TRAFFIC LIGHT VIRTUAL OBSTACLES — appear as stopped cars at red lights
+// ============================================================
+const virtualStopCars = []; // rebuilt each frame
+
+function buildVirtualStopCars() {
+  virtualStopCars.length = 0;
+  for (const tl of trafficLights) {
+    const node = tl.intersection;
+    for (const approach of node.approaches) {
+      if (tl.greenApproaches.has(approach)) continue; // green = no obstacle
+
+      // Find the road edge and lane that approaches this intersection from this direction
+      // and place a virtual stopped car at the stop line
+      const edges = nodeEdges[node.id];
+      for (const edge of edges) {
+        // Determine if this edge + lane combination arrives at this node from this approach
+        // u convention: always distance-in-direction-of-travel
+        // Forward lanes (0,1): u goes 0..length (A->B), stop near length
+        // Backward lanes (2,3): u goes 0..length (B->A), stop near length
+        let stopLanes;
+
+        if (approach === 'W' && edge.horizontal && edge.to === node.id) {
+          // Traffic from west: going +X (A->B), forward lanes (0,1), stop near end
+          stopLanes = [0, 1];
+        } else if (approach === 'E' && edge.horizontal && edge.from === node.id) {
+          // Traffic from east: going -X (B->A), backward lanes (2,3), stop near end
+          stopLanes = [2, 3];
+        } else if (approach === 'N' && !edge.horizontal && edge.to === node.id) {
+          // Traffic from north: going +Z (A->B), forward lanes (0,1), stop near end
+          stopLanes = [0, 1];
+        } else if (approach === 'S' && !edge.horizontal && edge.from === node.id) {
+          // Traffic from south: going -Z (B->A), backward lanes (2,3), stop near end
+          stopLanes = [2, 3];
+        } else {
+          continue;
+        }
+
+        // In our convention, u=length-2 means "2m before reaching the intersection"
+        // This works for both forward and backward lanes
+        const stopU = edge.length - 2;
+
+        for (const lane of stopLanes) {
+          virtualStopCars.push({
+            id: `virt_${node.id}_${approach}_${lane}`,
+            road: edge,
+            lane: lane,
+            u: stopU,
+            speed: 0,
+            length: 1, // small virtual obstacle
+            isVirtual: true,
+          });
+        }
+      }
+    }
+  }
+}
+
+// Transition car to next road at intersection
+function transitionToNextRoad(car) {
+  const isForward = car.lane < (car.road.numLanesPerDir || 2);
+  const arrivalNodeId = isForward ? car.road.to : car.road.from;
+
+  // Determine lane direction on current edge
+  const currentLaneDir = isForward ? 1 : -1;
+  const result = pickNextEdge(car.road, arrivalNodeId, currentLaneDir);
+
+  car.road = result.edge;
+  // Map lane: forward (A->B) = lanes 0,1; backward (B->A) = lanes 2,3
+  if (result.laneDir === 1) {
+    car.lane = Math.random() < 0.5 ? 0 : 1;
+  } else {
+    car.lane = Math.random() < 0.5 ? 2 : 3;
+  }
+  car.u = 0; // u=0 means "just entered this road" in direction of travel
+  // Carry over speed — IDM handles deceleration naturally
+}
+
+// Custom findLeader: all cars use u-increases-in-travel-direction convention
+function findLeaderCustom(car, allCars) {
+  let bestGap = Infinity;
+  let leader = null;
+
+  for (const other of allCars) {
+    if (other === car) continue;
+    if (other.road !== car.road) continue;
+    if (other.lane !== car.lane) continue;
+
+    // Leader is ahead = higher u (both forward and backward lanes use this convention)
+    const gap = other.u - car.u;
+    if (gap > 0 && gap < bestGap) {
+      bestGap = gap;
+      leader = other;
+    }
+  }
+
+  // Subtract car lengths for bumper-to-bumper gap
+  if (leader) {
+    bestGap = Math.max(0.1, bestGap - (car.length || 4) - (leader.length || 4));
+  }
+
+  return { leader, gap: bestGap };
+}
+
+// IDM-based car update
 function updateCar(car, dt) {
-  if (!car.currentEdge) {
+  if (!car.road) {
     assignCarRoute(car);
     return;
   }
 
-  const edge = car.currentEdge;
-  const lane = edge.lanes[car.laneIndex];
-  const edgeLen = edge.horizontal ? (edge.x2 - edge.x1) : (edge.z2 - edge.z1);
-  if (edgeLen <= 0) { assignCarRoute(car); return; }
+  // Combine real cars and virtual stop cars for leader finding
+  const allCars = cars.concat(virtualStopCars);
 
-  // Compute parameter step
-  const tStep = (car.speed * dt) / edgeLen;
+  // Find leader: car ahead in same lane, same road, with higher u
+  // (Our convention: u always increases in direction of travel for both forward and backward lanes)
+  const { leader, gap } = findLeaderCustom(car, allCars);
+  car.gap = gap;
+  car.leader = leader;
 
-  // Advance t in lane direction
-  if (car.laneDir > 0) {
-    // laneDir 1 means lane.dir determines actual motion direction
-    car.t += lane.dir * tStep;
-  } else {
-    car.t += lane.dir * tStep;
+  // Calculate IDM acceleration
+  const leaderSpeed = leader ? leader.speed : car.speed;
+  car.acc = idmAcceleration(car.speed, gap, leaderSpeed, car.idmParams);
+
+  // Ballistic update
+  const updated = ballisticUpdate(car.u, car.speed, car.acc, dt);
+  car.u = updated.u;
+  car.speed = updated.v;
+
+  // Check if reached end of road → transition to next road
+  if (car.u >= car.road.length) {
+    car.u = car.road.length; // clamp before transition
+    transitionToNextRoad(car);
   }
 
-  // Determine which intersection we're approaching
-  const approachingEnd = car.t >= 1.0;
-  const approachingStart = car.t <= 0.0;
-  const STOP_DIST = 0.1; // t-parameter distance to start checking lights
+  // Derive world position and orientation from road coordinates
+  // For backward lanes (2,3), u is distance from B end, so convert for roadToWorld
+  const isForward = car.lane < (car.road.numLanesPerDir || 2);
+  const roadU = isForward ? car.u : (car.road.length - car.u);
+  const world = roadToWorld(car.road, car.lane, roadU);
+  car.vehicle.position.set(world.x, 0, world.z);
+  car.mesh.position.set(world.x, 0, world.z);
+  car.mesh.rotation.y = world.angle;
 
-  // Check if approaching an intersection — need to check traffic light
-  if (!car.stopped) {
-    let nearEndNode = null;
-    let approachDir = null;
-
-    if (car.t > (1.0 - STOP_DIST)) {
-      nearEndNode = edge.to;
-      approachDir = getApproachDir(edge, edge.to);
-    } else if (car.t < STOP_DIST) {
-      nearEndNode = edge.from;
-      approachDir = getApproachDir(edge, edge.from);
-    }
-
-    if (nearEndNode && approachDir) {
-      const green = isGreenForApproach(nearEndNode, approachDir);
-      if (!green && !approachingEnd && !approachingStart) {
-        car.stopped = true;
-        car.stopApproach = approachDir;
-        car.stopNodeId = nearEndNode;
-        // Clamp t so car doesn't enter intersection
-        if (car.t > 0.5) car.t = Math.min(car.t, 1.0 - STOP_DIST * 0.3);
-        else car.t = Math.max(car.t, STOP_DIST * 0.3);
-      }
-    }
-  } else {
-    // Check if light has turned green
-    if (car.stopNodeId && car.stopApproach) {
-      const green = isGreenForApproach(car.stopNodeId, car.stopApproach);
-      if (green) {
-        car.stopped = false;
-        car.stopNodeId = null;
-        car.stopApproach = null;
-      }
-    }
+  // Update path debug line
+  const destNodeId = isForward ? car.road.to : car.road.from;
+  const destNode = roadGraph.nodes[destNodeId];
+  if (destNode) {
+    updatePathLine(car.pathLine, [
+      { x: world.x, z: world.z },
+      { x: destNode.x, z: destNode.z },
+    ]);
   }
-
-  // If stopped, don't move
-  if (car.stopped) {
-    // Keep position stable
-    const p = lanePosition(edge, car.laneIndex, car.t);
-    car.vehicle.position.set(p.x, 0, p.z);
-    car.mesh.position.set(p.x, 0, p.z);
-    return;
-  }
-
-  // Check if car reached end of edge
-  if (approachingEnd || approachingStart) {
-    const arrivalNodeId = approachingEnd ? edge.to : edge.from;
-    const result = pickNextEdge(edge, arrivalNodeId, lane.dir);
-    car.currentEdge = result.edge;
-    car.laneIndex = pickLaneForDir(result.edge, result.laneDir);
-    car.laneDir = result.laneDir;
-
-    // Place at start of new edge
-    const node = roadGraph.nodes[arrivalNodeId];
-    if (result.laneDir > 0) {
-      // Going from→to: start at from end
-      car.t = (arrivalNodeId === result.edge.from) ? 0.05 : 0.95;
-    } else {
-      car.t = (arrivalNodeId === result.edge.to) ? 0.95 : 0.05;
-    }
-  }
-
-  // Update position on lane
-  car.t = Math.max(0, Math.min(1, car.t));
-  const p = lanePosition(car.currentEdge, car.laneIndex, car.t);
-  car.vehicle.position.set(p.x, 0, p.z);
-  car.mesh.position.set(p.x, 0, p.z);
-
-  // Smooth rotation: face direction of travel
-  const dx = p.x - car.prevX;
-  const dz = p.z - car.prevZ;
-  if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) {
-    const angle = Math.atan2(dx, dz);
-    // Smooth rotate toward target angle
-    let current = car.mesh.rotation.y;
-    let diff = angle - current;
-    // Normalize to -PI..PI
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    car.mesh.rotation.y += diff * Math.min(1, dt * 8);
-  }
-  car.prevX = p.x;
-  car.prevZ = p.z;
-
-  // Update path debug line (show next few waypoints)
-  const fromNode = roadGraph.nodes[car.currentEdge.from];
-  const toNode = roadGraph.nodes[car.currentEdge.to];
-  updatePathLine(car.pathLine, [
-    { x: car.vehicle.position.x, z: car.vehicle.position.z },
-    { x: (lane.dir > 0) ? toNode.x : fromNode.x, z: (lane.dir > 0) ? toNode.z : fromNode.z },
-  ]);
 }
 
 // ============================================================
@@ -1475,6 +1545,8 @@ function updateCar(car, dt) {
 // ============================================================
 let protestActive = false;
 let showTrafficLights = true;
+let showCarDebug = false;
+const carDebugEl = document.getElementById('car-debug');
 
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
@@ -1491,6 +1563,10 @@ document.addEventListener('keydown', (e) => {
     for (const tl of trafficLights) {
       for (const a in tl.lights) tl.lights[a].group.visible = showTrafficLights;
     }
+  }
+  if (e.code === 'KeyC') {
+    showCarDebug = !showCarDebug;
+    carDebugEl.style.display = showCarDebug ? 'block' : 'none';
   }
   if (e.code === 'KeyR') {
     npcs.forEach(npc => {
@@ -1541,6 +1617,22 @@ ${smStatus}
   `.trim().replace(/\n/g, '<br>');
 }
 
+function updateCarDebug() {
+  if (!showCarDebug) return;
+  const lines = ['CAR DEBUG (C to toggle)', ''];
+  for (const car of cars) {
+    const roadId = car.road ? `${car.road.horizontal ? 'h' : 'v'}_${car.road.from}_${car.road.to}` : 'none';
+    const leaderStr = car.leader ? (car.leader.id || (car.leader.isVirtual ? 'RED_LIGHT' : '?')) : 'none';
+    const gapStr = car.gap === Infinity ? 'INF' : car.gap.toFixed(1);
+    lines.push(
+      `${car.id}: road=${roadId} lane=${car.lane} u=${car.u.toFixed(1)}/${(car.road ? car.road.length : 0).toFixed(0)} v=${car.speed.toFixed(1)} acc=${car.acc.toFixed(2)} gap=${gapStr} leader=${leaderStr}`
+    );
+  }
+  lines.push('');
+  lines.push(`Virtual stops: ${virtualStopCars.length}`);
+  carDebugEl.textContent = lines.join('\n');
+}
+
 // ============================================================
 // ANIMATION LOOP
 // ============================================================
@@ -1552,6 +1644,9 @@ function animate() {
 
   // Update traffic lights
   updateTrafficLights(dt);
+
+  // Rebuild virtual stop cars for red lights (before car update)
+  buildVirtualStopCars();
 
   // Update NPCs
   for (const npc of npcs) {
@@ -1585,6 +1680,7 @@ function animate() {
   controls.update();
   renderer.render(scene, camera);
   updateHUD();
+  updateCarDebug();
 }
 
 animate();
