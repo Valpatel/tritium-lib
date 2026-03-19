@@ -64,6 +64,7 @@ import { decideLaneChange, createLaneChangeState, updateLaneChange, MOBIL_DEFAUL
 import { SimClock, ScheduleExecutor } from './js/sim/schedule-executor.js';
 import { ProtestEngine } from './js/sim/protest-engine.js';
 import { SensorBridge, generateBleMac, generateTpmsId } from './js/sim/sensor-bridge.js';
+import { computeWeather } from './js/sim/weather.js';
 import { createCar, tickCar, resolveOverlaps, rebuildSpatialHash } from './js/sim/car-controller.js';
 import { InstancedCarRenderer } from './js/sim/instanced-cars.js';
 
@@ -2541,8 +2542,30 @@ function animate() {
   }
   // Flush instanced mesh updates to GPU
   instancedCars.flush();
-  // Day/night headlights + beams
-  const isNight = !simClock.isDaytime();
+  // Weather system: sky color, lighting, fog from tritium-lib weather module
+  const weather = computeWeather({
+    simTime: simClock.getHour(),
+    isNight: !simClock.isDaytime(),
+    weather: { rain: false, fog: false },
+    phase: protestActive ? protestEngine.currentPhase : 'NORMAL',
+  });
+
+  // Apply weather to scene
+  const skyC = new THREE.Color(weather.skyColor);
+  scene.background.copy(skyC);
+  scene.fog.color.copy(skyC);
+  scene.fog.near = 1 / weather.fogDensity * 0.3;
+  scene.fog.far = 1 / weather.fogDensity;
+
+  // Find ambient light (first Light child in scene)
+  if (!window._ambientLight) {
+    scene.traverse(obj => { if (!window._ambientLight && obj.isLight && obj.isAmbientLight) window._ambientLight = obj; });
+  }
+  if (window._ambientLight) window._ambientLight.intensity = weather.ambientIntensity;
+  sun.intensity = weather.sunIntensity;
+
+  // Headlights + beams
+  const isNight = weather.isNight;
   instancedCars.setHeadlightIntensity(isNight ? 1.0 : 0.15);
   if (instancedCars.beamMesh) {
     instancedCars.beamMesh.visible = isNight;

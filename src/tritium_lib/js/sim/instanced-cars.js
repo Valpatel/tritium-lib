@@ -128,12 +128,14 @@ export class InstancedCarRenderer {
         this.taillightMesh.instanceColor = new THREE.InstancedBufferAttribute(tlColors, 3);
 
         // Headlight beams (cone mesh projecting forward from each car)
-        const beamGeoL = new THREE.ConeGeometry(1.5, 8, 4); // wide cone, 8m long
-        beamGeoL.rotateX(Math.PI / 2); // point along +Z (forward)
-        beamGeoL.translate(0.5, 0.4, 6); // offset forward
-        const beamGeoR = new THREE.ConeGeometry(1.5, 8, 4);
+        // ConeGeometry: apex at +Y, base at -Y.
+        // rotateX(PI/2): apex → +Z (forward), base → -Z (at car) = correct headlight cone
+        const beamGeoL = new THREE.ConeGeometry(2.0, 12, 4);
+        beamGeoL.rotateX(Math.PI / 2); // apex → forward (+Z)
+        beamGeoL.translate(0.5, 0.3, 8); // center of cone 8m ahead of car
+        const beamGeoR = new THREE.ConeGeometry(2.0, 12, 4);
         beamGeoR.rotateX(Math.PI / 2);
-        beamGeoR.translate(-0.5, 0.4, 6);
+        beamGeoR.translate(-0.5, 0.3, 8);
         const beamMerged = mergeGeometries([beamGeoL, beamGeoR], false);
         const beamMat = new THREE.MeshBasicMaterial({
             color: 0xffffaa, transparent: true, opacity: 0.06,
