@@ -64,7 +64,7 @@ import { decideLaneChange, createLaneChangeState, updateLaneChange, MOBIL_DEFAUL
 import { SimClock, ScheduleExecutor } from './js/sim/schedule-executor.js';
 import { ProtestEngine } from './js/sim/protest-engine.js';
 import { SensorBridge, generateBleMac, generateTpmsId } from './js/sim/sensor-bridge.js';
-import { createCar, tickCar, resolveOverlaps } from './js/sim/car-controller.js';
+import { createCar, tickCar, resolveOverlaps, rebuildSpatialHash } from './js/sim/car-controller.js';
 import { InstancedCarRenderer } from './js/sim/instanced-cars.js';
 
 // ============================================================
@@ -2370,6 +2370,7 @@ function animate() {
   }
 
   // Update cars — use new CarPath system
+  rebuildSpatialHash(cars); // O(n) rebuild for O(1) neighbor lookups
   const pedPositions = npcs.map(n => ({ x: n.vehicle.position.x, z: n.vehicle.position.z, speed: n.vehicle.velocity.length() }));
   for (const car of cars) {
     if (car.useNewSystem && car.path) {

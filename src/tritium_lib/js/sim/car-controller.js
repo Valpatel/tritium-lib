@@ -24,6 +24,53 @@ import { idmAcceleration, IDM_DEFAULTS } from './idm.js';
 import { CarPath, buildPathFromRoute, extendPath } from './car-path.js';
 
 // ============================================================
+// SPATIAL HASH GRID — O(1) neighbor lookup instead of O(n)
+// ============================================================
+
+class SpatialHash {
+    constructor(cellSize = 50) {
+        this.cellSize = cellSize;
+        this.grid = new Map();
+    }
+
+    _key(x, z) {
+        const cx = Math.floor(x / this.cellSize);
+        const cz = Math.floor(z / this.cellSize);
+        return (cx & 0xFFFF) | ((cz & 0xFFFF) << 16);
+    }
+
+    clear() {
+        this.grid.clear();
+    }
+
+    insert(car) {
+        const key = this._key(car.worldX, car.worldZ);
+        let cell = this.grid.get(key);
+        if (!cell) { cell = []; this.grid.set(key, cell); }
+        cell.push(car);
+    }
+
+    /** Get all cars in the same cell and 8 neighbors */
+    getNearby(x, z) {
+        const cx = Math.floor(x / this.cellSize);
+        const cz = Math.floor(z / this.cellSize);
+        const result = [];
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+                const key = ((cx + dx) & 0xFFFF) | (((cz + dz) & 0xFFFF) << 16);
+                const cell = this.grid.get(key);
+                if (cell) {
+                    for (let i = 0; i < cell.length; i++) result.push(cell[i]);
+                }
+            }
+        }
+        return result;
+    }
+}
+
+const spatialHash = new SpatialHash(50);
+
+// ============================================================
 // TICK — one frame of vehicle simulation
 // ============================================================
 
@@ -37,6 +84,17 @@ import { CarPath, buildPathFromRoute, extendPath } from './car-path.js';
  * @param {Object} trafficCtrl - Traffic controller manager
  * @param {Object} roadNetwork - Road network (for path extension)
  */
+/**
+ * Rebuild spatial hash grid for O(1) neighbor lookups.
+ * Call ONCE per frame before ticking cars.
+ */
+export function rebuildSpatialHash(allCars) {
+    spatialHash.clear();
+    for (const car of allCars) {
+        if (car.worldX !== undefined) spatialHash.insert(car);
+    }
+}
+
 export function tickCar(car, dt, allCars, pedestrians, trafficCtrl, roadNetwork) {
     if (!car.path || car.path.totalLength < 1) return;
 
@@ -92,15 +150,15 @@ export function findEffectiveLeader(car, allCars, pedestrians, trafficCtrl) {
     const fwdX = Math.sin(carHeading);
     const fwdZ = Math.cos(carHeading);
 
-    // 1. Other cars: use world-space proximity + forward cone
-    for (const other of allCars) {
+    // 1. Other cars: spatial hash for O(1) neighbor lookup
+    const nearby = spatialHash.getNearby(carPos.x, carPos.z);
+    for (const other of nearby) {
         if (other === car) continue;
 
         const dx = other.worldX - carPos.x;
         const dz = other.worldZ - carPos.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        // Only check cars within 50m
         if (dist > 50) continue;
 
         // Only check cars ahead (in forward cone)
