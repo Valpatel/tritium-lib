@@ -1118,6 +1118,7 @@ function spawnNPC(type, hasStateMachine) {
   entityManager.add(vehicle);
 
   const npc = {
+    id: `npc_${npcs.length}`,
     vehicle, mesh, followPath, wander, type,
     state: STATE.IDLE, stateTimer: 0, moveTime: 0,
     currentPath: null,
