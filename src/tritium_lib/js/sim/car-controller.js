@@ -216,40 +216,42 @@ export function findEffectiveLeader(car, allCars, pedestrians, trafficCtrl) {
  * @returns {number} Gap in meters (Infinity if no red signal ahead)
  */
 function findNextRedSignalGap(car, trafficCtrl) {
-    // Check the next intersection on the car's path
     const path = car.path;
     if (!path.intersections || path.intersections.length < 2) return Infinity;
+    if (!trafficCtrl) return Infinity;
 
-    // Find the next intersection the car hasn't passed yet
-    // This is approximate — we check path distance to each intersection
+    const heading = car.path.getHeading(car.d);
+    const fwdX = Math.sin(heading);
+    const fwdZ = Math.cos(heading);
+
     for (let i = 0; i < path.intersections.length; i++) {
         const node = path.intersections[i];
         if (!node || !node.id) continue;
 
-        // Compute approximate distance from car to this intersection
         const dx = node.x - car.worldX;
         const dz = node.z - car.worldZ;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        // Skip intersections behind us or too close (already in intersection)
         if (dist < 5 || dist > 80) continue;
 
-        // Check if this intersection is ahead (in forward direction)
-        const heading = car.path.getHeading(car.d);
-        const fwdX = Math.sin(heading);
-        const fwdZ = Math.cos(heading);
         const dot = dx * fwdX + dz * fwdZ;
-        if (dot <= 0) continue; // behind us
+        if (dot <= 0) continue;
 
-        // Check signal state
-        const ctrl = trafficCtrl.getController ? trafficCtrl.getController(node.id) : null;
-        if (!ctrl) continue;
-
-        // Determine our approach direction
+        // Check signal: support both TrafficControllerManager and prototype's isGreenForApproach
         const approachDir = getApproachDirection(car.worldX, car.worldZ, node.x, node.z);
-        if (!ctrl.isGreen(approachDir)) {
-            // Red or yellow — treat as obstacle at stop line
-            return Math.max(0.5, dot - 5); // stop 5m before intersection center
+        let isGreen = true;
+
+        if (trafficCtrl.getController) {
+            // TrafficControllerManager API
+            const ctrl = trafficCtrl.getController(node.id);
+            if (ctrl) isGreen = ctrl.isGreen(approachDir);
+        } else if (trafficCtrl.isGreenForApproach) {
+            // Prototype's function-based API
+            isGreen = trafficCtrl.isGreenForApproach(node.id, approachDir);
+        }
+
+        if (!isGreen) {
+            return Math.max(0.5, dot - 5);
         }
     }
 

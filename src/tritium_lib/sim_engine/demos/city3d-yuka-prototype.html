@@ -2263,6 +2263,7 @@ function updateCar(car, dt) {
 let protestActive = false;
 let vizLOD = 0; // adaptive visual quality: 0=full, 1=reduced, 2=minimal
 let showPaths = true; // P key toggles route/trajectory/pulse visibility
+let _carsToSpawn = 0; // queued cars to spawn gradually
 let showTrafficLights = true;
 let showCarDebug = false;
 const carDebugEl = document.getElementById('car-debug');
@@ -2301,8 +2302,8 @@ document.addEventListener('keydown', (e) => {
     }
   }
   if (e.code === 'Equal' || e.code === 'NumpadAdd') {
-    // Add 50 instanced cars
-    window.__city3d.addCars(50);
+    // Queue 50 cars to spawn gradually (5 per frame to avoid freeze)
+    _carsToSpawn += 50;
   }
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
     // Remove last 50 cars (hide them)
@@ -2402,6 +2403,13 @@ function animate() {
   // Update sim clock
   simClock.tick(dt);
 
+  // Gradual car spawning (5 per frame to avoid freeze)
+  if (_carsToSpawn > 0) {
+    const batch = Math.min(5, _carsToSpawn);
+    window.__city3d.addCars(batch);
+    _carsToSpawn -= batch;
+  }
+
   // Check NPC schedule transitions (every ~1 second of real time)
   if (Math.floor(simClock.totalElapsed) !== Math.floor(simClock.totalElapsed - dt)) {
     for (const npc of npcs) {
@@ -2500,7 +2508,7 @@ function animate() {
   const pedPositions = npcs.map(n => ({ x: n.vehicle.position.x, z: n.vehicle.position.z, speed: n.vehicle.velocity.length() }));
   for (const car of cars) {
     if (car.useNewSystem && car.path) {
-      tickCar(car, dt, cars, pedPositions, null, modularRoadNetwork);
+      tickCar(car, dt, cars, pedPositions, { trafficLights, isGreenForApproach, intersections: roadGraph.nodes }, modularRoadNetwork);
       // Sync rendering
       if (car.useInstanced && car.instanceHandle >= 0) {
         // Update instanced mesh transform
