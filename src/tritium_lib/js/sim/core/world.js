@@ -70,11 +70,13 @@ function createPedGeometry() {
 }
 
 function createBeamGeometry() {
+    // Cone: apex(narrow) at car, base(wide) ahead = headlight spread
+    // ConeGeometry apex at +Y. rotateX(-PI/2): apex → -Z (car), base → +Z (forward)
     const l = new THREE.ConeGeometry(2.0, 12, 4);
-    l.rotateX(Math.PI / 2);
+    l.rotateX(-Math.PI / 2);
     l.translate(0.5, 0.3, 8);
     const r = new THREE.ConeGeometry(2.0, 12, 4);
-    r.rotateX(Math.PI / 2);
+    r.rotateX(-Math.PI / 2);
     r.translate(-0.5, 0.3, 8);
     return mergeGeometries([l, r], false);
 }
