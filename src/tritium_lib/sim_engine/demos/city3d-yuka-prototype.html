@@ -53,6 +53,7 @@
 <div id="hud"></div>
 <div id="car-debug"></div>
 <div id="controls">[SPACE] Protest &nbsp; [D] Debug &nbsp; [R] Reset &nbsp; [L] Lights &nbsp; [C] Car debug &nbsp; [P] Paths &nbsp; [+/-] Cars &nbsp; [1-5] Speed</div>
+<div id="tooltip" style="position:fixed; display:none; background:rgba(0,0,0,0.85); color:#00f0ff; padding:4px 8px; border:1px solid #00f0ff44; border-radius:3px; font-size:12px; pointer-events:none; font-family:'Courier New',monospace; z-index:999;"></div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -2455,6 +2456,70 @@ function _spawnOneCar() {
   carState.pathLine = null;
   cars.push(carState);
 }
+
+// Mouse hover tooltip — raycasts against instanced car meshes
+const _raycaster = new THREE.Raycaster();
+const _mouse = new THREE.Vector2();
+const _tooltipEl = document.getElementById('tooltip');
+let _hoverCarId = null;
+
+document.addEventListener('mousemove', (e) => {
+  _mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  _mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+  _raycaster.setFromCamera(_mouse, camera);
+
+  // Check all car body instanced meshes + headlight/taillight
+  const meshesToCheck = [];
+  for (const key in instancedCars.instances) {
+    if (instancedCars.instances[key].count > 0) meshesToCheck.push(instancedCars.instances[key].mesh);
+  }
+  if (instancedCars.headlightMesh?.count > 0) meshesToCheck.push(instancedCars.headlightMesh);
+  if (instancedCars.taillightMesh?.count > 0) meshesToCheck.push(instancedCars.taillightMesh);
+
+  const hits = _raycaster.intersectObjects(meshesToCheck, false);
+
+  if (hits.length > 0) {
+    const hit = hits[0];
+    const instanceId = hit.instanceId;
+
+    // Find which car this instance belongs to
+    let carId = '?';
+    let carInfo = '';
+    if (hit.object === instancedCars.headlightMesh || hit.object === instancedCars.taillightMesh) {
+      // Global index = instanceId for headlights/taillights
+      const car = cars.find(c => c.instanceHandle === instanceId);
+      if (car) {
+        carId = car.id;
+        carInfo = ` v=${car.speed?.toFixed(1)} acc=${car.acc?.toFixed(1)}`;
+      }
+    } else {
+      // Body mesh — find by type + typeIndex
+      for (const [type, inst] of Object.entries(instancedCars.instances)) {
+        if (hit.object === inst.mesh) {
+          const car = cars.find(c => {
+            const data = instancedCars.carData[c.instanceHandle];
+            return data && data.type === type && data.typeIndex === instanceId;
+          });
+          if (car) {
+            carId = car.id;
+            carInfo = ` v=${car.speed?.toFixed(1)} acc=${car.acc?.toFixed(1)}`;
+          }
+          break;
+        }
+      }
+    }
+
+    _tooltipEl.style.display = 'block';
+    _tooltipEl.style.left = (e.clientX + 12) + 'px';
+    _tooltipEl.style.top = (e.clientY - 20) + 'px';
+    _tooltipEl.textContent = `${carId}${carInfo}`;
+    _hoverCarId = carId;
+  } else {
+    _tooltipEl.style.display = 'none';
+    _hoverCarId = null;
+  }
+});
 
 function animate() {
   requestAnimationFrame(animate);
