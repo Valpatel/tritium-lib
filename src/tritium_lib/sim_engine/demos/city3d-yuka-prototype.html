@@ -61,6 +61,7 @@ import { idmAcceleration, ballisticUpdate, roadToWorld, findLeader, IDM_DEFAULTS
 import { RoadNetwork, bezierPosition, bezierTangent, tangentToAngle } from './js/sim/road-network.js';
 import { TrafficControllerManager } from './js/sim/traffic-controller.js';
 import { decideLaneChange, createLaneChangeState, updateLaneChange, MOBIL_DEFAULTS } from './js/sim/mobil.js';
+import { SimClock, ScheduleExecutor } from './js/sim/schedule-executor.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -1358,6 +1359,32 @@ smNPCs.push(spawnNPC('hostile', true));
 for (let i = 0; i < 20; i++) spawnCar();
 
 // ============================================================
+// SIM CLOCK & SCHEDULE EXECUTOR
+// ============================================================
+const simClock = new SimClock(7.0, 1.0); // Start at 7:00am, 1 sim-minute per real second
+
+const scheduleExec = new ScheduleExecutor(simClock);
+// Assign schedules to all NPCs
+for (const npc of npcs) {
+  const blockRow = npc.blockRow || Math.floor(Math.random() * GRID_ROWS);
+  const blockCol = npc.blockCol || Math.floor(Math.random() * GRID_COLS);
+  const homeX = blockCol * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+  const homeZ = blockRow * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+  // Pick random work location (different block)
+  const workCol = (blockCol + 2 + Math.floor(Math.random() * (GRID_COLS - 2))) % GRID_COLS;
+  const workRow = (blockRow + 1 + Math.floor(Math.random() * (GRID_ROWS - 1))) % GRID_ROWS;
+  const workX = workCol * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+  const workZ = workRow * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+
+  scheduleExec.assignSchedule(npc.id, npc.type === 'police' ? 'police' : null, {
+    home: { x: homeX, z: homeZ },
+    work: { x: workX, z: workZ },
+    commercial: { x: PLAZA_X + (Math.random() - 0.5) * 60, z: PLAZA_Z + (Math.random() - 0.5) * 40 },
+    park: { x: PLAZA_X, z: PLAZA_Z },
+  });
+}
+
+// ============================================================
 // STATE MACHINE UPDATE — SPECIAL NPCs
 // ============================================================
 function updateNPCState(npc, dt) {
@@ -1798,7 +1825,7 @@ function updateHUD() {
   const zoneStr = Object.entries(zoneCounts).map(([k, v]) => `${k}:${v}`).join(' ');
 
   hudEl.innerHTML = `
-<span class="label">YUKA ROAD GRAPH PROTOTYPE v4 (Bezier turns)</span>
+<span class="label">CITY3D v4 — ${simClock.getTimeString()} Day ${simClock.getDay()}</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
 <span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
 <span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
@@ -1837,6 +1864,37 @@ function animate() {
 
   const delta = time.update().getDelta();
   const dt = Math.min(delta, 0.1);
+
+  // Update sim clock
+  simClock.tick(dt);
+
+  // Check NPC schedule transitions (every ~1 second of real time)
+  if (Math.floor(simClock.totalElapsed) !== Math.floor(simClock.totalElapsed - dt)) {
+    for (const npc of npcs) {
+      const { shouldTransition, goal } = scheduleExec.checkTransition(npc.id);
+      if (shouldTransition && goal) {
+        if (goal.action === 'go_to' && goal.destination) {
+          // Find a location matching the destination zone
+          const destEntry = buildingEntries.find(e => blockZones[e.blockRow]?.[e.blockCol] === goal.destination);
+          if (destEntry) {
+            assignNPCDestination(npc, new YUKA.Vector3(destEntry.x, 0, destEntry.z));
+          } else if (goal.destination === 'home' || goal.destination === 'work') {
+            // Use POI from schedule
+            const pois = scheduleExec.schedules.get(npc.id)?.pois;
+            if (pois && pois[goal.destination]) {
+              const p = pois[goal.destination];
+              assignNPCDestination(npc, new YUKA.Vector3(p.x, 0, p.z));
+            }
+          }
+        } else if (goal.action === 'stay_at') {
+          // NPC should idle at current location
+          npc.followPath.active = false;
+          npc.wander.active = true;
+          npc.vehicle.maxSpeed = 0.5;
+        }
+      }
+    }
+  }
 
   // Update traffic lights
   updateTrafficLights(dt);
