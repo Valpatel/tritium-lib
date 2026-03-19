@@ -108,6 +108,8 @@ export function tickCar(car, dt, allCars, pedestrians, trafficCtrl, roadNetwork)
 
     // 3. IDM acceleration
     car.acc = idmAcceleration(car.speed, leader.gap, leader.speed, car.idmParams);
+    // Debug: store IDM inputs for inspection
+    car._debugLeader = { gap: leader.gap, speed: leader.speed };
 
     // 4. Update speed and advance along path
     const newSpeed = Math.max(0, car.speed + car.acc * dt);
@@ -165,9 +167,9 @@ export function findEffectiveLeader(car, allCars, pedestrians, trafficCtrl) {
         const dot = (dx * fwdX + dz * fwdZ);
         if (dot <= 0) continue; // behind us
 
-        // Lateral check: within ~4m of our path (roughly same lane or adjacent)
+        // Lateral check: within 2m of our path (same lane only, not adjacent lane)
         const lateral = Math.abs(-dx * fwdZ + dz * fwdX);
-        if (lateral > 4) continue;
+        if (lateral > 2) continue;
 
         // Gap = forward distance minus car lengths
         const gap = Math.max(0.1, dot - (car.length || 4) / 2 - (other.length || 4) / 2);
