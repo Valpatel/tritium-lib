@@ -76,21 +76,18 @@ function createBeamGeometry() {
         geo.rotateX(-Math.PI / 2);
         geo.translate(offsetX, 0.3, 8.5);
 
-        // Apply vertex-based alpha gradient: bright at apex (car), dim at base (far)
+        // Vertex color gradient: bright near car, dim far (RGB, no alpha)
         const pos = geo.attributes.position;
-        const colors = new Float32Array(pos.count * 4); // RGBA
+        const colors = new Float32Array(pos.count * 3); // RGB
         for (let i = 0; i < pos.count; i++) {
-            // Z position in local space determines brightness
-            // After rotation+translate: lower Z = near car = bright, higher Z = far = dim
             const z = pos.getZ(i);
             const t = Math.max(0, Math.min(1, (z - 2) / 12)); // 0=car, 1=far
-            const brightness = 1.0 - t * 0.85; // 1.0 at car → 0.15 at far
-            colors[i * 4] = 1.0;           // R
-            colors[i * 4 + 1] = 1.0;       // G
-            colors[i * 4 + 2] = 0.7;       // B (warm tint)
-            colors[i * 4 + 3] = brightness * 0.12; // A: bright near car, dim far
+            const brightness = 1.0 - t * 0.7; // 1.0 at car → 0.3 at far
+            colors[i * 3] = brightness;        // R
+            colors[i * 3 + 1] = brightness;    // G
+            colors[i * 3 + 2] = brightness * 0.75; // B (warm tint)
         }
-        geo.setAttribute('color', new THREE.BufferAttribute(colors, 4));
+        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         return geo;
     }
     return mergeGeometries([makeBeamCone(0.5), makeBeamCone(-0.5)], false);
@@ -254,11 +251,11 @@ export class World {
 
         // Register with renderer
         const bodyIdx = this.renderer.addInstance('car_body', color);
-        // Randomize headlight warmth: cool white (0.85,0.9,1.0) to warm white (1.0,0.9,0.7)
+        // Randomize headlight temperature: cool blue-white to warm yellow-white
         const warmth = Math.random();
-        const hlR = 0.85 + warmth * 0.15;
-        const hlG = 0.88 + warmth * 0.05;
-        const hlB = 1.0 - warmth * 0.3;
+        const hlR = warmth < 0.3 ? 0.7 : (0.85 + warmth * 0.15);  // cool cars are bluer
+        const hlG = warmth < 0.3 ? 0.8 : (0.88 + warmth * 0.05);
+        const hlB = warmth < 0.3 ? 1.0 : (1.0 - warmth * 0.4);    // warm cars are more yellow
         const hlIdx = this.renderer.addInstance('car_headlights', null);
         this.renderer.setInstanceColor('car_headlights', hlIdx, hlR, hlG, hlB);
         const tlIdx = this.renderer.addInstance('car_taillights', null);
@@ -412,9 +409,12 @@ export class World {
             this.renderer.updateInstance('car_body', h.body, v.x, v.y, v.z, v.heading);
             this.renderer.updateInstance('car_headlights', h.headlights, v.x, v.y, v.z, v.heading);
             this.renderer.updateInstance('car_taillights', h.taillights, v.x, v.y, v.z, v.heading);
-            // Scale beam based on gap to leader (shorter when car is close ahead)
-            const beamScale = v._leaderGap !== undefined ? Math.min(1, v._leaderGap / 15) : 1;
-            this.renderer.updateInstance('car_beams', h.beams, v.x, v.y, v.z, v.heading, 0, 0, beamScale);
+            // Beam tilt: pivot down when car is close ahead (like adaptive headlights)
+            // No car ahead (gap=Infinity): beam level (pitch=0)
+            // Car at 5m: beam tilted down ~20° (pitch=-0.35 rad)
+            const gap = v._leaderGap !== undefined ? v._leaderGap : Infinity;
+            const beamPitch = gap < 20 ? -Math.max(0, (20 - gap) / 20) * 0.35 : 0;
+            this.renderer.updateInstance('car_beams', h.beams, v.x, v.y, v.z, v.heading, beamPitch);
 
             // Brake lights: bright red when braking
             if (v.brakeLightsOn) {

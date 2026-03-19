@@ -129,6 +129,9 @@ export class Vehicle extends GroundUnit {
             }
         }
 
+        // Store vehicle-only gap for beam rendering (before traffic lights)
+        this._leaderGap = bestGap;
+
         // Check traffic lights (if not emergency vehicle)
         if (!this.isEmergency && world.trafficCtrl) {
             const signalGap = this._findRedLightGap(world.trafficCtrl, fwdX, fwdZ);
@@ -140,10 +143,8 @@ export class Vehicle extends GroundUnit {
 
         // During curves, enforce minimum speed if no close leader
         if (this.inCurve && bestGap > 4) {
-            bestGap = Infinity; // don't brake
+            bestGap = Infinity;
         }
-
-        this._leaderGap = bestGap; // expose for beam rendering
         return { gap: bestGap, speed: bestSpeed };
     }
 
