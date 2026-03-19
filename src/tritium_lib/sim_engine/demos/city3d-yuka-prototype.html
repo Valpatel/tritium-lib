@@ -650,7 +650,10 @@ function updateTrafficLights(dt) {
           if (tl.lights[a]) setTrafficLightState(tl.lights[a], 'green');
         }
       } else if (phase.yellow) {
+        // Yellow: still allow cars to pass (virtual obstacles removed)
+        // Cars already close will proceed; new arrivals during all-red will stop
         for (const a of phase.yellow) {
+          tl.greenApproaches.add(a); // treat as "still passable"
           if (tl.lights[a]) setTrafficLightState(tl.lights[a], 'yellow');
         }
       }
