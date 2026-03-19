@@ -2162,6 +2162,7 @@ function updateCar(car, dt) {
 // INPUT
 // ============================================================
 let protestActive = false;
+let vizLOD = 0; // adaptive visual quality: 0=full, 1=reduced, 2=minimal
 let showTrafficLights = true;
 let showCarDebug = false;
 const carDebugEl = document.getElementById('car-debug');
@@ -2233,7 +2234,7 @@ function updateHUD() {
   const zoneStr = Object.entries(zoneCounts).map(([k, v]) => `${k}:${v}`).join(' ');
 
   hudEl.innerHTML = `
-<span class="label">CITY3D v4 — ${simClock.getTimeString()} Day ${simClock.getDay()}</span>
+<span class="label">CITY3D v5 — ${simClock.getTimeString()} Day ${simClock.getDay()} LOD:${vizLOD}</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
 <span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
 <span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
@@ -2417,51 +2418,78 @@ function animate() {
   }
   // Cars use road graph lane following — no NavMesh clamping needed
 
-  // Update route + trajectory visualization
+  // Adaptive LOD: reduce visual effects when FPS drops
+  // Level 0: full (FPS > 25) — all lines, pulse arrows, dash animation
+  // Level 1: reduced (FPS 15-25) — route lines coarser, no trajectory lines
+  // Level 2: minimal (FPS < 15) — no route lines, no pulse, just car meshes
+  vizLOD = fps > 25 ? 0 : fps > 15 ? 1 : 2;
+
+  // Update route + trajectory visualization (adaptive)
   for (const car of cars) {
     if (!car.useNewSystem || !car.path) continue;
 
-    // Route line: full path ahead (update geometry every 30 frames)
-    if (car.routeLine && frameCount % 30 === 0) {
-      const endD = car.path.totalLength;
-      const points = car.path.sample(car.d, endD, 4)
-        .map(p => new THREE.Vector3(p.x, 0.3, p.z));
-      if (points.length >= 2) {
-        car.routeLine.geometry.dispose();
-        car.routeLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
-        car.routeLine.computeLineDistances();
+    // Route line
+    if (car.routeLine) {
+      if (vizLOD >= 2) {
+        car.routeLine.visible = false;
+      } else {
+        car.routeLine.visible = true;
+        // Update geometry periodically (coarser sampling at lower LOD)
+        const updateRate = vizLOD === 0 ? 30 : 90;
+        const sampleStep = vizLOD === 0 ? 6 : 15;
+        if (frameCount % updateRate === 0) {
+          const endD = car.path.totalLength;
+          const points = car.path.sample(car.d, endD, sampleStep)
+            .map(p => new THREE.Vector3(p.x, 0.3, p.z));
+          if (points.length >= 2) {
+            car.routeLine.geometry.dispose();
+            car.routeLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
+            car.routeLine.computeLineDistances();
+          }
+        }
+        // Dash animation (skip at LOD 1)
+        if (vizLOD === 0 && car.routeLine.material.dashOffset !== undefined) {
+          car.routeLine.material.dashOffset -= dt * 8;
+        }
       }
     }
 
-    // Animate dash offset for pulse effect (every frame)
-    if (car.routeLine && car.routeLine.material.dashOffset !== undefined) {
-      car.routeLine.material.dashOffset -= dt * 8; // pulse speed
+    // Pulse arrow (only at LOD 0)
+    if (car.pulseDot) {
+      if (vizLOD >= 1) {
+        car.pulseDot.visible = false;
+      } else {
+        car.pulseDot.visible = true;
+        if (car.path.totalLength > car.d + 10) {
+          car.pulseT += dt * 0.25;
+          if (car.pulseT > 1) car.pulseT -= 1;
+          const remaining = car.path.totalLength - car.d;
+          const pulseD = car.d + 5 + car.pulseT * (remaining - 5);
+          const pulsePos = car.path.getPosition(pulseD);
+          car.pulseDot.position.set(pulsePos.x, 0.5, pulsePos.z);
+          car.pulseDot.rotation.y = car.path.getHeading(pulseD);
+          const childMat = car.pulseDot.children[0]?.material;
+          if (childMat) childMat.opacity = 0.9 - car.pulseT * 0.5;
+        }
+      }
     }
 
-    // Pulse arrow: travels from car to end of route, oriented along path heading
-    if (car.pulseDot && car.path.totalLength > car.d + 10) {
-      car.pulseT += dt * 0.25; // pulse travel speed
-      if (car.pulseT > 1) car.pulseT -= 1;
-      const remaining = car.path.totalLength - car.d;
-      const pulseD = car.d + 5 + car.pulseT * (remaining - 5); // start 5m ahead
-      const pulsePos = car.path.getPosition(pulseD);
-      const pulseHeading = car.path.getHeading(pulseD);
-      car.pulseDot.position.set(pulsePos.x, 0.5, pulsePos.z);
-      car.pulseDot.rotation.y = pulseHeading; // orient arrow along path
-      // Fade: bright near car, dimmer at end
-      const childMat = car.pulseDot.children[0]?.material;
-      if (childMat) childMat.opacity = 0.9 - car.pulseT * 0.5;
-    }
-
-    // Trajectory line: next 25m (update every 10 frames)
-    if (car.trajectoryLine && frameCount % 10 === 0) {
-      const trajEnd = Math.min(car.d + 25, car.path.totalLength);
-      const trajPoints = car.path.sample(car.d, trajEnd, 1.5)
-        .map(p => new THREE.Vector3(p.x, 0.4, p.z));
-      if (trajPoints.length >= 2) {
-        car.trajectoryLine.geometry.dispose();
-        car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(trajPoints);
-        car.trajectoryLine.computeLineDistances();
+    // Trajectory line (only at LOD 0)
+    if (car.trajectoryLine) {
+      if (vizLOD >= 1) {
+        car.trajectoryLine.visible = false;
+      } else {
+        car.trajectoryLine.visible = true;
+        if (frameCount % 10 === 0) {
+          const trajEnd = Math.min(car.d + 25, car.path.totalLength);
+          const trajPoints = car.path.sample(car.d, trajEnd, 1.5)
+            .map(p => new THREE.Vector3(p.x, 0.4, p.z));
+          if (trajPoints.length >= 2) {
+            car.trajectoryLine.geometry.dispose();
+            car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(trajPoints);
+            car.trajectoryLine.computeLineDistances();
+          }
+        }
       }
     }
   }
