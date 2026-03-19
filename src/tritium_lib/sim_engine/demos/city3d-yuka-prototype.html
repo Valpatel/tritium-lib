@@ -63,6 +63,7 @@ import { TrafficControllerManager } from './js/sim/traffic-controller.js';
 import { decideLaneChange, createLaneChangeState, updateLaneChange, MOBIL_DEFAULTS } from './js/sim/mobil.js';
 import { SimClock, ScheduleExecutor } from './js/sim/schedule-executor.js';
 import { ProtestEngine } from './js/sim/protest-engine.js';
+import { SensorBridge, generateBleMac, generateTpmsId } from './js/sim/sensor-bridge.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -1449,6 +1450,30 @@ for (const npc of npcs) {
 }
 
 // ============================================================
+// SENSOR BRIDGE — synthetic sensor data from simulation
+// ============================================================
+const sensorBridge = new SensorBridge({
+  deviceId: 'city3d_sim',
+  site: 'sim',
+  bleInterval: 3,
+  cameraInterval: 2,
+  onSighting: (data) => { /* logged to window.__city3d.sensorLog */ },
+  onDetection: (data) => { /* logged to window.__city3d.sensorLog */ },
+});
+// Assign BLE MACs to NPCs and TPMS IDs to vehicles
+for (const npc of npcs) {
+  npc.bleMac = generateBleMac(npc.id);
+}
+for (const car of cars) {
+  car.tpmsId = generateTpmsId(car.id);
+}
+// Auto-connect if SC is running on default port
+// sensorBridge.connect('ws://localhost:8000/ws/sim');
+// For now: enable local data generation (accessible via window.__city3d)
+sensorBridge.enable();
+const sensorLog = []; // last N sensor events
+
+// ============================================================
 // STATE MACHINE UPDATE — SPECIAL NPCs
 // ============================================================
 function updateNPCState(npc, dt) {
@@ -2073,6 +2098,12 @@ function animate() {
   }
   // Cars use road graph lane following — no NavMesh clamping needed
 
+  // Tick sensor bridge (generates BLE sightings + camera detections)
+  sensorBridge.tick(dt,
+    npcs.map(n => ({ id: n.id, x: n.vehicle.position.x, z: n.vehicle.position.z, bleMac: n.bleMac, type: n.type })),
+    cars.map(c => ({ id: c.id, x: c.mesh.position.x, z: c.mesh.position.z, tpmsId: c.tpmsId, vehicleType: c.vehicleType }))
+  );
+
   controls.update();
   renderer.render(scene, camera);
   updateHUD();
@@ -2093,9 +2124,9 @@ console.log(`[Yuka Prototype v3] City: ${CITY_W}x${CITY_H}, Ped NavMesh: ${pedPo
 // Expose state for external debugging/testing
 window.__city3d = {
   npcs, cars, buildings, buildingEntries, intersections, trafficLights,
-  pedNavMesh, combinedNavMesh, roadGraph, nodeEdges,
-  entityManager, smNPCs,
-  get state() { return { protestActive, debugMeshVisible, showTrafficLights }; },
+  pedNavMesh, combinedNavMesh, roadGraph, nodeEdges, modularRoadNetwork,
+  entityManager, smNPCs, simClock, scheduleExec, protestEngine, sensorBridge,
+  get state() { return { protestActive, debugMeshVisible, showTrafficLights, simTime: simClock.getTimeString() }; },
   sidewalkOnlyRects, debugPedRects, blockZones,
   CITY_W, CITY_H, PLAZA_X, PLAZA_Z,
 };
