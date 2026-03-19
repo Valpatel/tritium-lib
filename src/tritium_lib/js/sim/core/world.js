@@ -412,7 +412,7 @@ export class World {
             // Adaptive beam tilt: level on open road, tilt down behind other cars
             const gap = v._leaderGap !== undefined ? v._leaderGap : Infinity;
             // Gap 25m+ = level (highbeam), gap 3m = max tilt 45° down (lowbeam)
-            const beamPitch = gap < 25 ? -Math.max(0, (25 - gap) / 22) * 0.78 : 0;
+            const beamPitch = gap < 25 ? Math.max(0, (25 - gap) / 22) * 0.78 : 0; // positive = tilt down
             this.renderer.updateInstance('car_beams', h.beams, v.x, v.y, v.z, v.heading, beamPitch);
 
             // Brake lights: bright red when braking

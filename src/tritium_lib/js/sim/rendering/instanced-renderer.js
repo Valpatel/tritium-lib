@@ -101,9 +101,25 @@ export class InstancedRenderer {
         if (!mt || index < 0 || index >= mt.count) return;
 
         this.dummy.position.set(x, y, z);
-        this.dummy.rotation.order = 'YXZ'; // heading first, then pitch in car's local frame
-        this.dummy.rotation.set(pitch, heading, roll);
         this.dummy.scale.set(1, 1, scaleZ);
+        if (pitch !== 0 || roll !== 0) {
+            // Compose: heading (Y) → local pitch (X) → local roll (Z)
+            // Quaternion multiplication: q_heading * q_pitch * q_roll
+            if (!this._qH) {
+                this._qH = new THREE.Quaternion();
+                this._qP = new THREE.Quaternion();
+                this._qR = new THREE.Quaternion();
+                this._axisX = new THREE.Vector3(1, 0, 0);
+                this._axisY = new THREE.Vector3(0, 1, 0);
+                this._axisZ = new THREE.Vector3(0, 0, 1);
+            }
+            this._qH.setFromAxisAngle(this._axisY, heading);
+            this._qP.setFromAxisAngle(this._axisX, pitch);
+            this._qR.setFromAxisAngle(this._axisZ, roll);
+            this.dummy.quaternion.copy(this._qH).multiply(this._qP).multiply(this._qR);
+        } else {
+            this.dummy.rotation.set(0, heading, 0);
+        }
         this.dummy.updateMatrix();
         mt.mesh.setMatrixAt(index, this.dummy.matrix);
         // Reset scale for next call
