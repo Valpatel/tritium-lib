@@ -535,52 +535,111 @@ const TL_BRIGHT = 1.0;  // active bulb emissive intensity
 
 const trafficLights = [];  // per-intersection controller + visuals
 
-function createLightBulb(color, localY) {
-  const mesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.2, 8, 6),
-    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: TL_DIM })
-  );
-  mesh.position.y = localY;
-  return mesh;
-}
+// Instanced traffic lights: poles+housings as 2 InstancedMeshes, bulbs as 3 InstancedMeshes
+const _tlPositions = []; // collected during creation, instanced after all are built
+let _tlPoleInstance = null, _tlHousingInstance = null;
+let _tlRedInstance = null, _tlYellowInstance = null, _tlGreenInstance = null;
+let _tlColorDirty = false;
+const _tlBulbIndices = []; // maps traffic light visual to instance index
 
 function createTrafficLightPole(x, z, facingAngle) {
-  const group = new THREE.Group();
+  const index = _tlPositions.length;
+  _tlPositions.push({ x, z, angle: facingAngle });
 
-  // Pole
-  const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.08, 0.08, 5, 4),
-    new THREE.MeshStandardMaterial({ color: 0x333333 })
-  );
-  pole.position.y = 2.5;
-  group.add(pole);
-
-  // Housing
-  const housing = new THREE.Mesh(
-    new THREE.BoxGeometry(0.5, 1.4, 0.3),
-    new THREE.MeshStandardMaterial({ color: 0x222222 })
-  );
-  housing.position.y = 5.5;
-  group.add(housing);
-
-  // Lights: red (top), yellow (mid), green (bottom)
-  const lightR = createLightBulb(TL_RED, 5.9);
-  const lightY = createLightBulb(TL_YELLOW, 5.5);
-  const lightG = createLightBulb(TL_GREEN, 5.1);
-  group.add(lightR, lightY, lightG);
-
-  group.position.set(x, 0, z);
-  group.rotation.y = facingAngle;
-  scene.add(group);
-
-  return { group, lightR, lightY, lightG };
+  // Return a lightweight handle (not actual meshes)
+  return {
+    group: { visible: true, position: { set() {} } }, // stub
+    lightR: { material: { emissiveIntensity: TL_DIM } },
+    lightY: { material: { emissiveIntensity: TL_DIM } },
+    lightG: { material: { emissiveIntensity: TL_DIM } },
+    _instanceIndex: index,
+  };
 }
 
 function setTrafficLightState(tlVisual, state) {
-  // state: 'red', 'yellow', 'green'
-  tlVisual.lightR.material.emissiveIntensity = state === 'red' ? TL_BRIGHT : TL_DIM;
-  tlVisual.lightY.material.emissiveIntensity = state === 'yellow' ? TL_BRIGHT : TL_DIM;
-  tlVisual.lightG.material.emissiveIntensity = state === 'green' ? TL_BRIGHT : TL_DIM;
+  // Update bulb emissive via instance color (bright = white-ish, dim = dark)
+  const idx = tlVisual._instanceIndex;
+  if (idx === undefined) return;
+
+  const brightR = new THREE.Color(state === 'red' ? 0xff4400 : 0x110000);
+  const brightY = new THREE.Color(state === 'yellow' ? 0xffcc00 : 0x111100);
+  const brightG = new THREE.Color(state === 'green' ? 0x00ff44 : 0x001100);
+
+  if (_tlRedInstance) _tlRedInstance.setColorAt(idx, brightR);
+  if (_tlYellowInstance) _tlYellowInstance.setColorAt(idx, brightY);
+  if (_tlGreenInstance) _tlGreenInstance.setColorAt(idx, brightG);
+  _tlColorDirty = true; // batch update, flushed once per frame
+}
+
+// Call after all traffic lights are created to build instanced meshes
+function buildInstancedTrafficLights() {
+  const n = _tlPositions.length;
+  if (n === 0) return;
+
+  const dummy = new THREE.Object3D();
+
+  // Poles: one InstancedMesh
+  const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 5, 4);
+  poleGeo.translate(0, 2.5, 0);
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+  _tlPoleInstance = new THREE.InstancedMesh(poleGeo, poleMat, n);
+
+  // Housings: one InstancedMesh
+  const housGeo = new THREE.BoxGeometry(0.5, 1.4, 0.3);
+  housGeo.translate(0, 5.5, 0);
+  const housMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+  _tlHousingInstance = new THREE.InstancedMesh(housGeo, housMat, n);
+
+  // Bulbs: 3 InstancedMeshes (R, Y, G) with per-instance color
+  const bulbGeo = new THREE.SphereGeometry(0.2, 6, 4);
+  const bulbMatR = new THREE.MeshStandardMaterial({ color: 0xff2200, emissive: 0xff2200, emissiveIntensity: 0.5 });
+  const bulbMatY = new THREE.MeshStandardMaterial({ color: 0xffcc00, emissive: 0xffcc00, emissiveIntensity: 0.5 });
+  const bulbMatG = new THREE.MeshStandardMaterial({ color: 0x00ff44, emissive: 0x00ff44, emissiveIntensity: 0.5 });
+  _tlRedInstance = new THREE.InstancedMesh(bulbGeo, bulbMatR, n);
+  _tlYellowInstance = new THREE.InstancedMesh(bulbGeo, bulbMatY, n);
+  _tlGreenInstance = new THREE.InstancedMesh(bulbGeo, bulbMatG, n);
+
+  // Set up per-instance colors for bulbs (used for on/off state)
+  for (const inst of [_tlRedInstance, _tlYellowInstance, _tlGreenInstance]) {
+    const colors = new Float32Array(n * 3);
+    inst.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+  }
+
+  for (let i = 0; i < n; i++) {
+    const p = _tlPositions[i];
+    dummy.position.set(p.x, 0, p.z);
+    dummy.rotation.set(0, p.angle, 0);
+    dummy.updateMatrix();
+
+    _tlPoleInstance.setMatrixAt(i, dummy.matrix);
+    _tlHousingInstance.setMatrixAt(i, dummy.matrix);
+
+    // Bulbs: offset Y for each color (red=5.9, yellow=5.5, green=5.1)
+    dummy.position.set(p.x, 5.9, p.z);
+    dummy.updateMatrix();
+    _tlRedInstance.setMatrixAt(i, dummy.matrix);
+
+    dummy.position.set(p.x, 5.5, p.z);
+    dummy.updateMatrix();
+    _tlYellowInstance.setMatrixAt(i, dummy.matrix);
+
+    dummy.position.set(p.x, 5.1, p.z);
+    dummy.updateMatrix();
+    _tlGreenInstance.setMatrixAt(i, dummy.matrix);
+
+    // Default: all red
+    _tlRedInstance.setColorAt(i, new THREE.Color(0xff4400));
+    _tlYellowInstance.setColorAt(i, new THREE.Color(0x111100));
+    _tlGreenInstance.setColorAt(i, new THREE.Color(0x001100));
+  }
+
+  for (const inst of [_tlPoleInstance, _tlHousingInstance, _tlRedInstance, _tlYellowInstance, _tlGreenInstance]) {
+    inst.instanceMatrix.needsUpdate = true;
+    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    scene.add(inst);
+  }
+
+  console.log(`[Perf] Instanced ${n} traffic lights as 5 draw calls (was ${n * 5})`);
 }
 
 function createTrafficController(node) {
@@ -677,6 +736,9 @@ for (const id in roadGraph.nodes) {
   trafficLights.push(tl);
   tlByIntersection[node.id] = tl;
 }
+
+// Build instanced meshes for all traffic light poles/housings/bulbs
+buildInstancedTrafficLights();
 
 function updateTrafficLights(dt) {
   for (const tl of trafficLights) {
@@ -2391,6 +2453,13 @@ function animate() {
 
   // Update traffic lights
   updateTrafficLights(dt);
+  // Flush traffic light bulb color changes to GPU (batched)
+  if (_tlColorDirty) {
+    if (_tlRedInstance?.instanceColor) _tlRedInstance.instanceColor.needsUpdate = true;
+    if (_tlYellowInstance?.instanceColor) _tlYellowInstance.instanceColor.needsUpdate = true;
+    if (_tlGreenInstance?.instanceColor) _tlGreenInstance.instanceColor.needsUpdate = true;
+    _tlColorDirty = false;
+  }
 
   // Rebuild virtual stop cars for red lights (before car update)
   buildVirtualStopCars();

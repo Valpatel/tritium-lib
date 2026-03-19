@@ -19,6 +19,7 @@
  */
 
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ============================================================
 // CAR TYPE GEOMETRIES
@@ -62,14 +63,15 @@ export class InstancedCarRenderer {
             const cabinGeo = new THREE.BoxGeometry(info.w * 0.8, info.cabinH, info.cabinL);
             cabinGeo.translate(0, info.h + info.cabinH / 2, -info.l * 0.05);
 
-            // Merge body + cabin into one geometry
-            // (Can't easily merge different materials, so just use body for now)
+            // Merge body + cabin into single geometry (one material)
+            const mergedGeo = mergeGeometries([bodyGeo, cabinGeo], false) || bodyGeo;
+
             const mat = new THREE.MeshStandardMaterial({
-                color: info.color || 0x888888, // default gray, overridden per instance
+                color: info.color || 0x888888,
                 roughness: 0.6,
             });
 
-            const mesh = new THREE.InstancedMesh(bodyGeo, mat, this.maxCars);
+            const mesh = new THREE.InstancedMesh(mergedGeo, mat, this.maxCars);
             mesh.count = 0; // start with 0 visible instances
             mesh.castShadow = true;
             mesh.receiveShadow = true;
