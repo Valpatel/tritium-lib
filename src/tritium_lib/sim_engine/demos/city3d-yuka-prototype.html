@@ -311,98 +311,304 @@ function drawCrosswalk(cx, cz, w, h, isHorizontal) {
 }
 
 // ============================================================
-// TRAFFIC LIGHTS
+// ROAD GRAPH — directed graph for vehicle lane following
 // ============================================================
-const trafficLights = []; // {intersection, meshN, meshS, meshE, meshW, phase, timer}
+const roadGraph = { nodes: {}, edges: [] };
 
+// Add intersection nodes with approach directions
+for (const inter of intersections) {
+  const id = `${inter.col}_${inter.row}`;
+  const isTop = inter.row === 0;
+  const isBot = inter.row === GRID_ROWS;
+  const isLeft = inter.col === 0;
+  const isRight = inter.col === GRID_COLS;
+  const approaches = [];
+  if (!isTop) approaches.push('N');    // traffic can arrive from the north (row-1)
+  if (!isBot) approaches.push('S');    // traffic can arrive from the south (row+1)
+  if (!isLeft) approaches.push('W');   // traffic can arrive from the west (col-1)
+  if (!isRight) approaches.push('E');  // traffic can arrive from the east (col+1)
+
+  roadGraph.nodes[id] = {
+    ...inter, id, approaches,
+    type: approaches.length === 4 ? '4-way' :
+          approaches.length === 3 ? '3-way' :
+          approaches.length === 2 ? '2-way' : '1-way',
+  };
+}
+
+// Add edges — horizontal road segments between (col,row) and (col+1,row)
+for (let row = 0; row <= GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    const from = `${col}_${row}`;
+    const to = `${col + 1}_${row}`;
+    const z = hRoadZ(row);
+    const x1 = vRoadX(col);
+    const x2 = vRoadX(col + 1);
+    roadGraph.edges.push({
+      from, to, horizontal: true,
+      lanes: [
+        { offset: -LANE_W * 1.5, dir: 1 },   // outer lane going +X (east)
+        { offset: -LANE_W * 0.5, dir: 1 },   // inner lane going +X (east)
+        { offset: LANE_W * 0.5, dir: -1 },    // inner lane going -X (west)
+        { offset: LANE_W * 1.5, dir: -1 },    // outer lane going -X (west)
+      ],
+      centerZ: z, x1, x2,
+    });
+  }
+}
+
+// Add edges — vertical road segments between (col,row) and (col,row+1)
+for (let col = 0; col <= GRID_COLS; col++) {
+  for (let row = 0; row < GRID_ROWS; row++) {
+    const from = `${col}_${row}`;
+    const to = `${col}_${row + 1}`;
+    const x = vRoadX(col);
+    const z1 = hRoadZ(row);
+    const z2 = hRoadZ(row + 1);
+    roadGraph.edges.push({
+      from, to, horizontal: false,
+      lanes: [
+        { offset: -LANE_W * 1.5, dir: 1 },   // outer lane going +Z (south)
+        { offset: -LANE_W * 0.5, dir: 1 },   // inner lane going +Z (south)
+        { offset: LANE_W * 0.5, dir: -1 },    // inner lane going -Z (north)
+        { offset: LANE_W * 1.5, dir: -1 },    // outer lane going -Z (north)
+      ],
+      centerX: x, z1, z2,
+    });
+  }
+}
+
+// Debug group (created early so road graph debug can use it)
+let debugMeshVisible = false;
+const debugGroup = new THREE.Group();
+debugGroup.visible = debugMeshVisible;
+scene.add(debugGroup);
+
+// Build adjacency lookup: nodeId -> [edges]
+const nodeEdges = {};
+for (const id in roadGraph.nodes) nodeEdges[id] = [];
+for (const edge of roadGraph.edges) {
+  nodeEdges[edge.from].push(edge);
+  nodeEdges[edge.to].push(edge);
+}
+
+// Debug: add road graph edges to debug overlay
+function addRoadGraphDebug() {
+  const mat = new THREE.LineBasicMaterial({ color: 0xfcee0a, transparent: true, opacity: 0.4 });
+  for (const edge of roadGraph.edges) {
+    const fromNode = roadGraph.nodes[edge.from];
+    const toNode = roadGraph.nodes[edge.to];
+    const pts = [
+      new THREE.Vector3(fromNode.x, Y_DEBUG + 0.1, fromNode.z),
+      new THREE.Vector3(toNode.x, Y_DEBUG + 0.1, toNode.z),
+    ];
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const line = new THREE.Line(geo, mat);
+    debugGroup.add(line);
+  }
+  // Node markers
+  const nodeMat = new THREE.MeshBasicMaterial({ color: 0xff2a6d, transparent: true, opacity: 0.6 });
+  for (const id in roadGraph.nodes) {
+    const n = roadGraph.nodes[id];
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1.5, 6, 4), nodeMat);
+    m.position.set(n.x, Y_DEBUG + 0.3, n.z);
+    debugGroup.add(m);
+  }
+}
+addRoadGraphDebug();
+
+// ============================================================
+// TRAFFIC LIGHTS — proper per-intersection controllers
+// ============================================================
 const TL_GREEN = 0x00ff44;
 const TL_YELLOW = 0xffcc00;
 const TL_RED = 0xff2200;
-const TL_CYCLE = { GREEN: 30, YELLOW: 3, ALL_RED: 2 };
+const TL_DIM = 0.15;    // dim bulb emissive intensity
+const TL_BRIGHT = 1.0;  // active bulb emissive intensity
 
-function createFloatingLight(x, z, color) {
-  const light = new THREE.Mesh(
-    new THREE.SphereGeometry(0.6, 8, 6),
-    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.8 })
+const trafficLights = [];  // per-intersection controller + visuals
+
+function createLightBulb(color, localY) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2, 8, 6),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: TL_DIM })
   );
-  light.position.set(x, 8, z);
-  scene.add(light);
-  return light;
+  mesh.position.y = localY;
+  return mesh;
 }
 
-for (const inter of intersections) {
+function createTrafficLightPole(x, z, facingAngle) {
+  const group = new THREE.Group();
+
+  // Pole
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.08, 5, 4),
+    new THREE.MeshStandardMaterial({ color: 0x333333 })
+  );
+  pole.position.y = 2.5;
+  group.add(pole);
+
+  // Housing
+  const housing = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 1.4, 0.3),
+    new THREE.MeshStandardMaterial({ color: 0x222222 })
+  );
+  housing.position.y = 5.5;
+  group.add(housing);
+
+  // Lights: red (top), yellow (mid), green (bottom)
+  const lightR = createLightBulb(TL_RED, 5.9);
+  const lightY = createLightBulb(TL_YELLOW, 5.5);
+  const lightG = createLightBulb(TL_GREEN, 5.1);
+  group.add(lightR, lightY, lightG);
+
+  group.position.set(x, 0, z);
+  group.rotation.y = facingAngle;
+  scene.add(group);
+
+  return { group, lightR, lightY, lightG };
+}
+
+function setTrafficLightState(tlVisual, state) {
+  // state: 'red', 'yellow', 'green'
+  tlVisual.lightR.material.emissiveIntensity = state === 'red' ? TL_BRIGHT : TL_DIM;
+  tlVisual.lightY.material.emissiveIntensity = state === 'yellow' ? TL_BRIGHT : TL_DIM;
+  tlVisual.lightG.material.emissiveIntensity = state === 'green' ? TL_BRIGHT : TL_DIM;
+}
+
+function createTrafficController(node) {
+  const approaches = node.approaches;
+  const phases = [];
+
+  if (approaches.length === 4) {
+    // 4-way: NS green, then EW green
+    phases.push({ green: ['N', 'S'], duration: 30 });
+    phases.push({ yellow: ['N', 'S'], duration: 3 });
+    phases.push({ allRed: true, duration: 2 });
+    phases.push({ green: ['E', 'W'], duration: 30 });
+    phases.push({ yellow: ['E', 'W'], duration: 3 });
+    phases.push({ allRed: true, duration: 2 });
+  } else if (approaches.length === 3) {
+    // T-junction: find the two that are opposite, then the solo
+    const hasN = approaches.includes('N'), hasS = approaches.includes('S');
+    const hasE = approaches.includes('E'), hasW = approaches.includes('W');
+    if (hasN && hasS) {
+      phases.push({ green: ['N', 'S'], duration: 30 });
+      phases.push({ yellow: ['N', 'S'], duration: 3 });
+      phases.push({ allRed: true, duration: 2 });
+      const solo = hasE ? 'E' : 'W';
+      phases.push({ green: [solo], duration: 20 });
+      phases.push({ yellow: [solo], duration: 3 });
+      phases.push({ allRed: true, duration: 2 });
+    } else {
+      phases.push({ green: ['E', 'W'], duration: 30 });
+      phases.push({ yellow: ['E', 'W'], duration: 3 });
+      phases.push({ allRed: true, duration: 2 });
+      const solo = hasN ? 'N' : 'S';
+      phases.push({ green: [solo], duration: 20 });
+      phases.push({ yellow: [solo], duration: 3 });
+      phases.push({ allRed: true, duration: 2 });
+    }
+  } else if (approaches.length === 2) {
+    // Corner: alternate between the two
+    phases.push({ green: [approaches[0]], duration: 30 });
+    phases.push({ yellow: [approaches[0]], duration: 3 });
+    phases.push({ allRed: true, duration: 2 });
+    phases.push({ green: [approaches[1]], duration: 30 });
+    phases.push({ yellow: [approaches[1]], duration: 3 });
+    phases.push({ allRed: true, duration: 2 });
+  } else if (approaches.length === 1) {
+    // Dead-end: always green
+    phases.push({ green: [approaches[0]], duration: 999 });
+  }
+
+  return { phases, currentPhase: 0, timer: (phases[0]?.duration || 30) * (0.5 + seededRandom() * 0.5) };
+}
+
+// Approach direction info: where to place the traffic light pole for each approach
+// The light faces incoming traffic, placed at the stop line (road edge near intersection)
+const approachPlacement = {
+  // Approach 'N' means traffic coming FROM north (going south, -Z direction)
+  // Stop line is on the north side of intersection, light faces north
+  N: { dx: ROAD_SURFACE_W / 2 + 0.5, dz: -ROAD_SURFACE_W / 2 - 1, angle: Math.PI },
+  S: { dx: -ROAD_SURFACE_W / 2 - 0.5, dz: ROAD_SURFACE_W / 2 + 1, angle: 0 },
+  E: { dx: ROAD_SURFACE_W / 2 + 1, dz: ROAD_SURFACE_W / 2 + 0.5, angle: -Math.PI / 2 },
+  W: { dx: -ROAD_SURFACE_W / 2 - 1, dz: -ROAD_SURFACE_W / 2 - 0.5, angle: Math.PI / 2 },
+};
+
+for (const id in roadGraph.nodes) {
+  const node = roadGraph.nodes[id];
+  const controller = createTrafficController(node);
+
+  // Create visual traffic light per approach
+  const lights = {};
+  for (const approach of node.approaches) {
+    const p = approachPlacement[approach];
+    lights[approach] = createTrafficLightPole(node.x + p.dx, node.z + p.dz, p.angle);
+    setTrafficLightState(lights[approach], 'red'); // start all red
+  }
+
   const tl = {
-    intersection: inter,
-    // Two floating lights above intersection — one for NS, one for EW
-    meshNS: createFloatingLight(inter.x - 2, inter.z, TL_GREEN),
-    meshEW: createFloatingLight(inter.x + 2, inter.z, TL_RED),
-    phase: 'NS_GREEN',
-    timer: TL_CYCLE.GREEN + seededRandom() * 10,
-    nsGreen: true,
+    intersection: node,
+    controller,
+    lights,
+    // Convenience: which approaches are currently green
+    greenApproaches: new Set(),
   };
-  trafficLights.push(tl);
-}
 
-function setLightColor(mesh, color) {
-  mesh.material.color.setHex(color);
-  mesh.material.emissive.setHex(color);
+  // Set initial state
+  if (controller.phases.length > 0) {
+    const phase = controller.phases[0];
+    if (phase.green) {
+      for (const a of phase.green) {
+        tl.greenApproaches.add(a);
+        if (lights[a]) setTrafficLightState(lights[a], 'green');
+      }
+    }
+  }
+
+  trafficLights.push(tl);
 }
 
 function updateTrafficLights(dt) {
   for (const tl of trafficLights) {
-    tl.timer -= dt;
-    if (tl.timer <= 0) {
-      switch (tl.phase) {
-        case 'NS_GREEN':
-          tl.phase = 'NS_YELLOW'; tl.timer = TL_CYCLE.YELLOW; break;
-        case 'NS_YELLOW':
-          tl.phase = 'ALL_RED_1'; tl.timer = TL_CYCLE.ALL_RED; break;
-        case 'ALL_RED_1':
-          tl.phase = 'EW_GREEN'; tl.timer = TL_CYCLE.GREEN; tl.nsGreen = false; break;
-        case 'EW_GREEN':
-          tl.phase = 'EW_YELLOW'; tl.timer = TL_CYCLE.YELLOW; break;
-        case 'EW_YELLOW':
-          tl.phase = 'ALL_RED_2'; tl.timer = TL_CYCLE.ALL_RED; break;
-        case 'ALL_RED_2':
-          tl.phase = 'NS_GREEN'; tl.timer = TL_CYCLE.GREEN; tl.nsGreen = true; break;
-      }
-    }
+    const ctrl = tl.controller;
+    if (ctrl.phases.length === 0) continue;
 
-    // Set colors based on phase
-    let nsColor = TL_RED, ewColor = TL_RED;
-    switch (tl.phase) {
-      case 'NS_GREEN': nsColor = TL_GREEN; break;
-      case 'NS_YELLOW': nsColor = TL_YELLOW; break;
-      case 'EW_GREEN': ewColor = TL_GREEN; break;
-      case 'EW_YELLOW': ewColor = TL_YELLOW; break;
+    ctrl.timer -= dt;
+    if (ctrl.timer <= 0) {
+      ctrl.currentPhase = (ctrl.currentPhase + 1) % ctrl.phases.length;
+      const phase = ctrl.phases[ctrl.currentPhase];
+      ctrl.timer = phase.duration;
+
+      // Reset all to red
+      tl.greenApproaches.clear();
+      for (const a in tl.lights) setTrafficLightState(tl.lights[a], 'red');
+
+      // Apply phase
+      if (phase.green) {
+        for (const a of phase.green) {
+          tl.greenApproaches.add(a);
+          if (tl.lights[a]) setTrafficLightState(tl.lights[a], 'green');
+        }
+      } else if (phase.yellow) {
+        for (const a of phase.yellow) {
+          if (tl.lights[a]) setTrafficLightState(tl.lights[a], 'yellow');
+        }
+      }
+      // allRed: everything stays red (already set above)
     }
-    setLightColor(tl.meshNS, nsColor);
-    setLightColor(tl.meshEW, ewColor);
   }
 }
 
-// Check if a car approaching an intersection should stop
-function shouldCarStop(carPos, carDir, carVehicle) {
-  // Use heading direction if velocity is zero (car is stopped)
-  let dirX = carDir.x, dirZ = carDir.z;
-  if (Math.abs(dirX) < 0.01 && Math.abs(dirZ) < 0.01 && carVehicle) {
-    const heading = carVehicle.getDirection(new YUKA.Vector3());
-    dirX = heading.x;
-    dirZ = heading.z;
-  }
-
+// Check if a car approaching from a given direction has a green light
+function isGreenForApproach(intersectionId, approachDir) {
   for (const tl of trafficLights) {
-    const dx = tl.intersection.x - carPos.x;
-    const dz = tl.intersection.z - carPos.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist > 20 || dist < 2) continue;
-
-    // Determine travel direction from velocity or heading
-    const isNS = Math.abs(dirZ) > Math.abs(dirX);
-    if (isNS && !tl.nsGreen) return dist < 12;
-    if (!isNS && tl.nsGreen) return dist < 12;
+    if (tl.intersection.id === intersectionId) {
+      return tl.greenApproaches.has(approachDir);
+    }
   }
-  return false;
+  return true; // default: go
 }
 
 // ============================================================
@@ -546,19 +752,13 @@ function rect(x1, z1, x2, z2) {
 
 // --- Pedestrian NavMesh: sidewalks + crosswalks + plaza + building entries ---
 const pedPolygons = [];
-const roadPolygons = [];
 const debugPedRects = [];
-const debugRoadRects = [];
 const sidewalkOnlyRects = []; // ONLY sidewalks — not crosswalks, not plaza
 
 function addPedRect(x1, z1, x2, z2, isSidewalk = false) {
   pedPolygons.push(rect(x1, z1, x2, z2));
   debugPedRects.push({ x1, z1, x2, z2 });
   if (isSidewalk) sidewalkOnlyRects.push({ x1, z1, x2, z2 });
-}
-function addRoadRect(x1, z1, x2, z2) {
-  roadPolygons.push(rect(x1, z1, x2, z2));
-  debugRoadRects.push({ x1, z1, x2, z2 });
 }
 
 // Horizontal road segments — from intersection edge to intersection edge
@@ -575,7 +775,6 @@ for (let row = 0; row <= GRID_ROWS; row++) {
     if (x2 > x1) {
       addPedRect(x1, zTop, x2, zTop + SIDEWALK_W, true);  // north sidewalk
       addPedRect(x1, zBot - SIDEWALK_W, x2, zBot, true);  // south sidewalk
-      addRoadRect(x1, zTop, x2, zBot);  // road surface (full ROAD_W height)
     }
   }
 }
@@ -592,7 +791,6 @@ for (let col = 0; col <= GRID_COLS; col++) {
     if (z2 > z1) {
       addPedRect(xLeft, z1, xLeft + SIDEWALK_W, z2, true);  // west sidewalk
       addPedRect(xRight - SIDEWALK_W, z1, xRight, z2, true); // east sidewalk
-      addRoadRect(xLeft, z1, xRight, z2);  // road surface (full ROAD_W width)
     }
   }
 }
@@ -621,8 +819,6 @@ for (let row = 0; row <= GRID_ROWS; row++) {
     addPedRect(ix - halfRoad, iz - cHalf, ix - halfRoad + CROSSWALK_W, iz + cHalf);
     addPedRect(ix + halfRoad - CROSSWALK_W, iz - cHalf, ix + halfRoad, iz + cHalf);
 
-    // Intersection road surface — use full ROAD_W so it connects to road segments
-    addRoadRect(ix - halfRoad, iz - halfRoad, ix + halfRoad, iz + halfRoad);
   }
 }
 
@@ -644,28 +840,50 @@ for (let row = 0; row < GRID_ROWS; row++) {
   }
 }
 
-// Build the two NavMeshes
+// Build pedestrian NavMesh
 const pedNavMesh = new YUKA.NavMesh();
 pedNavMesh.fromPolygons(pedPolygons);
 
-const roadNavMesh = new YUKA.NavMesh();
-roadNavMesh.fromPolygons(roadPolygons);
-
-// Combined NavMesh for protest mode (pedestrians can walk anywhere)
+// Combined NavMesh for protest mode (pedestrians can walk on roads too)
 // Rebuild from raw rects since yuka Polygons don't expose contour after fromContour()
 const allCombinedPolygons = [];
 for (const r of debugPedRects) allCombinedPolygons.push(rect(r.x1, r.z1, r.x2, r.z2));
-for (const r of debugRoadRects) allCombinedPolygons.push(rect(r.x1, r.z1, r.x2, r.z2));
+// Add road surfaces to combined mesh for protest mode
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const roadCenterZ = hRoadZ(row);
+  const zTop = roadCenterZ - ROAD_W / 2;
+  const zBot = roadCenterZ + ROAD_W / 2;
+  for (let col = 0; col < GRID_COLS; col++) {
+    const x1 = vRoadX(col) + ROAD_W / 2;
+    const x2 = vRoadX(col + 1) - ROAD_W / 2;
+    if (x2 > x1) allCombinedPolygons.push(rect(x1, zTop, x2, zBot));
+  }
+}
+for (let col = 0; col <= GRID_COLS; col++) {
+  const roadCenterX = vRoadX(col);
+  const xLeft = roadCenterX - ROAD_W / 2;
+  const xRight = roadCenterX + ROAD_W / 2;
+  for (let row = 0; row < GRID_ROWS; row++) {
+    const z1 = hRoadZ(row) + ROAD_W / 2;
+    const z2 = hRoadZ(row + 1) - ROAD_W / 2;
+    if (z2 > z1) allCombinedPolygons.push(rect(xLeft, z1, xRight, z2));
+  }
+}
+for (let row = 0; row <= GRID_ROWS; row++) {
+  for (let col = 0; col <= GRID_COLS; col++) {
+    const ix = vRoadX(col);
+    const iz = hRoadZ(row);
+    const halfRoad = ROAD_W / 2;
+    allCombinedPolygons.push(rect(ix - halfRoad, iz - halfRoad, ix + halfRoad, iz + halfRoad));
+  }
+}
 const combinedNavMesh = new YUKA.NavMesh();
 combinedNavMesh.fromPolygons(allCombinedPolygons);
 
 // ============================================================
 // DEBUG NAVMESH OVERLAY
 // ============================================================
-let debugMeshVisible = false;
-const debugGroup = new THREE.Group();
-debugGroup.visible = debugMeshVisible;
-scene.add(debugGroup);
+// debugGroup already created above (before road graph debug section)
 
 function addDebugRects(rects, color) {
   for (const r of rects) {
@@ -690,7 +908,6 @@ function addDebugRects(rects, color) {
 }
 
 addDebugRects(debugPedRects, 0x05ffa1);   // green = pedestrian
-addDebugRects(debugRoadRects, 0xfcee0a);  // yellow = road
 
 // ============================================================
 // NPC + VEHICLE MANAGEMENT
@@ -713,26 +930,22 @@ function randomSidewalkPoint() {
   );
 }
 
-function randomRoadPoint() {
-  // Pick a point on a road centerline (not in overlap zones)
-  if (Math.random() < 0.5) {
-    // Horizontal road
-    const row = Math.floor(Math.random() * (GRID_ROWS + 1));
-    const z = hRoadZ(row);
-    const x = ROAD_W + Math.random() * (CITY_W - ROAD_W * 2);
-    return new YUKA.Vector3(x, 0, z);
+// Pick a random edge and lane position for spawning/destination
+function randomEdgeLanePosition() {
+  const edge = roadGraph.edges[Math.floor(Math.random() * roadGraph.edges.length)];
+  // Pick a lane that goes in a positive direction (index 0 or 1)
+  const laneIndex = Math.floor(Math.random() * 4);
+  const lane = edge.lanes[laneIndex];
+  const t = 0.2 + Math.random() * 0.6; // avoid spawning too close to intersections
+  let x, z;
+  if (edge.horizontal) {
+    x = edge.x1 + t * (edge.x2 - edge.x1);
+    z = edge.centerZ + lane.offset;
   } else {
-    // Vertical road
-    const col = Math.floor(Math.random() * (GRID_COLS + 1));
-    const x = vRoadX(col);
-    const z = ROAD_W + Math.random() * (CITY_H - ROAD_W * 2);
-    return new YUKA.Vector3(x, 0, z);
+    x = edge.centerX + lane.offset;
+    z = edge.z1 + t * (edge.z2 - edge.z1);
   }
-}
-
-function randomLanePoint() {
-  // Pick a point on a road centerline for destination
-  return randomRoadPoint();
+  return { pos: new YUKA.Vector3(x, 0, z), edge, laneIndex };
 }
 
 function randomBuildingEntry() {
@@ -860,12 +1073,117 @@ function assignNPCDestination(npc, target) {
 }
 
 // ============================================================
-// SPAWN CARS
+// SPAWN CARS — road graph + lane following (no NavMesh)
 // ============================================================
+
+// Find which edge a position is closest to (for route recovery)
+function findNearestEdge(x, z) {
+  let best = null, bestDist = Infinity;
+  for (const edge of roadGraph.edges) {
+    let dist;
+    if (edge.horizontal) {
+      const cx = Math.max(edge.x1, Math.min(edge.x2, x));
+      dist = Math.abs(z - edge.centerZ) + Math.abs(x - cx) * 0.1;
+    } else {
+      const cz = Math.max(edge.z1, Math.min(edge.z2, z));
+      dist = Math.abs(x - edge.centerX) + Math.abs(z - cz) * 0.1;
+    }
+    if (dist < bestDist) { bestDist = dist; best = edge; }
+  }
+  return best;
+}
+
+// Pick a random lane index that goes in a given direction on an edge
+function pickLaneForDir(edge, dir) {
+  // dir: 1 = positive direction (from→to), -1 = negative (to→from)
+  const candidates = [];
+  for (let i = 0; i < edge.lanes.length; i++) {
+    if (edge.lanes[i].dir === dir) candidates.push(i);
+  }
+  return candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : 0;
+}
+
+// Compute the approach direction a car uses when arriving at a node via an edge
+function getApproachDir(edge, nodeId) {
+  if (edge.horizontal) {
+    // Arriving at 'to' node means car was going +X → approaching from West
+    if (nodeId === edge.to) return 'W';
+    // Arriving at 'from' node means car was going -X → approaching from East
+    return 'E';
+  } else {
+    if (nodeId === edge.to) return 'N';
+    return 'S';
+  }
+}
+
+// Pick next edge at an intersection (random turn)
+function pickNextEdge(currentEdge, arrivalNodeId, laneDir) {
+  const edges = nodeEdges[arrivalNodeId];
+  // Filter: don't U-turn (don't go back on the same edge), and pick edges we can travel on
+  const candidates = [];
+  for (const e of edges) {
+    if (e === currentEdge) continue; // no U-turn
+    candidates.push(e);
+  }
+  if (candidates.length === 0) {
+    // Dead end — U-turn allowed
+    return { edge: currentEdge, laneDir: -laneDir };
+  }
+  const next = candidates[Math.floor(Math.random() * candidates.length)];
+  // Determine direction on the new edge
+  // If we arrived at nodeId, we leave from nodeId
+  // If nodeId is next.from, we go dir=1; if nodeId is next.to, we go dir=-1
+  const newDir = (arrivalNodeId === next.from) ? 1 : -1;
+  return { edge: next, laneDir: newDir };
+}
+
+// Compute lane position along an edge at parameter t (0..1 from node 'from' to 'to')
+function lanePosition(edge, laneIndex, t) {
+  const lane = edge.lanes[laneIndex];
+  if (edge.horizontal) {
+    return {
+      x: edge.x1 + t * (edge.x2 - edge.x1),
+      z: edge.centerZ + lane.offset,
+    };
+  } else {
+    return {
+      x: edge.centerX + lane.offset,
+      z: edge.z1 + t * (edge.z2 - edge.z1),
+    };
+  }
+}
+
+// Compute parameter t for a position on an edge
+function edgeParameter(edge, x, z) {
+  if (edge.horizontal) {
+    const len = edge.x2 - edge.x1;
+    return len > 0 ? (x - edge.x1) / len : 0.5;
+  } else {
+    const len = edge.z2 - edge.z1;
+    return len > 0 ? (z - edge.z1) / len : 0.5;
+  }
+}
+
+// Assign initial route to a car
+function assignCarRoute(car) {
+  const spawn = randomEdgeLanePosition();
+  car.currentEdge = spawn.edge;
+  car.laneIndex = spawn.laneIndex;
+  car.laneDir = spawn.edge.lanes[spawn.laneIndex].dir;
+  car.t = edgeParameter(spawn.edge, spawn.pos.x, spawn.pos.z);
+  car.speed = 8 + Math.random() * 6;  // 8-14 m/s
+  car.maxSpeed = car.speed;
+  car.stopped = false;
+  car.stopTimer = 0;
+
+  // Snap car to lane position
+  const p = lanePosition(car.currentEdge, car.laneIndex, car.t);
+  car.vehicle.position.set(p.x, 0, p.z);
+  car.mesh.position.set(p.x, 0, p.z);
+}
+
 function spawnCar() {
   const vehicle = new YUKA.Vehicle();
-  const start = randomRoadPoint();
-  vehicle.position.copy(start);
   vehicle.maxSpeed = 12;
   vehicle.maxForce = 15;
   vehicle.updateNeighborhood = false;
@@ -889,59 +1207,50 @@ function spawnCar() {
   cabin.position.set(-0.3, 1.3, 0);
   group.add(cabin);
 
-  group.position.set(start.x, 0, start.z);
+  // Headlights
+  const hlMat = new THREE.MeshStandardMaterial({ color: 0xffffcc, emissive: 0xffffcc, emissiveIntensity: 0.3 });
+  const hlL = new THREE.Mesh(new THREE.SphereGeometry(0.15, 4, 4), hlMat);
+  hlL.position.set(2, 0.5, 0.7);
+  group.add(hlL);
+  const hlR = new THREE.Mesh(new THREE.SphereGeometry(0.15, 4, 4), hlMat);
+  hlR.position.set(2, 0.5, -0.7);
+  group.add(hlR);
+
+  // Taillights
+  const tlMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.2 });
+  const tlL = new THREE.Mesh(new THREE.SphereGeometry(0.12, 4, 4), tlMat);
+  tlL.position.set(-2, 0.5, 0.7);
+  group.add(tlL);
+  const tlR = new THREE.Mesh(new THREE.SphereGeometry(0.12, 4, 4), tlMat);
+  tlR.position.set(-2, 0.5, -0.7);
+  group.add(tlR);
+
+  group.position.set(0, 0, 0);
   group.castShadow = true;
   scene.add(group);
 
+  // We use yuka Vehicle for entity management but NOT for steering
   vehicle.setRenderComponent(group, (entity, renderComponent) => {
     renderComponent.position.set(entity.position.x, 0, entity.position.z);
-    const dir = entity.getDirection(new YUKA.Vector3());
-    if (dir.squaredLength() > 0.001) {
-      renderComponent.lookAt(
-        entity.position.x + dir.x, 0, entity.position.z + dir.z
-      );
-    }
   });
-
-  const followPath = new YUKA.FollowPathBehavior();
-  followPath.active = false;
-  vehicle.steering.add(followPath);
 
   entityManager.add(vehicle);
 
   const car = {
-    vehicle, mesh: group, followPath,
-    currentPath: null, pathLine: createPathLine(bodyColor),
-    stateTimer: 0, stopped: false, stopTimer: 0,
-    savedMaxSpeed: 12,
+    vehicle, mesh: group,
+    pathLine: createPathLine(bodyColor),
+    // Lane following state
+    currentEdge: null, laneIndex: 0, laneDir: 1,
+    t: 0.5, speed: 10, maxSpeed: 10,
+    stopped: false, stopTimer: 0,
+    prevX: 0, prevZ: 0,  // for rotation smoothing
   };
-  assignCarDestination(car);
+
+  assignCarRoute(car);
+  car.prevX = car.vehicle.position.x;
+  car.prevZ = car.vehicle.position.z;
   cars.push(car);
   return car;
-}
-
-function assignCarDestination(car) {
-  // Try multiple destinations if pathfinding fails
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const dest = randomLanePoint();
-    const from = new YUKA.Vector3(car.vehicle.position.x, 0, car.vehicle.position.z);
-    const path = findNavPath(from, dest, roadNavMesh);
-    if (path && path.length > 1) {
-    car.followPath.path = new YUKA.Path();
-    for (const p of path) car.followPath.path.add(p);
-    car.followPath.active = true;
-    car.currentPath = path;
-    car.stateTimer = 0;
-      updatePathLine(car.pathLine, path);
-      return;
-    }
-  }
-  // All attempts failed — teleport to a road point and try again next tick
-  const fallback = randomRoadPoint();
-  car.vehicle.position.copy(fallback);
-  car.mesh.position.set(fallback.x, 0, fallback.z);
-  car.stateTimer = 0.5;
-  updatePathLine(car.pathLine, []);
 }
 
 // ============================================================
@@ -1039,46 +1348,126 @@ function updateSimpleNPC(npc, dt) {
 }
 
 // Car update with traffic light stops
+// Car update: lane following along road graph edges
 function updateCar(car, dt) {
-  const speed = car.vehicle.velocity.length();
-  const dir = car.vehicle.getDirection(new YUKA.Vector3());
+  if (!car.currentEdge) {
+    assignCarRoute(car);
+    return;
+  }
 
-  // Traffic light check — only when moving, release when light changes
+  const edge = car.currentEdge;
+  const lane = edge.lanes[car.laneIndex];
+  const edgeLen = edge.horizontal ? (edge.x2 - edge.x1) : (edge.z2 - edge.z1);
+  if (edgeLen <= 0) { assignCarRoute(car); return; }
+
+  // Compute parameter step
+  const tStep = (car.speed * dt) / edgeLen;
+
+  // Advance t in lane direction
+  if (car.laneDir > 0) {
+    // laneDir 1 means lane.dir determines actual motion direction
+    car.t += lane.dir * tStep;
+  } else {
+    car.t += lane.dir * tStep;
+  }
+
+  // Determine which intersection we're approaching
+  const approachingEnd = car.t >= 1.0;
+  const approachingStart = car.t <= 0.0;
+  const STOP_DIST = 0.1; // t-parameter distance to start checking lights
+
+  // Check if approaching an intersection — need to check traffic light
   if (!car.stopped) {
-    const mustStop = shouldCarStop(car.vehicle.position, dir, car.vehicle);
-    if (mustStop) {
-      car.stopped = true;
-      car.stoppedDir = { x: dir.x, z: dir.z }; // remember direction when we stopped
-      car.savedMaxSpeed = car.vehicle.maxSpeed;
-      car.vehicle.maxSpeed = 0;
+    let nearEndNode = null;
+    let approachDir = null;
+
+    if (car.t > (1.0 - STOP_DIST)) {
+      nearEndNode = edge.to;
+      approachDir = getApproachDir(edge, edge.to);
+    } else if (car.t < STOP_DIST) {
+      nearEndNode = edge.from;
+      approachDir = getApproachDir(edge, edge.from);
+    }
+
+    if (nearEndNode && approachDir) {
+      const green = isGreenForApproach(nearEndNode, approachDir);
+      if (!green && !approachingEnd && !approachingStart) {
+        car.stopped = true;
+        car.stopApproach = approachDir;
+        car.stopNodeId = nearEndNode;
+        // Clamp t so car doesn't enter intersection
+        if (car.t > 0.5) car.t = Math.min(car.t, 1.0 - STOP_DIST * 0.3);
+        else car.t = Math.max(car.t, STOP_DIST * 0.3);
+      }
     }
   } else {
-    // Check if we should release — use stored direction from when we stopped
-    const checkDir = car.stoppedDir || dir;
-    const _d = { x: checkDir.x, z: checkDir.z };
-    let canGo = true;
-    for (const tl of trafficLights) {
-      const dx = tl.intersection.x - car.vehicle.position.x;
-      const dz = tl.intersection.z - car.vehicle.position.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      if (dist > 20 || dist < 2) continue;
-      const isNS = Math.abs(_d.z) > Math.abs(_d.x);
-      if (isNS && !tl.nsGreen) { canGo = false; break; }
-      if (!isNS && tl.nsGreen) { canGo = false; break; }
-    }
-    if (canGo) {
-      car.stopped = false;
-      car.vehicle.maxSpeed = car.savedMaxSpeed || 12;
+    // Check if light has turned green
+    if (car.stopNodeId && car.stopApproach) {
+      const green = isGreenForApproach(car.stopNodeId, car.stopApproach);
+      if (green) {
+        car.stopped = false;
+        car.stopNodeId = null;
+        car.stopApproach = null;
+      }
     }
   }
 
-  if (speed < 0.1 && car.followPath.active && !car.stopped) {
-    car.stateTimer += dt;
-    if (car.stateTimer > 0.5) {
-      car.stateTimer = 0;
-      assignCarDestination(car);
+  // If stopped, don't move
+  if (car.stopped) {
+    // Keep position stable
+    const p = lanePosition(edge, car.laneIndex, car.t);
+    car.vehicle.position.set(p.x, 0, p.z);
+    car.mesh.position.set(p.x, 0, p.z);
+    return;
+  }
+
+  // Check if car reached end of edge
+  if (approachingEnd || approachingStart) {
+    const arrivalNodeId = approachingEnd ? edge.to : edge.from;
+    const result = pickNextEdge(edge, arrivalNodeId, lane.dir);
+    car.currentEdge = result.edge;
+    car.laneIndex = pickLaneForDir(result.edge, result.laneDir);
+    car.laneDir = result.laneDir;
+
+    // Place at start of new edge
+    const node = roadGraph.nodes[arrivalNodeId];
+    if (result.laneDir > 0) {
+      // Going from→to: start at from end
+      car.t = (arrivalNodeId === result.edge.from) ? 0.05 : 0.95;
+    } else {
+      car.t = (arrivalNodeId === result.edge.to) ? 0.95 : 0.05;
     }
   }
+
+  // Update position on lane
+  car.t = Math.max(0, Math.min(1, car.t));
+  const p = lanePosition(car.currentEdge, car.laneIndex, car.t);
+  car.vehicle.position.set(p.x, 0, p.z);
+  car.mesh.position.set(p.x, 0, p.z);
+
+  // Smooth rotation: face direction of travel
+  const dx = p.x - car.prevX;
+  const dz = p.z - car.prevZ;
+  if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) {
+    const angle = Math.atan2(dx, dz);
+    // Smooth rotate toward target angle
+    let current = car.mesh.rotation.y;
+    let diff = angle - current;
+    // Normalize to -PI..PI
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    car.mesh.rotation.y += diff * Math.min(1, dt * 8);
+  }
+  car.prevX = p.x;
+  car.prevZ = p.z;
+
+  // Update path debug line (show next few waypoints)
+  const fromNode = roadGraph.nodes[car.currentEdge.from];
+  const toNode = roadGraph.nodes[car.currentEdge.to];
+  updatePathLine(car.pathLine, [
+    { x: car.vehicle.position.x, z: car.vehicle.position.z },
+    { x: (lane.dir > 0) ? toNode.x : fromNode.x, z: (lane.dir > 0) ? toNode.z : fromNode.z },
+  ]);
 }
 
 // ============================================================
@@ -1100,8 +1489,7 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyL') {
     showTrafficLights = !showTrafficLights;
     for (const tl of trafficLights) {
-      tl.meshNS.visible = showTrafficLights;
-      tl.meshEW.visible = showTrafficLights;
+      for (const a in tl.lights) tl.lights[a].group.visible = showTrafficLights;
     }
   }
   if (e.code === 'KeyR') {
@@ -1141,10 +1529,10 @@ function updateHUD() {
   const zoneStr = Object.entries(zoneCounts).map(([k, v]) => `${k}:${v}`).join(' ');
 
   hudEl.innerHTML = `
-<span class="label">YUKA NAVMESH PROTOTYPE v2</span>
+<span class="label">YUKA ROAD GRAPH PROTOTYPE v3</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
 <span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
-<span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road NavMesh:</span> ${roadPolygons.length} polys
+<span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
 <span class="label">Building entries:</span> ${buildingEntries.length} &nbsp; <span class="label">Intersections:</span> ${intersections.length}
 <span class="label">Protest:</span> ${protestActive ? '<span class="warn">ACTIVE — NPCs march in street</span>' : 'off'}
 <span class="zone">Zones:</span> ${zoneStr}
@@ -1192,14 +1580,7 @@ function animate() {
       pos.copy(_clampResult);
     } catch(e) { /* outside navmesh entirely, leave as-is */ }
   }
-  // Clamp cars to road NavMesh
-  for (const car of cars) {
-    const pos = car.vehicle.position;
-    try {
-      roadNavMesh.clampMovement(pos, pos, _clampResult);
-      pos.copy(_clampResult);
-    } catch(e) { /* outside navmesh */ }
-  }
+  // Cars use road graph lane following — no NavMesh clamping needed
 
   controls.update();
   renderer.render(scene, camera);
@@ -1215,15 +1596,15 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-console.log(`[Yuka Prototype v2] City: ${CITY_W}x${CITY_H}, Ped NavMesh: ${pedPolygons.length} polys, Road NavMesh: ${roadPolygons.length} polys, NPCs: ${npcs.length}, Cars: ${cars.length}, Entries: ${buildingEntries.length}, Intersections: ${intersections.length}`);
+console.log(`[Yuka Prototype v3] City: ${CITY_W}x${CITY_H}, Ped NavMesh: ${pedPolygons.length} polys, Road Graph: ${Object.keys(roadGraph.nodes).length} nodes / ${roadGraph.edges.length} edges, NPCs: ${npcs.length}, Cars: ${cars.length}, Entries: ${buildingEntries.length}, Intersections: ${intersections.length}`);
 
 // Expose state for external debugging/testing
 window.__city3d = {
   npcs, cars, buildings, buildingEntries, intersections, trafficLights,
-  pedNavMesh, roadNavMesh, combinedNavMesh,
+  pedNavMesh, combinedNavMesh, roadGraph, nodeEdges,
   entityManager, smNPCs,
   get state() { return { protestActive, debugMeshVisible, showTrafficLights }; },
-  sidewalkOnlyRects, debugPedRects, debugRoadRects, blockZones,
+  sidewalkOnlyRects, debugPedRects, blockZones,
   CITY_W, CITY_H, PLAZA_X, PLAZA_Z,
 };
 </script>
