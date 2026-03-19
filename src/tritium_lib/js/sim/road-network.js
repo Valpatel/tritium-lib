@@ -310,19 +310,66 @@ export class RoadNetwork {
 
     /**
      * Calculate Bezier control point for intersection turn.
+     * For straight: center point (degenerate straight Bezier).
+     * For turns: offset toward the corner the car should arc through.
      */
     _getBezierControl(fromEdge, fromLane, toEdge, toLane, nodeId, turnType) {
         const node = this.nodes[nodeId];
 
         if (turnType === 'straight') {
-            // For straight-through, control point is the intersection center
-            // This gives a straight line (degenerate Bezier)
             return { x: node.x, z: node.z };
         }
 
-        // For turns, offset the control point slightly toward the turn direction
-        // This creates a smooth arc through the intersection
+        // Compute entry and exit world positions to find the corner to arc through
+        const fromIsForward = fromLane < (fromEdge.numLanesPerDir || 2);
+        const entryU = fromIsForward ? fromEdge.length : 0;
+        const entry = this._roadToWorldSimple(fromEdge, fromLane, entryU);
+
+        const toIsForward = toLane < (toEdge.numLanesPerDir || 2);
+        const exitU = toIsForward ? 0 : toEdge.length;
+        const exit = this._roadToWorldSimple(toEdge, toLane, exitU);
+
+        // Control point: for a clean arc, place it at the corner where
+        // the entry tangent extended meets the exit tangent extended.
+        // For a grid city this is approximately the L-shaped corner.
+        // Simple approach: use the point that shares one coordinate with entry
+        // and the other with exit (the "corner" of the L-turn).
+        if (turnType === 'right' || turnType === 'left') {
+            // For horizontal→vertical or vertical→horizontal turns,
+            // the corner point is (entry.x, exit.z) or (exit.x, entry.z)
+            // depending on which creates the correct arc direction.
+            // Test both and pick the one closer to intersection center.
+            const c1 = { x: entry.x, z: exit.z };
+            const c2 = { x: exit.x, z: entry.z };
+            const d1 = (c1.x - node.x) ** 2 + (c1.z - node.z) ** 2;
+            const d2 = (c2.x - node.x) ** 2 + (c2.z - node.z) ** 2;
+            return d1 < d2 ? c1 : c2;
+        }
+
         return { x: node.x, z: node.z };
+    }
+
+    /**
+     * Simple world position from road coordinates (no imports needed).
+     */
+    _roadToWorldSimple(road, lane, u) {
+        const t = Math.max(0, Math.min(1, u / road.length));
+        const cx = road.ax + t * (road.bx - road.ax);
+        const cz = road.az + t * (road.bz - road.az);
+        const dx = road.bx - road.ax;
+        const dz = road.bz - road.az;
+        const len = Math.sqrt(dx * dx + dz * dz) || 1;
+        const perpX = -dz / len;
+        const perpZ = dx / len;
+        const nPerDir = road.numLanesPerDir || 2;
+        const laneWidth = road.laneWidth || 3;
+        let offset;
+        if (lane < nPerDir) {
+            offset = (lane + 0.5) * laneWidth;
+        } else {
+            offset = -((lane - nPerDir) + 0.5) * laneWidth;
+        }
+        return { x: cx + perpX * offset, z: cz + perpZ * offset };
     }
 
     /**

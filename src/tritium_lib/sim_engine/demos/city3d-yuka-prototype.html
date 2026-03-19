@@ -1297,28 +1297,100 @@ function edgeParameter(edge, x, z) {
   }
 }
 
-// Assign initial route to a car (IDM-based)
+// Assign initial route to a car with Dijkstra path planning
 function assignCarRoute(car) {
   const spawn = randomEdgeLanePosition();
   car.road = spawn.edge;
   car.lane = spawn.laneIndex;
-  // u = distance traveled in direction of travel (0..road.length)
   car.u = spawn.edge.length * (0.2 + Math.random() * 0.6);
-  car.speed = 2 + Math.random() * 4; // start slow, IDM will accelerate
+  car.speed = 2 + Math.random() * 4;
   car.acc = 0;
   car.gap = Infinity;
   car.leader = null;
-  car.desiredSpeed = 10 + Math.random() * 4;
-  car.idmParams = { ...IDM_DEFAULTS, v0: car.desiredSpeed };
-  car.length = 4;
+  if (!car.desiredSpeed) car.desiredSpeed = 10 + Math.random() * 4;
+  if (!car.idmParams) car.idmParams = { ...IDM_DEFAULTS, v0: car.desiredSpeed };
+  if (!car.length) car.length = 4;
 
-  // Snap car to lane position via roadToWorld
+  // Plan route to a random destination using Dijkstra
+  planCarRoute(car);
+
+  // Snap car to lane position
   const isForward = car.lane < (car.road.numLanesPerDir || 2);
   const roadU = isForward ? car.u : (car.road.length - car.u);
   const world = roadToWorld(car.road, car.lane, roadU);
   car.vehicle.position.set(world.x, 0, world.z);
   car.mesh.position.set(world.x, 0, world.z);
   car.mesh.rotation.y = world.angle;
+}
+
+// Plan a Dijkstra route from current position to a random destination
+function planCarRoute(car) {
+  if (!modularRoadNetwork) { car.route = []; return; }
+
+  const isForward = car.lane < (car.road.numLanesPerDir || 2);
+  const currentNodeId = isForward ? car.road.to : car.road.from;
+
+  // Pick random destination node (at least 3 edges away)
+  const nodeIds = Object.keys(modularRoadNetwork.nodes);
+  let destNodeId;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    destNodeId = nodeIds[Math.floor(Math.random() * nodeIds.length)];
+    if (destNodeId !== currentNodeId) {
+      const dn = modularRoadNetwork.nodes[destNodeId];
+      const cn = modularRoadNetwork.nodes[currentNodeId];
+      if (dn && cn) {
+        const dist = Math.abs(dn.x - cn.x) + Math.abs(dn.z - cn.z);
+        if (dist > 100) break; // at least ~2 blocks away
+      }
+    }
+  }
+
+  car.destination = destNodeId;
+  car.route = modularRoadNetwork.findPath(currentNodeId, destNodeId);
+  car.routeIndex = 0;
+  car.routeReplanTimer = 0;
+
+  // Update route visualization (dotted line to destination)
+  updateCarRouteLine(car);
+}
+
+// Create dotted route line for a car
+function createRouteLine() {
+  const mat = new THREE.LineDashedMaterial({ color: 0x00f0ff, dashSize: 2, gapSize: 1, transparent: true, opacity: 0.4 });
+  // Start with 2 points at origin (can't compute line distances on empty geometry)
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, -10, 0), new THREE.Vector3(0, -10, 0)
+  ]);
+  const line = new THREE.Line(geo, mat);
+  line.computeLineDistances();
+  scene.add(line);
+  return line;
+}
+
+// Update route visualization
+function updateCarRouteLine(car) {
+  if (!car.routeLine) return;
+
+  const points = [];
+  // Start from current position
+  points.push(new THREE.Vector3(car.mesh.position.x, 0.3, car.mesh.position.z));
+
+  if (car.route && car.route.length > 0) {
+    // Add each intersection node along the remaining route
+    for (let i = car.routeIndex || 0; i < car.route.length; i++) {
+      const node = modularRoadNetwork?.nodes[car.route[i].nodeId];
+      if (node) points.push(new THREE.Vector3(node.x, 0.3, node.z));
+    }
+  }
+
+  // Need at least 2 points for a line
+  if (points.length < 2) {
+    points.push(new THREE.Vector3(points[0].x, -10, points[0].z));
+  }
+
+  car.routeLine.geometry.dispose();
+  car.routeLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
+  car.routeLine.computeLineDistances();
 }
 
 function spawnCar(vehicleType = 'sedan') {
@@ -1426,7 +1498,12 @@ function spawnCar(vehicleType = 'sedan') {
     stuckTimer: 0,
     laneChangeState: null,
     mobilParams: { ...MOBIL_DEFAULTS, politeness: isEmergency ? 0.05 : (0.2 + Math.random() * 0.3) },
-    sirenActive: isEmergency, // emergency vehicles always have siren on
+    sirenActive: isEmergency,
+    route: [],
+    routeIndex: 0,
+    destination: null,
+    routeLine: createRouteLine(),
+    routeReplanTimer: 0,
   };
 
   assignCarRoute(car);
@@ -1663,10 +1740,25 @@ function transitionToNextRoad(car) {
   const isForward = car.lane < (car.road.numLanesPerDir || 2);
   const arrivalNodeId = isForward ? car.road.to : car.road.from;
 
-  // Use RoadNetwork lane connections if available, fall back to pickNextEdge
-  const connection = modularRoadNetwork
-    ? modularRoadNetwork.pickRandomConnection(car.road.id, car.lane, arrivalNodeId)
-    : null;
+  // Follow planned route if available, otherwise random
+  let connection = null;
+  if (modularRoadNetwork && car.route && car.routeIndex < car.route.length) {
+    // Follow route: find connection to next route edge
+    const nextStep = car.route[car.routeIndex];
+    const connections = modularRoadNetwork.getLaneConnections(car.road.id, car.lane, arrivalNodeId);
+    connection = connections.find(c => c.toEdge.id === nextStep.edge.id);
+    if (connection) {
+      car.routeIndex++;
+      // If route complete, plan new destination
+      if (car.routeIndex >= car.route.length) {
+        planCarRoute(car);
+      }
+    }
+  }
+  // Fallback: random connection
+  if (!connection && modularRoadNetwork) {
+    connection = modularRoadNetwork.pickRandomConnection(car.road.id, car.lane, arrivalNodeId);
+  }
 
   if (connection) {
     // Calculate Bezier turn path
@@ -1819,6 +1911,34 @@ function updateCar(car, dt) {
   car.u = updated.u;
   car.speed = updated.v;
 
+  // Check for pedestrians in the car's path (treat as obstacles)
+  for (const npc of npcs) {
+    const npcPos = npc.vehicle.position;
+    const carPos = car.mesh.position;
+    const dx = npcPos.x - carPos.x, dz = npcPos.z - carPos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    // Only care about NPCs within 15m ahead in roughly the same direction
+    if (dist < 15 && dist > 1) {
+      // Check if NPC is ahead (dot product with car forward direction)
+      const fwdX = Math.sin(car.mesh.rotation.y);
+      const fwdZ = Math.cos(car.mesh.rotation.y);
+      const dot = (dx * fwdX + dz * fwdZ) / dist;
+      if (dot > 0.5) { // within ~60° cone ahead
+        // Lateral distance to centerline
+        const lateral = Math.abs(-dx * fwdZ + dz * fwdX);
+        if (lateral < 2.5) { // within lane width
+          // Treat as leader at distance dist
+          const pedGap = Math.max(0.5, dist - car.length);
+          if (pedGap < car.gap) {
+            car.gap = pedGap;
+            car.leader = { id: npc.id, speed: 1.0, length: 0.6 };
+            car.acc = idmAcceleration(car.speed, pedGap, 1.0, car.idmParams);
+          }
+        }
+      }
+    }
+  }
+
   // Stuck detection
   if (car.speed < 0.1) {
     car.stuckTimer = (car.stuckTimer || 0) + dt;
@@ -1829,6 +1949,13 @@ function updateCar(car, dt) {
     }
   } else {
     car.stuckTimer = 0;
+  }
+
+  // Route replan every 10 seconds
+  car.routeReplanTimer = (car.routeReplanTimer || 0) + dt;
+  if (car.routeReplanTimer > 10) {
+    car.routeReplanTimer = 0;
+    updateCarRouteLine(car);
   }
 
   // Check if reached end of road → start intersection turn
