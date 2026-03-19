@@ -42,8 +42,8 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/",
+    "three": "https://unpkg.com/three@0.172.0/build/three.webgpu.js",
+    "three/addons/": "https://unpkg.com/three@0.172.0/examples/jsm/",
     "yuka": "https://unpkg.com/yuka@0.7.8/build/yuka.module.js"
   }
 }
@@ -133,10 +133,10 @@ for (let row = 0; row < GRID_ROWS; row++) {
 // ============================================================
 // THREE.JS SETUP
 // ============================================================
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+await renderer.init();
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -1384,7 +1384,7 @@ function planCarRoute(car) {
 
 // Create route line with animated pulse (color-matched dashed)
 function createRouteLine(color) {
-  const mat = new THREE.LineDashedMaterial({
+  const mat = new THREE.LineBasicMaterial({
     color: color || 0x00f0ff, dashSize: 3, gapSize: 2,
     transparent: true, opacity: 0.35,
   });
@@ -1412,7 +1412,7 @@ function createPulseArrow(color) {
 
 // Create short-term trajectory line (yellow, brighter, closer spacing)
 function createTrajectoryLine() {
-  const mat = new THREE.LineDashedMaterial({
+  const mat = new THREE.LineBasicMaterial({
     color: 0xfcee0a, dashSize: 1.5, gapSize: 0.5,
     transparent: true, opacity: 0.7,
   });
