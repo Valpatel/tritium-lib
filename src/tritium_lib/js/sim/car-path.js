@@ -388,37 +388,41 @@ export function extendPath(path, nextNode, laneOffset = 3, margin = 3) {
  * @returns {{ x: number, z: number }}
  */
 function computeTurnControl(prevExit, nextEntry, intersection) {
-    // Direction from prevExit toward intersection
-    const dx1 = intersection.x - prevExit.x;
-    const dz1 = intersection.z - prevExit.z;
+    // Direct vector from prevExit to nextEntry
+    const dx = nextEntry.x - prevExit.x;
+    const dz = nextEntry.z - prevExit.z;
 
-    // Direction from intersection toward nextEntry
-    const dx2 = nextEntry.x - intersection.x;
-    const dz2 = nextEntry.z - intersection.z;
+    // Check if this is essentially straight (both points on same axis)
+    // For a grid city: if the X or Z difference is very small relative to the other,
+    // it's a straight-through (lane offset causes small perpendicular difference).
+    const absDx = Math.abs(dx);
+    const absDz = Math.abs(dz);
+    const dominantAxis = Math.max(absDx, absDz);
+    const minorAxis = Math.min(absDx, absDz);
 
-    // Check if this is a straight-through (same direction)
-    const dot = dx1 * dx2 + dz1 * dz2;
-    const len1 = Math.sqrt(dx1 * dx1 + dz1 * dz1) || 1;
-    const len2 = Math.sqrt(dx2 * dx2 + dz2 * dz2) || 1;
-    const cosAngle = dot / (len1 * len2);
-
-    if (cosAngle > 0.9) {
-        // Nearly straight — control point is midpoint (Bezier degenerates to line)
+    if (dominantAxis < 0.1 || minorAxis / dominantAxis < 0.3) {
+        // Nearly straight — midpoint gives a straight line Bezier
         return {
             x: (prevExit.x + nextEntry.x) / 2,
             z: (prevExit.z + nextEntry.z) / 2,
         };
     }
 
-    // For a 90° turn: L-corner
-    // The control point shares one coordinate with prevExit and the other with nextEntry.
-    // Determine which based on approach direction:
-    const approachHorizontal = Math.abs(dx1) > Math.abs(dz1);
-    if (approachHorizontal) {
-        // Approaching horizontally → keep prevExit's z, use nextEntry's x
+    // Genuine turn (both axes have significant delta = ~90° turn)
+    // L-corner: use the approach direction to pick the right corner
+    // The approach direction is from the previous straight segment
+    // For a horizontal approach: extend X to nextEntry.x, keep Z from prevExit
+    // For a vertical approach: extend Z to nextEntry.z, keep X from prevExit
+
+    // Determine approach axis from prevExit to intersection
+    const approachDx = Math.abs(intersection.x - prevExit.x);
+    const approachDz = Math.abs(intersection.z - prevExit.z);
+
+    if (approachDx > approachDz) {
+        // Horizontal approach → L-corner at (nextEntry.x, prevExit.z)
         return { x: nextEntry.x, z: prevExit.z };
     } else {
-        // Approaching vertically → keep prevExit's x, use nextEntry's z
+        // Vertical approach → L-corner at (prevExit.x, nextEntry.z)
         return { x: prevExit.x, z: nextEntry.z };
     }
 }
