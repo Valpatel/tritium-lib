@@ -1354,26 +1354,27 @@ function planCarRoute(car) {
   updateCarRouteLine(car);
 }
 
-// Create dotted route line for a car
+// Create dotted route line for a car (hidden by default, shown with C key)
 function createRouteLine() {
   const mat = new THREE.LineDashedMaterial({ color: 0x00f0ff, dashSize: 2, gapSize: 1, transparent: true, opacity: 0.4 });
-  // Start with 2 points at origin (can't compute line distances on empty geometry)
   const geo = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(0, -10, 0), new THREE.Vector3(0, -10, 0)
   ]);
   const line = new THREE.Line(geo, mat);
   line.computeLineDistances();
+  line.visible = false; // hidden until debug mode
   scene.add(line);
   return line;
 }
 
-// Create short-term trajectory line (yellow, shows immediate path ~20m ahead)
+// Create short-term trajectory line (yellow, hidden until debug mode)
 function createTrajectoryLine() {
   const mat = new THREE.LineBasicMaterial({ color: 0xfcee0a, transparent: true, opacity: 0.6 });
   const geo = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(0, -10, 0), new THREE.Vector3(0, -10, 0)
   ]);
   const line = new THREE.Line(geo, mat);
+  line.visible = false;
   scene.add(line);
   return line;
 }
@@ -2143,6 +2144,11 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') {
     showCarDebug = !showCarDebug;
     carDebugEl.style.display = showCarDebug ? 'block' : 'none';
+    // Toggle route and trajectory line visibility
+    for (const car of cars) {
+      if (car.routeLine) car.routeLine.visible = showCarDebug;
+      if (car.trajectoryLine) car.trajectoryLine.visible = showCarDebug;
+    }
   }
   if (e.code === 'KeyR') {
     npcs.forEach(npc => {
