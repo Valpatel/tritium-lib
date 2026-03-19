@@ -101,7 +101,7 @@ export class InstancedCarRenderer {
         const hlMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // pure white, always visible
         this.headlightMesh = new THREE.InstancedMesh(hlMerged, hlMat, this.maxCars);
         this.headlightMesh.count = 0;
-        // frustumCulled default=true, bounding sphere computed in flush()
+        this.headlightMesh.frustumCulled = false;
         for (let i = 0; i < this.maxCars; i++) this.headlightMesh.setMatrixAt(i, hideMatrix);
         this.headlightMesh.instanceMatrix.needsUpdate = true;
         this.scene.add(this.headlightMesh);
@@ -115,7 +115,7 @@ export class InstancedCarRenderer {
         const tlMat = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // bright red
         this.taillightMesh = new THREE.InstancedMesh(tlMerged, tlMat, this.maxCars);
         this.taillightMesh.count = 0;
-        // frustumCulled default=true, bounding sphere computed in flush()
+        this.taillightMesh.frustumCulled = false;
         for (let i = 0; i < this.maxCars; i++) this.taillightMesh.setMatrixAt(i, hideMatrix);
         this.taillightMesh.instanceMatrix.needsUpdate = true;
         this.scene.add(this.taillightMesh);
@@ -147,7 +147,7 @@ export class InstancedCarRenderer {
         this.beamMesh = new THREE.InstancedMesh(beamMerged, beamMat, this.maxCars);
         this.beamMesh.count = 0;
         this.beamMesh.renderOrder = 999;
-        // frustumCulled default=true, bounding sphere computed in flush()
+        this.beamMesh.frustumCulled = false;
         for (let i = 0; i < this.maxCars; i++) this.beamMesh.setMatrixAt(i, hideMatrix);
         this.beamMesh.instanceMatrix.needsUpdate = true;
         this.scene.add(this.beamMesh);
