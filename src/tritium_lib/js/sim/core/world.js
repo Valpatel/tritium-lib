@@ -409,10 +409,11 @@ export class World {
             this.renderer.updateInstance('car_body', h.body, v.x, v.y, v.z, v.heading);
             this.renderer.updateInstance('car_headlights', h.headlights, v.x, v.y, v.z, v.heading);
             this.renderer.updateInstance('car_taillights', h.taillights, v.x, v.y, v.z, v.heading);
-            // Adaptive beam tilt: level on open road, tilt down behind other cars
+            // Adaptive beam tilt: slight dip when car ahead, like real low/high beam
             const gap = v._leaderGap !== undefined ? v._leaderGap : Infinity;
-            // Gap 25m+ = level (highbeam), gap 3m = max tilt 45° down (lowbeam)
-            const beamPitch = gap < 25 ? Math.max(0, (25 - gap) / 22) * 0.78 : 0; // positive = tilt down
+            // Gap 30m+ = level (highbeam), gap 5m = max tilt 8° (0.14 rad) = lowbeam
+            // Real headlights only tilt a few degrees — beam always projects forward
+            const beamPitch = gap < 30 ? Math.max(0, (30 - gap) / 25) * 0.14 : 0;
             this.renderer.updateInstance('car_beams', h.beams, v.x, v.y, v.z, v.heading, beamPitch);
 
             // Brake lights: bright red when braking
