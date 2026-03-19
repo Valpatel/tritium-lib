@@ -96,14 +96,17 @@ export class InstancedRenderer {
      * @param {number} [pitch] - Rotation X (for aircraft)
      * @param {number} [roll] - Rotation Z (for aircraft banking)
      */
-    updateInstance(meshType, index, x, y, z, heading, pitch = 0, roll = 0) {
+    updateInstance(meshType, index, x, y, z, heading, pitch = 0, roll = 0, scaleZ = 1) {
         const mt = this.meshTypes[meshType];
         if (!mt || index < 0 || index >= mt.count) return;
 
         this.dummy.position.set(x, y, z);
         this.dummy.rotation.set(pitch, heading, roll);
+        this.dummy.scale.set(1, 1, scaleZ);
         this.dummy.updateMatrix();
         mt.mesh.setMatrixAt(index, this.dummy.matrix);
+        // Reset scale for next call
+        this.dummy.scale.set(1, 1, 1);
     }
 
     /**

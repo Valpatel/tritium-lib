@@ -70,17 +70,30 @@ function createPedGeometry() {
 }
 
 function createBeamGeometry() {
-    // Headlight beam: narrow at car, wide ahead
-    // ConeGeometry: apex at +Y, base at -Y
-    // rotateX(PI/2): apex → +Z (ahead), base → -Z (at car) — VISUALLY: wide near car, narrow far
-    // rotateX(-PI/2): apex → -Z (at car), base → +Z (ahead) — VISUALLY: narrow near car, wide far
-    // User says beams look flipped, so try PI/2 (original rotation):
-    const l = new THREE.ConeGeometry(2.0, 12, 4);
-    l.rotateX(Math.PI / 2);
-    l.translate(0.5, 0.3, 8);
-    const r = new THREE.ConeGeometry(2.0, 12, 4);
-    r.rotateX(Math.PI / 2);
-    r.translate(-0.5, 0.3, 8);
+    // Headlight beam with gradient: bright at car, dim at far end
+    function makeBeamCone(offsetX) {
+        const geo = new THREE.ConeGeometry(2.5, 12, 6);
+        geo.rotateX(-Math.PI / 2);
+        geo.translate(offsetX, 0.3, 8.5);
+
+        // Apply vertex-based alpha gradient: bright at apex (car), dim at base (far)
+        const pos = geo.attributes.position;
+        const colors = new Float32Array(pos.count * 4); // RGBA
+        for (let i = 0; i < pos.count; i++) {
+            // Z position in local space determines brightness
+            // After rotation+translate: lower Z = near car = bright, higher Z = far = dim
+            const z = pos.getZ(i);
+            const t = Math.max(0, Math.min(1, (z - 2) / 12)); // 0=car, 1=far
+            const brightness = 1.0 - t * 0.85; // 1.0 at car → 0.15 at far
+            colors[i * 4] = 1.0;           // R
+            colors[i * 4 + 1] = 1.0;       // G
+            colors[i * 4 + 2] = 0.7;       // B (warm tint)
+            colors[i * 4 + 3] = brightness * 0.12; // A: bright near car, dim far
+        }
+        geo.setAttribute('color', new THREE.BufferAttribute(colors, 4));
+        return geo;
+    }
+    return mergeGeometries([makeBeamCone(0.5), makeBeamCone(-0.5)], false);
     return mergeGeometries([l, r], false);
 }
 
@@ -156,11 +169,17 @@ export class World {
         this.renderer.defineMeshType('car_taillights', createTaillightGeometry(),
             new THREE.MeshBasicMaterial({ color: 0xff0000 }), this.maxVehicles);
 
-        // Headlight beams (night only, transparent cones)
+        // Headlight beams (night only, gradient cones)
         this.renderer.defineMeshType('car_beams', createBeamGeometry(),
-            new THREE.MeshBasicMaterial({ color: 0xffffaa, transparent: true, opacity: 0.06, depthWrite: false }),
+            new THREE.MeshBasicMaterial({
+                color: 0xffffaa,
+                transparent: true,
+                opacity: 0.08,
+                depthWrite: false,
+                vertexColors: true, // use per-vertex color for gradient
+            }),
             this.maxVehicles);
-        this.renderer.setVisible('car_beams', false); // hidden during day
+        this.renderer.setVisible('car_beams', false);
 
         // Pedestrian body
         this.renderer.defineMeshType('ped_body', createPedGeometry(),
@@ -235,7 +254,13 @@ export class World {
 
         // Register with renderer
         const bodyIdx = this.renderer.addInstance('car_body', color);
+        // Randomize headlight warmth: cool white (0.85,0.9,1.0) to warm white (1.0,0.9,0.7)
+        const warmth = Math.random();
+        const hlR = 0.85 + warmth * 0.15;
+        const hlG = 0.88 + warmth * 0.05;
+        const hlB = 1.0 - warmth * 0.3;
         const hlIdx = this.renderer.addInstance('car_headlights', null);
+        this.renderer.setInstanceColor('car_headlights', hlIdx, hlR, hlG, hlB);
         const tlIdx = this.renderer.addInstance('car_taillights', null);
         const beamIdx = this.renderer.addInstance('car_beams', null);
         car._renderHandles = { body: bodyIdx, headlights: hlIdx, taillights: tlIdx, beams: beamIdx };
@@ -387,7 +412,9 @@ export class World {
             this.renderer.updateInstance('car_body', h.body, v.x, v.y, v.z, v.heading);
             this.renderer.updateInstance('car_headlights', h.headlights, v.x, v.y, v.z, v.heading);
             this.renderer.updateInstance('car_taillights', h.taillights, v.x, v.y, v.z, v.heading);
-            this.renderer.updateInstance('car_beams', h.beams, v.x, v.y, v.z, v.heading);
+            // Scale beam based on gap to leader (shorter when car is close ahead)
+            const beamScale = v._leaderGap !== undefined ? Math.min(1, v._leaderGap / 15) : 1;
+            this.renderer.updateInstance('car_beams', h.beams, v.x, v.y, v.z, v.heading, 0, 0, beamScale);
 
             // Brake lights: bright red when braking
             if (v.brakeLightsOn) {

@@ -143,6 +143,7 @@ export class Vehicle extends GroundUnit {
             bestGap = Infinity; // don't brake
         }
 
+        this._leaderGap = bestGap; // expose for beam rendering
         return { gap: bestGap, speed: bestSpeed };
     }
 
