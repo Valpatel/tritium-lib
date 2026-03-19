@@ -58,6 +58,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as YUKA from 'yuka';
 import { idmAcceleration, ballisticUpdate, roadToWorld, findLeader, IDM_DEFAULTS } from './js/sim/idm.js';
+import { RoadNetwork, bezierPosition, bezierTangent, tangentToAngle } from './js/sim/road-network.js';
+import { TrafficControllerManager } from './js/sim/traffic-controller.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -445,6 +447,29 @@ for (const edge of roadGraph.edges) {
   edge.numLanesPerDir = 2;
   edge.laneWidth = LANE_W;
 }
+
+// Build modular RoadNetwork (with lane connections for Bezier turns)
+const modularRoadNetwork = new RoadNetwork();
+modularRoadNetwork.buildFromGrid(GRID_COLS, GRID_ROWS, BLOCK_W, BLOCK_H, ROAD_W, LANE_W, NUM_LANES);
+// Cross-reference: ensure modular edge IDs match existing roadGraph edge references
+// The modular network edges have IDs like h_col_row and v_col_row
+// We need to map them to the existing roadGraph.edges array
+for (const edge of roadGraph.edges) {
+  // Find matching modular edge and copy the lane connections
+  let modId;
+  if (edge.horizontal) {
+    const fromNode = roadGraph.nodes[edge.from];
+    modId = `h_${fromNode.col}_${fromNode.row}`;
+  } else {
+    const fromNode = roadGraph.nodes[edge.from];
+    modId = `v_${fromNode.col}_${fromNode.row}`;
+  }
+  const modEdge = modularRoadNetwork.edgeById[modId];
+  if (modEdge) {
+    edge.id = modId; // assign ID for lane connection lookup
+  }
+}
+console.log(`[RoadNetwork] Built modular network: ${Object.keys(modularRoadNetwork.nodes).length} nodes, ${modularRoadNetwork.edges.length} edges, ${Object.keys(modularRoadNetwork.laneConnections).length} lane connections`);
 
 // Build traffic light lookup by intersection ID for fast access
 const tlByIntersection = {};
@@ -1284,6 +1309,9 @@ function spawnCar() {
     gap: Infinity, leader: null,
     desiredSpeed: 10, length: 4,
     idmParams: { ...IDM_DEFAULTS },
+    turningState: null,
+    brakeLightsOn: false,
+    stuckTimer: 0,
   };
 
   assignCarRoute(car);
@@ -1443,24 +1471,60 @@ function buildVirtualStopCars() {
   }
 }
 
-// Transition car to next road at intersection
+// Transition car to next road at intersection — now uses Bezier turning
 function transitionToNextRoad(car) {
   const isForward = car.lane < (car.road.numLanesPerDir || 2);
   const arrivalNodeId = isForward ? car.road.to : car.road.from;
 
-  // Determine lane direction on current edge
-  const currentLaneDir = isForward ? 1 : -1;
-  const result = pickNextEdge(car.road, arrivalNodeId, currentLaneDir);
+  // Use RoadNetwork lane connections if available, fall back to pickNextEdge
+  const connection = modularRoadNetwork
+    ? modularRoadNetwork.pickRandomConnection(car.road.id, car.lane, arrivalNodeId)
+    : null;
 
-  car.road = result.edge;
-  // Map lane: forward (A->B) = lanes 0,1; backward (B->A) = lanes 2,3
-  if (result.laneDir === 1) {
-    car.lane = Math.random() < 0.5 ? 0 : 1;
+  if (connection) {
+    // Calculate Bezier turn path
+    const entryU = isForward ? car.road.length : 0;
+    const entryWorld = roadToWorld(car.road, car.lane, entryU);
+
+    const toIsForward = connection.toLane < (connection.toEdge.numLanesPerDir || 2);
+    const exitU = toIsForward ? 0 : connection.toEdge.length;
+    const exitWorld = roadToWorld(connection.toEdge, connection.toLane, exitU);
+
+    const ctrl = connection.bezierControl || {
+      x: roadGraph.nodes[arrivalNodeId].x,
+      z: roadGraph.nodes[arrivalNodeId].z,
+    };
+
+    // Estimate arc length for turn duration
+    const dx1 = ctrl.x - entryWorld.x, dz1 = ctrl.z - entryWorld.z;
+    const dx2 = exitWorld.x - ctrl.x, dz2 = exitWorld.z - ctrl.z;
+    const arcLen = Math.sqrt(dx1*dx1 + dz1*dz1) + Math.sqrt(dx2*dx2 + dz2*dz2);
+    const turnSpeed = Math.max(2, car.speed * 0.5);
+    const duration = Math.max(0.5, Math.min(2.5, arcLen / Math.max(1, turnSpeed)));
+
+    car.turningState = {
+      p0: { x: entryWorld.x, z: entryWorld.z },
+      p1: ctrl,
+      p2: { x: exitWorld.x, z: exitWorld.z },
+      t: 0,
+      duration,
+      toEdge: connection.toEdge,
+      toLane: connection.toLane,
+      turnSpeed,
+      turnType: connection.turnType || 'straight',
+    };
   } else {
-    car.lane = Math.random() < 0.5 ? 2 : 3;
+    // Fallback: original behavior (instant transition)
+    const currentLaneDir = isForward ? 1 : -1;
+    const result = pickNextEdge(car.road, arrivalNodeId, currentLaneDir);
+    car.road = result.edge;
+    if (result.laneDir === 1) {
+      car.lane = Math.random() < 0.5 ? 0 : 1;
+    } else {
+      car.lane = Math.random() < 0.5 ? 2 : 3;
+    }
+    car.u = 0;
   }
-  car.u = 0; // u=0 means "just entered this road" in direction of travel
-  // Carry over speed — IDM handles deceleration naturally
 }
 
 // Custom findLeader: all cars use u-increases-in-travel-direction convention
@@ -1489,18 +1553,51 @@ function findLeaderCustom(car, allCars) {
   return { leader, gap: bestGap };
 }
 
-// IDM-based car update
+// IDM-based car update with Bezier intersection turning
 function updateCar(car, dt) {
   if (!car.road) {
     assignCarRoute(car);
     return;
   }
 
+  // Handle Bezier turning through intersection
+  if (car.turningState) {
+    const ts = car.turningState;
+    ts.t += dt / ts.duration;
+    car.speed = Math.max(2, ts.turnSpeed);
+    car.acc = 0;
+
+    if (ts.t >= 1) {
+      // Turn complete — enter new road
+      car.road = ts.toEdge;
+      car.lane = ts.toLane;
+      car.u = 0;
+      car.turningState = null;
+      // Derive world position normally
+      const isF = car.lane < (car.road.numLanesPerDir || 2);
+      const rU = isF ? car.u : (car.road.length - car.u);
+      const w = roadToWorld(car.road, car.lane, rU);
+      car.vehicle.position.set(w.x, 0, w.z);
+      car.mesh.position.set(w.x, 0, w.z);
+      car.mesh.rotation.y = w.angle;
+    } else {
+      // Position from Bezier curve
+      const pos = bezierPosition(ts.p0, ts.p1, ts.p2, ts.t);
+      const tang = bezierTangent(ts.p0, ts.p1, ts.p2, ts.t);
+      const angle = tangentToAngle(tang);
+      car.vehicle.position.set(pos.x, 0, pos.z);
+      car.mesh.position.set(pos.x, 0, pos.z);
+      car.mesh.rotation.y = angle;
+    }
+    updatePathLine(car.pathLine, []);
+    return;
+  }
+
+  // Normal driving on a road segment
   // Combine real cars and virtual stop cars for leader finding
   const allCars = cars.concat(virtualStopCars);
 
   // Find leader: car ahead in same lane, same road, with higher u
-  // (Our convention: u always increases in direction of travel for both forward and backward lanes)
   const { leader, gap } = findLeaderCustom(car, allCars);
   car.gap = gap;
   car.leader = leader;
@@ -1509,25 +1606,47 @@ function updateCar(car, dt) {
   const leaderSpeed = leader ? leader.speed : car.speed;
   car.acc = idmAcceleration(car.speed, gap, leaderSpeed, car.idmParams);
 
+  // Brake lights
+  car.brakeLightsOn = car.acc < -0.5;
+
   // Ballistic update
   const updated = ballisticUpdate(car.u, car.speed, car.acc, dt);
   car.u = updated.u;
   car.speed = updated.v;
 
-  // Check if reached end of road → transition to next road
+  // Stuck detection
+  if (car.speed < 0.1) {
+    car.stuckTimer = (car.stuckTimer || 0) + dt;
+    if (car.stuckTimer > 30) {
+      assignCarRoute(car);
+      car.stuckTimer = 0;
+      return;
+    }
+  } else {
+    car.stuckTimer = 0;
+  }
+
+  // Check if reached end of road → start intersection turn
   if (car.u >= car.road.length) {
     car.u = car.road.length; // clamp before transition
     transitionToNextRoad(car);
+    if (car.turningState) return; // started a Bezier turn, don't update position
   }
 
   // Derive world position and orientation from road coordinates
-  // For backward lanes (2,3), u is distance from B end, so convert for roadToWorld
   const isForward = car.lane < (car.road.numLanesPerDir || 2);
   const roadU = isForward ? car.u : (car.road.length - car.u);
   const world = roadToWorld(car.road, car.lane, roadU);
   car.vehicle.position.set(world.x, 0, world.z);
   car.mesh.position.set(world.x, 0, world.z);
   car.mesh.rotation.y = world.angle;
+
+  // Update brake light visuals
+  if (car.mesh.children[4] && car.mesh.children[5]) {
+    const intensity = car.brakeLightsOn ? 0.8 : 0.2;
+    car.mesh.children[4].material.emissiveIntensity = intensity;
+    car.mesh.children[5].material.emissiveIntensity = intensity;
+  }
 
   // Update path debug line
   const destNodeId = isForward ? car.road.to : car.road.from;
@@ -1605,7 +1724,7 @@ function updateHUD() {
   const zoneStr = Object.entries(zoneCounts).map(([k, v]) => `${k}:${v}`).join(' ');
 
   hudEl.innerHTML = `
-<span class="label">YUKA ROAD GRAPH PROTOTYPE v3</span>
+<span class="label">YUKA ROAD GRAPH PROTOTYPE v4 (Bezier turns)</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
 <span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
 <span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
@@ -1624,8 +1743,11 @@ function updateCarDebug() {
     const roadId = car.road ? `${car.road.horizontal ? 'h' : 'v'}_${car.road.from}_${car.road.to}` : 'none';
     const leaderStr = car.leader ? (car.leader.id || (car.leader.isVirtual ? 'RED_LIGHT' : '?')) : 'none';
     const gapStr = car.gap === Infinity ? 'INF' : car.gap.toFixed(1);
+    const turnStr = car.turningState ? `TURN:${car.turningState.turnType}(${(car.turningState.t*100).toFixed(0)}%)` : '';
+    const brakeStr = car.brakeLightsOn ? ' [BRAKE]' : '';
+    const stuckStr = (car.stuckTimer || 0) > 5 ? ` STUCK:${car.stuckTimer.toFixed(0)}s` : '';
     lines.push(
-      `${car.id}: road=${roadId} lane=${car.lane} u=${car.u.toFixed(1)}/${(car.road ? car.road.length : 0).toFixed(0)} v=${car.speed.toFixed(1)} acc=${car.acc.toFixed(2)} gap=${gapStr} leader=${leaderStr}`
+      `${car.id}: road=${roadId} lane=${car.lane} u=${car.u.toFixed(1)}/${(car.road ? car.road.length : 0).toFixed(0)} v=${car.speed.toFixed(1)} acc=${car.acc.toFixed(2)} gap=${gapStr} leader=${leaderStr}${brakeStr}${stuckStr} ${turnStr}`
     );
   }
   lines.push('');
