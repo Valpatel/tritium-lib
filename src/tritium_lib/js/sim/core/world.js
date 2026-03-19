@@ -344,7 +344,7 @@ export class World {
         // Hard collision: push overlapping vehicles apart in world space
         // AND reduce speed of the car behind to prevent re-collision
         for (const car of this.vehicles) {
-            if (car.inCurve) continue;
+            if (car.inCurve || car._aggressive) continue; // skip during turns and aggressive mode
             const nearby = this.spatialHash.getNearby(car.x, 0, car.z);
             for (const other of nearby) {
                 if (other === car || other.type === 'pedestrian') continue;

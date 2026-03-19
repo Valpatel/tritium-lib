@@ -105,30 +105,38 @@ export class CityBuilder {
         const yellowGeos = [], whiteGeos = [], crosswalkGeos = [];
         const DASH = 2, GAP = 3, MW = 0.15;
 
+        // Horizontal roads
         for (let row = 0; row <= rows; row++) {
             const z = hRoadZ(row);
             for (let col = 0; col < cols; col++) {
                 const x1 = vRoadX(col) + roadW / 2, x2 = vRoadX(col + 1) - roadW / 2;
-                const n = Math.floor((x2 - x1) / (DASH + GAP));
+                const segLen = x2 - x1;
+                // SOLID yellow center line (no dashes)
+                const yg = new THREE.PlaneGeometry(segLen, MW); yg.rotateX(-Math.PI / 2); yg.translate((x1 + x2) / 2, 0.015, z);
+                yellowGeos.push(yg);
+                // DASHED white lane lines
+                const n = Math.floor(segLen / (DASH + GAP));
                 for (let d = 0; d < n; d++) {
                     const cx = x1 + (d + 0.5) * (DASH + GAP);
-                    const yg = new THREE.PlaneGeometry(DASH, MW); yg.rotateX(-Math.PI / 2); yg.translate(cx, 0.015, z);
-                    yellowGeos.push(yg);
                     const w1 = new THREE.PlaneGeometry(DASH, MW); w1.rotateX(-Math.PI / 2); w1.translate(cx, 0.015, z - laneW);
                     const w2 = new THREE.PlaneGeometry(DASH, MW); w2.rotateX(-Math.PI / 2); w2.translate(cx, 0.015, z + laneW);
                     whiteGeos.push(w1, w2);
                 }
             }
         }
+        // Vertical roads
         for (let col = 0; col <= cols; col++) {
             const x = vRoadX(col);
             for (let row = 0; row < rows; row++) {
                 const z1 = hRoadZ(row) + roadW / 2, z2 = hRoadZ(row + 1) - roadW / 2;
-                const n = Math.floor((z2 - z1) / (DASH + GAP));
+                const segLen = z2 - z1;
+                // SOLID yellow center line
+                const yg = new THREE.PlaneGeometry(MW, segLen); yg.rotateX(-Math.PI / 2); yg.translate(x, 0.015, (z1 + z2) / 2);
+                yellowGeos.push(yg);
+                // DASHED white lane lines
+                const n = Math.floor(segLen / (DASH + GAP));
                 for (let d = 0; d < n; d++) {
                     const cz = z1 + (d + 0.5) * (DASH + GAP);
-                    const yg = new THREE.PlaneGeometry(MW, DASH); yg.rotateX(-Math.PI / 2); yg.translate(x, 0.015, cz);
-                    yellowGeos.push(yg);
                     const w1 = new THREE.PlaneGeometry(MW, DASH); w1.rotateX(-Math.PI / 2); w1.translate(x - laneW, 0.015, cz);
                     const w2 = new THREE.PlaneGeometry(MW, DASH); w2.rotateX(-Math.PI / 2); w2.translate(x + laneW, 0.015, cz);
                     whiteGeos.push(w1, w2);

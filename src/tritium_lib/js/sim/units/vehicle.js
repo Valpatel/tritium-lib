@@ -61,16 +61,18 @@ export class Vehicle extends GroundUnit {
             if (leader.gap > 3) acc = Math.max(acc, 0.5); // gentle acceleration through intersection
         }
 
-        // Aggressive driving: if stopped for too long, push through
-        if (this.speed < 0.1) {
+        // Aggressive driving: if stopped too long, force through
+        if (this.speed < 0.2) {
             this._stuckTimer = (this._stuckTimer || 0) + dt;
-            if (this._stuckTimer > 8) {
-                // After 8 seconds stopped, become aggressive — accelerate regardless
-                acc = Math.max(acc, 1.0);
-                this._stuckTimer = 0; // reset, try again if still stuck
+            if (this._stuckTimer > 5) {
+                // After 5 seconds, become aggressive — accelerate hard and ignore collisions
+                acc = Math.max(acc, 2.0);
+                this._aggressive = true; // flag for World to skip overlap resolution
+                this._stuckTimer = 0;
             }
         } else {
-            this._stuckTimer = 0;
+            this._stuckTimer = Math.max(0, (this._stuckTimer || 0) - dt * 0.5);
+            this._aggressive = false;
         }
 
         // Brake lights
@@ -108,10 +110,16 @@ export class Vehicle extends GroundUnit {
             const dot = dx * fwdX + dz * fwdZ;
             if (dot <= 0) continue;
 
-            // Lateral check: within 2m for vehicles (same lane), wider for peds
+            // Lateral check + heading alignment
             const lateral = Math.abs(-dx * fwdZ + dz * fwdX);
-            const lateralThreshold = other.type === 'pedestrian' ? 1.5 : 2.0;
-            if (lateral > lateralThreshold) continue;
+            if (other.type === 'pedestrian') {
+                if (lateral > 1.5) continue;
+            } else {
+                if (lateral > 2.0) continue;
+                // Ignore oncoming and perpendicular traffic — only react to same-direction vehicles
+                const ofx = Math.sin(other.heading || 0), ofz = Math.cos(other.heading || 0);
+                if (fwdX * ofx + fwdZ * ofz < 0.3) continue;
+            }
 
             const gap = Math.max(0.1, dot - this.length / 2 - (other.length || 1) / 2);
             if (gap < bestGap) {
