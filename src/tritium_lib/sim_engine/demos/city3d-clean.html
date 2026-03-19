@@ -54,6 +54,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { RoadNetwork } from './js/sim/road-network.js';
+import { TrafficControllerManager } from './js/sim/traffic-controller.js';
 import { World } from './js/sim/core/world.js';
 import { computeWeather } from './js/sim/weather.js';
 
@@ -341,6 +342,59 @@ const roadNetwork = new RoadNetwork();
 roadNetwork.buildFromGrid(GRID_COLS, GRID_ROWS, BLOCK_W, BLOCK_H, ROAD_W, LANE_W, 2);
 
 // ============================================================
+// TRAFFIC LIGHTS
+// ============================================================
+const trafficMgr = new TrafficControllerManager();
+trafficMgr.initFromNetwork(roadNetwork);
+
+// Simple traffic light visuals — instanced poles with colored bulb tops
+const tlPositions = [];
+for (const nodeId in roadNetwork.nodes) {
+  const node = roadNetwork.nodes[nodeId];
+  if (node.approaches.length < 2) continue;
+  for (const approach of node.approaches) {
+    const offset = ROAD_W / 2 - 1;
+    let px = node.x, pz = node.z;
+    if (approach === 'N') pz -= offset;
+    else if (approach === 'S') pz += offset;
+    else if (approach === 'W') px -= offset;
+    else if (approach === 'E') px += offset;
+    tlPositions.push({ x: px, z: pz, nodeId, approach });
+  }
+}
+// Instanced poles (1 draw call)
+const poleGeo = new THREE.CylinderGeometry(0.1, 0.1, 5, 4);
+poleGeo.translate(0, 2.5, 0);
+const poleMesh = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x333333 }), tlPositions.length);
+poleMesh.count = tlPositions.length;
+poleMesh.frustumCulled = false;
+const tlDummy = new THREE.Object3D();
+for (let i = 0; i < tlPositions.length; i++) {
+  tlDummy.position.set(tlPositions[i].x, 0, tlPositions[i].z);
+  tlDummy.updateMatrix();
+  poleMesh.setMatrixAt(i, tlDummy.matrix);
+}
+poleMesh.instanceMatrix.needsUpdate = true;
+scene.add(poleMesh);
+
+// Instanced bulbs (color changes per frame based on signal state)
+const bulbGeo = new THREE.SphereGeometry(0.3, 6, 4);
+bulbGeo.translate(0, 5.5, 0);
+const bulbMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+const bulbMesh = new THREE.InstancedMesh(bulbGeo, bulbMat, tlPositions.length);
+bulbMesh.count = tlPositions.length;
+bulbMesh.frustumCulled = false;
+const bulbColors = new Float32Array(tlPositions.length * 3);
+bulbMesh.instanceColor = new THREE.InstancedBufferAttribute(bulbColors, 3);
+for (let i = 0; i < tlPositions.length; i++) {
+  tlDummy.position.set(tlPositions[i].x, 0, tlPositions[i].z);
+  tlDummy.updateMatrix();
+  bulbMesh.setMatrixAt(i, tlDummy.matrix);
+}
+bulbMesh.instanceMatrix.needsUpdate = true;
+scene.add(bulbMesh);
+
+// ============================================================
 // WORLD
 // ============================================================
 const world = new World(scene, roadNetwork, {
@@ -349,6 +403,7 @@ const world = new World(scene, roadNetwork, {
   startHour: 7,
   timeScale: 1,
   buildingEntries,
+  trafficCtrl: trafficMgr,
 });
 
 // Initial spawn
@@ -363,6 +418,23 @@ const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
+
+  // Tick traffic lights
+  trafficMgr.tick(dt);
+
+  // Update traffic light bulb colors
+  for (let i = 0; i < tlPositions.length; i++) {
+    const tl = tlPositions[i];
+    const state = trafficMgr.getLightState(tl.nodeId, tl.approach);
+    if (state === 'green') {
+      bulbMesh.instanceColor.setXYZ(i, 0, 1, 0.3);
+    } else if (state === 'yellow') {
+      bulbMesh.instanceColor.setXYZ(i, 1, 0.8, 0);
+    } else {
+      bulbMesh.instanceColor.setXYZ(i, 1, 0.1, 0);
+    }
+  }
+  bulbMesh.instanceColor.needsUpdate = true;
 
   // Tick simulation
   world.tick(dt);
