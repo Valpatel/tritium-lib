@@ -154,6 +154,8 @@ camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(CITY_W / 2, 0, CITY_H / 2);
 controls.maxPolarAngle = Math.PI / 2.1;
+controls.minDistance = 10;   // allow very close zoom
+controls.maxDistance = 800;  // but not infinitely far
 controls.update();
 
 // Lighting
@@ -1749,7 +1751,9 @@ for (const car of cars) {
         // Register with instanced renderer (color from car mesh body)
         const type = car.vehicleType === 'police' ? 'police' :
                      car.vehicleType === 'ambulance' ? 'ambulance' : 'sedan';
-        car.instanceHandle = instancedCars.addCar(type, car.bodyColor || 0x888888);
+        // Police/ambulance have color baked into material — pass white so instanceColor doesn't darken
+        const instColor = (type === 'police' || type === 'ambulance') ? 0xffffff : (car.bodyColor || 0xffffff);
+        car.instanceHandle = instancedCars.addCar(type, instColor);
         car.useInstanced = true;
 
         // Hide individual mesh (instanced mesh replaces it)
