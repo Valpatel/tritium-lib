@@ -25,12 +25,13 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // CAR TYPE GEOMETRIES
 // ============================================================
 
+// Slightly oversized for visibility at default zoom (city is 600m, camera at 300m)
 const CAR_TYPES = {
-    sedan:     { w: 2.0, h: 1.4, l: 4.5, cabinH: 0.8, cabinL: 2.0, color: null },
-    suv:       { w: 2.2, h: 1.8, l: 5.0, cabinH: 0.9, cabinL: 2.2, color: null },
-    truck:     { w: 2.5, h: 2.5, l: 8.0, cabinH: 1.0, cabinL: 2.0, color: null },
-    police:    { w: 2.0, h: 1.5, l: 4.5, cabinH: 0.8, cabinL: 2.0, color: 0x1155ff },
-    ambulance: { w: 2.2, h: 2.2, l: 6.0, cabinH: 1.0, cabinL: 2.5, color: 0xffffff },
+    sedan:     { w: 2.5, h: 1.6, l: 5.0, cabinH: 1.0, cabinL: 2.5, color: null },
+    suv:       { w: 2.7, h: 2.0, l: 5.5, cabinH: 1.1, cabinL: 2.5, color: null },
+    truck:     { w: 3.0, h: 3.0, l: 9.0, cabinH: 1.2, cabinL: 2.5, color: null },
+    police:    { w: 2.5, h: 1.8, l: 5.0, cabinH: 1.0, cabinL: 2.5, color: 0x1155ff },
+    ambulance: { w: 2.7, h: 2.5, l: 6.5, cabinH: 1.2, cabinL: 3.0, color: 0xffffff },
 };
 
 // ============================================================
@@ -71,15 +72,15 @@ export class InstancedCarRenderer {
             // Merge body + cabin
             const mergedGeo = mergeGeometries([bodyGeo, cabinGeo], false) || bodyGeo;
 
-            const mat = new THREE.MeshStandardMaterial({
-                color: info.color || 0x888888,
-                roughness: 0.6,
+            const mat = new THREE.MeshPhongMaterial({
+                color: info.color || 0xcccccc,
             });
 
             const mesh = new THREE.InstancedMesh(mergedGeo, mat, this.maxCars);
             mesh.count = 0;
             mesh.castShadow = true;
             mesh.receiveShadow = true;
+            mesh.frustumCulled = false; // instances span entire city, can't cull as one
 
             const colors = new Float32Array(this.maxCars * 3);
             mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
@@ -100,6 +101,7 @@ export class InstancedCarRenderer {
         const hlMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // pure white, always visible
         this.headlightMesh = new THREE.InstancedMesh(hlMerged, hlMat, this.maxCars);
         this.headlightMesh.count = 0;
+        this.headlightMesh.frustumCulled = false;
         for (let i = 0; i < this.maxCars; i++) this.headlightMesh.setMatrixAt(i, hideMatrix);
         this.headlightMesh.instanceMatrix.needsUpdate = true;
         this.scene.add(this.headlightMesh);
@@ -113,6 +115,7 @@ export class InstancedCarRenderer {
         const tlMat = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // bright red
         this.taillightMesh = new THREE.InstancedMesh(tlMerged, tlMat, this.maxCars);
         this.taillightMesh.count = 0;
+        this.taillightMesh.frustumCulled = false;
         for (let i = 0; i < this.maxCars; i++) this.taillightMesh.setMatrixAt(i, hideMatrix);
         this.taillightMesh.instanceMatrix.needsUpdate = true;
         this.scene.add(this.taillightMesh);
@@ -143,7 +146,8 @@ export class InstancedCarRenderer {
         });
         this.beamMesh = new THREE.InstancedMesh(beamMerged, beamMat, this.maxCars);
         this.beamMesh.count = 0;
-        this.beamMesh.renderOrder = 999; // render last (transparent)
+        this.beamMesh.renderOrder = 999;
+        this.beamMesh.frustumCulled = false;
         for (let i = 0; i < this.maxCars; i++) this.beamMesh.setMatrixAt(i, hideMatrix);
         this.beamMesh.instanceMatrix.needsUpdate = true;
         this.scene.add(this.beamMesh);

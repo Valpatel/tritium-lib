@@ -256,6 +256,7 @@ export class InstancedPedRenderer {
         this.mesh = new THREE.InstancedMesh(merged, mat, maxPeds);
         this.mesh.count = 0;
         this.mesh.castShadow = true;
+        this.mesh.frustumCulled = false;
 
         // Per-instance color for role differentiation
         const colors = new Float32Array(maxPeds * 3);
