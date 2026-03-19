@@ -341,24 +341,33 @@ export class World {
     }
 
     _resolveOverlaps() {
+        // Hard collision: push overlapping vehicles apart in world space
+        // AND reduce speed of the car behind to prevent re-collision
         for (const car of this.vehicles) {
-            if (car.inCurve) continue; // skip during turns
+            if (car.inCurve) continue;
             const nearby = this.spatialHash.getNearby(car.x, 0, car.z);
             for (const other of nearby) {
                 if (other === car || other.type === 'pedestrian') continue;
                 const dx = other.x - car.x;
                 const dz = other.z - car.z;
                 const distSq = dx * dx + dz * dz;
-                if (distSq < 9 && distSq > 0.01) { // 3m
+                const minDist = (car.length + (other.length || 4)) / 2;
+                if (distSq < minDist * minDist && distSq > 0.01) {
                     const dist = Math.sqrt(distSq);
-                    const overlap = 3 - dist;
+                    const overlap = minDist - dist;
+
+                    // Determine who is "behind" (should slow down)
                     const fwdX = Math.sin(car.heading);
                     const fwdZ = Math.cos(car.heading);
                     const dot = dx * fwdX + dz * fwdZ;
+
                     if (dot > 0) {
-                        car.d = Math.max(0, car.d - overlap * 0.15);
+                        // Other is ahead — this car must brake and back up
+                        car.speed = Math.max(0, car.speed - overlap * 3);
+                        car.d = Math.max(0, car.d - overlap * 0.5);
                     } else {
-                        car.d += overlap * 0.05;
+                        // Other is behind — nudge forward slightly
+                        car.d += overlap * 0.1;
                     }
                 }
             }
