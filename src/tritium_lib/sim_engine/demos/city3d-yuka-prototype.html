@@ -52,7 +52,7 @@
 <body>
 <div id="hud"></div>
 <div id="car-debug"></div>
-<div id="controls">[SPACE] Protest mode &nbsp; [D] Debug mesh &nbsp; [R] Reset &nbsp; [L] Traffic lights &nbsp; [C] Car debug</div>
+<div id="controls">[SPACE] Protest &nbsp; [D] Debug &nbsp; [R] Reset &nbsp; [L] Lights &nbsp; [C] Car debug &nbsp; [P] Paths &nbsp; [+/-] Cars &nbsp; [1-5] Speed</div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -2262,6 +2262,7 @@ function updateCar(car, dt) {
 // ============================================================
 let protestActive = false;
 let vizLOD = 0; // adaptive visual quality: 0=full, 1=reduced, 2=minimal
+let showPaths = true; // P key toggles route/trajectory/pulse visibility
 let showTrafficLights = true;
 let showCarDebug = false;
 const carDebugEl = document.getElementById('car-debug');
@@ -2290,11 +2291,32 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') {
     showCarDebug = !showCarDebug;
     carDebugEl.style.display = showCarDebug ? 'block' : 'none';
-    // Toggle route and trajectory line visibility
+  }
+  if (e.code === 'KeyP') {
+    showPaths = !showPaths;
     for (const car of cars) {
-      if (car.routeLine) car.routeLine.visible = showCarDebug;
-      if (car.trajectoryLine) car.trajectoryLine.visible = showCarDebug;
+      if (car.routeLine) car.routeLine.visible = showPaths;
+      if (car.trajectoryLine) car.trajectoryLine.visible = showPaths;
+      if (car.pulseDot) car.pulseDot.visible = showPaths;
     }
+  }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+    // Add 50 instanced cars
+    window.__city3d.addCars(50);
+  }
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+    // Remove last 50 cars (hide them)
+    for (let i = 0; i < 50 && cars.length > 20; i++) {
+      const removed = cars.pop();
+      if (removed.mesh) removed.mesh.visible = false;
+      if (removed.routeLine) removed.routeLine.visible = false;
+      if (removed.pulseDot) removed.pulseDot.visible = false;
+      if (removed.trajectoryLine) removed.trajectoryLine.visible = false;
+    }
+  }
+  if (e.code >= 'Digit1' && e.code <= 'Digit5') {
+    const speeds = [0.5, 1, 2, 5, 10]; // sim minutes per real second
+    simClock.setTimeScale(speeds[parseInt(e.code.slice(5)) - 1]);
   }
   if (e.code === 'KeyR') {
     npcs.forEach(npc => {
@@ -2333,7 +2355,7 @@ function updateHUD() {
   const zoneStr = Object.entries(zoneCounts).map(([k, v]) => `${k}:${v}`).join(' ');
 
   hudEl.innerHTML = `
-<span class="label">CITY3D v5 — ${simClock.getTimeString()} Day ${simClock.getDay()} LOD:${vizLOD}</span>
+<span class="label">CITY3D v5 — ${simClock.getTimeString()} Day ${simClock.getDay()} LOD:${vizLOD} Paths:${showPaths ? 'ON' : 'OFF'}</span>
 <span class="label">FPS:</span> ${fps} &nbsp; <span class="label">Entities:</span> ${npcs.length + cars.length}
 <span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
 <span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
@@ -2538,71 +2560,55 @@ function animate() {
   // Level 2: minimal (FPS < 15) — no route lines, no pulse, just car meshes
   vizLOD = fps > 25 ? 0 : fps > 15 ? 1 : 2;
 
-  // Update route + trajectory visualization (adaptive)
+  // Update route + trajectory visualization (respects showPaths toggle + adaptive LOD)
+  // showPaths (P key) overrides everything — if off, nothing shows
+  // LOD further reduces detail when FPS drops
+  const pathsVisible = showPaths && vizLOD < 2;
+  const fullDetail = showPaths && vizLOD === 0;
+
   for (const car of cars) {
     if (!car.useNewSystem || !car.path) continue;
 
     // Route line
     if (car.routeLine) {
-      if (vizLOD >= 2) {
-        car.routeLine.visible = false;
-      } else {
-        car.routeLine.visible = true;
-        // Update geometry periodically (coarser sampling at lower LOD)
-        const updateRate = vizLOD === 0 ? 30 : 90;
-        const sampleStep = vizLOD === 0 ? 6 : 15;
-        if (frameCount % updateRate === 0) {
-          const endD = car.path.totalLength;
-          const points = car.path.sample(car.d, endD, sampleStep)
-            .map(p => new THREE.Vector3(p.x, 0.3, p.z));
-          if (points.length >= 2) {
-            car.routeLine.geometry.dispose();
-            car.routeLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
-            car.routeLine.computeLineDistances();
-          }
-        }
-        // Dash animation (skip at LOD 1)
-        if (vizLOD === 0 && car.routeLine.material.dashOffset !== undefined) {
-          car.routeLine.material.dashOffset -= dt * 8;
+      car.routeLine.visible = pathsVisible;
+      if (pathsVisible && frameCount % (fullDetail ? 30 : 90) === 0) {
+        const step = fullDetail ? 6 : 15;
+        const points = car.path.sample(car.d, car.path.totalLength, step)
+          .map(p => new THREE.Vector3(p.x, 0.3, p.z));
+        if (points.length >= 2) {
+          car.routeLine.geometry.dispose();
+          car.routeLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
         }
       }
     }
 
-    // Pulse arrow (only at LOD 0)
+    // Pulse arrow — ONLY visible when route lines are visible
     if (car.pulseDot) {
-      if (vizLOD >= 1) {
-        car.pulseDot.visible = false;
-      } else {
-        car.pulseDot.visible = true;
-        if (car.path.totalLength > car.d + 10) {
-          car.pulseT += dt * 0.25;
-          if (car.pulseT > 1) car.pulseT -= 1;
-          const remaining = car.path.totalLength - car.d;
-          const pulseD = car.d + 5 + car.pulseT * (remaining - 5);
-          const pulsePos = car.path.getPosition(pulseD);
-          car.pulseDot.position.set(pulsePos.x, 0.5, pulsePos.z);
-          car.pulseDot.rotation.y = car.path.getHeading(pulseD);
-          const childMat = car.pulseDot.children[0]?.material;
-          if (childMat) childMat.opacity = 0.9 - car.pulseT * 0.5;
-        }
+      car.pulseDot.visible = fullDetail;
+      if (fullDetail && car.path.totalLength > car.d + 10) {
+        car.pulseT += dt * 0.25;
+        if (car.pulseT > 1) car.pulseT -= 1;
+        const remaining = car.path.totalLength - car.d;
+        const pulseD = car.d + 5 + car.pulseT * (remaining - 5);
+        const pulsePos = car.path.getPosition(pulseD);
+        car.pulseDot.position.set(pulsePos.x, 0.5, pulsePos.z);
+        car.pulseDot.rotation.y = car.path.getHeading(pulseD);
+        const childMat = car.pulseDot.children[0]?.material;
+        if (childMat) childMat.opacity = 0.9 - car.pulseT * 0.5;
       }
     }
 
-    // Trajectory line (only at LOD 0)
+    // Trajectory line — only at full detail
     if (car.trajectoryLine) {
-      if (vizLOD >= 1) {
-        car.trajectoryLine.visible = false;
-      } else {
-        car.trajectoryLine.visible = true;
-        if (frameCount % 10 === 0) {
-          const trajEnd = Math.min(car.d + 25, car.path.totalLength);
-          const trajPoints = car.path.sample(car.d, trajEnd, 1.5)
-            .map(p => new THREE.Vector3(p.x, 0.4, p.z));
-          if (trajPoints.length >= 2) {
-            car.trajectoryLine.geometry.dispose();
-            car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(trajPoints);
-            car.trajectoryLine.computeLineDistances();
-          }
+      car.trajectoryLine.visible = fullDetail;
+      if (fullDetail && frameCount % 10 === 0) {
+        const trajEnd = Math.min(car.d + 25, car.path.totalLength);
+        const trajPoints = car.path.sample(car.d, trajEnd, 1.5)
+          .map(p => new THREE.Vector3(p.x, 0.4, p.z));
+        if (trajPoints.length >= 2) {
+          car.trajectoryLine.geometry.dispose();
+          car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(trajPoints);
         }
       }
     }
