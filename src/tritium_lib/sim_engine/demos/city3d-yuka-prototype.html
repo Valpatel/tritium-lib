@@ -726,6 +726,7 @@ function isGreenForApproach(intersectionId, approachDir) {
 // BUILDINGS + ENTRIES + ZONES
 // ============================================================
 const buildings = [];
+const _treePositions = []; // collected during park generation, instanced after loop
 const buildingEntries = []; // {x, z, blockRow, blockCol, zone}
 
 for (let row = 0; row < GRID_ROWS; row++) {
@@ -757,24 +758,14 @@ for (let row = 0; row < GRID_ROWS; row++) {
     if (zone === 'park') {
       // Green ground, trees, no buildings
       addFlatRect(bx, bz, BLOCK_W - 2, BLOCK_H - 2, Y_SIDEWALK, 0x2a5a2a, { roughness: 0.95 });
-      // A few trees
+      // Collect tree positions for instanced rendering (created after loop)
       const treeCount = 4 + Math.floor(seededRandom() * 6);
       for (let t = 0; t < treeCount; t++) {
         const tx = bx + (seededRandom() - 0.5) * (BLOCK_W - 8);
         const tz = bz + (seededRandom() - 0.5) * (BLOCK_H - 8);
-        const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.3, 0.4, 3, 6),
-          new THREE.MeshStandardMaterial({ color: 0x4a3520 })
-        );
-        trunk.position.set(tx, 1.5, tz);
-        scene.add(trunk);
-        const canopy = new THREE.Mesh(
-          new THREE.SphereGeometry(2 + seededRandom() * 1.5, 8, 6),
-          new THREE.MeshStandardMaterial({ color: 0x228833 })
-        );
-        canopy.position.set(tx, 4 + seededRandom(), tz);
-        canopy.castShadow = true;
-        scene.add(canopy);
+        const canopyR = 2 + seededRandom() * 1.5;
+        const canopyY = 4 + seededRandom();
+        _treePositions.push({ x: tx, z: tz, canopyR, canopyY });
       }
       // Park entries
       buildingEntries.push({ x: bx, z: bz - BLOCK_H / 2, blockRow: row, blockCol: col, zone });
@@ -861,8 +852,40 @@ for (let row = 0; row < GRID_ROWS; row++) {
   }
 }
 
-// Flush building batches (second pass — trees, doors, garages still individual)
+// Flush building batches (second pass)
 flushFlatRectBatches();
+
+// Create instanced trees (2 draw calls for all trees instead of 2 per tree)
+if (_treePositions.length > 0) {
+  const trunkGeo = new THREE.CylinderGeometry(0.3, 0.4, 3, 6);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3520 });
+  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, _treePositions.length);
+  trunkMesh.castShadow = true;
+
+  const canopyGeo = new THREE.SphereGeometry(1, 8, 6); // unit sphere, scaled per instance
+  const canopyMat = new THREE.MeshStandardMaterial({ color: 0x228833 });
+  const canopyMesh = new THREE.InstancedMesh(canopyGeo, canopyMat, _treePositions.length);
+  canopyMesh.castShadow = true;
+
+  const _dm = new THREE.Object3D();
+  for (let i = 0; i < _treePositions.length; i++) {
+    const t = _treePositions[i];
+    _dm.position.set(t.x, 1.5, t.z);
+    _dm.scale.set(1, 1, 1);
+    _dm.updateMatrix();
+    trunkMesh.setMatrixAt(i, _dm.matrix);
+
+    _dm.position.set(t.x, t.canopyY, t.z);
+    _dm.scale.set(t.canopyR, t.canopyR, t.canopyR);
+    _dm.updateMatrix();
+    canopyMesh.setMatrixAt(i, _dm.matrix);
+  }
+  trunkMesh.instanceMatrix.needsUpdate = true;
+  canopyMesh.instanceMatrix.needsUpdate = true;
+  scene.add(trunkMesh);
+  scene.add(canopyMesh);
+  console.log(`[Perf] Instanced ${_treePositions.length} trees as 2 draw calls`);
+}
 
 // ============================================================
 // YUKA ENTITY MANAGER
