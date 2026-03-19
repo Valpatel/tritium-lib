@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<!--
+  City3D — Clean Prototype
+  Created by Matthew Valancy
+  Copyright 2026 Valpatel Software LLC
+  Licensed under AGPL-3.0
+
+  Uses: World class (core/world.js), CarPath+IDM for vehicles, InstancedRenderer
+  Controls: SPACE=protest, P=paths, +/-=cars, 1-5=speed, C=debug
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>City3D — Clean Prototype</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 10px; left: 10px; color: #00f0ff; font-size: 13px;
+    background: rgba(10,10,15,0.85); padding: 10px 14px; border: 1px solid #00f0ff33;
+    border-radius: 4px; pointer-events: none; line-height: 1.6;
+  }
+  #hud .g { color: #05ffa1; }
+  #hud .y { color: #fcee0a; }
+  #controls {
+    position: fixed; bottom: 10px; left: 10px; color: #00f0ff88; font-size: 11px;
+    pointer-events: none;
+  }
+  #tooltip {
+    position: fixed; display: none; background: rgba(0,0,0,0.85); color: #00f0ff;
+    padding: 4px 8px; border: 1px solid #00f0ff44; border-radius: 3px;
+    font-size: 12px; pointer-events: none; z-index: 999;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.172.0/build/three.webgpu.js",
+    "three/addons/": "https://unpkg.com/three@0.172.0/examples/jsm/",
+    "yuka": "https://unpkg.com/yuka@0.7.8/build/yuka.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<div id="tooltip"></div>
+<div id="controls">[SPACE] Protest &nbsp; [+/-] Cars &nbsp; [1-5] Speed &nbsp; [C] Debug</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+import { RoadNetwork } from './js/sim/road-network.js';
+import { World } from './js/sim/core/world.js';
+import { computeWeather } from './js/sim/weather.js';
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+const BLOCK_W = 60, BLOCK_H = 50, ROAD_W = 16;
+const GRID_COLS = 8, GRID_ROWS = 6;
+const CITY_W = GRID_COLS * (BLOCK_W + ROAD_W) + ROAD_W;
+const CITY_H = GRID_ROWS * (BLOCK_H + ROAD_W) + ROAD_W;
+const LANE_W = 3;
+
+// ============================================================
+// THREE.JS SETUP
+// ============================================================
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+await renderer.init();
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+scene.fog = new THREE.Fog(0x87CEEB, 500, 1500);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 2000);
+camera.position.set(CITY_W / 2, 80, CITY_H / 2 + 120);
+camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(CITY_W / 2, 0, CITY_H / 2);
+controls.minDistance = 10;
+controls.maxDistance = 800;
+controls.maxPolarAngle = Math.PI / 2.1;
+controls.update();
+
+// Lighting
+const ambient = new THREE.AmbientLight(0x334455, 0.7);
+scene.add(ambient);
+const sun = new THREE.DirectionalLight(0xffeedd, 1.4);
+sun.position.set(CITY_W / 2, 150, CITY_H / 3);
+scene.add(sun);
+
+// Ground
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(CITY_W + 40, CITY_H + 40),
+  new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(CITY_W / 2, -0.05, CITY_H / 2);
+scene.add(ground);
+
+// ============================================================
+// CITY GEOMETRY (roads, buildings, trees — batched for performance)
+// ============================================================
+// Road surfaces, lane markings, sidewalks, crosswalks
+// (Reuse the batched geometry building from the old prototype)
+// For now: simple road rectangles
+const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 });
+const buildingEntries = [];
+
+function hRoadZ(row) { return row * (BLOCK_H + ROAD_W) + ROAD_W / 2; }
+function vRoadX(col) { return col * (BLOCK_W + ROAD_W) + ROAD_W / 2; }
+
+// Horizontal roads
+for (let row = 0; row <= GRID_ROWS; row++) {
+  const z = hRoadZ(row);
+  const geo = new THREE.PlaneGeometry(CITY_W, ROAD_W - 4);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(CITY_W / 2, 0.01, z);
+  scene.add(new THREE.Mesh(geo, roadMat));
+}
+
+// Vertical roads
+for (let col = 0; col <= GRID_COLS; col++) {
+  const x = vRoadX(col);
+  const geo = new THREE.PlaneGeometry(ROAD_W - 4, CITY_H);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(x, 0.01, CITY_H / 2);
+  scene.add(new THREE.Mesh(geo, roadMat));
+}
+
+// Simple block buildings
+const buildMat = new THREE.MeshStandardMaterial({ color: 0x667788, roughness: 0.7 });
+const seeded = ((s) => () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; })(42);
+
+for (let row = 0; row < GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    const bx = col * (BLOCK_W + ROAD_W) + ROAD_W + BLOCK_W / 2;
+    const bz = row * (BLOCK_H + ROAD_W) + ROAD_W + BLOCK_H / 2;
+    const h = 5 + seeded() * 30;
+    const w = 15 + seeded() * 25;
+    const d = 15 + seeded() * 20;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), buildMat);
+    mesh.position.set(bx, h / 2, bz);
+    mesh.castShadow = true;
+    scene.add(mesh);
+
+    // Building entry (on south side)
+    buildingEntries.push({ x: bx, z: bz + BLOCK_H / 2 - 2, blockRow: row, blockCol: col });
+    buildingEntries.push({ x: bx, z: bz - BLOCK_H / 2 + 2, blockRow: row, blockCol: col });
+  }
+}
+
+// ============================================================
+// ROAD NETWORK
+// ============================================================
+const roadNetwork = new RoadNetwork();
+roadNetwork.buildFromGrid(GRID_COLS, GRID_ROWS, BLOCK_W, BLOCK_H, ROAD_W, LANE_W, 2);
+
+// ============================================================
+// WORLD
+// ============================================================
+const world = new World(scene, roadNetwork, {
+  maxVehicles: 5000,
+  maxPedestrians: 500,
+  startHour: 7,
+  timeScale: 1,
+  buildingEntries,
+});
+
+// Initial spawn
+world.spawnCars(200);
+world.spawnPedestrians(50, buildingEntries);
+
+// ============================================================
+// ANIMATION LOOP
+// ============================================================
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+
+  // Tick simulation
+  world.tick(dt);
+
+  // Update weather (sky, lighting)
+  const weather = world.getWeather();
+  const skyC = new THREE.Color(weather.skyColor);
+  scene.background.copy(skyC);
+  scene.fog.color.copy(skyC);
+  scene.fog.near = world.isNight ? 200 : 500;
+  scene.fog.far = world.isNight ? 600 : 1500;
+  ambient.intensity = weather.ambientIntensity;
+  sun.intensity = weather.sunIntensity;
+
+  // Render
+  controls.update();
+  renderer.render(scene, camera);
+
+  // HUD
+  const s = world.getStats();
+  document.getElementById('hud').innerHTML = `
+    <span class="g">CITY3D</span> — ${s.simTime} Day ${s.day}
+    FPS: ${s.fps} &nbsp; Draws: ${s.drawCalls}
+    <span class="g">Cars:</span> ${s.vehicles} (${s.vehiclesStopped} stopped)
+    <span class="g">Peds:</span> ${s.pedestrians} (${s.pedsDown} down)
+    ${s.spawning > 0 ? `<span class="y">Spawning: ${s.spawning}</span>` : ''}
+  `.trim().replace(/\n\s*/g, '<br>');
+}
+
+animate();
+
+// ============================================================
+// CONTROLS
+// ============================================================
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') world.addCars(50);
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+    // Remove last 50 vehicles
+    for (let i = 0; i < 50 && world.vehicles.length > 10; i++) world.vehicles.pop();
+  }
+  if (e.code >= 'Digit1' && e.code <= 'Digit5') {
+    world.setTimeScale([0.5, 1, 2, 5, 10][parseInt(e.code.slice(5)) - 1]);
+  }
+});
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Expose for debugging
+window.__city3d = world;
+</script>
+</body>
+</html>
