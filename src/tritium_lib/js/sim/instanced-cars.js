@@ -30,7 +30,7 @@ const CAR_TYPES = {
     sedan:     { w: 2.5, h: 1.6, l: 5.0, cabinH: 1.0, cabinL: 2.5, color: null },
     suv:       { w: 2.7, h: 2.0, l: 5.5, cabinH: 1.1, cabinL: 2.5, color: null },
     truck:     { w: 3.0, h: 3.0, l: 9.0, cabinH: 1.2, cabinL: 2.5, color: null },
-    police:    { w: 2.5, h: 1.8, l: 5.0, cabinH: 1.0, cabinL: 2.5, color: 0x1155ff },
+    police:    { w: 2.5, h: 1.8, l: 5.0, cabinH: 1.0, cabinL: 2.5, color: 0x4488ff }, // brighter blue
     ambulance: { w: 2.7, h: 2.5, l: 6.5, cabinH: 1.2, cabinL: 3.0, color: 0xffffff },
 };
 
