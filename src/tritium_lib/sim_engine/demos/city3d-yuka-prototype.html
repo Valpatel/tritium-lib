@@ -65,6 +65,7 @@ import { SimClock, ScheduleExecutor } from './js/sim/schedule-executor.js';
 import { ProtestEngine } from './js/sim/protest-engine.js';
 import { SensorBridge, generateBleMac, generateTpmsId } from './js/sim/sensor-bridge.js';
 import { createCar, tickCar, resolveOverlaps } from './js/sim/car-controller.js';
+import { InstancedCarRenderer } from './js/sim/instanced-cars.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -867,6 +868,7 @@ flushFlatRectBatches();
 // YUKA ENTITY MANAGER
 // ============================================================
 const entityManager = new YUKA.EntityManager();
+const instancedCars = new InstancedCarRenderer(scene, 5000);
 const time = new YUKA.Time();
 
 // ============================================================
@@ -2372,14 +2374,21 @@ function animate() {
   for (const car of cars) {
     if (car.useNewSystem && car.path) {
       tickCar(car, dt, cars, pedPositions, null, modularRoadNetwork);
-      // Sync Three.js mesh from CarPath position
-      car.mesh.position.set(car.worldX, 0, car.worldZ);
-      car.mesh.rotation.y = car.worldHeading;
-      car.vehicle.position.set(car.worldX, 0, car.worldZ);
+      // Sync rendering
+      if (car.useInstanced && car.instanceHandle >= 0) {
+        // Update instanced mesh transform
+        instancedCars.updateCar(car.instanceHandle, car.worldX, car.worldZ, car.worldHeading);
+      } else if (car.mesh) {
+        car.mesh.position.set(car.worldX, 0, car.worldZ);
+        car.mesh.rotation.y = car.worldHeading;
+      }
+      if (car.vehicle?.position?.set) car.vehicle.position.set(car.worldX, 0, car.worldZ);
     } else {
       updateCar(car, dt); // fallback to old system
     }
   }
+  // Flush instanced mesh updates to GPU
+  instancedCars.flush();
   // Resolve visual overlaps
   if (frameCount % 5 === 0) resolveOverlaps(cars);
 
@@ -2525,22 +2534,41 @@ window.__city3d = {
   get state() { return { protestActive, debugMeshVisible, showTrafficLights, simTime: simClock.getTimeString() }; },
   sidewalkOnlyRects, debugPedRects, blockZones,
   CITY_W, CITY_H, PLAZA_X, PLAZA_Z, scene, renderer,
-  // Benchmark: spawn more cars at runtime
-  addCars(n) {
+  // Benchmark: spawn cars using InstancedMesh (lightweight, no per-car Three.js Group)
+  addCars(n, useInstanced = true) {
+    const colors = [0xfcee0a, 0xff4444, 0x4488ff, 0x44ff44, 0xffffff, 0x888888, 0xff8844, 0x44ffff];
     for (let i = 0; i < n; i++) {
-      const c = spawnCar('sedan');
       const carState = createCar(modularRoadNetwork, LANE_W);
-      if (carState) {
+      if (!carState) continue;
+
+      const color = colors[Math.floor(Math.random() * colors.length)];
+
+      if (useInstanced) {
+        // Instanced rendering: one draw call for all sedans
+        const handle = instancedCars.addCar('sedan', color);
+        carState.instanceHandle = handle;
+        carState.useNewSystem = true;
+        carState.useInstanced = true;
+        carState.id = 'icar_' + (cars.length);
+        carState.mesh = null; // no individual mesh
+        carState.vehicle = { position: { x: 0, z: 0, set() {} } };
+        carState.routeLine = null;
+        carState.trajectoryLine = null;
+        carState.pulseDot = null;
+        carState.pathLine = null;
+        cars.push(carState);
+      } else {
+        // Old method: individual mesh per car
+        const c = spawnCar('sedan');
         Object.assign(c, { path: carState.path, d: carState.d, laneOffset: carState.laneOffset,
           worldX: carState.worldX, worldZ: carState.worldZ, worldHeading: carState.worldHeading,
           route: carState.route, routeIndex: carState.routeIndex, destination: carState.destination,
           useNewSystem: true });
-        const pos = c.path.getPosition(c.d);
-        c.mesh.position.set(pos.x, 0, pos.z);
       }
     }
     return cars.length;
   },
+  instancedCars,
   get renderInfo() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, geometries: i.memory.geometries, textures: i.memory.textures }; },
 };
 </script>
