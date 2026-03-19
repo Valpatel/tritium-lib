@@ -62,6 +62,7 @@ import { RoadNetwork, bezierPosition, bezierTangent, tangentToAngle } from './js
 import { TrafficControllerManager } from './js/sim/traffic-controller.js';
 import { decideLaneChange, createLaneChangeState, updateLaneChange, MOBIL_DEFAULTS } from './js/sim/mobil.js';
 import { SimClock, ScheduleExecutor } from './js/sim/schedule-executor.js';
+import { ProtestEngine } from './js/sim/protest-engine.js';
 
 // ============================================================
 // CITY GRID CONSTANTS
@@ -1385,6 +1386,24 @@ for (const npc of npcs) {
 }
 
 // ============================================================
+// PROTEST ENGINE (Epstein model)
+// ============================================================
+const protestEngine = new ProtestEngine({
+  legitimacy: 0.7,
+  threshold: 0.1,
+  plazaCenter: { x: PLAZA_X, z: PLAZA_Z },
+  plazaRadius: 25,
+  policeStation: { x: vRoadX(1), z: hRoadZ(1) },
+});
+// Register all NPCs as potential protest participants
+for (const npc of npcs) {
+  protestEngine.registerAgent(npc.id,
+    npc.type === 'hostile' ? 0.9 : (0.3 + Math.random() * 0.4), // hardship
+    npc.type === 'police' ? 0.9 : (0.2 + Math.random() * 0.6)  // risk aversion
+  );
+}
+
+// ============================================================
 // STATE MACHINE UPDATE — SPECIAL NPCs
 // ============================================================
 function updateNPCState(npc, dt) {
@@ -1772,6 +1791,11 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     protestActive = !protestActive;
+    if (protestActive) {
+      protestEngine.start();
+    } else {
+      protestEngine.stop();
+    }
     smNPCs.forEach(npc => { npc.protestMode = protestActive; });
   }
   if (e.code === 'KeyD') {
@@ -1830,7 +1854,7 @@ function updateHUD() {
 <span class="label">Pedestrians:</span> ${npcs.length} &nbsp; <span class="label">Cars:</span> ${cars.length}
 <span class="label">Ped NavMesh:</span> ${pedPolygons.length} polys &nbsp; <span class="label">Road Graph:</span> ${Object.keys(roadGraph.nodes).length} nodes, ${roadGraph.edges.length} edges
 <span class="label">Building entries:</span> ${buildingEntries.length} &nbsp; <span class="label">Intersections:</span> ${intersections.length}
-<span class="label">Protest:</span> ${protestActive ? '<span class="warn">ACTIVE — NPCs march in street</span>' : 'off'}
+<span class="label">Protest:</span> ${protestActive ? `<span class="warn">${protestEngine.currentPhase} (${protestEngine.getDebugInfo().active} active, ${protestEngine.getDebugInfo().arrested} arrested)</span>` : 'off [SPACE to start]'}
 <span class="zone">Zones:</span> ${zoneStr}
 <span class="label">State machines:</span>
 ${smStatus}
@@ -1891,6 +1915,49 @@ function animate() {
           npc.followPath.active = false;
           npc.wander.active = true;
           npc.vehicle.maxSpeed = 0.5;
+        }
+      }
+    }
+  }
+
+  // Update protest engine
+  if (protestActive) {
+    const npcPositions = npcs.map(n => ({
+      id: n.id,
+      x: n.vehicle.position.x,
+      z: n.vehicle.position.z,
+      type: n.type,
+    }));
+    const protestState = protestEngine.tick(dt, npcPositions);
+
+    // Apply protest goals to NPCs
+    for (const npc of npcs) {
+      const goal = protestEngine.getAgentGoal(npc.id);
+      if (goal) {
+        if (goal.action === 'go_to' && goal.target) {
+          npc.vehicle.maxSpeed = goal.speed || 2.5;
+          assignNPCDestination(npc, new YUKA.Vector3(goal.target.x, 0, goal.target.z));
+        } else if (goal.action === 'mill' && goal.target) {
+          // Wander near target
+          npc.vehicle.maxSpeed = goal.speed || 1.0;
+          const ox = (Math.random() - 0.5) * (goal.radius || 20);
+          const oz = (Math.random() - 0.5) * (goal.radius || 20);
+          if (!npc.followPath.active || Math.random() < 0.02) { // occasionally re-target
+            assignNPCDestination(npc, new YUKA.Vector3(goal.target.x + ox, 0, goal.target.z + oz));
+          }
+        } else if (goal.action === 'flee') {
+          npc.vehicle.maxSpeed = goal.speed || 3.5;
+          // Flee away from plaza
+          const dx = npc.vehicle.position.x - PLAZA_X;
+          const dz = npc.vehicle.position.z - PLAZA_Z;
+          const dist = Math.sqrt(dx * dx + dz * dz) || 1;
+          const fleeX = npc.vehicle.position.x + (dx / dist) * 50;
+          const fleeZ = npc.vehicle.position.z + (dz / dist) * 50;
+          assignNPCDestination(npc, new YUKA.Vector3(fleeX, 0, fleeZ));
+        } else if (goal.action === 'stay') {
+          npc.followPath.active = false;
+          npc.wander.active = false;
+          npc.vehicle.maxSpeed = 0;
         }
       }
     }
