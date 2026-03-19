@@ -2530,7 +2530,7 @@ function animate() {
       tickCar(car, dt, cars, pedPositions, null, modularRoadNetwork);
       // Sync rendering
       if (car.useInstanced && car.instanceHandle >= 0) {
-        instancedCars.updateCar(car.instanceHandle, car.worldX, car.worldZ, car.worldHeading);
+        instancedCars.updateCar(car.instanceHandle, car.worldX, car.worldZ, car.worldHeading, car.brakeLightsOn);
       } else if (car.mesh) {
         car.mesh.position.set(car.worldX, 0, car.worldZ);
         car.mesh.rotation.y = car.worldHeading;
@@ -2541,9 +2541,12 @@ function animate() {
   }
   // Flush instanced mesh updates to GPU
   instancedCars.flush();
-  // Day/night headlights
+  // Day/night headlights + beams
   const isNight = !simClock.isDaytime();
-  instancedCars.setHeadlightIntensity(isNight ? 0.8 : 0.1);
+  instancedCars.setHeadlightIntensity(isNight ? 1.0 : 0.15);
+  if (instancedCars.beamMesh) {
+    instancedCars.beamMesh.visible = isNight;
+  }
   // Resolve visual overlaps
   if (frameCount % 5 === 0) resolveOverlaps(cars);
 

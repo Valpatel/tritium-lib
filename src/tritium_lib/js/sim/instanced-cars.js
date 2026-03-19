@@ -116,6 +116,35 @@ export class InstancedCarRenderer {
         for (let i = 0; i < this.maxCars; i++) this.taillightMesh.setMatrixAt(i, hideMatrix);
         this.taillightMesh.instanceMatrix.needsUpdate = true;
         this.scene.add(this.taillightMesh);
+
+        // Per-instance taillight color (for brake light toggling)
+        const tlColors = new Float32Array(this.maxCars * 3);
+        // Default: dim red
+        for (let i = 0; i < this.maxCars; i++) {
+            tlColors[i * 3] = 0.3;     // R
+            tlColors[i * 3 + 1] = 0;   // G
+            tlColors[i * 3 + 2] = 0;   // B
+        }
+        this.taillightMesh.instanceColor = new THREE.InstancedBufferAttribute(tlColors, 3);
+
+        // Headlight beams (cone mesh projecting forward from each car)
+        const beamGeoL = new THREE.ConeGeometry(1.5, 8, 4); // wide cone, 8m long
+        beamGeoL.rotateX(Math.PI / 2); // point along +Z (forward)
+        beamGeoL.translate(0.5, 0.4, 6); // offset forward
+        const beamGeoR = new THREE.ConeGeometry(1.5, 8, 4);
+        beamGeoR.rotateX(Math.PI / 2);
+        beamGeoR.translate(-0.5, 0.4, 6);
+        const beamMerged = mergeGeometries([beamGeoL, beamGeoR], false);
+        const beamMat = new THREE.MeshBasicMaterial({
+            color: 0xffffaa, transparent: true, opacity: 0.06,
+            depthWrite: false, // don't block other geometry
+        });
+        this.beamMesh = new THREE.InstancedMesh(beamMerged, beamMat, this.maxCars);
+        this.beamMesh.count = 0;
+        this.beamMesh.renderOrder = 999; // render last (transparent)
+        for (let i = 0; i < this.maxCars; i++) this.beamMesh.setMatrixAt(i, hideMatrix);
+        this.beamMesh.instanceMatrix.needsUpdate = true;
+        this.scene.add(this.beamMesh);
     }
 
     /**
@@ -148,6 +177,9 @@ export class InstancedCarRenderer {
         if (this.taillightMesh) {
             this.taillightMesh.count = globalIdx + 1;
         }
+        if (this.beamMesh) {
+            this.beamMesh.count = globalIdx + 1;
+        }
 
         this.carData.push({ type, typeIndex: index, globalIndex: globalIdx });
         this.totalCount++;
@@ -171,17 +203,25 @@ export class InstancedCarRenderer {
         this.dummy.rotation.set(0, heading, 0);
         this.dummy.updateMatrix();
 
-        // Body
-        const inst = this.instances[data.type];
-        inst.mesh.setMatrixAt(data.typeIndex, this.dummy.matrix);
-
-        // Headlights + taillights follow the same transform
         const gi = data.globalIndex;
-        if (this.headlightMesh) {
-            this.headlightMesh.setMatrixAt(gi, this.dummy.matrix);
-        }
-        if (this.taillightMesh) {
-            this.taillightMesh.setMatrixAt(gi, this.dummy.matrix);
+
+        // Body
+        data._inst = data._inst || this.instances[data.type];
+        data._inst.mesh.setMatrixAt(data.typeIndex, this.dummy.matrix);
+
+        // Headlights, taillights, beams all follow same transform
+        if (this.headlightMesh) this.headlightMesh.setMatrixAt(gi, this.dummy.matrix);
+        if (this.taillightMesh) this.taillightMesh.setMatrixAt(gi, this.dummy.matrix);
+        if (this.beamMesh) this.beamMesh.setMatrixAt(gi, this.dummy.matrix);
+
+        // Brake light: bright red when braking, dim when not
+        if (this.taillightMesh?.instanceColor) {
+            if (braking) {
+                this.taillightMesh.instanceColor.setXYZ(gi, 1.0, 0.1, 0.0);
+            } else {
+                this.taillightMesh.instanceColor.setXYZ(gi, 0.4, 0.0, 0.0);
+            }
+            this._tlColorDirty = true;
         }
     }
 
@@ -193,7 +233,14 @@ export class InstancedCarRenderer {
             this.instances[key].mesh.instanceMatrix.needsUpdate = true;
         }
         if (this.headlightMesh) this.headlightMesh.instanceMatrix.needsUpdate = true;
-        if (this.taillightMesh) this.taillightMesh.instanceMatrix.needsUpdate = true;
+        if (this.taillightMesh) {
+            this.taillightMesh.instanceMatrix.needsUpdate = true;
+            if (this._tlColorDirty) {
+                this.taillightMesh.instanceColor.needsUpdate = true;
+                this._tlColorDirty = false;
+            }
+        }
+        if (this.beamMesh) this.beamMesh.instanceMatrix.needsUpdate = true;
     }
 
     /**
