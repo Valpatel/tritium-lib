@@ -1367,6 +1367,54 @@ function createRouteLine() {
   return line;
 }
 
+// Create short-term trajectory line (yellow, shows immediate path ~20m ahead)
+function createTrajectoryLine() {
+  const mat = new THREE.LineBasicMaterial({ color: 0xfcee0a, transparent: true, opacity: 0.6 });
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, -10, 0), new THREE.Vector3(0, -10, 0)
+  ]);
+  const line = new THREE.Line(geo, mat);
+  scene.add(line);
+  return line;
+}
+
+// Update short-term trajectory (shows where car is heading in next ~20m)
+function updateCarTrajectory(car) {
+  if (!car.trajectoryLine || !car.road) return;
+
+  const points = [];
+  const pos = car.mesh.position;
+  points.push(new THREE.Vector3(pos.x, 0.4, pos.z));
+
+  if (car.turningState) {
+    // Show Bezier arc during turning
+    const ts = car.turningState;
+    for (let i = 0; i < 8; i++) {
+      const t = ts.t + (1 - ts.t) * (i / 7);
+      const u = 1 - t;
+      const px = u*u*ts.p0.x + 2*u*t*ts.p1.x + t*t*ts.p2.x;
+      const pz = u*u*ts.p0.z + 2*u*t*ts.p1.z + t*t*ts.p2.z;
+      points.push(new THREE.Vector3(px, 0.4, pz));
+    }
+  } else {
+    // Show straight line along current lane for ~20m
+    const isForward = car.lane < (car.road.numLanesPerDir || 2);
+    for (let d = 4; d <= 20; d += 4) {
+      const futureU = Math.min(car.road.length, car.u + d);
+      const roadU = isForward ? futureU : (car.road.length - futureU);
+      const w = roadToWorld(car.road, car.lane, roadU);
+      points.push(new THREE.Vector3(w.x, 0.4, w.z));
+    }
+  }
+
+  if (points.length < 2) {
+    points.push(new THREE.Vector3(pos.x, -10, pos.z));
+  }
+
+  car.trajectoryLine.geometry.dispose();
+  car.trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
+}
+
 // Update route visualization
 function updateCarRouteLine(car) {
   if (!car.routeLine) return;
@@ -1503,6 +1551,7 @@ function spawnCar(vehicleType = 'sedan') {
     routeIndex: 0,
     destination: null,
     routeLine: createRouteLine(),
+    trajectoryLine: createTrajectoryLine(),
     routeReplanTimer: 0,
   };
 
@@ -1869,6 +1918,7 @@ function updateCar(car, dt) {
       car.mesh.rotation.y = angle;
     }
     updatePathLine(car.pathLine, []);
+    updateCarTrajectory(car);
     return;
   }
 
@@ -2025,6 +2075,9 @@ function updateCar(car, dt) {
       sirenR.material.emissiveIntensity = sirenPhase ? 0.1 : 1.5;
     }
   }
+
+  // Update short-term trajectory line (yellow)
+  updateCarTrajectory(car);
 
   // Update path debug line
   const destNodeId = isForward ? car.road.to : car.road.from;
