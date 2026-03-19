@@ -1161,6 +1161,25 @@ function animate() {
   // Update yuka entity manager
   entityManager.update(delta);
 
+  // Clamp NPCs to pedestrian NavMesh (prevent walking through buildings)
+  const _clampResult = new YUKA.Vector3();
+  for (const npc of npcs) {
+    const pos = npc.vehicle.position;
+    const mesh = npc.protestMode ? combinedNavMesh : pedNavMesh;
+    try {
+      mesh.clampMovement(pos, pos, _clampResult);
+      pos.copy(_clampResult);
+    } catch(e) { /* outside navmesh entirely, leave as-is */ }
+  }
+  // Clamp cars to road NavMesh
+  for (const car of cars) {
+    const pos = car.vehicle.position;
+    try {
+      roadNavMesh.clampMovement(pos, pos, _clampResult);
+      pos.copy(_clampResult);
+    } catch(e) { /* outside navmesh */ }
+  }
+
   controls.update();
   renderer.render(scene, camera);
   updateHUD();
