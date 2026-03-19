@@ -40,8 +40,8 @@ import { CarPath, buildPathFromRoute, extendPath } from './car-path.js';
 export function tickCar(car, dt, allCars, pedestrians, trafficCtrl, roadNetwork) {
     if (!car.path || car.path.totalLength < 1) return;
 
-    // 1. Extend path if running low (< 80m ahead)
-    if (car.path.remainingLength(car.d) < 80) {
+    // 1. Extend path if running low (< 200m ahead)
+    if (car.path.remainingLength(car.d) < 200) {
         extendCarPath(car, roadNetwork);
     }
 
@@ -359,9 +359,9 @@ export function createCar(roadNetwork, laneOffset = 3) {
 
     // Build initial path with 3+ segments ahead
     const route = [startNode, nextNode];
-    // Extend a few more steps
+    // Extend path 6+ intersections ahead for visible route
     let currNode = nextNode, prevNode = startNode;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 8; i++) {
         const next = pickRandomNextNode(roadNetwork, currNode, prevNode);
         if (!next) break;
         route.push(next);

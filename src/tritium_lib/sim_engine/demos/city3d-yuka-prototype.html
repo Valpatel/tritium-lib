@@ -1357,10 +1357,10 @@ function planCarRoute(car) {
   updateCarRouteLine(car);
 }
 
-// Create route line with animated pulse (teal dashed, moving dashOffset)
-function createRouteLine() {
+// Create route line with animated pulse (color-matched dashed)
+function createRouteLine(color) {
   const mat = new THREE.LineDashedMaterial({
-    color: 0x00f0ff, dashSize: 3, gapSize: 2,
+    color: color || 0x00f0ff, dashSize: 3, gapSize: 2,
     transparent: true, opacity: 0.35,
   });
   const geo = new THREE.BufferGeometry().setFromPoints([
@@ -1372,13 +1372,17 @@ function createRouteLine() {
   return line;
 }
 
-// Create pulse dot that travels along the route line
-function createPulseDot() {
-  const mat = new THREE.MeshBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.8 });
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.6, 6, 4), mat);
-  mesh.position.y = -10; // hidden initially
-  scene.add(mesh);
-  return mesh;
+// Create pulse arrow that travels along the route line (color matches car)
+function createPulseArrow(color) {
+  // Cone pointing forward (+Z) as an arrow indicator
+  const mat = new THREE.MeshBasicMaterial({ color: color || 0x00f0ff, transparent: true, opacity: 0.85 });
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.5, 4), mat);
+  cone.rotation.x = Math.PI / 2; // point forward along Z
+  const group = new THREE.Group();
+  group.add(cone);
+  group.position.y = -10; // hidden initially
+  scene.add(group);
+  return group;
 }
 
 // Create short-term trajectory line (yellow, brighter, closer spacing)
@@ -1589,9 +1593,10 @@ function spawnCar(vehicleType = 'sedan') {
     route: [],
     routeIndex: 0,
     destination: null,
-    routeLine: createRouteLine(),
-    pulseDot: createPulseDot(),
+    routeLine: createRouteLine(bodyColor),
+    pulseDot: createPulseArrow(bodyColor),
     pulseT: Math.random(), // phase offset so dots don't all sync
+    bodyColor: bodyColor,
     trajectoryLine: createTrajectoryLine(),
     routeReplanTimer: 0,
   };
@@ -2433,16 +2438,19 @@ function animate() {
       car.routeLine.material.dashOffset -= dt * 8; // pulse speed
     }
 
-    // Pulse dot: travels from car to end of route and loops
-    if (car.pulseDot && car.path.totalLength > car.d + 5) {
-      car.pulseT += dt * 0.3; // speed of pulse travel
+    // Pulse arrow: travels from car to end of route, oriented along path heading
+    if (car.pulseDot && car.path.totalLength > car.d + 10) {
+      car.pulseT += dt * 0.25; // pulse travel speed
       if (car.pulseT > 1) car.pulseT -= 1;
       const remaining = car.path.totalLength - car.d;
-      const pulseD = car.d + car.pulseT * remaining;
+      const pulseD = car.d + 5 + car.pulseT * (remaining - 5); // start 5m ahead
       const pulsePos = car.path.getPosition(pulseD);
+      const pulseHeading = car.path.getHeading(pulseD);
       car.pulseDot.position.set(pulsePos.x, 0.5, pulsePos.z);
-      // Fade dot based on distance from car (brighter near end)
-      car.pulseDot.material.opacity = 0.3 + car.pulseT * 0.6;
+      car.pulseDot.rotation.y = pulseHeading; // orient arrow along path
+      // Fade: bright near car, dimmer at end
+      const childMat = car.pulseDot.children[0]?.material;
+      if (childMat) childMat.opacity = 0.9 - car.pulseT * 0.5;
     }
 
     // Trajectory line: next 25m (update every 10 frames)
