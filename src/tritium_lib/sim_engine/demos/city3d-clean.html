@@ -80,7 +80,7 @@ scene.background = new THREE.Color(0x87CEEB);
 scene.fog = new THREE.Fog(0x87CEEB, 500, 1500);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 2000);
-camera.position.set(CITY_W / 2, 80, CITY_H / 2 + 120);
+camera.position.set(CITY_W / 2, 120, CITY_H / 2 + 180);
 camera.lookAt(CITY_W / 2, 0, CITY_H / 2);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -367,13 +367,11 @@ function animate() {
   // Tick simulation
   world.tick(dt);
 
-  // Update weather (sky, lighting)
+  // Weather: sky color, lighting
   const weather = world.getWeather();
   const skyC = new THREE.Color(weather.skyColor);
   scene.background.copy(skyC);
-  scene.fog.color.copy(skyC);
-  scene.fog.near = world.isNight ? 200 : 500;
-  scene.fog.far = world.isNight ? 600 : 1500;
+  if (scene.fog) { scene.fog.color.copy(skyC); scene.fog.near = world.isNight ? 200 : 500; scene.fog.far = world.isNight ? 600 : 1500; }
   ambient.intensity = weather.ambientIntensity;
   sun.intensity = weather.sunIntensity;
 

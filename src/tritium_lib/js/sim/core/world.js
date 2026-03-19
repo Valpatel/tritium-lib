@@ -141,7 +141,7 @@ export class World {
     _initMeshTypes() {
         // Car body
         this.renderer.defineMeshType('car_body', createCarGeometry(),
-            new THREE.MeshPhongMaterial({ color: 0xffffff }), this.maxVehicles);
+            new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }), this.maxVehicles);
 
         // Headlights (always bright white)
         this.renderer.defineMeshType('car_headlights', createHeadlightGeometry(),
@@ -159,7 +159,7 @@ export class World {
 
         // Pedestrian body
         this.renderer.defineMeshType('ped_body', createPedGeometry(),
-            new THREE.MeshPhongMaterial({ color: 0x44aa66 }), this.maxPeds);
+            new THREE.MeshStandardMaterial({ color: 0x44aa66, roughness: 0.7 }), this.maxPeds);
     }
 
     // ============================================================

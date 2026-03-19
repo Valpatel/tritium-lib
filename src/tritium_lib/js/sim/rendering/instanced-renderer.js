@@ -41,8 +41,10 @@ export class InstancedRenderer {
     defineMeshType(name, geometry, material, maxInstances = 5000) {
         const hideMatrix = new THREE.Matrix4().makeTranslation(0, -1000, 0);
         const mesh = new THREE.InstancedMesh(geometry, material, maxInstances);
-        mesh.count = 0;
-        mesh.frustumCulled = false; // instances span large area
+        // WebGPU bug: count must be set to max at creation, not incremented later
+        // (three.js issue #32099: WebGPU doesn't re-allocate instance buffer on count change)
+        mesh.count = maxInstances;
+        mesh.frustumCulled = false;
         mesh.castShadow = true;
 
         // Initialize all instance colors to white
@@ -70,7 +72,8 @@ export class InstancedRenderer {
         if (!mt || mt.count >= mt.maxInstances) return -1;
 
         const idx = mt.count++;
-        mt.mesh.count = mt.count;
+        // Don't change mesh.count — it stays at maxInstances for WebGPU compatibility
+        // Unused instances stay at the hide position (y=-1000)
 
         if (color !== null) {
             const c = new THREE.Color(color);
