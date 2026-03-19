@@ -83,6 +83,7 @@ export function tickPedestrian(ped, dt, allPeds, cars, spatialHash = null) {
         if (ped.knockedTimer <= 0) {
             ped.knockedDown = false;
             ped.goalType = 'idle';
+            ped.goalReached = true; // trigger new goal assignment
         }
         return;
     }
@@ -117,33 +118,33 @@ export function tickPedestrian(ped, dt, allPeds, cars, spatialHash = null) {
         const dx = ped.x - other.x;
         const dz = ped.z - other.z;
         const distSq = dx * dx + dz * dz;
-        if (distSq < 4 && distSq > 0.01) { // 2m radius
+        if (distSq < 2.25 && distSq > 0.01) { // 1.5m radius (tighter)
             const dist = Math.sqrt(distSq);
-            const repulsion = (2 - dist) * 0.5; // stronger when closer
+            const repulsion = (1.5 - dist) * 0.3; // gentle push
             dvx += (dx / dist) * repulsion;
             dvz += (dz / dist) * repulsion;
         }
     }
 
-    // 3. Car avoidance: run away from approaching cars
+    // 3. Car avoidance: only dodge if car is very close AND heading directly at us
     for (const car of cars) {
         if (!car.worldX && car.worldX !== 0) continue;
+        if (car.speed < 2) continue; // ignore slow/stopped cars
         const dx = ped.x - car.worldX;
         const dz = ped.z - car.worldZ;
         const dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist > 15 || dist < 0.1) continue;
+        if (dist > 6 || dist < 0.1) continue; // only react within 6m
 
-        // Is car heading toward us?
         const carFwdX = Math.sin(car.worldHeading || 0);
         const carFwdZ = Math.cos(car.worldHeading || 0);
         const dot = (-dx * carFwdX + -dz * carFwdZ) / dist;
 
-        if (dot > 0.3 && dist < 8) {
-            // Car approaching — dodge sideways
-            const urgency = (8 - dist) * car.speed * 0.3;
-            // Perpendicular to car's heading
-            dvx += -carFwdZ * urgency * Math.sign(dx * carFwdZ - dz * carFwdX);
-            dvz += carFwdX * urgency * Math.sign(dx * carFwdZ - dz * carFwdX);
+        if (dot > 0.6 && dist < 5) { // car must be heading nearly straight at us
+            // Gentle dodge perpendicular to car — don't overwhelm goal force
+            const urgency = Math.min(2.0, (5 - dist) * 0.4);
+            const side = Math.sign(dx * carFwdZ - dz * carFwdX) || 1;
+            dvx += -carFwdZ * urgency * side;
+            dvz += carFwdX * urgency * side;
         }
     }
 

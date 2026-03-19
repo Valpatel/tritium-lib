@@ -255,18 +255,26 @@ export class InstancedCarRenderer {
      * Set headlight brightness (day/night toggle).
      * @param {number} intensity - 0 = off (day), 0.8 = on (night)
      */
-    setHeadlightIntensity(intensity) {
+    /**
+     * Headlights are always white. At night they're full bright, during day slightly dimmer.
+     * @param {boolean} isNight
+     */
+    setNightMode(isNight) {
         if (this.headlightMesh) {
-            // MeshBasicMaterial: adjust color brightness
-            const b = Math.floor(intensity * 255);
-            this.headlightMesh.material.color.setRGB(b/255, b/255, (b*0.85)/255);
+            // Always visible white, brighter at night
+            this.headlightMesh.material.color.setRGB(
+                isNight ? 1.0 : 0.9,
+                isNight ? 1.0 : 0.9,
+                isNight ? 0.85 : 0.8
+            );
         }
-    }
-
-    setTaillightIntensity(intensity) {
         if (this.taillightMesh) {
-            const b = Math.floor(intensity * 255);
-            this.taillightMesh.material.color.setRGB(b/255, 0, 0);
+            // Always visible red, brighter at night
+            // (per-instance brake color handles braking separately)
+            this.taillightMesh.material.color.setRGB(
+                isNight ? 1.0 : 0.8,
+                0, 0
+            );
         }
     }
 

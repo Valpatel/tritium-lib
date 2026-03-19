@@ -1714,16 +1714,17 @@ function spawnCar(vehicleType = 'sedan') {
 // SPAWN ENTITIES
 // ============================================================
 // 25 regular pedestrians
-for (let i = 0; i < 25; i++) spawnNPC('pedestrian', false);
-// 7 state-machine NPCs (4 pedestrian, 2 police, 1 hostile)
+// Old yuka NPCs — spawn but hide meshes (new instanced peds replace them visually)
+for (let i = 0; i < 25; i++) {
+  const npc = spawnNPC('pedestrian', false);
+  if (npc.mesh) npc.mesh.visible = false;
+}
 const smNPCs = [];
-smNPCs.push(spawnNPC('pedestrian', true));
-smNPCs.push(spawnNPC('pedestrian', true));
-smNPCs.push(spawnNPC('pedestrian', true));
-smNPCs.push(spawnNPC('pedestrian', true));
-smNPCs.push(spawnNPC('police', true));
-smNPCs.push(spawnNPC('police', true));
-smNPCs.push(spawnNPC('hostile', true));
+for (const type of ['pedestrian','pedestrian','pedestrian','pedestrian','police','police','hostile']) {
+  const npc = spawnNPC(type, true);
+  if (npc.mesh) npc.mesh.visible = false;
+  smNPCs.push(npc);
+}
 // 20 cars — use new CarPath-based system
 for (let i = 0; i < 18; i++) spawnCar('sedan');
 spawnCar('police');
@@ -1779,7 +1780,9 @@ for (const car of cars) {
     const role = roles[Math.floor(Math.random() * roles.length)];
     const ped = createPedestrian(sx, sz, 'ped_' + i, role);
     ped.meshIndex = instancedPeds.addPed(PED_COLORS[role] || 0x44aa66);
-    assignRandomGoal(ped, 60);
+    // Assign a building entry as initial goal
+    const initEntry = buildingEntries[Math.floor(Math.random() * buildingEntries.length)];
+    if (initEntry) assignGoal(ped, initEntry.x, initEntry.z, 'walk_to');
     peds.push(ped);
   }
   console.log(`[Peds] Created ${peds.length} instanced pedestrians`);
@@ -2592,8 +2595,14 @@ function animate() {
   for (const ped of peds) {
     tickPedestrian(ped, dt, peds, carDataForPeds);
     // Reassign goal when reached
-    if (ped.goalReached && !ped.knockedDown) {
-      assignRandomGoal(ped, 80);
+    // Assign new goal when reached or idle
+    if ((ped.goalReached || ped.goalType === 'idle') && !ped.knockedDown) {
+      if (buildingEntries.length > 0) {
+        const entry = buildingEntries[Math.floor(Math.random() * buildingEntries.length)];
+        assignGoal(ped, entry.x, entry.z, 'walk_to');
+      } else {
+        assignRandomGoal(ped, 40);
+      }
     }
     // Update instanced mesh
     if (ped.meshIndex >= 0) {
@@ -2626,7 +2635,7 @@ function animate() {
 
   // Headlights + beams
   const isNight = weather.isNight;
-  instancedCars.setHeadlightIntensity(isNight ? 1.0 : 0.15);
+  instancedCars.setNightMode(isNight);
   if (instancedCars.beamMesh) {
     instancedCars.beamMesh.visible = isNight;
   }
