@@ -1289,6 +1289,21 @@ function spawnCar() {
   tlR.position.set(-0.7, 0.5, -2);
   group.add(tlR);
 
+  // Turn signal indicators (4 corners — front left, front right, rear left, rear right)
+  const turnMat = new THREE.MeshStandardMaterial({ color: 0xff8800, emissive: 0xff8800, emissiveIntensity: 0, transparent: true, opacity: 0.9 });
+  const tsFL = new THREE.Mesh(new THREE.SphereGeometry(0.1, 4, 4), turnMat.clone());
+  tsFL.position.set(0.9, 0.3, 1.8);
+  group.add(tsFL);
+  const tsFR = new THREE.Mesh(new THREE.SphereGeometry(0.1, 4, 4), turnMat.clone());
+  tsFR.position.set(-0.9, 0.3, 1.8);
+  group.add(tsFR);
+  const tsRL = new THREE.Mesh(new THREE.SphereGeometry(0.1, 4, 4), turnMat.clone());
+  tsRL.position.set(0.9, 0.3, -1.8);
+  group.add(tsRL);
+  const tsRR = new THREE.Mesh(new THREE.SphereGeometry(0.1, 4, 4), turnMat.clone());
+  tsRR.position.set(-0.9, 0.3, -1.8);
+  group.add(tsRR);
+
   group.position.set(0, 0, 0);
   group.castShadow = true;
   scene.add(group);
@@ -1331,8 +1346,8 @@ smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('pedestrian', true));
 smNPCs.push(spawnNPC('police', true));
 smNPCs.push(spawnNPC('hostile', true));
-// 8 cars
-for (let i = 0; i < 8; i++) spawnCar();
+// 20 cars for realistic traffic density
+for (let i = 0; i < 20; i++) spawnCar();
 
 // ============================================================
 // STATE MACHINE UPDATE — SPECIAL NPCs
@@ -1641,11 +1656,39 @@ function updateCar(car, dt) {
   car.mesh.position.set(world.x, 0, world.z);
   car.mesh.rotation.y = world.angle;
 
-  // Update brake light visuals
+  // Update brake light visuals (children indices: 0=body, 1=cabin, 2=hlL, 3=hlR, 4=tlL, 5=tlR, 6=tsFL, 7=tsFR, 8=tsRL, 9=tsRR)
   if (car.mesh.children[4] && car.mesh.children[5]) {
     const intensity = car.brakeLightsOn ? 0.8 : 0.2;
     car.mesh.children[4].material.emissiveIntensity = intensity;
     car.mesh.children[5].material.emissiveIntensity = intensity;
+  }
+
+  // Update turn signal indicators
+  const blinkOn = Math.sin(performance.now() * 0.006) > 0; // ~2Hz blink
+  const tsChildren = [car.mesh.children[6], car.mesh.children[7], car.mesh.children[8], car.mesh.children[9]]; // FL, FR, RL, RR
+  if (tsChildren[0]) {
+    let leftOn = false, rightOn = false;
+    // Approaching intersection — signal upcoming turn
+    if (car.turningState) {
+      if (car.turningState.turnType === 'left') leftOn = blinkOn;
+      else if (car.turningState.turnType === 'right') rightOn = blinkOn;
+    } else if (car.road && car.u > car.road.length - 25) {
+      // 25m before intersection, preview the turn direction
+      const isF = car.lane < (car.road.numLanesPerDir || 2);
+      const nId = isF ? car.road.to : car.road.from;
+      if (car.road.id && modularRoadNetwork) {
+        const conn = modularRoadNetwork.pickRandomConnection(car.road.id, car.lane, nId);
+        if (conn && conn.turnType === 'left') leftOn = blinkOn;
+        else if (conn && conn.turnType === 'right') rightOn = blinkOn;
+      }
+    }
+    // Hazard: stopped > 10 seconds
+    if ((car.stuckTimer || 0) > 10) { leftOn = blinkOn; rightOn = blinkOn; }
+
+    tsChildren[0].material.emissiveIntensity = leftOn ? 1.0 : 0;  // FL
+    tsChildren[1].material.emissiveIntensity = rightOn ? 1.0 : 0; // FR
+    tsChildren[2].material.emissiveIntensity = leftOn ? 1.0 : 0;  // RL
+    tsChildren[3].material.emissiveIntensity = rightOn ? 1.0 : 0; // RR
   }
 
   // Update path debug line
