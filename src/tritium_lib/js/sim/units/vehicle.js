@@ -56,9 +56,21 @@ export class Vehicle extends GroundUnit {
         // IDM acceleration
         let acc = idmAcceleration(this.speed, leader.gap, leader.speed, this.idmParams);
 
-        // In curves: don't brake unless leader is very close (prevents false positives)
-        if (this.inCurve && acc < 0 && leader.gap > 4) {
-            acc = Math.max(acc, 0);
+        // NEVER stop in curves (intersections) — maintain minimum 4 m/s
+        if (this.inCurve) {
+            if (leader.gap > 3) acc = Math.max(acc, 0.5); // gentle acceleration through intersection
+        }
+
+        // Aggressive driving: if stopped for too long, push through
+        if (this.speed < 0.1) {
+            this._stuckTimer = (this._stuckTimer || 0) + dt;
+            if (this._stuckTimer > 8) {
+                // After 8 seconds stopped, become aggressive — accelerate regardless
+                acc = Math.max(acc, 1.0);
+                this._stuckTimer = 0; // reset, try again if still stuck
+            }
+        } else {
+            this._stuckTimer = 0;
         }
 
         // Brake lights
@@ -138,9 +150,11 @@ export class Vehicle extends GroundUnit {
             const dx = node.x - this.x;
             const dz = node.z - this.z;
             const dist = Math.sqrt(dx * dx + dz * dz);
-            if (dist < 5 || dist > 60) continue;
+            if (dist < 5 || dist > 30) continue; // only react to nearby lights
             const dot = dx * fwdX + dz * fwdZ;
             if (dot <= 0) continue;
+            // Must be nearly straight ahead (not off to the side)
+            if (dot / dist < 0.7) continue; // within ~45° forward cone
             if (dot < nearestDot) {
                 nearestDot = dot;
                 nearestNode = node;

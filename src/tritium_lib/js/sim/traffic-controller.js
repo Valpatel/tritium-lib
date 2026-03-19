@@ -32,13 +32,13 @@ export function buildSignalPhases(approaches) {
     const phases = [];
 
     if (approaches.length === 4) {
-        // 4-way intersection: NS green, then EW green
-        phases.push({ greenApproaches: ['N', 'S'], duration: 30, type: 'green' });
-        phases.push({ greenApproaches: ['N', 'S'], duration: 3, type: 'yellow' });
-        phases.push({ greenApproaches: [], duration: 2, type: 'allRed' });
-        phases.push({ greenApproaches: ['E', 'W'], duration: 30, type: 'green' });
-        phases.push({ greenApproaches: ['E', 'W'], duration: 3, type: 'yellow' });
-        phases.push({ greenApproaches: [], duration: 2, type: 'allRed' });
+        // 4-way intersection: NS green, then EW green (shorter cycles for small city)
+        phases.push({ greenApproaches: ['N', 'S'], duration: 15, type: 'green' });
+        phases.push({ greenApproaches: ['N', 'S'], duration: 2, type: 'yellow' });
+        phases.push({ greenApproaches: [], duration: 1, type: 'allRed' });
+        phases.push({ greenApproaches: ['E', 'W'], duration: 15, type: 'green' });
+        phases.push({ greenApproaches: ['E', 'W'], duration: 2, type: 'yellow' });
+        phases.push({ greenApproaches: [], duration: 1, type: 'allRed' });
     } else if (approaches.length === 3) {
         // 3-way (T-junction): two phases
         // Find the pair and the single approach
@@ -289,7 +289,8 @@ export class TrafficControllerManager {
         this.controllers = {};
         for (const nodeId in roadNetwork.nodes) {
             const node = roadNetwork.nodes[nodeId];
-            if (node.approaches.length >= 2) {
+            // Only 4-way intersections get traffic lights (3-way and 2-way are uncontrolled)
+            if (node.approaches.length >= 4) {
                 this.controllers[nodeId] = new TrafficController(node, roadNetwork);
             }
         }
