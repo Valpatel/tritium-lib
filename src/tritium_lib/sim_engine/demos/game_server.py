@@ -666,7 +666,7 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         collisions = gs.collision.check_all()
         if collisions:
             frame["collisions"] = [
-                {"a": c.entity_a, "b": c.entity_b, "type": c.collision_type}
+                {"a": c.entity_a, "b": c.entity_b, "overlap": c.overlap}
                 for c in collisions[:20]  # cap for frame size
             ]
 
