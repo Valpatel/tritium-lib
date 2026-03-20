@@ -847,6 +847,72 @@ function generateDemoFrame() {
 // =========================================================================
 // Frame processing
 // =========================================================================
+// =========================================================================
+// Terrain polygon rendering from geospatial segmentation
+// =========================================================================
+const TERRAIN_COLORS = {
+  building: 0x404040, road: 0x555555, water: 0x0066cc,
+  vegetation: 0x228B22, sidewalk: 0x999999, parking: 0x666666,
+  bridge: 0x4682B4, barren: 0xD2B48C, rail: 0x8B0000,
+};
+const TERRAIN_OPACITY = {
+  building: 0.6, road: 0.3, water: 0.5,
+  vegetation: 0.25, sidewalk: 0.2, parking: 0.2,
+  bridge: 0.4, barren: 0.15, rail: 0.3,
+};
+
+function renderTerrainPolygons(geojson) {
+  if (!geojson || !geojson.features) return;
+  const terrainGroup = new THREE.Group();
+  terrainGroup.name = 'terrain-overlay';
+
+  for (const feature of geojson.features) {
+    const props = feature.properties || {};
+    const tt = props.terrain_type || 'unknown';
+    const coords = feature.geometry?.coordinates?.[0];
+    if (!coords || coords.length < 3) continue;
+
+    const color = TERRAIN_COLORS[tt] || 0x808080;
+    const opacity = TERRAIN_OPACITY[tt] || 0.2;
+
+    // Convert lon/lat polygon to local XY (centered on first coord)
+    // This is approximate — proper geo projection would be better
+    const cx = coords.reduce((s, c) => s + c[0], 0) / coords.length;
+    const cy = coords.reduce((s, c) => s + c[1], 0) / coords.length;
+
+    const shape = new THREE.Shape();
+    for (let i = 0; i < coords.length; i++) {
+      // Convert degrees to approximate meters from center
+      const x = (coords[i][0] - cx) * 111320 * Math.cos(cy * Math.PI / 180);
+      const y = (coords[i][1] - cy) * 111320;
+      if (i === 0) shape.moveTo(x, y);
+      else shape.lineTo(x, y);
+    }
+
+    const geometry = new THREE.ShapeGeometry(shape);
+    const material = new THREE.MeshBasicMaterial({
+      color, opacity, transparent: true, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+
+    // Position at centroid, flat on ground (y=0.1 to avoid z-fighting)
+    const centroid = props.centroid || [cx, cy];
+    // Use approximate local coordinates — this needs proper geo-reference
+    // For now, offset from world center
+    mesh.position.set(
+      (centroid[0] - cx) * 111320 * Math.cos(cy * Math.PI / 180),
+      0.1,
+      -(centroid[1] - cy) * 111320,
+    );
+    mesh.rotation.x = -Math.PI / 2; // flat on ground
+
+    terrainGroup.add(mesh);
+  }
+
+  scene.add(terrainGroup);
+  console.log(`[TERRAIN] Rendered ${geojson.features.length} terrain polygons`);
+}
+
 function processFrame(frame) {
   lastFrame = frame;
 
@@ -867,6 +933,12 @@ function processFrame(frame) {
 
   // Buildings
   if (frame.buildings) updateBuildings(frame.buildings);
+
+  // Terrain polygons from geospatial segmentation (first frame only)
+  if (frame.terrain_geojson && !window._terrainRendered) {
+    renderTerrainPolygons(frame.terrain_geojson);
+    window._terrainRendered = true;
+  }
 
   // HUD
   updateHUD(frame.ui || {}, frame);
