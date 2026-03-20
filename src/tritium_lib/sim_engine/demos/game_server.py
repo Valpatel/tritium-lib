@@ -146,7 +146,11 @@ from tritium_lib.sim_engine.abilities import (
 from tritium_lib.sim_engine.status_effects import (
     StatusEffectEngine,
 )
-# 16. Artillery — fire support
+# 16. Collision detection
+from tritium_lib.sim_engine.collision import (
+    CollisionWorld, Collider, ColliderType,
+)
+# 17. Artillery — fire support
 from tritium_lib.sim_engine.artillery import (
     ArtilleryEngine, ArtilleryPiece, ArtilleryType, ARTILLERY_TEMPLATES,
 )
@@ -186,6 +190,7 @@ class GameState:
         self.morale: MoraleEngine | None = None
         self.ew: EWEngine | None = None
         self.supply_routes: SupplyRouteEngine | None = None
+        self.collision: CollisionWorld | None = None
         self.artillery: ArtilleryEngine | None = None
         self.abilities: AbilityEngine | None = None
         self.status_effects: StatusEffectEngine | None = None
@@ -415,7 +420,20 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         if unit.alliance == Alliance.FRIENDLY:
             gs.supply_routes.register_unit(uid, alliance="friendly")
 
-    # 14. Artillery — friendly mortar battery
+    # 14. Collision world — unit and vehicle collisions
+    gs.collision = CollisionWorld(cell_size=5.0)
+    for uid, unit in gs.world.units.items():
+        gs.collision.add(Collider(
+            entity_id=uid, position=unit.position,
+            collider_type=ColliderType.CIRCLE, radius=1.0,
+        ))
+    for vid, veh in gs.world.vehicles.items():
+        gs.collision.add(Collider(
+            entity_id=vid, position=veh.position,
+            collider_type=ColliderType.CIRCLE, radius=2.5,
+        ))
+
+    # 15. Artillery — friendly mortar battery
     gs.artillery = ArtilleryEngine()
     mortar_tmpl = ARTILLERY_TEMPLATES[ArtilleryType.MORTAR_60MM]
     gs.artillery.add_piece(ArtilleryPiece(
@@ -608,7 +626,21 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         frame["supply_routes"] = gs.supply_routes.to_three_js()
         frame["supply_warnings"] = sr_result.get("warnings", [])
 
-    # 14. Artillery tick
+    # 14. Collision tick
+    if gs.collision is not None:
+        for uid, u in gs.world.units.items():
+            if u.is_alive():
+                gs.collision.update(uid, position=u.position)
+        for vid, v in gs.world.vehicles.items():
+            gs.collision.update(vid, position=v.position)
+        collisions = gs.collision.check_all()
+        if collisions:
+            frame["collisions"] = [
+                {"a": c.entity_a, "b": c.entity_b, "type": c.collision_type}
+                for c in collisions[:20]  # cap for frame size
+            ]
+
+    # 15. Artillery tick
     if gs.artillery is not None:
         arty_events = gs.artillery.tick(dt)
         frame["artillery"] = gs.artillery.to_three_js()
