@@ -728,7 +728,15 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
             for uid, u in gs.world.units.items() if u.is_alive()
         }
         gs.influence.tick(dt, inf_units)
-        frame["influence"] = gs.influence.to_three_js()
+        # Only send summary, not the full 250K-cell grid (saves ~2.4MB/frame)
+        infl_data = gs.influence.to_three_js()
+        frame["influence"] = {
+            "width": infl_data.get("width"),
+            "height": infl_data.get("height"),
+            "cell_size": infl_data.get("cell_size"),
+            "frontlines": infl_data.get("frontlines", {}),
+            # Omit heatmaps — too large for per-frame WebSocket
+        }
     if gs.territory is not None:
         terr_units = {
             uid: (u.position, "friendly" if u.alliance == Alliance.FRIENDLY else "hostile")
