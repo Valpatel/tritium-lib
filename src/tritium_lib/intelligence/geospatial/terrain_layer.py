@@ -198,6 +198,11 @@ class TerrainLayer:
                     terrain_type = TerrainType.UNKNOWN
 
                 centroid = props.get("centroid", (0, 0))
+                # Extract custom properties (OSM name, road type, etc.)
+                custom_props = {
+                    k: v for k, v in props.items()
+                    if k not in ("terrain_type", "confidence", "area_m2", "centroid")
+                }
                 region = SegmentedRegion(
                     geometry_wkt=wkt,
                     terrain_type=terrain_type,
@@ -205,6 +210,7 @@ class TerrainLayer:
                     area_m2=props.get("area_m2", 0.0),
                     centroid_lon=centroid[0] if isinstance(centroid, (list, tuple)) else 0,
                     centroid_lat=centroid[1] if isinstance(centroid, (list, tuple)) else 0,
+                    properties=custom_props,
                 )
                 self._regions.append(region)
 
@@ -327,18 +333,24 @@ class TerrainLayer:
         for region in self._regions:
             # Parse WKT to coordinates
             coords = self._wkt_to_coords(region.geometry_wkt)
+            props = {
+                "terrain_type": region.terrain_type.value,
+                "confidence": region.confidence,
+                "area_m2": region.area_m2,
+                "centroid": (region.centroid_lon, region.centroid_lat),
+            }
+            # Include custom properties (OSM name, building type, etc.)
+            if region.properties:
+                for k, v in region.properties.items():
+                    if k not in props:
+                        props[k] = v
             features.append({
                 "type": "Feature",
                 "geometry": {
                     "type": "Polygon",
                     "coordinates": [coords] if coords else [[]],
                 },
-                "properties": {
-                    "terrain_type": region.terrain_type.value,
-                    "confidence": region.confidence,
-                    "area_m2": region.area_m2,
-                    "centroid": (region.centroid_lon, region.centroid_lat),
-                },
+                "properties": props,
             })
         return {"type": "FeatureCollection", "features": features}
 
