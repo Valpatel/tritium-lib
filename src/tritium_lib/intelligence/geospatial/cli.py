@@ -134,6 +134,60 @@ def cmd_query(args):
     print(f"({args.lat}, {args.lon}): {result.value}")
 
 
+def cmd_osm(args):
+    """Build terrain layer from OSM data only (no satellite imagery needed)."""
+    from tritium_lib.models.gis import TileBounds
+    from tritium_lib.intelligence.geospatial.osm_enrichment import OSMEnrichment
+    from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
+    from tritium_lib.intelligence.geospatial.models import SegmentedRegion, TerrainLayerMetadata
+
+    r_deg = args.radius / 111320.0
+    bounds = TileBounds(
+        min_lat=args.lat - r_deg, min_lon=args.lon - r_deg / math.cos(math.radians(args.lat)),
+        max_lat=args.lat + r_deg, max_lon=args.lon + r_deg / math.cos(math.radians(args.lat)),
+    )
+
+    t0 = time.monotonic()
+    enrichment = OSMEnrichment()
+    osm_features = enrichment.fetch_osm(bounds)
+    print(f"Fetched {len(osm_features)} OSM features in {time.monotonic()-t0:.1f}s")
+
+    regions = []
+    for f in osm_features:
+        if f.lat == 0 and f.lon == 0:
+            continue
+        props = {"osm_id": f.osm_id, "source": "osm"}
+        if f.name:
+            props["osm_name"] = f.name
+        if f.road_type:
+            props["road_type"] = f.road_type
+        if f.building_type:
+            props["building_type"] = f.building_type
+        if f.speed_limit:
+            props["speed_limit"] = f.speed_limit
+        regions.append(SegmentedRegion(
+            geometry_wkt="POLYGON EMPTY", terrain_type=f.terrain_type,
+            confidence=0.85, area_m2=100,
+            centroid_lat=f.lat, centroid_lon=f.lon, properties=props,
+        ))
+
+    elapsed = time.monotonic() - t0
+    layer = TerrainLayer(cache_dir=Path("data/cache/terrain"))
+    layer._regions = regions
+    layer._bounds = bounds
+    layer._metadata = TerrainLayerMetadata(
+        ao_id=args.ao_id, segment_count=len(regions),
+        processing_time_s=elapsed, source_imagery="osm", bounds=bounds,
+    )
+    layer._build_grid_index()
+    layer._save_cache(args.ao_id)
+
+    print(f"Built {len(regions)} features in {elapsed:.1f}s")
+    print(f"Cached to data/cache/terrain/{args.ao_id}/")
+    print()
+    print(layer.terrain_brief())
+
+
 def cmd_status(args):
     """Show cached terrain areas."""
     cache_dir = Path("data/cache/terrain")
@@ -175,6 +229,12 @@ def main():
     p.add_argument("--lon", type=float, required=True)
     p.add_argument("ao_id", help="Area of operations ID")
 
+    p = sub.add_parser("osm", help="Build terrain from OSM data (no satellite imagery)")
+    p.add_argument("--lat", type=float, required=True, help="Center latitude")
+    p.add_argument("--lon", type=float, required=True, help="Center longitude")
+    p.add_argument("--radius", type=float, default=500, help="Radius in meters")
+    p.add_argument("--ao-id", default="osm_area", help="Area of operations ID")
+
     sub.add_parser("status", help="Show cached terrain areas")
 
     args = parser.parse_args()
@@ -183,7 +243,7 @@ def main():
         sys.exit(1)
 
     {"process": cmd_process, "brief": cmd_brief, "missions": cmd_missions,
-     "query": cmd_query, "status": cmd_status}[args.command](args)
+     "query": cmd_query, "osm": cmd_osm, "status": cmd_status}[args.command](args)
 
 
 if __name__ == "__main__":
