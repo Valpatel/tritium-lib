@@ -154,7 +154,9 @@ from tritium_lib.sim_engine.collision import (
 from tritium_lib.sim_engine.spawner import (
     SpawnerEngine, SpawnPoint, EnemyComposition, SpawnPattern, WAVE_PRESETS,
 )
-# 18. Artillery — fire support
+# 18. Weather visual effects
+from tritium_lib.sim_engine.weather_fx import WeatherFXEngine
+# 19. Artillery — fire support
 from tritium_lib.sim_engine.artillery import (
     ArtilleryEngine, ArtilleryPiece, ArtilleryType, ARTILLERY_TEMPLATES,
 )
@@ -194,6 +196,7 @@ class GameState:
         self.morale: MoraleEngine | None = None
         self.ew: EWEngine | None = None
         self.supply_routes: SupplyRouteEngine | None = None
+        self.weather_fx: WeatherFXEngine | None = None
         self.spawner: SpawnerEngine | None = None
         self.collision: CollisionWorld | None = None
         self.artillery: ArtilleryEngine | None = None
@@ -425,7 +428,10 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         if unit.alliance == Alliance.FRIENDLY:
             gs.supply_routes.register_unit(uid, alliance="friendly")
 
-    # 14. Wave spawner — hostile reinforcement spawn points
+    # 14. Weather visual effects (rain, fog, lightning)
+    gs.weather_fx = WeatherFXEngine()
+
+    # 15. Wave spawner — hostile reinforcement spawn points
     gs.spawner = SpawnerEngine(seed=42)
     gs.spawner.add_spawn_point(SpawnPoint(position=(450.0, 250.0)))
     gs.spawner.add_spawn_point(SpawnPoint(position=(250.0, 450.0)))
@@ -636,7 +642,16 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         frame["supply_routes"] = gs.supply_routes.to_three_js()
         frame["supply_warnings"] = sr_result.get("warnings", [])
 
-    # 14. Spawner tick
+    # 14. Weather FX tick
+    if gs.weather_fx is not None:
+        env_snap = gs.world.environment.snapshot()
+        wx_state = {"type": env_snap.get("weather", "clear"), "intensity": 0.5}
+        time_state = {"hour": env_snap.get("hour", 12.0)}
+        wx_fx = gs.weather_fx.tick(dt, wx_state, time_state)
+        if wx_fx:
+            frame["weather_fx"] = wx_fx
+
+    # 15. Spawner tick
     if gs.spawner is not None:
         spawn_events = gs.spawner.tick(dt)
         frame["spawner"] = gs.spawner.to_three_js()
