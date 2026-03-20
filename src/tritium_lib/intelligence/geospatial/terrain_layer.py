@@ -505,6 +505,31 @@ class TerrainLayer:
             dense = [v for v in veg if v.area_m2 > 5000]
             lines.append(f"  - Vegetation: {len(veg)} areas, {len(dense)} dense (>5000 m²)")
 
+        # Named features from OSM (when available)
+        named_roads = [
+            r.properties["osm_name"]
+            for r in self._regions
+            if r.terrain_type == TerrainType.ROAD and r.properties.get("osm_name")
+        ]
+        if named_roads:
+            # Deduplicate and show top roads
+            unique_roads = list(dict.fromkeys(named_roads))  # preserves order, deduplicates
+            lines.append("")
+            lines.append(f"Major Roads ({len(unique_roads)} named):")
+            for road in unique_roads[:8]:
+                lines.append(f"  - {road}")
+
+        named_buildings = [
+            r.properties["osm_name"]
+            for r in self._regions
+            if r.terrain_type == TerrainType.BUILDING and r.properties.get("osm_name")
+        ]
+        if named_buildings:
+            lines.append("")
+            lines.append(f"Named Structures ({len(named_buildings)}):")
+            for bldg in named_buildings[:5]:
+                lines.append(f"  - {bldg}")
+
         return "\n".join(lines)
 
     # --- Grid index ---
