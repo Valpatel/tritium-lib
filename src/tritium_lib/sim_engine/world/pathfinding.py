@@ -36,6 +36,9 @@ _FLYING_TYPES = {"drone", "scout_drone"}
 # Unit types that follow roads
 _ROAD_TYPES = {"rover", "tank", "apc", "vehicle"}
 
+# Unit types that prefer sidewalks (pedestrian navigation)
+_PEDESTRIAN_TYPES = {"person", "infantry", "civilian", "animal"}
+
 # Distance threshold for hostile direct approach (meters)
 _HOSTILE_DIRECT_RANGE = 30.0
 
@@ -48,6 +51,7 @@ def plan_path(
     obstacles: Optional[BuildingObstacles] = None,
     alliance: str = "friendly",
     terrain_map: Optional[TerrainMap] = None,
+    sidewalk_graph: Optional[SidewalkGraph] = None,
 ) -> Optional[list[tuple[float, float]]]:
     """Plan a path from start to end based on unit type and available data.
 
@@ -59,6 +63,7 @@ def plan_path(
         obstacles: loaded BuildingObstacles (or None if unavailable)
         alliance: "friendly", "hostile", or "neutral"
         terrain_map: loaded TerrainMap for grid A* fallback (or None)
+        sidewalk_graph: loaded SidewalkGraph for pedestrian navigation (or None)
 
     Returns:
         List of (x, y) waypoints, or None for stationary units.
@@ -74,6 +79,13 @@ def plan_path(
     # Graphlings: always use grid A* with building avoidance (never street graph)
     if unit_type == "graphling":
         return _grid_fallback(start, end, unit_type, alliance, terrain_map, obstacles)
+
+    # Pedestrians: try sidewalk graph first for terrain-aware routing
+    if unit_type in _PEDESTRIAN_TYPES and sidewalk_graph is not None:
+        path = _sidewalk_path(start, end, sidewalk_graph)
+        if path is not None and len(path) > 2:
+            return path
+        # Sidewalk graph didn't have coverage — fall through to other methods
 
     # Hostile persons: road approach then direct last 30m
     if alliance == "hostile" and unit_type == "person":
@@ -93,6 +105,21 @@ def plan_path(
 
     # Unknown or other unit types: grid A* then direct fallback
     return _grid_fallback(start, end, unit_type, alliance, terrain_map, obstacles)
+
+
+def _sidewalk_path(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    sidewalk_graph: SidewalkGraph,
+) -> Optional[list[tuple[float, float]]]:
+    """Route pedestrians along sidewalk graph for terrain-aware navigation."""
+    try:
+        path = sidewalk_graph.find_path(start, end)
+        if path is not None and len(path) >= 2:
+            return path
+    except Exception:
+        pass
+    return None
 
 
 def _grid_fallback(

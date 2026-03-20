@@ -48,3 +48,8 @@ __all__ = [
     "CoverSystem",
     "CoverObject",
 ]
+
+# Note: SidewalkGraph is available via:
+#   from tritium_lib.intelligence.geospatial.sidewalk_graph import SidewalkGraph
+# TerrainLayer is available via:
+#   from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer

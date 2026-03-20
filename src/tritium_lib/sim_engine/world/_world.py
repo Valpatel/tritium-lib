@@ -165,6 +165,10 @@ class World:
         self.vehicles: dict[str, VehicleState] = {}
         self.drone_controllers: dict[str, DroneController] = {}
 
+        # --- geospatial terrain layer (optional) ---
+        self.terrain_layer: Any = None  # TerrainLayer from intelligence.geospatial
+        self.sidewalk_graph: Any = None  # SidewalkGraph for pedestrian nav
+
         # --- bookkeeping ---
         self.tick_count: int = 0
         self.sim_time: float = 0.0
@@ -835,6 +839,8 @@ class WorldBuilder:
         self._vehicles: list[tuple[str, str, str, Vec2]] = []
         self._structures: list[tuple[Vec2, tuple[float, float, float], str]] = []
         self._crowds: list[tuple[Vec2, int, float, CrowdMood]] = []
+        self._terrain_layer: Any = None
+        self._terrain_layer_ao_id: str | None = None
 
     def set_map_size(self, width: float, height: float) -> WorldBuilder:
         self._config.map_size = (width, height)
@@ -907,6 +913,24 @@ class WorldBuilder:
         self._config.enable_crowds = True
         return self
 
+    def load_terrain_layer(self, terrain_layer: Any) -> WorldBuilder:
+        """Attach a geospatial TerrainLayer for terrain-aware pathfinding.
+
+        The terrain layer provides classified terrain polygons (buildings,
+        roads, water, vegetation, sidewalks) from satellite/aerial imagery.
+        It builds a SidewalkGraph for pedestrian navigation automatically.
+        """
+        self._terrain_layer = terrain_layer
+        return self
+
+    def load_terrain_cache(self, ao_id: str, cache_dir: str = "data/cache/terrain") -> WorldBuilder:
+        """Load a cached TerrainLayer by AO ID.
+
+        Convenience method that creates a TerrainLayer and loads from cache.
+        """
+        self._terrain_layer_ao_id = ao_id
+        return self
+
     def build(self) -> World:
         """Construct the World from accumulated configuration."""
         world = World(self._config)
@@ -959,6 +983,29 @@ class WorldBuilder:
         # Crowds
         for center, count, radius, mood in self._crowds:
             world.spawn_crowd(center, count, radius, mood)
+
+        # Geospatial terrain layer
+        if self._terrain_layer is not None:
+            world.terrain_layer = self._terrain_layer
+            try:
+                from tritium_lib.intelligence.geospatial.sidewalk_graph import SidewalkGraph
+                sg = SidewalkGraph()
+                sg.build_from_terrain_layer(self._terrain_layer)
+                world.sidewalk_graph = sg
+            except Exception:
+                pass
+        elif self._terrain_layer_ao_id is not None:
+            try:
+                from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
+                from tritium_lib.intelligence.geospatial.sidewalk_graph import SidewalkGraph
+                tl = TerrainLayer()
+                if tl.load_cached(self._terrain_layer_ao_id):
+                    world.terrain_layer = tl
+                    sg = SidewalkGraph()
+                    sg.build_from_terrain_layer(tl)
+                    world.sidewalk_graph = sg
+            except Exception:
+                pass
 
         return world
 

@@ -17,6 +17,19 @@ dependencies = [
 mqtt = ["paho-mqtt>=2.0"]
 graph = ["kuzu>=0.4"]
 testing = ["requests>=2.28", "opencv-python-headless>=4.8", "numpy>=1.24"]
+geospatial = [
+    "rasterio>=1.3",
+    "shapely>=2.0",
+    "geopandas>=0.14",
+    "Pillow>=10.0",
+    "numpy>=1.24",
+    "requests>=2.28",
+]
+sam = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "segment-anything-2>=0.1",
+]
 full = ["paho-mqtt>=2.0", "bcrypt>=4.1.0", "requests>=2.28", "opencv-python-headless>=4.8", "numpy>=1.24", "kuzu>=0.4"]
 
 [build-system]
@@ -24,9 +37,13 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
+markers = [
+    "slow: marks tests that hit the network or take >10s (deselect with '-m \"not slow\"')",
+]
 filterwarnings = [
     "error",
     "ignore::jwt.warnings.InsecureKeyLengthWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.setuptools.packages.find]

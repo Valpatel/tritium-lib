@@ -19,8 +19,15 @@ from pydantic import BaseModel, Field
 
 
 class TerrainType(str, Enum):
-    """Terrain classification for RF propagation modeling."""
+    """Terrain classification for RF propagation and geospatial segmentation.
 
+    Original values (URBAN..INDOOR) model RF propagation environments.
+    Segmentation values (BUILDING..BARREN) classify satellite/aerial imagery
+    into navigable terrain polygons for pathfinding, NPC AI, and commander
+    intelligence.
+    """
+
+    # RF propagation environments
     URBAN = "urban"
     SUBURBAN = "suburban"
     RURAL = "rural"
@@ -30,6 +37,16 @@ class TerrainType(str, Enum):
     MOUNTAIN = "mountain"
     INDOOR = "indoor"
     UNKNOWN = "unknown"
+
+    # Geospatial segmentation — from satellite/aerial imagery
+    BUILDING = "building"
+    ROAD = "road"
+    SIDEWALK = "sidewalk"
+    PARKING = "parking"
+    VEGETATION = "vegetation"
+    BRIDGE = "bridge"
+    RAIL = "rail"
+    BARREN = "barren"  # dirt, gravel, construction
 
 
 class ElevationPoint(BaseModel):
@@ -158,6 +175,15 @@ def terrain_path_loss_db(
         TerrainType.MOUNTAIN: 15.0,
         TerrainType.INDOOR: 35.0,
         TerrainType.UNKNOWN: 20.0,
+        # Segmentation types — mapped to nearest RF environment
+        TerrainType.BUILDING: 35.0,
+        TerrainType.ROAD: 10.0,
+        TerrainType.SIDEWALK: 10.0,
+        TerrainType.PARKING: 12.0,
+        TerrainType.VEGETATION: 20.0,
+        TerrainType.BRIDGE: 15.0,
+        TerrainType.RAIL: 12.0,
+        TerrainType.BARREN: 8.0,
     }
 
     extra_loss = terrain_factor.get(terrain, 20.0)

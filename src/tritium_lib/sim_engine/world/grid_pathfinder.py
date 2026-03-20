@@ -37,20 +37,52 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class MovementProfile:
-    """Cost multipliers for each terrain type."""
+    """Cost multipliers for each terrain type.
+
+    Original fields (road, yard, open_, building, water) map to the
+    legacy TerrainMap string types. New fields (sidewalk, parking,
+    vegetation, bridge, rail, barren) map to geospatial segmentation
+    TerrainType values for richer terrain-aware pathfinding.
+    """
     road: float       # cost on road cells
     yard: float       # cost on yard/park cells
     open_: float      # cost on open terrain
     building: float   # cost through buildings (inf = impassable)
     water: float      # cost through water (inf = impassable)
+    # Geospatial segmentation terrain types
+    sidewalk: float = 1.0    # paved pedestrian paths
+    parking: float = 1.0     # parking lots
+    vegetation: float = 1.5  # light vegetation / parks
+    bridge: float = 0.7      # bridge over water/rail
+    rail: float = 5.0        # railroad tracks
+    barren: float = 1.2      # dirt, gravel, construction
 
 
 PROFILES: dict[str, MovementProfile] = {
-    "pedestrian":    MovementProfile(road=0.7, yard=1.0, open_=1.0, building=25.0, water=999.0),
-    "light_vehicle": MovementProfile(road=0.7, yard=1.5, open_=2.0, building=999.0, water=999.0),
-    "heavy_vehicle": MovementProfile(road=0.7, yard=999.0, open_=999.0, building=999.0, water=999.0),
-    "aerial":        MovementProfile(road=1.0, yard=1.0, open_=1.0, building=5.0, water=1.0),
-    "graphling":     MovementProfile(road=0.8, yard=1.0, open_=1.0, building=999.0, water=999.0),
+    "pedestrian":    MovementProfile(
+        road=0.7, yard=1.0, open_=1.0, building=25.0, water=999.0,
+        sidewalk=0.7, parking=1.0, vegetation=1.5, bridge=0.8, rail=5.0, barren=1.2,
+    ),
+    "light_vehicle": MovementProfile(
+        road=0.7, yard=1.5, open_=2.0, building=999.0, water=999.0,
+        sidewalk=999.0, parking=0.8, vegetation=3.0, bridge=0.7, rail=999.0, barren=1.5,
+    ),
+    "heavy_vehicle": MovementProfile(
+        road=0.7, yard=999.0, open_=999.0, building=999.0, water=999.0,
+        sidewalk=999.0, parking=1.0, vegetation=999.0, bridge=0.8, rail=999.0, barren=2.0,
+    ),
+    "aerial":        MovementProfile(
+        road=1.0, yard=1.0, open_=1.0, building=5.0, water=1.0,
+        sidewalk=1.0, parking=1.0, vegetation=1.0, bridge=1.0, rail=1.0, barren=1.0,
+    ),
+    "graphling":     MovementProfile(
+        road=0.8, yard=1.0, open_=1.0, building=999.0, water=999.0,
+        sidewalk=0.8, parking=1.0, vegetation=1.0, bridge=0.8, rail=5.0, barren=1.0,
+    ),
+    "rover":         MovementProfile(
+        road=0.8, yard=1.2, open_=1.0, building=999.0, water=999.0,
+        sidewalk=2.0, parking=1.0, vegetation=1.5, bridge=0.8, rail=999.0, barren=1.2,
+    ),
 }
 
 # Terrain type -> profile field mapping
@@ -60,6 +92,13 @@ _TERRAIN_TO_FIELD = {
     "open": "open_",
     "building": "building",
     "water": "water",
+    # Geospatial segmentation terrain types
+    "sidewalk": "sidewalk",
+    "parking": "parking",
+    "vegetation": "vegetation",
+    "bridge": "bridge",
+    "rail": "rail",
+    "barren": "barren",
 }
 
 # 8-directional neighbor offsets (dx, dy, distance_multiplier)

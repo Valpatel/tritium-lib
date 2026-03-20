@@ -110,4 +110,6 @@ __all__ = [
     "estimate_from_multiple_anchors",
     "estimate_from_single_anchor",
     "fusion_rssi_to_distance",
+    # Geospatial segmentation (subpackage)
+    "geospatial",
 ]

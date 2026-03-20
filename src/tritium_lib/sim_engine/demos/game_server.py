@@ -194,22 +194,24 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         .add_terrain_noise(octaves=4, amplitude=8.0, seed=42)
         .set_weather(Weather.RAIN)
         # Friendly squad: 4 infantry + 1 sniper + 1 medic
+        # Positioned near the center for quick engagement
         .spawn_friendly_squad(
             "Alpha",
             ["infantry", "infantry", "infantry", "infantry", "sniper", "medic"],
-            (100.0, 100.0),
+            (200.0, 200.0),
             spacing=4.0,
         )
         # Hostile squad: 6 infantry + 2 heavy
+        # Close enough for combat within ~10 seconds
         .spawn_hostile_squad(
             "Tango",
             ["infantry"] * 6 + ["heavy", "heavy"],
-            (400.0, 400.0),
+            (280.0, 280.0),
             spacing=4.0,
         )
         # 4. Vehicles — humvee (friendly), technical (hostile)
-        .add_vehicle("humvee", "Humvee-Alpha", "friendly", (90.0, 90.0))
-        .add_vehicle("technical", "Technical-1", "hostile", (410.0, 410.0))
+        .add_vehicle("humvee", "Humvee-Alpha", "friendly", (190.0, 190.0))
+        .add_vehicle("technical", "Technical-1", "hostile", (290.0, 290.0))
         # 10. Destruction — 4 buildings
         .add_building((200.0, 200.0), (20, 15, 10), "concrete")
         .add_building((220.0, 180.0), (15, 10, 8), "concrete")
@@ -218,6 +220,19 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         # 9. Crowd — 50 civilians in market area
         .add_crowd((250.0, 250.0), 50, 30.0, CrowdMood.CALM)
     )
+
+    # Try to load geospatial terrain layer if cached data exists
+    try:
+        from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
+        from pathlib import Path
+        tl = TerrainLayer()
+        # Check common cache locations
+        for ao_id in ["demo_area", "default"]:
+            if tl.load_cached(ao_id):
+                builder.load_terrain_layer(tl)
+                break
+    except Exception:
+        pass
 
     gs.world = builder.build()
 
