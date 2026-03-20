@@ -172,9 +172,16 @@ class MissionGenerator:
         buildings = terrain_layer.features_by_type(TerrainType.BUILDING)
         missions = []
 
-        # Large buildings → overwatch positions
-        large_buildings = [b for b in buildings if b.area_m2 > 2000]
-        for i, bldg in enumerate(large_buildings[:5]):  # max 5 overwatch missions
+        # Overwatch positions: large buildings OR named buildings from OSM
+        overwatch_candidates = [
+            b for b in buildings
+            if b.area_m2 > 2000 or b.properties.get("osm_name")
+        ]
+        # Prioritize named buildings, then sort by area
+        overwatch_candidates.sort(
+            key=lambda b: (0 if b.properties.get("osm_name") else 1, -b.area_m2)
+        )
+        for i, bldg in enumerate(overwatch_candidates[:5]):
             name = bldg.properties.get("osm_name", f"Structure {i+1}")
             tmpl = _MISSION_TEMPLATES["overwatch"]
 
