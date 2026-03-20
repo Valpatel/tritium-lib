@@ -150,7 +150,11 @@ from tritium_lib.sim_engine.status_effects import (
 from tritium_lib.sim_engine.collision import (
     CollisionWorld, Collider, ColliderType,
 )
-# 17. Artillery — fire support
+# 17. Wave spawner — reinforcement waves
+from tritium_lib.sim_engine.spawner import (
+    SpawnerEngine, SpawnPoint, EnemyComposition, SpawnPattern, WAVE_PRESETS,
+)
+# 18. Artillery — fire support
 from tritium_lib.sim_engine.artillery import (
     ArtilleryEngine, ArtilleryPiece, ArtilleryType, ARTILLERY_TEMPLATES,
 )
@@ -190,6 +194,7 @@ class GameState:
         self.morale: MoraleEngine | None = None
         self.ew: EWEngine | None = None
         self.supply_routes: SupplyRouteEngine | None = None
+        self.spawner: SpawnerEngine | None = None
         self.collision: CollisionWorld | None = None
         self.artillery: ArtilleryEngine | None = None
         self.abilities: AbilityEngine | None = None
@@ -420,7 +425,12 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         if unit.alliance == Alliance.FRIENDLY:
             gs.supply_routes.register_unit(uid, alliance="friendly")
 
-    # 14. Collision world — unit and vehicle collisions
+    # 14. Wave spawner — hostile reinforcement spawn points
+    gs.spawner = SpawnerEngine(seed=42)
+    gs.spawner.add_spawn_point(SpawnPoint(position=(450.0, 250.0)))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(250.0, 450.0)))
+
+    # 15. Collision world — unit and vehicle collisions
     gs.collision = CollisionWorld(cell_size=5.0)
     for uid, unit in gs.world.units.items():
         gs.collision.add(Collider(
@@ -626,7 +636,12 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         frame["supply_routes"] = gs.supply_routes.to_three_js()
         frame["supply_warnings"] = sr_result.get("warnings", [])
 
-    # 14. Collision tick
+    # 14. Spawner tick
+    if gs.spawner is not None:
+        spawn_events = gs.spawner.tick(dt)
+        frame["spawner"] = gs.spawner.to_three_js()
+
+    # 15. Collision tick
     if gs.collision is not None:
         for uid, u in gs.world.units.items():
             if u.is_alive():
