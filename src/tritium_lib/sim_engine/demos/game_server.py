@@ -146,7 +146,11 @@ from tritium_lib.sim_engine.abilities import (
 from tritium_lib.sim_engine.status_effects import (
     StatusEffectEngine,
 )
-# 16. Objectives — mission chains with triggers
+# 16. Artillery — fire support
+from tritium_lib.sim_engine.artillery import (
+    ArtilleryEngine, ArtilleryPiece, ArtilleryType, ARTILLERY_TEMPLATES,
+)
+# 17. Objectives — mission chains with triggers
 from tritium_lib.sim_engine.objectives import (
     ObjectiveEngine, MissionObjective, ObjectiveType, ObjectiveStatus,
     OBJECTIVE_TEMPLATES,
@@ -182,6 +186,7 @@ class GameState:
         self.morale: MoraleEngine | None = None
         self.ew: EWEngine | None = None
         self.supply_routes: SupplyRouteEngine | None = None
+        self.artillery: ArtilleryEngine | None = None
         self.abilities: AbilityEngine | None = None
         self.status_effects: StatusEffectEngine | None = None
         self.objectives: ObjectiveEngine | None = None
@@ -410,7 +415,20 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         if unit.alliance == Alliance.FRIENDLY:
             gs.supply_routes.register_unit(uid, alliance="friendly")
 
-    # 14. Abilities — grant special abilities to units
+    # 14. Artillery — friendly mortar battery
+    gs.artillery = ArtilleryEngine()
+    mortar_tmpl = ARTILLERY_TEMPLATES[ArtilleryType.MORTAR_60MM]
+    gs.artillery.add_piece(ArtilleryPiece(
+        piece_id="mortar_1", artillery_type=ArtilleryType.MORTAR_60MM,
+        alliance="friendly", position=(180.0, 180.0), heading=0.7,
+        min_range=mortar_tmpl["min_range"], max_range=mortar_tmpl["max_range"],
+        damage=mortar_tmpl["damage"], blast_radius=mortar_tmpl["blast_radius"],
+        reload_time=mortar_tmpl["reload_time"], ammo=mortar_tmpl["max_ammo"],
+        max_ammo=mortar_tmpl["max_ammo"], accuracy_cep=mortar_tmpl["accuracy_cep"],
+        crew=mortar_tmpl["crew"],
+    ))
+
+    # 15. Abilities — grant special abilities to units
     gs.abilities = AbilityEngine()
     # Grant smoke grenade to snipers, heal to medics
     for uid, unit in gs.world.units.items():
@@ -590,7 +608,12 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         frame["supply_routes"] = gs.supply_routes.to_three_js()
         frame["supply_warnings"] = sr_result.get("warnings", [])
 
-    # 14. Abilities tick
+    # 14. Artillery tick
+    if gs.artillery is not None:
+        arty_events = gs.artillery.tick(dt)
+        frame["artillery"] = gs.artillery.to_three_js()
+
+    # 15. Abilities tick
     if gs.abilities is not None:
         ability_events = gs.abilities.tick(dt)
         # Collect ability visual effects per unit
