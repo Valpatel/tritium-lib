@@ -138,6 +138,15 @@ from tritium_lib.sim_engine.electronic_warfare import (
 from tritium_lib.sim_engine.supply_routes import (
     SupplyRouteEngine, SupplyLine, SupplyConvoy,
 )
+# 14. Objectives — mission chains with triggers
+from tritium_lib.sim_engine.objectives import (
+    ObjectiveEngine, MissionObjective, ObjectiveType, ObjectiveStatus,
+    OBJECTIVE_TEMPLATES,
+)
+# 15. Territory — influence maps and control points
+from tritium_lib.sim_engine.territory import (
+    InfluenceMap, TerritoryControl, ControlPoint, StrategicValue,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +174,9 @@ class GameState:
         self.morale: MoraleEngine | None = None
         self.ew: EWEngine | None = None
         self.supply_routes: SupplyRouteEngine | None = None
+        self.objectives: ObjectiveEngine | None = None
+        self.territory: TerritoryControl | None = None
+        self.influence: InfluenceMap | None = None
         self.running: bool = False
         self.paused: bool = False
         self.tick_count: int = 0
@@ -388,6 +400,22 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         if unit.alliance == Alliance.FRIENDLY:
             gs.supply_routes.register_unit(uid, alliance="friendly")
 
+    # 14. Objectives — assault mission chain
+    gs.objectives = ObjectiveEngine()
+    gs.objectives.load_template("assault_chain")
+
+    # 15. Territory — influence map and control points
+    gs.influence = InfluenceMap(width=500, height=500, cell_size=10.0)
+    gs.territory = TerritoryControl()
+    gs.territory.add_control_point(ControlPoint(
+        point_id="cp_center", name="Central Objective",
+        position=(250.0, 250.0), capture_radius=30.0,
+    ))
+    gs.territory.add_control_point(ControlPoint(
+        point_id="cp_east", name="Eastern Approach",
+        position=(350.0, 250.0), capture_radius=25.0,
+    ))
+
     gs.start_time = time.time()
     return gs
 
@@ -537,6 +565,45 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         sr_result = gs.supply_routes.tick(dt, unit_positions=unit_pos_supply, enemy_positions=enemy_pos_supply)
         frame["supply_routes"] = gs.supply_routes.to_three_js()
         frame["supply_warnings"] = sr_result.get("warnings", [])
+
+    # 14. Objectives tick
+    if gs.objectives is not None:
+        world_state = {
+            "friendly_positions": {
+                uid: u.position for uid, u in gs.world.units.items()
+                if u.is_alive() and u.alliance == Alliance.FRIENDLY
+            },
+            "hostile_positions": {
+                uid: u.position for uid, u in gs.world.units.items()
+                if u.is_alive() and u.alliance == Alliance.HOSTILE
+            },
+            "friendly_count": sum(
+                1 for u in gs.world.units.values()
+                if u.is_alive() and u.alliance == Alliance.FRIENDLY
+            ),
+            "hostile_count": sum(
+                1 for u in gs.world.units.values()
+                if u.is_alive() and u.alliance == Alliance.HOSTILE
+            ),
+        }
+        obj_events = gs.objectives.tick(dt, world_state)
+        frame["objectives"] = gs.objectives.to_three_js()
+
+    # 15. Territory/Influence tick
+    if gs.influence is not None:
+        inf_units = {
+            uid: (u.position, "friendly" if u.alliance == Alliance.FRIENDLY else "hostile")
+            for uid, u in gs.world.units.items() if u.is_alive()
+        }
+        gs.influence.tick(dt, inf_units)
+        frame["influence"] = gs.influence.to_three_js()
+    if gs.territory is not None:
+        terr_units = {
+            uid: (u.position, "friendly" if u.alliance == Alliance.FRIENDLY else "hostile")
+            for uid, u in gs.world.units.items() if u.is_alive()
+        }
+        terr_events = gs.territory.tick(dt, terr_units)
+        frame["territory"] = gs.territory.to_dict()
 
     # Add metadata
     frame["tick"] = gs.tick_count
