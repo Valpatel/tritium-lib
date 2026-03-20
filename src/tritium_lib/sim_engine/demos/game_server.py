@@ -544,6 +544,27 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     frame["preset"] = gs.preset
     frame["stats"] = gs.world.stats()
 
+    # Add terrain data on first tick (large payload, sent once)
+    if gs.tick_count == 1 and gs.world.terrain_layer is not None:
+        tl = gs.world.terrain_layer
+        frame["terrain_geojson"] = tl.to_geojson()
+        frame["terrain_brief"] = tl.terrain_brief()
+        # Add mission data
+        try:
+            from tritium_lib.intelligence.geospatial.mission_generator import MissionGenerator
+            gen = MissionGenerator()
+            missions = gen.generate_missions(tl)
+            frame["missions"] = [
+                {
+                    "id": m.id, "type": m.mission_type, "name": m.name,
+                    "description": m.description, "position": m.position,
+                    "waypoints": m.waypoints, "priority": m.priority,
+                }
+                for m in missions
+            ]
+        except Exception:
+            pass
+
     return frame
 
 
