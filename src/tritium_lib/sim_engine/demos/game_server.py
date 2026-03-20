@@ -265,11 +265,21 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     try:
         from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
         from pathlib import Path
-        tl = TerrainLayer()
-        # Check common cache locations
-        for ao_id in ["demo_area", "default"]:
-            if tl.load_cached(ao_id):
-                builder.load_terrain_layer(tl)
+
+        # Search common cache locations (CWD-relative and absolute)
+        cache_dirs = [
+            Path("data/cache/terrain"),
+            Path(__file__).parent.parent.parent.parent.parent / "data" / "cache" / "terrain",
+        ]
+        for cache_dir in cache_dirs:
+            if not cache_dir.exists():
+                continue
+            tl = TerrainLayer(cache_dir=cache_dir)
+            for ao_id in ["demo_area", "default"]:
+                if tl.load_cached(ao_id):
+                    builder.load_terrain_layer(tl)
+                    break
+            if builder._terrain_layer is not None:
                 break
     except Exception:
         pass
