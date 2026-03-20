@@ -43,6 +43,37 @@ class CoverSystem:
         """Add a cover object to the system."""
         self._cover_objects.append(cover)
 
+    def load_from_terrain_layer(self, terrain_layer: object) -> int:
+        """Add cover objects from geospatial terrain buildings.
+
+        Each building in the terrain layer becomes a cover object.
+        Returns number of cover objects added.
+        """
+        if not hasattr(terrain_layer, 'regions'):
+            return 0
+
+        count = 0
+        for region in terrain_layer.regions:
+            if region.terrain_type.value == "building":
+                # Buildings provide strong cover
+                cover_radius = max(2.0, math.sqrt(region.area_m2) / 4)
+                self.add_cover(CoverObject(
+                    position=(region.centroid_lon, region.centroid_lat),
+                    radius=cover_radius,
+                    cover_value=0.6,
+                ))
+                count += 1
+            elif region.terrain_type.value == "vegetation":
+                # Dense vegetation provides light cover (concealment)
+                if region.area_m2 > 1000:
+                    self.add_cover(CoverObject(
+                        position=(region.centroid_lon, region.centroid_lat),
+                        radius=max(3.0, math.sqrt(region.area_m2) / 3),
+                        cover_value=0.3,
+                    ))
+                    count += 1
+        return count
+
     def add_cover_point(self, position: tuple[float, float]) -> CoverObject:
         """Add a cover point at the given position.
 
