@@ -139,6 +139,14 @@ from tritium_lib.sim_engine.supply_routes import (
     SupplyRouteEngine, SupplyLine, SupplyConvoy,
 )
 # 14. Objectives — mission chains with triggers
+from tritium_lib.sim_engine.abilities import (
+    AbilityEngine, Ability, ABILITIES,
+)
+# 15. Status effects (suppression, healing, burning)
+from tritium_lib.sim_engine.status_effects import (
+    StatusEffectEngine,
+)
+# 16. Objectives — mission chains with triggers
 from tritium_lib.sim_engine.objectives import (
     ObjectiveEngine, MissionObjective, ObjectiveType, ObjectiveStatus,
     OBJECTIVE_TEMPLATES,
@@ -174,6 +182,8 @@ class GameState:
         self.morale: MoraleEngine | None = None
         self.ew: EWEngine | None = None
         self.supply_routes: SupplyRouteEngine | None = None
+        self.abilities: AbilityEngine | None = None
+        self.status_effects: StatusEffectEngine | None = None
         self.objectives: ObjectiveEngine | None = None
         self.territory: TerritoryControl | None = None
         self.influence: InfluenceMap | None = None
@@ -400,7 +410,21 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         if unit.alliance == Alliance.FRIENDLY:
             gs.supply_routes.register_unit(uid, alliance="friendly")
 
-    # 14. Objectives — assault mission chain
+    # 14. Abilities — grant special abilities to units
+    gs.abilities = AbilityEngine()
+    # Grant smoke grenade to snipers, heal to medics
+    for uid, unit in gs.world.units.items():
+        for ability in ABILITIES.values():
+            if unit.unit_type.value in getattr(ability, 'allowed_types', []) or not hasattr(ability, 'allowed_types'):
+                try:
+                    gs.abilities.grant_ability(uid, ability)
+                except Exception:
+                    pass
+
+    # 15. Status effects
+    gs.status_effects = StatusEffectEngine()
+
+    # 16. Objectives — assault mission chain
     gs.objectives = ObjectiveEngine()
     gs.objectives.load_template("assault_chain")
 
@@ -566,7 +590,30 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         frame["supply_routes"] = gs.supply_routes.to_three_js()
         frame["supply_warnings"] = sr_result.get("warnings", [])
 
-    # 14. Objectives tick
+    # 14. Abilities tick
+    if gs.abilities is not None:
+        ability_events = gs.abilities.tick(dt)
+        # Collect ability visual effects per unit
+        ability_fx = {}
+        for uid in gs.world.units:
+            fx = gs.abilities.to_three_js(uid)
+            if fx:
+                ability_fx[uid] = fx
+        if ability_fx:
+            frame["abilities"] = ability_fx
+
+    # 15. Status effects tick
+    if gs.status_effects is not None:
+        se_events = gs.status_effects.tick(dt)
+        se_fx = {}
+        for uid in gs.world.units:
+            fx = gs.status_effects.to_three_js(uid)
+            if fx:
+                se_fx[uid] = fx
+        if se_fx:
+            frame["status_effects"] = se_fx
+
+    # 16. Objectives tick
     if gs.objectives is not None:
         world_state = {
             "friendly_positions": {
