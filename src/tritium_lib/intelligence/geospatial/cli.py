@@ -85,11 +85,51 @@ def cmd_process(args):
     elapsed = time.monotonic() - t0
 
     layer = TerrainLayer(cache_dir=Path("data/cache/terrain"))
+    # Optionally fuse with OSM data for richer terrain
+    if getattr(args, 'fuse_osm', False):
+        try:
+            from tritium_lib.intelligence.geospatial.osm_enrichment import OSMEnrichment
+            enrichment = OSMEnrichment()
+            osm_features = enrichment.fetch_osm(bounds)
+            if osm_features:
+                # OSM features become primary, satellite fills gaps
+                osm_regions = []
+                for f in osm_features:
+                    if f.lat == 0 and f.lon == 0:
+                        continue
+                    props = {"osm_id": f.osm_id, "source": "osm"}
+                    if f.name:
+                        props["osm_name"] = f.name
+                    osm_regions.append(SegmentedRegion(
+                        geometry_wkt="POLYGON EMPTY", terrain_type=f.terrain_type,
+                        confidence=0.85, area_m2=100,
+                        centroid_lat=f.lat, centroid_lon=f.lon, properties=props,
+                    ))
+                # Build index of OSM coverage
+                osm_cells = set()
+                for r in osm_regions:
+                    osm_cells.add((int(r.centroid_lon * 10000), int(r.centroid_lat * 10000)))
+                # Add satellite features only where OSM has no coverage
+                sat_fill = 0
+                for r in regions:
+                    cell = (int(r.centroid_lon * 10000), int(r.centroid_lat * 10000))
+                    if cell not in osm_cells:
+                        osm_regions.append(r)
+                        sat_fill += 1
+                regions = osm_regions
+                print(f"Fused: {len(osm_features)} OSM + {sat_fill} satellite gap-fill = {len(regions)}")
+        except Exception as e:
+            print(f"OSM fusion skipped: {e}")
+
+    elapsed = time.monotonic() - t0
+
+    layer = TerrainLayer(cache_dir=Path("data/cache/terrain"))
     layer._regions = regions
     layer._bounds = bounds
+    source = f"{args.source}+osm" if getattr(args, 'fuse_osm', False) else args.source
     layer._metadata = TerrainLayerMetadata(
         ao_id=ao.id, segment_count=len(regions),
-        processing_time_s=elapsed, source_imagery=args.source, bounds=bounds,
+        processing_time_s=elapsed, source_imagery=source, bounds=bounds,
     )
     layer._build_grid_index()
     layer._save_cache(ao.id)
@@ -215,6 +255,7 @@ def main():
     p.add_argument("--zoom", type=int, default=16, help="Tile zoom level (default: 16)")
     p.add_argument("--ao-id", default="cli_area", help="Area of operations ID")
     p.add_argument("--source", default="satellite", help="Tile source (satellite, osm)")
+    p.add_argument("--fuse-osm", action="store_true", help="Fuse with OSM data for richer terrain")
     p.add_argument("--llm", action="store_true", help="Use llama-server for classification")
     p.add_argument("--llm-port", type=int, default=8081, help="llama-server port")
 
