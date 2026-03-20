@@ -678,14 +678,15 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     # 15. Abilities tick
     if gs.abilities is not None:
         ability_events = gs.abilities.tick(dt)
-        # Collect ability visual effects per unit
-        ability_fx = {}
-        for uid in gs.world.units:
-            fx = gs.abilities.to_three_js(uid)
-            if fx:
-                ability_fx[uid] = fx
-        if ability_fx:
-            frame["abilities"] = ability_fx
+        # Full ability data only on first frame (static descriptions are ~147KB)
+        if gs.tick_count <= 1:
+            ability_fx = {}
+            for uid in gs.world.units:
+                fx = gs.abilities.to_three_js(uid)
+                if fx:
+                    ability_fx[uid] = fx
+            if ability_fx:
+                frame["abilities"] = ability_fx
 
     # 15. Status effects tick
     if gs.status_effects is not None:
