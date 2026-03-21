@@ -110,6 +110,10 @@ from tritium_lib.sim_engine.civilian import (
 from tritium_lib.sim_engine.intel import (
     IntelEngine, FogOfWar, IntelType,
 )
+# 20b. commander.py — battle narration and tactical AI
+from tritium_lib.sim_engine.commander import (
+    BattleNarrator, NarrationLog, NarrationEvent, TacticalAdvisor, PERSONALITIES,
+)
 # 21. scoring.py
 from tritium_lib.sim_engine.scoring import (
     ScoringEngine, ScoreCategory, Achievement,
@@ -203,6 +207,9 @@ class GameState:
         self.spawner: SpawnerEngine | None = None
         self.collision: CollisionWorld | None = None
         self.artillery: ArtilleryEngine | None = None
+        self.narrator: BattleNarrator | None = None
+        self.narration_log: NarrationLog | None = None
+        self.tactical_advisor: TacticalAdvisor | None = None
         self.abilities: AbilityEngine | None = None
         self.status_effects: StatusEffectEngine | None = None
         self.objectives: ObjectiveEngine | None = None
@@ -482,6 +489,35 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         max_ammo=mortar_tmpl["max_ammo"], accuracy_cep=mortar_tmpl["accuracy_cep"],
         crew=mortar_tmpl["crew"],
     ))
+    # Add a second mortar (hostile) for visual variety
+    mortar_tmpl_81 = ARTILLERY_TEMPLATES[ArtilleryType.MORTAR_81MM]
+    gs.artillery.add_piece(ArtilleryPiece(
+        piece_id="mortar_hostile_1", artillery_type=ArtilleryType.MORTAR_81MM,
+        alliance="hostile", position=(320.0, 310.0), heading=3.9,
+        min_range=mortar_tmpl_81["min_range"], max_range=mortar_tmpl_81["max_range"],
+        damage=mortar_tmpl_81["damage"], blast_radius=mortar_tmpl_81["blast_radius"],
+        reload_time=mortar_tmpl_81["reload_time"], ammo=mortar_tmpl_81["max_ammo"],
+        max_ammo=mortar_tmpl_81["max_ammo"], accuracy_cep=mortar_tmpl_81["accuracy_cep"],
+        crew=mortar_tmpl_81["crew"],
+    ))
+    # Queue initial fire missions
+    try:
+        gs.artillery.request_fire_mission(
+            "mortar_1", (280.0, 280.0), mission_type="barrage", rounds=5, interval=3.0,
+        )
+        gs.artillery.request_fire_mission(
+            "mortar_hostile_1", (200.0, 200.0), mission_type="area", rounds=3, interval=4.0,
+        )
+    except ValueError:
+        pass  # out of range in some presets
+
+    # Commander / narrator — "Mad Dog" personality for demo
+    gs.narrator = BattleNarrator(personality=PERSONALITIES["mad_dog"])
+    gs.narration_log = NarrationLog(max_events=200)
+    gs.tactical_advisor = TacticalAdvisor(personality=PERSONALITIES["mad_dog"])
+    # Seed narration log with mission start message
+    hostile_count = sum(1 for u in gs.world.units.values() if u.alliance.value == "hostile")
+    gs.narration_log.add(gs.narrator.narrate_wave_start(1, hostile_count))
 
     # 15. Abilities — grant special abilities to units
     gs.abilities = AbilityEngine()
@@ -594,6 +630,8 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
                     observer_data[alliance_key].append((u.position, u.stats.detection_range))
         entity_map = {uid: u.position for uid, u in gs.world.units.items() if u.is_alive()}
         gs.intel.tick(dt, observer_data=observer_data, entities=entity_map)
+        # Export fog-of-war for the friendly alliance
+        frame["intel"] = gs.intel.to_three_js("friendly")
 
     # 9. Scoring — record kills from world events
     if gs.scoring is not None:
@@ -695,6 +733,55 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     if gs.artillery is not None:
         arty_events = gs.artillery.tick(dt)
         frame["artillery"] = gs.artillery.to_three_js()
+
+    # Commander / Narration — generate commentary from world events
+    if gs.narrator is not None and gs.narration_log is not None:
+        gs.narrator.set_tick(gs.tick_count, gs.world.sim_time)
+        for ev in frame.get("events", []):
+            etype = ev.get("type", "")
+            if etype == "unit_killed":
+                killer_id = ev.get("source_id", "unknown")
+                victim_id = ev.get("target_id", "unknown")
+                narr_ev = gs.narrator.narrate_kill(killer_id, victim_id)
+                gs.narration_log.add(narr_ev)
+            elif etype == "unit_hit":
+                attacker_id = ev.get("source_id", "unknown")
+                target_id = ev.get("target_id", "unknown")
+                narr_ev = gs.narrator.narrate_engagement(attacker_id, target_id, "hit")
+                gs.narration_log.add(narr_ev)
+            elif etype == "explosion":
+                pos = ev.get("position", (0.0, 0.0))
+                radius = ev.get("radius", 5.0)
+                casualties = ev.get("casualties", 0)
+                narr_ev = gs.narrator.narrate_explosion(pos, radius, casualties)
+                gs.narration_log.add(narr_ev)
+        # Periodic tactical assessments (every 50 ticks)
+        if gs.tick_count % 50 == 1 and gs.tactical_advisor is not None:
+            friendly_alive = sum(
+                1 for u in gs.world.units.values()
+                if u.is_alive() and u.alliance.value == "friendly"
+            )
+            hostile_alive = sum(
+                1 for u in gs.world.units.values()
+                if u.is_alive() and u.alliance.value == "hostile"
+            )
+            recs = gs.tactical_advisor.assess_situation({
+                "friendly_count": friendly_alive,
+                "hostile_count": hostile_alive,
+                "friendly_casualties": 0,
+                "ammo_level": 0.7,
+                "visibility": 0.8,
+            })
+            for rec_text in recs[:2]:  # max 2 per assessment
+                gs.narration_log.add(NarrationEvent(
+                    tick=gs.tick_count,
+                    time=gs.world.sim_time,
+                    category="tactical",
+                    priority=2,
+                    text=rec_text,
+                    voice="commander",
+                ))
+        frame["narration"] = gs.narration_log.to_three_js()
 
     # 15. Abilities tick
     if gs.abilities is not None:
@@ -831,7 +918,16 @@ _city_mode: bool = False  # When True, WS streams city frames instead of game fr
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    """Serve the game client HTML page."""
+    """Serve the game client HTML page. Auto-starts the game."""
+    global _game, _game_task
+    if _game.world is None or not _game.running:
+        import os
+        preset = os.environ.get("SIM_PRESET", "urban_combat")
+        _game = build_full_game(preset)
+        _game.running = True
+        if _game_task is not None and not _game_task.done():
+            _game_task.cancel()
+        _game_task = asyncio.create_task(_game_loop())
     return HTMLResponse(content=GAME_HTML, status_code=200)
 
 

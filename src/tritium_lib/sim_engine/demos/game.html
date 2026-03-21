@@ -175,6 +175,95 @@ canvas { display: block; }
 #unit-info .info-row { line-height: 1.8; }
 #unit-info .info-label { color: #888; }
 #unit-info .info-val { color: #05ffa1; }
+
+/* ── Objectives panel ── */
+#objectives-panel {
+  position: absolute; top: 50%; left: 16px; transform: translateY(-50%);
+  background: #0a0a0fcc; border: 1px solid #fcee0a33;
+  border-radius: 4px; padding: 10px 14px; min-width: 220px;
+  max-height: 320px; overflow-y: auto;
+}
+#objectives-panel .title {
+  font-size: 11px; color: #fcee0a88; text-transform: uppercase;
+  letter-spacing: 2px; margin-bottom: 8px;
+}
+.obj-entry { margin-bottom: 8px; }
+.obj-name { font-size: 12px; font-weight: bold; margin-bottom: 2px; }
+.obj-bar-bg {
+  width: 100%; height: 5px; background: #1a1a2e;
+  border-radius: 3px; overflow: hidden;
+}
+.obj-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.obj-status { font-size: 10px; color: #666; text-transform: uppercase;
+  letter-spacing: 1px; margin-top: 1px; }
+
+/* ── Weather indicator ── */
+#weather-indicator {
+  position: absolute; bottom: 50px; left: 50%;
+  transform: translateX(-50%);
+  background: #0a0a0fcc; border: 1px solid #00f0ff22;
+  border-radius: 4px; padding: 4px 12px;
+  font-size: 11px; color: #00f0ff66;
+  pointer-events: none; display: none;
+}
+#weather-indicator.visible { display: block; }
+
+/* ── Territory legend ── */
+#territory-legend {
+  position: absolute; top: 12px; left: 50%;
+  transform: translateX(-50%);
+  background: #0a0a0fcc; border: 1px solid #ffffff11;
+  border-radius: 4px; padding: 4px 16px;
+  font-size: 10px; display: flex; gap: 16px; align-items: center;
+  pointer-events: none;
+}
+.terr-dot { display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 4px; }
+
+/* ── Narration box — Amy / Commander scrolling commentary ── */
+#narration-panel {
+  position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%);
+  background: #0a0a0fdd; border: 1px solid #ff2a6d44;
+  border-radius: 4px; padding: 8px 14px;
+  width: 520px; max-width: calc(100vw - 420px);
+  pointer-events: none; min-width: 280px;
+}
+#narration-panel .title {
+  font-size: 10px; color: #ff2a6daa; text-transform: uppercase;
+  letter-spacing: 2px; margin-bottom: 5px;
+}
+#narration-log {
+  max-height: 88px; overflow: hidden; display: flex;
+  flex-direction: column-reverse; gap: 2px;
+}
+.narration-entry {
+  font-size: 12px; line-height: 1.5; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis;
+  opacity: 1; transition: opacity 1.2s;
+}
+.narration-entry.fading { opacity: 0.3; }
+.narration-entry.priority-4 { color: #ff2a6d; text-shadow: 0 0 6px #ff2a6d66; }
+.narration-entry.priority-3 { color: #fcee0a; }
+.narration-entry.priority-2 { color: #00f0ff; }
+.narration-entry.priority-1 { color: #555555; }
+.narration-entry.voice-commander::before { content: "[CDR] "; color: #fcee0a88; font-size: 10px; }
+.narration-entry.voice-radio::before     { content: "[NET] "; color: #00f0ff88; font-size: 10px; }
+.narration-entry.voice-observer::before  { content: "[OBS] "; color: #05ffa188; font-size: 10px; }
+.narration-entry.voice-medic::before     { content: "[MED] "; color: #ff880088; font-size: 10px; }
+.narration-entry.new { animation: narr-slide 0.35s ease-out; }
+@keyframes narr-slide {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── FOW canvas overlay — between 3D scene and HUD ── */
+#fow-canvas {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none; z-index: 5;
+  opacity: 0; transition: opacity 0.8s;
+}
+#fow-canvas.active { opacity: 1; }
 </style>
 </head>
 <body>
@@ -231,12 +320,34 @@ canvas { display: block; }
     <div class="info-row"><span class="info-label">Pos: </span><span class="info-val" id="info-pos">--</span></div>
   </div>
 
+  <div id="objectives-panel">
+    <div class="title">Objectives</div>
+    <div id="objectives-list"></div>
+  </div>
+
+  <div id="weather-indicator"></div>
+
+  <div id="territory-legend">
+    <span><span class="terr-dot" style="background:#05ffa1"></span>Friendly</span>
+    <span><span class="terr-dot" style="background:#ff2a6d"></span>Hostile</span>
+    <span><span class="terr-dot" style="background:#fcee0a"></span>Contested</span>
+  </div>
+
   <div id="game-over">
     <h1>MISSION COMPLETE</h1>
     <div class="stat-grid" id="stats-grid"></div>
     <div class="grade" id="grade-display"></div>
   </div>
+
+  <!-- Amy / Commander narration box -->
+  <div id="narration-panel">
+    <div class="title">Commander — Amy</div>
+    <div id="narration-log"></div>
+  </div>
 </div>
+
+<!-- Fog-of-war canvas overlay (z-index 5, between scene and HUD) -->
+<canvas id="fow-canvas"></canvas>
 
 <script type="importmap">
 {
@@ -610,6 +721,154 @@ for (let i = 0; i < MUZZLE_POOL; i++) {
 }
 
 // =========================================================================
+// Weather FX — snow particle system (rain already exists above)
+// =========================================================================
+const MAX_SNOW = 3000;
+const snowPositions = new Float32Array(MAX_SNOW * 3);
+const snowGeo = new THREE.BufferGeometry();
+snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPositions, 3));
+const snowMat = new THREE.PointsMaterial({
+  color: 0xeeeeff, size: 0.3, transparent: true, opacity: 0.7,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+});
+const snowPoints = new THREE.Points(snowGeo, snowMat);
+snowPoints.visible = false;
+scene.add(snowPoints);
+let snowActive = false;
+let snowIntensity = 0;
+for (let i = 0; i < MAX_SNOW; i++) {
+  snowPositions[i * 3]     = (Math.random() - 0.5) * MAP_SIZE * 2;
+  snowPositions[i * 3 + 1] = Math.random() * 80;
+  snowPositions[i * 3 + 2] = (Math.random() - 0.5) * MAP_SIZE * 2;
+}
+
+// Lightning flash — brief scene-wide point light
+const lightningLight = new THREE.PointLight(0xccddff, 0, 400);
+scene.add(lightningLight);
+let lightningTTL = 0;
+
+// =========================================================================
+// Territory — canvas-based heatmap overlay on a ground plane
+// =========================================================================
+const TERRITORY_CANVAS_SIZE = 256;
+const territoryCanvas = document.createElement('canvas');
+territoryCanvas.width  = TERRITORY_CANVAS_SIZE;
+territoryCanvas.height = TERRITORY_CANVAS_SIZE;
+const territoryCtx = territoryCanvas.getContext('2d');
+const territoryTexture = new THREE.CanvasTexture(territoryCanvas);
+const territoryGeo = new THREE.PlaneGeometry(MAP_SIZE * 2, MAP_SIZE * 2);
+const territoryMat = new THREE.MeshBasicMaterial({
+  map: territoryTexture, transparent: true, opacity: 0.35,
+  blending: THREE.NormalBlending, depthWrite: false, side: THREE.DoubleSide,
+});
+const territoryPlane = new THREE.Mesh(territoryGeo, territoryMat);
+territoryPlane.rotation.x = -Math.PI / 2;
+territoryPlane.position.y = 0.08;
+scene.add(territoryPlane);
+
+// Control point markers — pool of cylindrical poles + capture rings
+const CP_POOL_SIZE = 8;
+const controlPointMarkers = [];
+for (let i = 0; i < CP_POOL_SIZE; i++) {
+  const group = new THREE.Group();
+
+  // Tall thin pole
+  const poleGeo = new THREE.CylinderGeometry(0.15, 0.15, 8, 6);
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.5 });
+  const pole = new THREE.Mesh(poleGeo, poleMat);
+  pole.position.y = 4;
+  group.add(pole);
+
+  // Flag plane at top
+  const flagGeo = new THREE.PlaneGeometry(3, 2);
+  const flagMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+  const flag = new THREE.Mesh(flagGeo, flagMat);
+  flag.position.set(1.5, 8.5, 0);
+  group.add(flag);
+
+  // Capture radius ring on ground
+  const ringGeo = new THREE.RingGeometry(0, 1, 32); // scaled dynamically
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xfcee0a, transparent: true, opacity: 0.25,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  group.add(ring);
+
+  // Progress arc (filled sector showing capture progress)
+  const arcGeo = new THREE.CircleGeometry(1, 32);
+  const arcMat = new THREE.MeshBasicMaterial({
+    color: 0xfcee0a, transparent: true, opacity: 0.4,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const arc = new THREE.Mesh(arcGeo, arcMat);
+  arc.rotation.x = -Math.PI / 2;
+  arc.position.y = 0.07;
+  group.add(arc);
+
+  // Name sprite
+  const nameSpr = makeLabelSprite('CP', '#fcee0a');
+  nameSpr.position.y = 12;
+  group.add(nameSpr);
+
+  group.visible = false;
+  scene.add(group);
+  controlPointMarkers.push({ group, flag, flagMat, ring, ringGeo, arc, arcGeo, arcMat, nameSpr, poleMat });
+}
+
+// =========================================================================
+// Objectives — 3D markers: diamond (octahedron) shapes at target positions
+// =========================================================================
+const OBJ_MARKER_POOL = 12;
+const objectiveMarkers = [];
+for (let i = 0; i < OBJ_MARKER_POOL; i++) {
+  const group = new THREE.Group();
+
+  // Diamond shape (tall octahedron)
+  const dGeo = new THREE.OctahedronGeometry(2.5, 0);
+  const dMat = new THREE.MeshStandardMaterial({
+    color: 0xfcee0a, emissive: 0xfcee0a, emissiveIntensity: 0.5,
+    transparent: true, opacity: 0.85, roughness: 0.3,
+  });
+  const diamond = new THREE.Mesh(dGeo, dMat);
+  diamond.position.y = 6;
+  group.add(diamond);
+
+  // Glowing ring on ground beneath the marker
+  const zoneRingGeo = new THREE.RingGeometry(0.8, 1.2, 32);
+  const zoneRingMat = new THREE.MeshBasicMaterial({
+    color: 0xfcee0a, transparent: true, opacity: 0.5,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const zoneRing = new THREE.Mesh(zoneRingGeo, zoneRingMat);
+  zoneRing.rotation.x = -Math.PI / 2;
+  zoneRing.position.y = 0.06;
+  group.add(zoneRing);
+
+  // Zone fill circle (scaled to objective radius)
+  const zoneFillGeo = new THREE.CircleGeometry(1, 32);
+  const zoneFillMat = new THREE.MeshBasicMaterial({
+    color: 0xfcee0a, transparent: true, opacity: 0.08,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const zoneFill = new THREE.Mesh(zoneFillGeo, zoneFillMat);
+  zoneFill.rotation.x = -Math.PI / 2;
+  zoneFill.position.y = 0.05;
+  group.add(zoneFill);
+
+  // Label sprite
+  const labelSpr = makeLabelSprite('OBJ', '#fcee0a');
+  labelSpr.position.y = 10;
+  group.add(labelSpr);
+
+  group.visible = false;
+  scene.add(group);
+  objectiveMarkers.push({ group, diamond, dMat, zoneRing, zoneRingMat, zoneRingGeo, zoneFill, zoneFillMat, zoneFillGeo, labelSpr });
+}
+
+// =========================================================================
 // State
 // =========================================================================
 let ws = null;
@@ -806,17 +1065,140 @@ function generateDemoFrame() {
     effects.push({ type: 'smoke', x: -20, y: 15, z: 0, radius: 6 });
   }
 
-  // Weather
+  // Weather (legacy simple format)
   const hour = 6 + (demoTick * 0.02) % 18;
   const isRaining = demoTick > 150 && demoTick < 300;
+  const isSnowing = demoTick > 350 && demoTick < 500;
+  const isStorming = demoTick > 290 && demoTick < 360;
   const weather = {
     sky_color: hour > 18 || hour < 6 ? '#0a0a1e' : '#1a2a3e',
     ambient_light: hour > 6 && hour < 18 ? 0.6 : 0.15,
     fog_density: isRaining ? 0.005 : 0.003,
   };
-  if (isRaining) {
-    weather.rain = { intensity: 0.6 };
+  if (isRaining) weather.rain = { intensity: 0.6 };
+
+  // Weather FX (rich format from WeatherFXEngine)
+  const sunAngle = ((hour - 6) / 12) * Math.PI;
+  const sunY = Math.sin(sunAngle);
+  const weather_fx = {
+    hour: hour,
+    sky: {
+      gradient: {
+        top:     sunY > 0.3 ? [0.05, 0.10, 0.20] : [0.02, 0.02, 0.08],
+        horizon: sunY > 0.3 ? [0.10, 0.20, 0.35] : [0.04, 0.05, 0.12],
+        bottom:  [0.05, 0.08, 0.05],
+      },
+      sun: { x: Math.cos(sunAngle - Math.PI/2), y: sunY, z: 0.2 },
+    },
+    wind: { speed: isStorming ? 12 : 3 },
+  };
+  if (isRaining)  weather_fx.rain = { intensity: 0.6, drop_count: 800 };
+  if (isSnowing)  weather_fx.snow = { intensity: 0.5 };
+  if (isStorming) {
+    weather_fx.rain = { intensity: 0.85 };
+    weather_fx.fog  = { density: 0.6 };
+    if (demoTick % 40 < 3) {
+      weather_fx.lightning = {
+        origin: [(Math.random()-0.5)*80, 0, (Math.random()-0.5)*80],
+      };
+    }
   }
+
+  // Territory (TerritoryControl.to_dict() format)
+  const cpProgress = Math.sin(demoTick * 0.03) * 0.5 + 0.5;
+  const cpOwner = demoTick > 200 ? 'friendly' : null;
+  const territory = {
+    control_points: [
+      {
+        point_id: 'cp_center', name: 'Central Obj',
+        position: [0, 0], owner: cpOwner,
+        capture_radius: 28, value: 1.0,
+        state: cpOwner ? 'captured' : (cpProgress > 0.05 ? 'capturing' : 'neutral'),
+        progress: cpOwner ? {} : { friendly: cpProgress },
+      },
+      {
+        point_id: 'cp_east', name: 'East Approach',
+        position: [50, 0], owner: demoTick > 350 ? 'hostile' : null,
+        capture_radius: 20, value: 0.7,
+        state: demoTick > 350 ? 'captured' : 'neutral',
+        progress: {},
+      },
+    ],
+  };
+
+  // Synthetic influence heatmap (20x20 grid over full MAP_SIZE)
+  const influenceW = 20, influenceH = 20;
+  const friendlyFlat = new Array(influenceW * influenceH).fill(0);
+  const hostileFlat  = new Array(influenceW * influenceH).fill(0);
+  for (const u of units) {
+    if (u.alliance !== 'friendly' && u.alliance !== 'hostile') continue;
+    const gx = Math.floor((u.x / (MAP_SIZE * 2) + 0.5) * influenceW);
+    const gy = Math.floor((u.y / (MAP_SIZE * 2) + 0.5) * influenceH);
+    const flat = u.alliance === 'friendly' ? friendlyFlat : hostileFlat;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = gx + dx, ny = gy + dy;
+        if (nx >= 0 && nx < influenceW && ny >= 0 && ny < influenceH) {
+          const d = Math.sqrt(dx*dx + dy*dy);
+          flat[ny * influenceW + nx] = Math.min(1, (flat[ny * influenceW + nx] || 0) + Math.max(0, 0.4 - d * 0.1));
+        }
+      }
+    }
+  }
+  const influence = {
+    width: influenceW, height: influenceH, cell_size: (MAP_SIZE * 2) / influenceW,
+    heatmaps: { friendly: friendlyFlat, hostile: hostileFlat },
+  };
+
+  // Objectives (ObjectiveEngine.to_three_js() format)
+  const obj1Progress = Math.min(1, demoTick / 300);
+  const obj1Status = obj1Progress >= 1.0 ? 'completed' : (demoTick > 30 ? 'active' : 'available');
+  const obj2Progress = Math.max(0, Math.min(1, (demoTick - 200) / 200));
+  const obj2Status = demoTick < 200 ? 'locked' : (obj2Progress >= 1.0 ? 'completed' : 'active');
+  const objectives = {
+    markers: [
+      ...(demoTick > 30 ? [{
+        id: 'assault_2', name: 'Breach Building',
+        type: 'capture', status: obj1Status,
+        position: [0, -20],
+        color: obj1Status === 'completed' ? '#05ffa1' : '#fcee0a',
+      }] : []),
+      ...(demoTick > 200 ? [{
+        id: 'assault_3', name: 'Secure Intel',
+        type: 'collect', status: obj2Status,
+        position: [15, -15],
+        color: obj2Status === 'completed' ? '#05ffa1' : '#00f0ff',
+      }] : []),
+    ],
+    zones: [
+      ...(demoTick > 30 ? [{
+        id: 'assault_2', center: [0, -20], radius: 15,
+        color: obj1Status === 'completed' ? '#05ffa1' : '#fcee0a',
+        progress: obj1Progress,
+      }] : []),
+    ],
+    progress_bars: [
+      {
+        id: 'assault_1', name: 'Eliminate Guards',
+        progress: Math.min(1, demoTick / 100),
+        status: demoTick >= 100 ? 'completed' : 'active',
+        required: true, color: demoTick >= 100 ? '#05ffa1' : '#fcee0a',
+      },
+      {
+        id: 'assault_2', name: 'Breach Building', progress: obj1Progress,
+        status: obj1Status, required: true,
+        color: obj1Status === 'completed' ? '#05ffa1' : '#fcee0a',
+      },
+      {
+        id: 'assault_3', name: 'Secure Intel', progress: obj2Progress,
+        status: obj2Status, required: true,
+        color: obj2Status === 'locked' ? '#444444' : obj2Status === 'completed' ? '#05ffa1' : '#00f0ff',
+      },
+    ],
+    all_complete: obj2Progress >= 1.0,
+    any_failed: false,
+    total_points: (demoTick >= 100 ? 100 : 0) + (obj1Progress >= 1.0 ? 150 : 0) + (obj2Progress >= 1.0 ? 200 : 0),
+  };
 
   const killFeed = [];
   if (demoTick > 50 && demoTick % 20 < 2) {
@@ -831,10 +1213,78 @@ function generateDemoFrame() {
     });
   }
 
+  // Artillery demo data
+  const demoArtillery = {
+    pieces: [
+      { id: 'mortar_demo', x: -40, y: -40, alliance: 'friendly', type: 'mortar_81mm',
+        ammo: 30, max_ammo: 40, ready: (demoTick % 40) > 8, heading: 0.8 },
+    ],
+    shells: [],
+    impacts: [],
+    smoke_areas: [],
+    illumination_areas: [],
+  };
+  // Periodically launch a demo shell
+  if (demoTick > 60 && demoTick % 40 < 5) {
+    const prog = (demoTick % 40) / 8.0;
+    const ox = -40, oy = -40, tx = 30 + Math.sin(demoTick * 0.3) * 20, ty = 30 + Math.cos(demoTick * 0.2) * 15;
+    const alt = Math.max(0, 30 * 4 * prog * (1 - prog));
+    demoArtillery.shells.push({
+      id: 'demo_s_' + Math.floor(demoTick / 40),
+      x: ox + (tx - ox) * prog, y: oy + (ty - oy) * prog,
+      altitude: alt, shell_type: 'he', progress: prog,
+    });
+  }
+  if (demoTick > 60 && demoTick % 40 === 5) {
+    const tx = 30 + Math.sin(demoTick * 0.3) * 20, ty = 30 + Math.cos(demoTick * 0.2) * 15;
+    demoArtillery.impacts.push({ x: tx, y: ty, blast_radius: 15, damage: 80, shell_type: 'he' });
+  }
+
+  // Narration demo data
+  const demoNarration = { kill_feed: [], alerts: [], sitrep: '' };
+  if (demoTick === 60) {
+    demoNarration.alerts.push({ tick: demoTick, text: 'MAD DOG: Wave 1 incoming! All stations weapons free!', priority: 3, voice: 'commander' });
+  }
+  if (demoTick > 60 && demoTick % 40 === 5) {
+    demoNarration.kill_feed.push({ tick: demoTick, text: `ALPHA-${(demoTick % 3)+1} — mortar impact on hostile position. Tango down.`, priority: 2 });
+  }
+  if (demoTick % 120 === 0 && demoTick > 0) {
+    demoNarration.sitrep = `SITREP T+${Math.floor(t)}s: ${8 - Math.floor(demoTick/100)} friendly, ${6 - Math.floor(demoTick/80)} hostile. Artillery at ${Math.max(0, 100 - demoTick/3)}% ammo.`;
+  }
+
+  // FOW demo — synthetic visibility cells (circle around friendly formation center)
+  const demoIntel = { fog_grid: null };
+  if (demoTick > 10) {
+    const visibleCells = [], exploredCells = [];
+    const cx = 40, cy = 40; // in cell coords (friendly squad is near sim 200,200 = cell 40,40)
+    for (let dc = -18; dc <= 18; dc++) {
+      for (let dr = -18; dr <= 18; dr++) {
+        const d2 = dc*dc + dr*dr;
+        if (d2 <= 144) { // 12 cells radius = visible
+          visibleCells.push([cx+dc, cy+dr]);
+        } else if (d2 <= 324) { // 18 cells radius = explored
+          exploredCells.push([cx+dc, cy+dr]);
+        }
+      }
+    }
+    demoIntel.fog_grid = {
+      width: 100, height: 100, cell_size: 5.0,
+      visible: visibleCells, explored: exploredCells,
+      fog_color: '#0a0a0f', explored_alpha: 0.5, hidden_alpha: 0.9,
+    };
+  }
+
   return {
     tick: demoTick, time: t,
     units, projectiles, effects, crowd,
     weather,
+    weather_fx,
+    territory,
+    influence,
+    objectives,
+    artillery: demoArtillery,
+    narration: demoNarration,
+    intel: demoIntel,
     ui: {
       wave: Math.floor(demoTick / 200) + 1,
       score: Math.floor(demoTick * 15),
@@ -996,6 +1446,25 @@ function processFrame(frame) {
     renderMapFeatures(frame.map_features);
     window._mapFeaturesRendered = true;
   }
+
+  // Weather FX (from WeatherFXEngine)
+  if (frame.weather_fx) updateWeatherFX(frame.weather_fx);
+
+  // Territory / influence map
+  if (frame.territory || frame.influence)
+    updateTerritory(frame.territory || null, frame.influence || null);
+
+  // Objectives
+  if (frame.objectives) updateObjectives(frame.objectives);
+
+  // Artillery — arcing shells, impacts, piece markers
+  if (frame.artillery) updateArtillery(frame.artillery);
+
+  // Commander narration — Amy commentary HUD
+  if (frame.narration) updateNarration(frame.narration);
+
+  // Intel — fog of war canvas overlay
+  if (frame.intel) updateFogOfWar(frame.intel);
 
   // HUD
   updateHUD(frame.ui || {}, frame);
@@ -1308,6 +1777,351 @@ function updateBuildings(buildingList) {
       const gb = Math.max(0, 0.25 - dmg * 0.3);
       entry.mat.color.setRGB(Math.max(0, r), Math.max(0, g), Math.max(0, gb));
     }
+  }
+}
+
+// =========================================================================
+// Weather FX rendering — from frame.weather_fx (WeatherFXEngine output)
+// =========================================================================
+function updateWeatherFX(wx) {
+  if (!wx) return;
+
+  // --- Sky gradient / day-night cycle ---
+  const sky = wx.sky;
+  if (sky && sky.gradient) {
+    const g = sky.gradient;
+    // gradient is {top: [r,g,b], horizon: [r,g,b], bottom: [r,g,b]}
+    // Use horizon color as scene background
+    if (g.horizon) {
+      const [r, g2, b] = g.horizon;
+      scene.background.setRGB(r, g2, b);
+      scene.fog.color.setRGB(r, g2, b);
+    }
+    // Adjust sun direction light from sun position if available
+    if (sky.sun) {
+      const sun = sky.sun;
+      // sun: {x, y, z} normalized direction
+      const intensity = Math.max(0.05, (sun.y || 0) + 0.1) * 1.2;
+      dirLight.intensity = intensity;
+      ambientLight.intensity = Math.max(0.05, (sun.y || 0) * 0.6 + 0.2);
+      if (sun.x !== undefined) {
+        dirLight.position.set(sun.x * 200, Math.max(10, (sun.y || 0.5) * 150), sun.z * 200);
+      }
+    }
+  }
+
+  // --- Fog ---
+  if (wx.fog) {
+    const fogData = wx.fog;
+    const density = fogData.density !== undefined ? fogData.density : (fogData.density_grid ? 0.006 : 0.003);
+    scene.fog.density = Math.max(0.001, density * 0.012);
+  }
+
+  // --- Rain ---
+  if (wx.rain) {
+    const r = wx.rain;
+    rainActive = true;
+    rainIntensity = r.intensity !== undefined ? r.intensity : 0.5;
+    rainPoints.visible = true;
+    rainMat.opacity = 0.25 + rainIntensity * 0.4;
+  } else {
+    rainActive = false;
+    rainPoints.visible = false;
+  }
+
+  // --- Snow ---
+  if (wx.snow) {
+    const s = wx.snow;
+    snowActive = true;
+    snowIntensity = s.intensity !== undefined ? s.intensity : 0.5;
+    snowPoints.visible = true;
+    snowMat.opacity = 0.5 + snowIntensity * 0.3;
+  } else {
+    snowActive = false;
+    snowPoints.visible = false;
+  }
+
+  // --- Lightning ---
+  if (wx.lightning) {
+    const l = wx.lightning;
+    // Flash the scene with a point light at strike position
+    const sx = l.origin ? l.origin[0] : 0;
+    const sz = l.origin ? -(l.origin[2] || 0) : 0;
+    lightningLight.position.set(sx, 60, sz);
+    lightningLight.intensity = 8 + Math.random() * 4;
+    lightningTTL = 0.08 + Math.random() * 0.05;
+  }
+
+  // --- Weather indicator HUD ---
+  const indEl = document.getElementById('weather-indicator');
+  if (indEl) {
+    let label = '';
+    if (wx.rain) label = 'RAIN ' + Math.round((wx.rain.intensity || 0.5) * 100) + '%';
+    else if (wx.snow) label = 'SNOW ' + Math.round((wx.snow.intensity || 0.5) * 100) + '%';
+    else if (wx.fog) label = 'FOG';
+    else if (wx.lightning) label = 'STORM';
+
+    if (label) {
+      const hr = wx.hour !== undefined ? wx.hour : 12;
+      const timeStr = Math.floor(hr).toString().padStart(2, '0') + ':' + Math.floor((hr % 1) * 60).toString().padStart(2, '0');
+      indEl.textContent = timeStr + '  ' + label;
+      indEl.classList.add('visible');
+    } else if (wx.hour !== undefined) {
+      const hr = wx.hour;
+      const timeStr = Math.floor(hr).toString().padStart(2, '0') + ':' + Math.floor((hr % 1) * 60).toString().padStart(2, '0');
+      indEl.textContent = timeStr;
+      indEl.classList.add('visible');
+    } else {
+      indEl.classList.remove('visible');
+    }
+  }
+}
+
+// =========================================================================
+// Territory rendering — from frame.territory (TerritoryControl.to_dict())
+// and optionally frame.influence (InfluenceMap summary)
+// =========================================================================
+
+// Helper: parse hex color string to [r,g,b] 0-255
+function hexToRGB(hex) {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+
+// Faction color map
+const FACTION_COLORS_RGBA = {
+  friendly: [5, 255, 161, 80],    // #05ffa1
+  hostile:  [255, 42, 109, 80],   // #ff2a6d
+  neutral:  [0, 240, 255, 60],    // #00f0ff
+  unknown:  [252, 238, 10, 60],   // #fcee0a
+};
+
+function updateTerritory(terrData, influenceData) {
+  if (!terrData) return;
+
+  // --- Draw heatmap on canvas from influence data or synthesize ---
+  const ctx = territoryCtx;
+  const cw = TERRITORY_CANVAS_SIZE;
+  ctx.clearRect(0, 0, cw, cw);
+
+  // If we have influence heatmap data (from frame.influence.heatmaps)
+  if (influenceData && influenceData.heatmaps) {
+    const hmaps = influenceData.heatmaps;
+    const gridW = influenceData.width || 50;
+    const gridH = influenceData.height || 50;
+    const cellW = cw / gridW;
+    const cellH = cw / gridH;
+
+    // Blend faction influence colors into the canvas
+    for (let y = 0; y < gridH; y++) {
+      for (let x = 0; x < gridW; x++) {
+        const idx = y * gridW + x;
+        let maxVal = 0;
+        let maxFaction = null;
+        for (const [faction, flat] of Object.entries(hmaps)) {
+          const v = flat[idx] || 0;
+          if (v > maxVal) { maxVal = v; maxFaction = faction; }
+        }
+        if (maxVal > 0.02 && maxFaction) {
+          const rgba = FACTION_COLORS_RGBA[maxFaction] || FACTION_COLORS_RGBA.neutral;
+          const alpha = Math.min(1, maxVal * 1.5) * (rgba[3] / 255);
+          ctx.fillStyle = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${alpha})`;
+          // Canvas Y is flipped relative to sim
+          ctx.fillRect(x * cellW, (gridH - 1 - y) * cellH, cellW + 1, cellH + 1);
+        }
+      }
+    }
+  }
+
+  territoryTexture.needsUpdate = true;
+
+  // --- Control point markers ---
+  const cps = terrData.control_points || [];
+
+  // Hide all markers first
+  for (const m of controlPointMarkers) {
+    m.group.visible = false;
+  }
+
+  for (let i = 0; i < Math.min(cps.length, CP_POOL_SIZE); i++) {
+    const cp = cps[i];
+    const m = controlPointMarkers[i];
+
+    const px = cp.position ? cp.position[0] : 0;
+    const pz = cp.position ? -(cp.position[1]) : 0;
+    m.group.position.set(px, 0, pz);
+    m.group.visible = true;
+
+    // Flag color by owner or state
+    let flagColor;
+    if (cp.owner === 'friendly') flagColor = 0x05ffa1;
+    else if (cp.owner === 'hostile') flagColor = 0xff2a6d;
+    else if (cp.state === 'contested') flagColor = 0xfcee0a;
+    else flagColor = 0x888888;
+    m.flagMat.color.setHex(flagColor);
+
+    // Pulse the ring based on capture state
+    const captureRadius = cp.capture_radius || 25;
+    const ringScale = captureRadius / MAP_SIZE * MAP_SIZE; // world units
+
+    // Build capture progress arc geometry
+    // Progress: max of all factions' progress
+    let maxProgress = 0;
+    let progressFaction = null;
+    if (cp.progress) {
+      for (const [faction, prog] of Object.entries(cp.progress)) {
+        if (prog > maxProgress) { maxProgress = prog; progressFaction = faction; }
+      }
+    }
+
+    // Update ring geometry to show capture radius
+    m.ring.scale.set(ringScale, ringScale, 1);
+    m.arc.scale.set(ringScale, ringScale, 1);
+
+    // Progress arc color
+    let arcColor;
+    if (progressFaction === 'friendly') arcColor = 0x05ffa1;
+    else if (progressFaction === 'hostile') arcColor = 0xff2a6d;
+    else arcColor = 0xfcee0a;
+    m.arcMat.color.setHex(arcColor);
+    m.arcMat.opacity = maxProgress > 0 ? 0.25 + maxProgress * 0.3 : 0.0;
+
+    // Update name label
+    const cpName = (cp.name || cp.point_id || 'CP').substring(0, 12);
+    if (m._lastName !== cpName) {
+      const c = document.createElement('canvas');
+      c.width = 256; c.height = 48;
+      const lctx = c.getContext('2d');
+      lctx.clearRect(0, 0, 256, 48);
+      lctx.font = 'bold 18px Courier New';
+      lctx.fillStyle = '#' + new THREE.Color(flagColor).getHexString();
+      lctx.textAlign = 'center';
+      lctx.fillText(cpName, 128, 20);
+      if (maxProgress > 0) {
+        lctx.font = '13px Courier New';
+        lctx.fillStyle = '#fcee0a';
+        lctx.fillText(Math.round(maxProgress * 100) + '%', 128, 38);
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.needsUpdate = true;
+      m.nameSpr.material.map = tex;
+      m.nameSpr.material.needsUpdate = true;
+      m._lastName = cpName;
+    }
+
+    // Slow rotation on pole flag
+    m.group.rotation.y += 0.002;
+  }
+}
+
+// =========================================================================
+// Objectives rendering — from frame.objectives (ObjectiveEngine.to_three_js())
+// =========================================================================
+function updateObjectives(objData) {
+  if (!objData) return;
+
+  const markers = objData.markers || [];
+  const zones   = objData.zones || [];
+  const bars    = objData.progress_bars || [];
+
+  // --- 3D diamond markers at objective positions ---
+  for (const m of objectiveMarkers) m.group.visible = false;
+
+  for (let i = 0; i < Math.min(markers.length, OBJ_MARKER_POOL); i++) {
+    const mk = markers[i];
+    const m  = objectiveMarkers[i];
+
+    const px = mk.position ? mk.position[0] : 0;
+    const pz = mk.position ? -(mk.position[1]) : 0;
+    m.group.position.set(px, 0, pz);
+    m.group.visible = true;
+
+    // Parse color
+    const colorHex = mk.color || '#fcee0a';
+    m.dMat.color.set(colorHex);
+    m.dMat.emissive.set(colorHex);
+
+    // Bobbing animation
+    const t = performance.now() * 0.001;
+    m.diamond.position.y = 6 + Math.sin(t * 1.5 + i * 0.8) * 0.8;
+    m.diamond.rotation.y = t * 0.5 + i * 0.3;
+
+    // Zone ring color
+    m.zoneRingMat.color.set(colorHex);
+    m.zoneFillMat.color.set(colorHex);
+
+    // Look up zone for this marker
+    const zone = zones.find(z => z.id === mk.id);
+    if (zone && zone.radius) {
+      const zr = zone.radius;
+      m.zoneRing.scale.set(zr, zr, 1);
+      m.zoneFill.scale.set(zr, zr, 1);
+      m.zoneFill.visible = true;
+      m.zoneRing.visible = true;
+      m.zoneRingMat.opacity = 0.5 + Math.sin(t * 2 + i) * 0.2;
+      m.zoneFillMat.opacity  = zone.progress ? zone.progress * 0.15 : 0.06;
+    } else {
+      m.zoneRing.visible = false;
+      m.zoneFill.visible = false;
+    }
+
+    // Label
+    const lblText = (mk.name || mk.id || 'OBJ').substring(0, 14);
+    if (m._lastLabel !== lblText + colorHex) {
+      const c = document.createElement('canvas');
+      c.width = 256; c.height = 48;
+      const lctx = c.getContext('2d');
+      lctx.clearRect(0, 0, 256, 48);
+      lctx.font = 'bold 16px Courier New';
+      lctx.fillStyle = colorHex;
+      lctx.textAlign = 'center';
+      lctx.fillText(lblText, 128, 18);
+      lctx.font = '12px Courier New';
+      lctx.fillStyle = '#888888';
+      lctx.fillText((mk.type || '').toUpperCase(), 128, 36);
+      const tex = new THREE.CanvasTexture(c);
+      tex.needsUpdate = true;
+      m.labelSpr.material.map = tex;
+      m.labelSpr.material.needsUpdate = true;
+      m._lastLabel = lblText + colorHex;
+    }
+  }
+
+  // --- HUD progress bars ---
+  const listEl = document.getElementById('objectives-list');
+  if (!listEl) return;
+
+  // Only rebuild when bar count or statuses change (avoid thrashing DOM)
+  const barKey = bars.map(b => b.id + b.status + Math.round(b.progress * 100)).join('|');
+  if (listEl._lastKey === barKey) return;
+  listEl._lastKey = barKey;
+
+  listEl.innerHTML = '';
+  for (const bar of bars) {
+    const color = bar.color || '#fcee0a';
+    const pct   = Math.round((bar.progress || 0) * 100);
+    const reqTxt = bar.required ? '' : ' <span style="color:#555">(opt)</span>';
+    const entry = document.createElement('div');
+    entry.className = 'obj-entry';
+    entry.innerHTML =
+      '<div class="obj-name" style="color:' + color + '">' + (bar.name || bar.id) + reqTxt + '</div>' +
+      '<div class="obj-bar-bg"><div class="obj-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+      '<div class="obj-status" style="color:' + color + '66">' + (bar.status || '') + ' &nbsp; ' + pct + '%</div>';
+    listEl.appendChild(entry);
+  }
+
+  // Mission complete / failed banner
+  if (objData.all_complete) {
+    const pts = objData.total_points || 0;
+    const banner = document.createElement('div');
+    banner.style.cssText = 'margin-top:8px;color:#05ffa1;font-weight:bold;font-size:13px;text-align:center;';
+    banner.textContent = 'MISSION COMPLETE +' + pts + 'pts';
+    listEl.appendChild(banner);
+  } else if (objData.any_failed) {
+    const banner = document.createElement('div');
+    banner.style.cssText = 'margin-top:8px;color:#ff2a6d;font-weight:bold;font-size:13px;text-align:center;';
+    banner.textContent = 'MISSION FAILED';
+    listEl.appendChild(banner);
   }
 }
 
@@ -1653,6 +2467,57 @@ function tickRain(dt) {
   rainGeo.attributes.position.needsUpdate = true;
 }
 
+function tickSnow(dt) {
+  if (!snowActive) return;
+  const count = Math.floor(snowIntensity * MAX_SNOW);
+  for (let i = 0; i < count; i++) {
+    // Slow drift down + gentle sway
+    snowPositions[i * 3]     += Math.sin(performance.now() * 0.0003 + i * 0.1) * 0.05;
+    snowPositions[i * 3 + 1] -= (0.8 + snowIntensity * 1.5) * dt;
+    snowPositions[i * 3 + 2] += Math.cos(performance.now() * 0.0002 + i * 0.13) * 0.04;
+    if (snowPositions[i * 3 + 1] < 0) {
+      snowPositions[i * 3]     = (Math.random() - 0.5) * MAP_SIZE * 2;
+      snowPositions[i * 3 + 1] = 70 + Math.random() * 20;
+      snowPositions[i * 3 + 2] = (Math.random() - 0.5) * MAP_SIZE * 2;
+    }
+  }
+  snowGeo.attributes.position.needsUpdate = true;
+}
+
+function tickLightning(dt) {
+  if (lightningTTL <= 0) return;
+  lightningTTL -= dt;
+  if (lightningTTL <= 0) {
+    lightningLight.intensity = 0;
+  } else {
+    // Flicker
+    lightningLight.intensity = lightningTTL > 0.03 ? 8 + Math.random() * 6 : 0;
+  }
+}
+
+function tickObjectiveMarkers(dt) {
+  // Continuous bobbing/rotation tick for visible objective markers
+  const t = performance.now() * 0.001;
+  for (let i = 0; i < objectiveMarkers.length; i++) {
+    const m = objectiveMarkers[i];
+    if (!m.group.visible) continue;
+    m.diamond.position.y = 6 + Math.sin(t * 1.5 + i * 0.8) * 0.8;
+    m.diamond.rotation.y = t * 0.5 + i * 0.3;
+    // Pulse zone ring
+    if (m.zoneRing.visible) {
+      m.zoneRingMat.opacity = 0.35 + Math.sin(t * 2.5 + i) * 0.2;
+    }
+  }
+}
+
+function tickControlPointMarkers(dt) {
+  // Slow pole rotation
+  for (const m of controlPointMarkers) {
+    if (!m.group.visible) continue;
+    m.group.rotation.y += dt * 0.3;
+  }
+}
+
 // FPS counter
 function updateFPS(dt) {
   frameCount++;
@@ -1694,6 +2559,12 @@ function animate() {
   tickSmoke(dt);
   tickMuzzleFlashes(dt);
   tickRain(dt);
+  tickSnow(dt);
+  tickLightning(dt);
+  tickObjectiveMarkers(dt);
+  tickControlPointMarkers(dt);
+  tickArtilleryShells(dt);
+  tickArtilleryImpacts(dt);
   updateFPS(dt);
 
   renderer.render(scene, camera);
@@ -1707,6 +2578,354 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// =========================================================================
+// Artillery renderer
+// =========================================================================
+
+const ARTY_SHELL_POOL_SIZE = 32;
+const artyShellPool = [];
+for (let i = 0; i < ARTY_SHELL_POOL_SIZE; i++) {
+  const shellGeo = new THREE.SphereGeometry(0.4, 6, 4);
+  const shellMat = new THREE.MeshBasicMaterial({
+    color: 0xfcee0a, transparent: true, opacity: 0.9,
+  });
+  const shellMesh = new THREE.Mesh(shellGeo, shellMat);
+  shellMesh.visible = false;
+  scene.add(shellMesh);
+
+  const TRAIL_POINTS = 10;
+  const trailBuf = new Float32Array(TRAIL_POINTS * 3);
+  const trailG = new THREE.BufferGeometry();
+  trailG.setAttribute('position', new THREE.BufferAttribute(trailBuf, 3));
+  trailG.setDrawRange(0, 0);
+  const trailL = new THREE.Line(trailG, new THREE.LineBasicMaterial({
+    color: 0xff8800, transparent: true, opacity: 0.6,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  scene.add(trailL);
+
+  artyShellPool.push({
+    mesh: shellMesh, trailLine: trailL, trailBuf,
+    trailPoints: TRAIL_POINTS, trailG,
+    active: false, _shellId: null, history: [],
+  });
+}
+
+const artyPieceMarkers = new Map(); // id -> { mesh, ring, ringMat, ringAge }
+
+function _getOrCreatePieceMark(id, alliance) {
+  if (artyPieceMarkers.has(id)) return artyPieceMarkers.get(id);
+  const color = alliance === 'friendly' ? GREEN : MAGENTA;
+  const geo = new THREE.ConeGeometry(1.4, 3.5, 6);
+  const mat = new THREE.MeshBasicMaterial({ color });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = Math.PI;
+  scene.add(mesh);
+  const ringGeo = new THREE.RingGeometry(2.8, 3.8, 18);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.3,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  scene.add(ring);
+  const marker = { mesh, ring, ringMat, ringAge: Math.random() * Math.PI * 2, alliance };
+  artyPieceMarkers.set(id, marker);
+  return marker;
+}
+
+const IMPACT_RING_POOL = 16;
+const impactRingPool = [];
+for (let i = 0; i < IMPACT_RING_POOL; i++) {
+  const geo = new THREE.RingGeometry(0.2, 0.8, 24);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xff4400, transparent: true, opacity: 0,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.visible = false;
+  scene.add(mesh);
+  impactRingPool.push({ mesh, mat, geo, active: false, age: 0, radius: 8, maxAge: 1.5, px: 0, pz: 0 });
+}
+
+function updateArtillery(arty) {
+  if (!arty) return;
+
+  // Piece markers
+  const activePieceIds = new Set();
+  for (const p of (arty.pieces || [])) {
+    activePieceIds.add(p.id);
+    const m = _getOrCreatePieceMark(p.id, p.alliance);
+    const px = p.x || 0, pz = -(p.y || 0);
+    m.mesh.position.set(px, 3.0, pz);
+    m.ring.position.set(px, 0.15, pz);
+    m.mesh.visible = true;
+    m.ring.visible = true;
+    const baseColor = p.alliance === 'friendly' ? GREEN : MAGENTA;
+    m.mesh.material.color.setHex(p.ready ? baseColor : YELLOW);
+  }
+  for (const [id, m] of artyPieceMarkers) {
+    if (!activePieceIds.has(id)) { m.mesh.visible = false; m.ring.visible = false; }
+  }
+
+  // In-flight shells
+  const usedIds = new Set((arty.shells || []).map(s => s.id));
+  for (const sl of artyShellPool) {
+    if (sl.active && !usedIds.has(sl._shellId)) {
+      sl.active = false;
+      sl.mesh.visible = false;
+      sl.trailG.setDrawRange(0, 0);
+      sl.trailG.attributes.position.needsUpdate = true;
+      sl.history = [];
+    }
+  }
+  for (const s of (arty.shells || [])) {
+    let sl = artyShellPool.find(x => x.active && x._shellId === s.id);
+    if (!sl) {
+      sl = artyShellPool.find(x => !x.active);
+      if (!sl) continue;
+      sl.active = true;
+      sl._shellId = s.id;
+      sl.history = [];
+    }
+    const px = s.x || 0, pz = -(s.y || 0), py = (s.altitude || 0) + 1.0;
+    sl.mesh.position.set(px, py, pz);
+    sl.mesh.visible = true;
+    const shellColors = { he: YELLOW, smoke: 0xaaaaaa, illumination: 0xffffff, wp: 0xff8800 };
+    sl.mesh.material.color.setHex(shellColors[s.shell_type] || YELLOW);
+    sl.history.push([px, py, pz]);
+    if (sl.history.length > sl.trailPoints) sl.history.shift();
+    let pi = 0;
+    for (const h of sl.history) { sl.trailBuf[pi++] = h[0]; sl.trailBuf[pi++] = h[1]; sl.trailBuf[pi++] = h[2]; }
+    sl.trailG.attributes.position.needsUpdate = true;
+    sl.trailG.setDrawRange(0, sl.history.length);
+  }
+
+  // Impacts — explosion + expanding ring
+  for (const imp of (arty.impacts || [])) {
+    const ix = imp.x || 0, iz = -(imp.y || 0);
+    spawnExplosion(ix, iz, 0, Math.max(3, (imp.blast_radius || 8) * 0.45));
+    const ring = impactRingPool.find(r => !r.active);
+    if (ring) {
+      ring.active = true; ring.age = 0;
+      ring.maxAge = 1.6; ring.radius = imp.blast_radius || 8;
+      ring.px = ix; ring.pz = iz;
+      ring.mesh.position.set(ix, 0.25, iz);
+      ring.mesh.visible = true;
+      ring.mat.color.setHex(imp.shell_type === 'wp' ? 0xffffff : 0xff4400);
+      ring.mat.opacity = 0.85;
+    }
+    // Persistent fire for HE/WP hits
+    if (!imp.shell_type || imp.shell_type === 'he' || imp.shell_type === 'wp') {
+      activeFireSources.push({ x: ix, z: iz, y: 0, radius: (imp.blast_radius || 8) * 0.25 });
+    }
+  }
+
+  // Smoke areas
+  for (const sa of (arty.smoke_areas || [])) {
+    spawnSmoke(sa.x || 0, -(sa.y || 0), 0, sa.radius || 12);
+  }
+
+  // Illumination areas — bright sphere glow
+  for (const il of (arty.illumination_areas || [])) {
+    const lx = il.x || 0, lz = -(il.y || 0);
+    spawnMuzzleFlash(lx, lz, 35);
+    const glowGeo = new THREE.SphereGeometry(il.radius || 35, 10, 7);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0xfff8cc, transparent: true, opacity: 0.07,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const glow = new THREE.Mesh(glowGeo, glowMat);
+    glow.position.set(lx, 25, lz);
+    scene.add(glow);
+    setTimeout(() => { scene.remove(glow); glowGeo.dispose(); glowMat.dispose(); }, 8000);
+  }
+}
+
+function tickArtilleryShells(dt) {
+  for (const [, m] of artyPieceMarkers) {
+    if (!m.mesh.visible) continue;
+    m.ringAge = (m.ringAge + dt * 2.2) % (Math.PI * 2);
+    m.ringMat.opacity = 0.15 + Math.abs(Math.sin(m.ringAge)) * 0.4;
+  }
+}
+
+function tickArtilleryImpacts(dt) {
+  for (const r of impactRingPool) {
+    if (!r.active) continue;
+    r.age += dt;
+    if (r.age >= r.maxAge) {
+      r.active = false; r.mesh.visible = false; continue;
+    }
+    const t = r.age / r.maxAge;
+    const curR = r.radius * (0.05 + t * 1.1);
+    r.geo.dispose();
+    r.geo = new THREE.RingGeometry(curR * 0.8, curR, 24);
+    r.geo.rotateX(-Math.PI / 2);
+    r.mesh.geometry = r.geo;
+    r.mat.opacity = 0.85 * (1.0 - t * t);
+  }
+}
+
+// =========================================================================
+// Narration renderer — Amy / Commander commentary HUD
+// =========================================================================
+
+const _narrationSeen = new Set();
+const NARRATION_MAX_LINES = 5;
+let _narrationLines = [];
+
+function updateNarration(narr) {
+  if (!narr) return;
+  const logEl = document.getElementById('narration-log');
+  if (!logEl) return;
+
+  const newEvents = [];
+  for (const ev of (narr.kill_feed || [])) {
+    const key = `${ev.tick}:${ev.text}`;
+    if (!_narrationSeen.has(key)) {
+      _narrationSeen.add(key);
+      newEvents.push({ text: ev.text, priority: ev.priority || 2, voice: 'radio', tick: ev.tick });
+    }
+  }
+  for (const ev of (narr.alerts || [])) {
+    const key = `a:${ev.tick}:${ev.text}`;
+    if (!_narrationSeen.has(key)) {
+      _narrationSeen.add(key);
+      newEvents.push({ text: ev.text, priority: ev.priority || 3, voice: ev.voice || 'commander', tick: ev.tick });
+    }
+  }
+  if (narr.sitrep && narr.sitrep.length > 0) {
+    const key = `s:${narr.sitrep}`;
+    if (!_narrationSeen.has(key)) {
+      _narrationSeen.add(key);
+      newEvents.push({ text: narr.sitrep, priority: 1, voice: 'commander', tick: -1 });
+    }
+  }
+  if (newEvents.length === 0) return;
+  if (_narrationSeen.size > 2000) {
+    const arr = Array.from(_narrationSeen);
+    arr.splice(0, 400).forEach(k => _narrationSeen.delete(k));
+  }
+
+  for (const ev of newEvents) {
+    const div = document.createElement('div');
+    div.className = `narration-entry priority-${ev.priority} voice-${ev.voice} new`;
+    div.textContent = ev.text;
+    logEl.insertBefore(div, logEl.firstChild);
+    _narrationLines.unshift({ el: div, ...ev });
+    setTimeout(() => div.classList.remove('new'), 450);
+  }
+
+  while (_narrationLines.length > NARRATION_MAX_LINES) {
+    const old = _narrationLines.pop();
+    if (old.el && old.el.parentNode) {
+      old.el.classList.add('fading');
+      setTimeout(() => { if (old.el.parentNode) old.el.parentNode.removeChild(old.el); }, 1400);
+    }
+  }
+  _narrationLines.forEach((line, i) => {
+    if (line.el) line.el.classList.toggle('fading', i >= 3);
+  });
+}
+
+// =========================================================================
+// Fog-of-War canvas overlay renderer
+// =========================================================================
+
+const fowCanvas = document.getElementById('fow-canvas');
+const fowCtx = fowCanvas ? fowCanvas.getContext('2d') : null;
+const FOW_WORLD_SIZE = 500; // matches server world 500x500
+
+function _resizeFowCanvas() {
+  if (!fowCanvas) return;
+  fowCanvas.width = window.innerWidth;
+  fowCanvas.height = window.innerHeight;
+}
+_resizeFowCanvas();
+window.addEventListener('resize', () => { _resizeFowCanvas(); });
+
+function _worldToCanvas(wx, wy, cellSize) {
+  // sim world: origin at (0,0), map center at (250,250)
+  const threeX = wx - FOW_WORLD_SIZE / 2;
+  const threeZ = -(wy - FOW_WORLD_SIZE / 2);
+  const wp = new THREE.Vector3(threeX, 0, threeZ);
+  wp.project(camera);
+  const px = (wp.x * 0.5 + 0.5) * fowCanvas.width;
+  const py = (-wp.y * 0.5 + 0.5) * fowCanvas.height;
+  // Estimate projected cell size (one axis only)
+  const wp2 = new THREE.Vector3(threeX + cellSize, 0, threeZ);
+  wp2.project(camera);
+  const px2 = (wp2.x * 0.5 + 0.5) * fowCanvas.width;
+  const cellPx = Math.abs(px2 - px) * 1.3 + 1; // slight overdraw to avoid gaps
+  return [px, py, cellPx];
+}
+
+function updateFogOfWar(intel) {
+  if (!fowCtx || !fowCanvas) return;
+  const fog = intel.fog_grid;
+  if (!fog) return;
+
+  const gridW = fog.width || 100;
+  const gridH = fog.height || 100;
+  const cellSize = fog.cell_size || 5.0;
+  const visible = fog.visible || [];
+  const explored = fog.explored || [];
+
+  if (visible.length === 0 && explored.length === 0) {
+    fowCanvas.classList.remove('active');
+    return;
+  }
+  fowCanvas.classList.add('active');
+
+  fowCtx.clearRect(0, 0, fowCanvas.width, fowCanvas.height);
+
+  // Full darkness overlay
+  fowCtx.fillStyle = 'rgba(6, 6, 14, 0.82)';
+  fowCtx.fillRect(0, 0, fowCanvas.width, fowCanvas.height);
+
+  // Punch out explored cells (50% transparency kept — light fog)
+  fowCtx.globalCompositeOperation = 'destination-out';
+  for (const cell of explored) {
+    const col = cell[0], row = cell[1];
+    const wx = (col + 0.5) * cellSize;
+    const wy = (row + 0.5) * cellSize;
+    const [px, py, cellPx] = _worldToCanvas(wx, wy, cellSize);
+    fowCtx.fillStyle = 'rgba(0,0,0,0.5)';
+    fowCtx.fillRect(px - cellPx / 2, py - cellPx / 2, cellPx, cellPx);
+  }
+
+  // Fully punch out visible cells (100% clear)
+  for (const cell of visible) {
+    const col = cell[0], row = cell[1];
+    const wx = (col + 0.5) * cellSize;
+    const wy = (row + 0.5) * cellSize;
+    const [px, py, cellPx] = _worldToCanvas(wx, wy, cellSize);
+    fowCtx.fillStyle = 'rgba(0,0,0,1)';
+    fowCtx.fillRect(px - cellPx / 2, py - cellPx / 2, cellPx, cellPx);
+  }
+
+  fowCtx.globalCompositeOperation = 'source-over';
+
+  // Cyan boundary glow along visible edge
+  if (visible.length > 0) {
+    const visSet = new Set(visible.map(c => `${c[0]},${c[1]}`));
+    fowCtx.strokeStyle = 'rgba(0,240,255,0.18)';
+    fowCtx.lineWidth = 1.5;
+    for (const cell of visible) {
+      const col = cell[0], row = cell[1];
+      const neighbors = [`${col-1},${row}`,`${col+1},${row}`,`${col},${row-1}`,`${col},${row+1}`];
+      if (neighbors.some(n => !visSet.has(n))) {
+        const wx = (col + 0.5) * cellSize;
+        const wy = (row + 0.5) * cellSize;
+        const [px, py, cellPx] = _worldToCanvas(wx, wy, cellSize);
+        fowCtx.strokeRect(px - cellPx / 2, py - cellPx / 2, cellPx, cellPx);
+      }
+    }
+  }
+}
 
 // =========================================================================
 // Init

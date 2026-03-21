@@ -22,7 +22,6 @@ from tritium_lib.sim_engine.ai.steering import (
     distance,
     normalize,
     magnitude,
-    heading_to_vec,
     _sub,
     _add,
     _scale,

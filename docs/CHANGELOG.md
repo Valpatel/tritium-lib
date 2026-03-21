@@ -12,6 +12,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-21 — Wave 183: Maintenance
+
+| Change | Verification |
+|--------|-------------|
+| Redundancy audit: removed unused `heading_to_vec` import from `vehicles.py` | Manual |
+| Redundancy audit: removed unused `math`, `normalize`, `magnitude`, `UnitStats`, `UnitState`, `UnitType`, `UNIT_TEMPLATES` imports from `scenario.py` | Manual |
+| Added missing READMEs: `combat/`, `core/`, `game/`, `world/`, `behavior/`, `debug/` | Human Verified |
+| Updated `demos/FEATURE_COVERAGE.md`: now reflects 18 fully demonstrated (up from 13), 22 partial, 22 missing based on actual `game.html` code review | Human Verified |
+
+---
+
 ## 2026-03-15 — Wave 165: Quality Check
 
 | Change | Verification |

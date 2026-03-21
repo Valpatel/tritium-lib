@@ -20,7 +20,6 @@ Usage::
 
 from __future__ import annotations
 
-import math
 import random
 from dataclasses import dataclass, field
 from typing import Callable
@@ -28,21 +27,15 @@ from typing import Callable
 from tritium_lib.sim_engine.ai.steering import (
     Vec2,
     distance,
-    normalize,
     _sub,
     _add,
     _scale,
-    magnitude,
     seek,
     flee,
 )
 from tritium_lib.sim_engine.units import (
     Unit,
     Alliance,
-    UnitStats,
-    UnitState,
-    UnitType,
-    UNIT_TEMPLATES,
     create_unit,
 )
 
