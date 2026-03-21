@@ -913,6 +913,57 @@ function renderTerrainPolygons(geojson) {
   console.log(`[TERRAIN] Rendered ${geojson.features.length} terrain polygons`);
 }
 
+// =========================================================================
+// Procedural map feature rendering (roads, forest, river, buildings)
+// =========================================================================
+const MAP_FEATURE_COLORS = {
+  road: 0x555555, forest: 0x1a6b1a, river: 0x1a5599, water: 0x1a5599,
+  building: 0x444444, village: 0x886644, wall: 0x888888, bridge: 0x777777,
+};
+
+function renderMapFeatures(features) {
+  if (!features || features.length === 0) return;
+  const mapGroup = new THREE.Group();
+  mapGroup.name = 'map-features';
+
+  for (const f of features) {
+    const color = MAP_FEATURE_COLORS[f.type] || 0x888888;
+    const w = f.w || 2;
+    const h = f.h || 2;
+
+    if (f.type === 'road' || f.type === 'river') {
+      // Roads and rivers are flat rectangles
+      const geo = new THREE.PlaneGeometry(w, h);
+      const mat = new THREE.MeshBasicMaterial({
+        color, opacity: f.type === 'river' ? 0.6 : 0.4,
+        transparent: true, side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(f.x, 0.05, f.y);
+      mesh.rotation.x = -Math.PI / 2;
+      if (f.rotation) mesh.rotation.z = f.rotation;
+      mapGroup.add(mesh);
+    } else if (f.type === 'forest') {
+      // Forest: small green cone (simplified tree)
+      const geo = new THREE.ConeGeometry(w * 0.3, h * 2, 6);
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.8 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(f.x, h, f.y);
+      mapGroup.add(mesh);
+    } else {
+      // Default: box
+      const geo = new THREE.BoxGeometry(w, Math.max(h, 2), w);
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(f.x, Math.max(h, 2) / 2, f.y);
+      mapGroup.add(mesh);
+    }
+  }
+
+  scene.add(mapGroup);
+  console.log(`[MAP] Rendered ${features.length} map features`);
+}
+
 function processFrame(frame) {
   lastFrame = frame;
 
@@ -938,6 +989,12 @@ function processFrame(frame) {
   if (frame.terrain_geojson && !window._terrainRendered) {
     renderTerrainPolygons(frame.terrain_geojson);
     window._terrainRendered = true;
+  }
+
+  // Procedural map features (roads, forest, river) from first frame
+  if (frame.map_features && !window._mapFeaturesRendered) {
+    renderMapFeatures(frame.map_features);
+    window._mapFeaturesRendered = true;
   }
 
   // HUD
