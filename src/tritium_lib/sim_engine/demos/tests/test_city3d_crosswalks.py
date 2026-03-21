@@ -16,8 +16,20 @@ CITY3D_PATH = os.path.join(
 
 @pytest.fixture(scope="module")
 def source():
+    """Load city3d.html combined with all city3d/*.js modules.
+
+    The frontend is split across city3d.html and external JS modules in
+    city3d/*.js.  Tests must scan both to find all code patterns.
+    """
+    import glob as _glob
+    parts = []
     with open(CITY3D_PATH, "r") as f:
-        return f.read()
+        parts.append(f.read())
+    js_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "city3d")
+    for js_path in sorted(_glob.glob(os.path.join(js_dir, "*.js"))):
+        with open(js_path, "r") as f:
+            parts.append(f.read())
+    return "\n".join(parts)
 
 
 # =========================================================================

@@ -256,6 +256,43 @@ canvas { display: block; }
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Economy panel — resource bars for friendly faction ── */
+#economy-panel {
+  position: absolute; bottom: 8px; right: 16px;
+  background: #0a0a0fdd; border: 1px solid #fcee0a33;
+  border-radius: 4px; padding: 8px 12px; min-width: 180px;
+  pointer-events: none; display: none;
+}
+#economy-panel.visible { display: block; }
+#economy-panel .title { font-size: 10px; color: #fcee0aaa;
+  text-transform: uppercase; letter-spacing: 2px; margin-bottom: 5px; }
+.econ-row { display: flex; align-items: center; gap: 6px;
+  margin-bottom: 3px; font-size: 11px; }
+.econ-label { width: 64px; color: #aaa; text-transform: capitalize; }
+.econ-bar { flex: 1; height: 6px; background: #1a1a2a; border-radius: 3px; overflow: hidden; }
+.econ-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+.econ-value { width: 40px; text-align: right; color: #fcee0a; font-size: 10px; }
+.econ-queue { font-size: 10px; color: #00f0ff88; margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── AI behaviors panel — unit decision overlay ── */
+#ai-panel {
+  position: absolute; top: 50%; left: 16px; transform: translateY(-50%);
+  background: #0a0a0fcc; border: 1px solid #05ffa133;
+  border-radius: 4px; padding: 8px 10px; min-width: 140px; max-height: 300px;
+  overflow-y: auto; pointer-events: none; display: none; font-size: 10px;
+}
+#ai-panel.visible { display: block; }
+#ai-panel .title { font-size: 10px; color: #05ffa1aa;
+  text-transform: uppercase; letter-spacing: 2px; margin-bottom: 5px; }
+.ai-unit-row { display: flex; align-items: center; gap: 4px;
+  margin-bottom: 2px; color: #888; }
+.ai-unit-id { width: 70px; overflow: hidden; text-overflow: ellipsis; }
+.ai-decision { color: #05ffa1; text-transform: uppercase; font-size: 9px; }
+.ai-decision.engage { color: #ff2a6d; }
+.ai-decision.flee, .ai-decision.retreat { color: #fcee0a; }
+.ai-decision.seek_cover, .ai-decision.hide { color: #00f0ff; }
+
 /* ── FOW canvas overlay — between 3D scene and HUD ── */
 #fow-canvas {
   position: absolute; top: 0; left: 0;
@@ -343,6 +380,19 @@ canvas { display: block; }
   <div id="narration-panel">
     <div class="title">Commander — Amy</div>
     <div id="narration-log"></div>
+  </div>
+
+  <!-- Economy panel — resource bars -->
+  <div id="economy-panel">
+    <div class="title">Resources</div>
+    <div id="economy-bars"></div>
+    <div class="econ-queue" id="economy-queue"></div>
+  </div>
+
+  <!-- AI behaviors panel — unit decision overlay -->
+  <div id="ai-panel">
+    <div class="title">AI Behaviors</div>
+    <div id="ai-units-list"></div>
   </div>
 </div>
 
@@ -1847,6 +1897,12 @@ function processFrame(frame) {
   // Intel — fog of war canvas overlay
   if (frame.intel) updateFogOfWar(frame.intel);
 
+  // Economy — resource bars (friendly faction)
+  if (frame.economy) updateEconomy(frame.economy);
+
+  // AI behaviors — unit decision panel
+  if (frame.ai_behaviors) updateAIBehaviors(frame.ai_behaviors);
+
   // HUD
   updateHUD(frame.ui || {}, frame);
 }
@@ -2707,6 +2763,78 @@ function updateObjectives(objData) {
     banner.style.cssText = 'margin-top:8px;color:#ff2a6d;font-weight:bold;font-size:13px;text-align:center;';
     banner.textContent = 'MISSION FAILED';
     listEl.appendChild(banner);
+  }
+}
+
+// =========================================================================
+// =========================================================================
+// Economy panel — resource bars from frame.economy (economy.py)
+// =========================================================================
+function updateEconomy(economy) {
+  const panel = document.getElementById('economy-panel');
+  const barsEl = document.getElementById('economy-bars');
+  const queueEl = document.getElementById('economy-queue');
+  if (!panel || !barsEl) return;
+
+  // Show friendly faction economy
+  const friendly = economy.friendly;
+  if (!friendly || !friendly.resource_bars || friendly.resource_bars.length === 0) {
+    panel.classList.remove('visible');
+    return;
+  }
+  panel.classList.add('visible');
+
+  barsEl.innerHTML = '';
+  for (const bar of friendly.resource_bars) {
+    const fill = Math.max(0, Math.min(1, bar.fill || 0));
+    const pct = Math.round(fill * 100);
+    const color = bar.color || '#fcee0a';
+    barsEl.innerHTML += '<div class="econ-row">' +
+      '<span class="econ-label">' + (bar.resource || '?') + '</span>' +
+      '<div class="econ-bar"><div class="econ-bar-fill" style="width:' + pct +
+      '%;background:' + color + '"></div></div>' +
+      '<span class="econ-value">' + Math.round(bar.value || 0) + '</span>' +
+      '</div>';
+  }
+
+  // Build queue summary
+  const queue = friendly.build_queue || [];
+  if (queue.length > 0) {
+    const names = queue.slice(0, 3).map(q => q.template_id || q.unit || '?').join(', ');
+    queueEl.textContent = 'Queue: ' + names + (queue.length > 3 ? ' +' + (queue.length - 3) : '');
+    queueEl.style.display = 'block';
+  } else {
+    queueEl.style.display = 'none';
+  }
+}
+
+// =========================================================================
+// AI behaviors panel — unit decision state from frame.ai_behaviors (ai/*)
+// =========================================================================
+function updateAIBehaviors(aiBehaviors) {
+  const panel = document.getElementById('ai-panel');
+  const listEl = document.getElementById('ai-units-list');
+  if (!panel || !listEl) return;
+
+  const units = aiBehaviors.units || {};
+  const keys = Object.keys(units).slice(0, 15); // cap at 15 units
+  if (keys.length === 0) {
+    panel.classList.remove('visible');
+    return;
+  }
+  panel.classList.add('visible');
+
+  listEl.innerHTML = '';
+  for (const uid of keys) {
+    const info = units[uid];
+    const decision = info.decision || 'idle';
+    const shortId = uid.length > 10 ? uid.slice(0, 9) + '.' : uid;
+    const decClass = 'ai-decision ' + decision.replace(' ', '_');
+    const inCover = info.in_cover ? ' [C]' : '';
+    listEl.innerHTML += '<div class="ai-unit-row">' +
+      '<span class="ai-unit-id">' + shortId + '</span>' +
+      '<span class="' + decClass + '">' + decision + inCover + '</span>' +
+      '</div>';
   }
 }
 
