@@ -1010,3 +1010,123 @@ class TestSegmentationQuality:
         # Should have at least one segment covering most of the image
         total_area = sum(s["area"] for s in segments)
         assert total_area > 10000, f"Expected large coverage, got {total_area}"
+
+
+# ---------------------------------------------------------------------------
+# Fused terrain features
+# ---------------------------------------------------------------------------
+
+class TestFusedTerrain:
+    """Test terrain layer with OSM fusion."""
+
+    def test_terrain_brief_includes_named_roads(self):
+        """Terrain brief should include named roads when OSM data is fused."""
+        from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
+        from tritium_lib.intelligence.geospatial.models import SegmentedRegion
+        from tritium_lib.models.terrain import TerrainType
+
+        layer = TerrainLayer()
+        layer._regions = [
+            SegmentedRegion(
+                geometry_wkt="POLYGON EMPTY",
+                terrain_type=TerrainType.ROAD,
+                area_m2=100,
+                centroid_lat=30.0,
+                centroid_lon=-97.0,
+                properties={"osm_name": "Congress Avenue"},
+            ),
+            SegmentedRegion(
+                geometry_wkt="POLYGON EMPTY",
+                terrain_type=TerrainType.BUILDING,
+                area_m2=500,
+                centroid_lat=30.001,
+                centroid_lon=-97.0,
+                properties={"osm_name": "Frost Bank Tower"},
+            ),
+        ]
+        from tritium_lib.intelligence.geospatial.models import TerrainLayerMetadata
+        layer._metadata = TerrainLayerMetadata(ao_id="test", segment_count=2)
+
+        brief = layer.terrain_brief()
+        assert "Congress Avenue" in brief
+        assert "Frost Bank Tower" in brief
+        assert "Major Roads" in brief
+        assert "Named Structures" in brief
+
+    def test_properties_survive_cache_roundtrip(self, tmp_path):
+        """Custom properties should persist through save/load cycle."""
+        from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
+        from tritium_lib.intelligence.geospatial.models import (
+            SegmentedRegion, TerrainLayerMetadata,
+        )
+        from tritium_lib.models.terrain import TerrainType
+
+        layer = TerrainLayer(cache_dir=tmp_path)
+        layer._regions = [
+            SegmentedRegion(
+                geometry_wkt="POLYGON ((0 0, 1 0, 1 1, 0 0))",
+                terrain_type=TerrainType.ROAD,
+                area_m2=100,
+                centroid_lat=0.5,
+                centroid_lon=0.5,
+                properties={"osm_name": "Main Street", "road_type": "residential", "osm_id": 12345},
+            ),
+        ]
+        layer._metadata = TerrainLayerMetadata(ao_id="props_test", segment_count=1)
+        layer._build_grid_index()
+        layer._save_cache("props_test")
+
+        # Reload
+        layer2 = TerrainLayer(cache_dir=tmp_path)
+        assert layer2.load_cached("props_test")
+        assert len(layer2.regions) == 1
+        r = layer2.regions[0]
+        assert r.properties.get("osm_name") == "Main Street"
+        assert r.properties.get("road_type") == "residential"
+        assert r.properties.get("osm_id") == 12345
+
+    def test_mission_generator_uses_building_names(self, tmp_path):
+        """Mission generator should use OSM building names."""
+        from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
+        from tritium_lib.intelligence.geospatial.models import SegmentedRegion
+        from tritium_lib.intelligence.geospatial.mission_generator import MissionGenerator
+        from tritium_lib.models.terrain import TerrainType
+
+        layer = TerrainLayer(cache_dir=tmp_path)
+        layer._regions = [
+            SegmentedRegion(
+                geometry_wkt="POLYGON EMPTY",
+                terrain_type=TerrainType.BUILDING,
+                area_m2=3000,
+                centroid_lat=30.0,
+                centroid_lon=-97.0,
+                properties={"osm_name": "City Hall"},
+            ),
+            SegmentedRegion(
+                geometry_wkt="POLYGON EMPTY",
+                terrain_type=TerrainType.ROAD,
+                area_m2=500,
+                centroid_lat=30.001,
+                centroid_lon=-97.0,
+            ),
+            SegmentedRegion(
+                geometry_wkt="POLYGON EMPTY",
+                terrain_type=TerrainType.ROAD,
+                area_m2=500,
+                centroid_lat=30.002,
+                centroid_lon=-97.001,
+            ),
+            SegmentedRegion(
+                geometry_wkt="POLYGON EMPTY",
+                terrain_type=TerrainType.ROAD,
+                area_m2=500,
+                centroid_lat=30.003,
+                centroid_lon=-97.002,
+            ),
+        ]
+
+        gen = MissionGenerator()
+        missions = gen.generate_missions(layer)
+        overwatch = [m for m in missions if m.mission_type == "overwatch"]
+        assert any("City Hall" in m.name for m in overwatch), \
+            f"Expected 'City Hall' in overwatch missions, got {[m.name for m in overwatch]}"
