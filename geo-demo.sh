@@ -152,8 +152,50 @@ layer._metadata = TerrainLayerMetadata(
 )
 layer._build_grid_index()
 layer._save_cache(ao.id)
-print(f"  Terrain features: {len(regions)}")
-print(f"  Cached to: data/cache/terrain/{ao.id}/")
+print(f"  Satellite features: {len(regions)}")
+
+# Step 4b: Fuse with OSM data for richer terrain
+print("  Fusing with OpenStreetMap...")
+try:
+    from tritium_lib.intelligence.geospatial.osm_enrichment import OSMEnrichment
+    osm_enrichment = OSMEnrichment()
+    osm_features = osm_enrichment.fetch_osm(ao.bounds)
+    if osm_features:
+        osm_regions = []
+        osm_cells = set()
+        for f in osm_features:
+            if f.lat == 0 and f.lon == 0:
+                continue
+            props = {"osm_id": f.osm_id, "source": "osm"}
+            if f.name:
+                props["osm_name"] = f.name
+            if f.road_type:
+                props["road_type"] = f.road_type
+            osm_regions.append(SegmentedRegion(
+                geometry_wkt="POLYGON EMPTY", terrain_type=f.terrain_type,
+                confidence=0.85, area_m2=100,
+                centroid_lat=f.lat, centroid_lon=f.lon, properties=props,
+            ))
+            osm_cells.add((int(f.lon * 10000), int(f.lat * 10000)))
+        # Add satellite gap-fill
+        sat_fill = 0
+        for r in regions:
+            cell = (int(r.centroid_lon * 10000), int(r.centroid_lat * 10000))
+            if cell not in osm_cells:
+                osm_regions.append(r)
+                sat_fill += 1
+        regions = osm_regions
+        layer._regions = regions
+        layer._metadata.segment_count = len(regions)
+        layer._metadata.source_imagery = "satellite+osm"
+        layer._build_grid_index()
+        layer._save_cache(ao.id)
+        named = sum(1 for r in regions if r.properties.get("osm_name"))
+        print(f"  OSM: {len(osm_features)} features, {named} named")
+        print(f"  Fused: {len(regions)} total ({len(osm_features)} OSM + {sat_fill} satellite)")
+except Exception as e:
+    print(f"  OSM fusion skipped: {e}")
+
 print(f"  ✓ Terrain layer built ({time.monotonic()-t0:.1f}s)")
 print()
 
