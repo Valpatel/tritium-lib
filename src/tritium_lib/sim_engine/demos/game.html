@@ -442,15 +442,48 @@ const fillLight = new THREE.DirectionalLight(0x2244ff, 0.15);
 fillLight.position.set(-30, 40, -50);
 scene.add(fillLight);
 
+// Hemisphere light — sky/ground ambient gradient (city3d quality)
+const hemiLight = new THREE.HemisphereLight(0x00f0ff, 0x112244, 0.5);
+scene.add(hemiLight);
+
+// =========================================================================
+// Day/Night sky color helper — matches city3d quality gradient
+// =========================================================================
+const _skyColorA = new THREE.Color();
+const _skyColorB = new THREE.Color();
+
+function getSkyColor(h) {
+  // h = hour 0..24
+  if (h >= 7 && h < 17) return 0x1a2a3e;  // daytime — deep tactical blue
+  if (h >= 19 || h < 5) return 0x0a0a0f;  // night — near black
+  if (h >= 5 && h < 6) {
+    _skyColorA.set(0x0a0a2e); _skyColorB.set(0xff6622);
+    _skyColorA.lerp(_skyColorB, h - 5); return _skyColorA.getHex();
+  }
+  if (h >= 6 && h < 7) {
+    _skyColorA.set(0xff6622); _skyColorB.set(0x1a2a3e);
+    _skyColorA.lerp(_skyColorB, h - 6); return _skyColorA.getHex();
+  }
+  if (h >= 17 && h < 18) {
+    _skyColorA.set(0x1a2a3e); _skyColorB.set(0xff5511);
+    _skyColorA.lerp(_skyColorB, h - 17); return _skyColorA.getHex();
+  }
+  _skyColorA.set(0xff5511); _skyColorB.set(0x2a1a3e);
+  _skyColorA.lerp(_skyColorB, h - 18); return _skyColorA.getHex();
+}
+
 // =========================================================================
 // Ground plane with grid
 // =========================================================================
+// Tracked ground material for wet road effect
+let groundMat;
+
 function createGround() {
   const groundGeo = new THREE.PlaneGeometry(MAP_SIZE * 2, MAP_SIZE * 2);
-  const groundMat = new THREE.MeshStandardMaterial({
-    color: 0x0e1a0e,
+  groundMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a,  // dark asphalt — matches city3d aesthetic
     roughness: 0.9,
-    metalness: 0.05,
+    metalness: 0.0,
   });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
@@ -458,23 +491,27 @@ function createGround() {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // Grid lines
-  const gridHelper = new THREE.GridHelper(MAP_SIZE * 2, 40, 0x0a2a0a, 0x0a1a0a);
+  // Grid lines — brighter cyan tint for cyberpunk feel
+  const gridHelper = new THREE.GridHelper(MAP_SIZE * 2, 40, 0x002222, 0x001a1a);
   gridHelper.position.y = 0.01;
   scene.add(gridHelper);
 
-  // Axis markers
-  const axisGeo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-HALF_MAP, 0.1, 0),
-    new THREE.Vector3(HALF_MAP, 0.1, 0),
-  ]);
-  const axisMat = new THREE.LineBasicMaterial({ color: 0x002200, transparent: true, opacity: 0.3 });
-  scene.add(new THREE.Line(axisGeo, axisMat));
-  const axisGeo2 = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0.1, -HALF_MAP),
-    new THREE.Vector3(0, 0.1, HALF_MAP),
-  ]);
-  scene.add(new THREE.Line(axisGeo2, axisMat));
+  // Subtle bright-cyan major axis lines (every 50 units)
+  const axisMat = new THREE.LineBasicMaterial({
+    color: CYAN, transparent: true, opacity: 0.08,
+  });
+  for (let offset = -HALF_MAP; offset <= HALF_MAP; offset += 50) {
+    const hGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-HALF_MAP, 0.02, offset),
+      new THREE.Vector3(HALF_MAP, 0.02, offset),
+    ]);
+    scene.add(new THREE.Line(hGeo, axisMat));
+    const vGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(offset, 0.02, -HALF_MAP),
+      new THREE.Vector3(offset, 0.02, HALF_MAP),
+    ]);
+    scene.add(new THREE.Line(vGeo, axisMat));
+  }
 }
 createGround();
 
@@ -485,10 +522,11 @@ const MAX_UNITS = 256;
 const MAX_PROJECTILES = 512;
 const MAX_CROWD = 512;
 
-// Unit mesh — octahedron for soldiers
-const unitGeo = new THREE.OctahedronGeometry(0.8, 0);
+// Unit mesh — capsule for infantry (body shape), separate emissive glow instance
+// CapsuleGeometry(radius, length, capSegments, radialSegments)
+const unitGeo = new THREE.CapsuleGeometry(0.45, 1.0, 4, 8);
 const unitMat = new THREE.MeshStandardMaterial({
-  color: 0xffffff, roughness: 0.4, metalness: 0.3,
+  color: 0xffffff, roughness: 0.55, metalness: 0.15,
 });
 const unitInstances = new THREE.InstancedMesh(unitGeo, unitMat, MAX_UNITS);
 unitInstances.count = 0;
@@ -496,41 +534,127 @@ unitInstances.castShadow = true;
 unitInstances.receiveShadow = true;
 scene.add(unitInstances);
 
-// Vehicle mesh — box
-const vehicleGeo = new THREE.BoxGeometry(3, 1.5, 2);
+// Selected unit glow — slightly larger transparent capsule, additive blending
+const unitGlowGeo = new THREE.CapsuleGeometry(0.65, 1.0, 4, 8);
+const unitGlowMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff, transparent: true, opacity: 0.35,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.FrontSide,
+});
+const unitGlowInstances = new THREE.InstancedMesh(unitGlowGeo, unitGlowMat, MAX_UNITS);
+unitGlowInstances.count = 0;
+scene.add(unitGlowInstances);
+
+// Vehicle body mesh — armored box shape with slight height chamfer feel
+const vehicleGeo = new THREE.BoxGeometry(3.2, 1.4, 2.0);
 const vehicleMat = new THREE.MeshStandardMaterial({
-  color: 0xffffff, roughness: 0.5, metalness: 0.4,
+  color: 0xffffff, roughness: 0.45, metalness: 0.55,
 });
 const vehicleInstances = new THREE.InstancedMesh(vehicleGeo, vehicleMat, 64);
 vehicleInstances.count = 0;
 vehicleInstances.castShadow = true;
+vehicleInstances.receiveShadow = true;
 scene.add(vehicleInstances);
 
-// Crowd mesh — small sphere
-const crowdGeo = new THREE.SphereGeometry(0.3, 6, 4);
+// Vehicle cabin — slightly narrower box on top (city3d style: body + cabin)
+const vehicleCabinGeo = new THREE.BoxGeometry(2.6, 1.0, 1.5);
+const vehicleCabinMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff, roughness: 0.55, metalness: 0.35,
+});
+const vehicleCabinInstances = new THREE.InstancedMesh(vehicleCabinGeo, vehicleCabinMat, 64);
+vehicleCabinInstances.count = 0;
+vehicleCabinInstances.castShadow = true;
+scene.add(vehicleCabinInstances);
+
+// Vehicle headlights — small emissive boxes
+const vehicleHLGeo = new THREE.BoxGeometry(0.3, 0.3, 0.4);
+const vehicleHLMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
+const vehicleHLInstances = new THREE.InstancedMesh(vehicleHLGeo, vehicleHLMat, 128);
+vehicleHLInstances.count = 0;
+scene.add(vehicleHLInstances);
+
+// Vehicle tail lights
+const vehicleTLMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.85 });
+const vehicleTLInstances = new THREE.InstancedMesh(vehicleHLGeo, vehicleTLMat, 128);
+vehicleTLInstances.count = 0;
+scene.add(vehicleTLInstances);
+
+// Crowd mesh — small flattened sphere (feels more like a person-blob)
+const crowdGeo = new THREE.SphereGeometry(0.28, 6, 5);
 const crowdMat = new THREE.MeshStandardMaterial({
-  color: 0xffffff, roughness: 0.6, metalness: 0.1,
+  color: 0xffffff, roughness: 0.7, metalness: 0.05,
 });
 const crowdInstances = new THREE.InstancedMesh(crowdGeo, crowdMat, MAX_CROWD);
 crowdInstances.count = 0;
 scene.add(crowdInstances);
 
 // =========================================================================
-// Projectile trail system — BufferGeometry line strips
+// Projectile trail system — per-projectile history with fading opacity
+// Each projectile gets a dedicated Line object from a pool so trails
+// fade from dim tail to bright head along multiple history points.
 // =========================================================================
-const MAX_TRAIL_POINTS = MAX_PROJECTILES * 4;
-const trailPositions = new Float32Array(MAX_TRAIL_POINTS * 3);
-const trailColors = new Float32Array(MAX_TRAIL_POINTS * 3);
-const trailGeo = new THREE.BufferGeometry();
-trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
-trailGeo.setAttribute('color', new THREE.BufferAttribute(trailColors, 3));
-trailGeo.setDrawRange(0, 0);
-const trailMat = new THREE.LineBasicMaterial({
-  vertexColors: true, transparent: true, opacity: 0.8,
-  blending: THREE.AdditiveBlending, depthWrite: false,
-});
-const trailLines = new THREE.LineSegments(trailGeo, trailMat);
-scene.add(trailLines);
+const TRAIL_HISTORY_LEN = 8;   // points kept per projectile
+const PROJ_TRAIL_POOL = 64;    // max simultaneous projectile trails
+
+// Pool of reusable trail line objects
+const projTrailPool = [];
+for (let i = 0; i < PROJ_TRAIL_POOL; i++) {
+  const pts = new Float32Array(TRAIL_HISTORY_LEN * 3);
+  const colors = new Float32Array(TRAIL_HISTORY_LEN * 3);
+  const tGeo = new THREE.BufferGeometry();
+  tGeo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+  tGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  tGeo.setDrawRange(0, 0);
+  const tMat = new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 1.0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const line = new THREE.Line(tGeo, tMat);
+  line.frustumCulled = false;
+  line.visible = false;
+  scene.add(line);
+  projTrailPool.push({
+    line, geo: tGeo, mat: tMat, pts, colors,
+    projId: null, history: [],
+  });
+}
+
+// Per-projectile history map: projId -> array of [x,y,z] (capped at TRAIL_HISTORY_LEN)
+const projHistories = new Map();
+
+// =========================================================================
+// Expanding shockwave ring pool — visual "boom" complement to particle system
+// =========================================================================
+const SHOCKWAVE_POOL_SIZE = 24;
+const shockwavePool = [];
+for (let i = 0; i < SHOCKWAVE_POOL_SIZE; i++) {
+  // Flat torus that expands outward and fades
+  const sGeo = new THREE.TorusGeometry(1, 0.18, 6, 28);
+  const sMat = new THREE.MeshBasicMaterial({
+    color: 0xff6600, transparent: true, opacity: 0.0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const sMesh = new THREE.Mesh(sGeo, sMat);
+  sMesh.rotation.x = -Math.PI / 2;
+  sMesh.visible = false;
+  scene.add(sMesh);
+
+  // Inner flash sphere — brief white flash at ground level
+  const fGeo = new THREE.SphereGeometry(1, 8, 6);
+  const fMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const fMesh = new THREE.Mesh(fGeo, fMat);
+  fMesh.visible = false;
+  scene.add(fMesh);
+
+  shockwavePool.push({
+    ring: sMesh, ringMat: sMat,
+    flash: fMesh, flashMat: fMat,
+    active: false, age: 0, duration: 0.6,
+    radius: 5, x: 0, y: 0, z: 0,
+  });
+}
 
 // =========================================================================
 // Explosion pool
@@ -606,51 +730,162 @@ for (let i = 0; i < SMOKE_POOL; i++) {
 }
 
 // =========================================================================
-// Rain particle system
+// Rain system — instanced BoxGeometry drops (city3d quality: emissive + stretch)
 // =========================================================================
-const MAX_RAIN = 4000;
-const rainPositions = new Float32Array(MAX_RAIN * 3);
-const rainGeo = new THREE.BufferGeometry();
-rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
-const rainMat = new THREE.PointsMaterial({
-  color: 0xaaccff, size: 0.15, transparent: true, opacity: 0.5,
-  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+const MAX_RAIN = 2000;
+const rainDropGeo = new THREE.BoxGeometry(0.08, 1.5, 0.08);
+const rainDropMat = new THREE.MeshStandardMaterial({
+  color: 0xccddff, emissive: 0x667799, emissiveIntensity: 0.4,
+  transparent: true, opacity: 0.55, depthWrite: false,
 });
-const rainPoints = new THREE.Points(rainGeo, rainMat);
-rainPoints.visible = false;
-scene.add(rainPoints);
+const rainMesh = new THREE.InstancedMesh(rainDropGeo, rainDropMat, MAX_RAIN);
+rainMesh.count = 0;
+rainMesh.renderOrder = 15;
+scene.add(rainMesh);
 let rainActive = false;
 let rainIntensity = 0;
-// Initialize rain positions
+
+// Pre-create rain drop state objects
+const rainDrops = [];
 for (let i = 0; i < MAX_RAIN; i++) {
-  rainPositions[i * 3] = (Math.random() - 0.5) * MAP_SIZE * 2;
-  rainPositions[i * 3 + 1] = Math.random() * 80;
-  rainPositions[i * 3 + 2] = (Math.random() - 0.5) * MAP_SIZE * 2;
+  rainDrops.push({
+    x: (Math.random() - 0.5) * MAP_SIZE * 2,
+    y: Math.random() * 80,
+    z: (Math.random() - 0.5) * MAP_SIZE * 2,
+    speed: 20 + Math.random() * 25,
+  });
 }
 
 // =========================================================================
-// Building pool
+// Building pool — 3D boxes with emissive window dots and edge glow
 // =========================================================================
-const buildings = new Map(); // id -> { mesh, wireframe }
+const buildings = new Map(); // id -> { mesh, wireframe, mat, windowPoints }
+
+// Window dot material — shared across all buildings
+const windowDotMat = new THREE.PointsMaterial({
+  color: 0xffffaa, size: 0.35, transparent: true, opacity: 0.85,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+});
+
+function _buildWindowPositions(w, h, d) {
+  // Place window dots on all four vertical faces of the building.
+  // Returns a Float32Array of local-space XYZ positions.
+  const pts = [];
+  const floorsCount = Math.max(1, Math.floor(h / 3.5));
+  const colsX = Math.max(1, Math.floor(w / 3));
+  const colsZ = Math.max(1, Math.floor(d / 3));
+  const floorSpacing = h / (floorsCount + 1);
+  const margin = 1.2;
+
+  for (let fl = 0; fl < floorsCount; fl++) {
+    const wy = -h / 2 + (fl + 1) * floorSpacing;
+    // +X face
+    for (let c = 0; c < colsX; c++) {
+      const wx = -w / 2 + margin + (c + 0.5) * ((w - margin * 2) / colsX);
+      pts.push(wx, wy, d / 2 + 0.05);
+    }
+    // -X face
+    for (let c = 0; c < colsX; c++) {
+      const wx = -w / 2 + margin + (c + 0.5) * ((w - margin * 2) / colsX);
+      pts.push(wx, wy, -d / 2 - 0.05);
+    }
+    // +Z face
+    for (let c = 0; c < colsZ; c++) {
+      const wz = -d / 2 + margin + (c + 0.5) * ((d - margin * 2) / colsZ);
+      pts.push(w / 2 + 0.05, wy, wz);
+    }
+    // -Z face
+    for (let c = 0; c < colsZ; c++) {
+      const wz = -d / 2 + margin + (c + 0.5) * ((d - margin * 2) / colsZ);
+      pts.push(-w / 2 - 0.05, wy, wz);
+    }
+  }
+  return new Float32Array(pts);
+}
+
+// Building material types by height/size — concrete=gray, wood=brown, brick=red/orange,
+// office glass=blue-steel for tall buildings.
+function _buildingMaterial(w, h, d) {
+  // Tall: h >= 16 → office glass with blue-steel tint
+  if (h >= 16) {
+    return new THREE.MeshStandardMaterial({
+      color: 0x1a2535,
+      roughness: 0.35,
+      metalness: 0.55,
+      emissive: 0x0a1020,
+      emissiveIntensity: 0.4,
+    });
+  }
+  // Medium: h 8..16 → concrete gray
+  if (h >= 8) {
+    return new THREE.MeshStandardMaterial({
+      color: 0x2a2a35,
+      roughness: 0.80,
+      metalness: 0.15,
+      emissive: 0x08080f,
+      emissiveIntensity: 0.25,
+    });
+  }
+  // Small wide (shop): w >= 12 → brick red-orange
+  if (w >= 12 || d >= 12) {
+    return new THREE.MeshStandardMaterial({
+      color: 0x3a1a10,
+      roughness: 0.90,
+      metalness: 0.05,
+      emissive: 0x0f0508,
+      emissiveIntensity: 0.2,
+    });
+  }
+  // Small low → wood brown
+  return new THREE.MeshStandardMaterial({
+    color: 0x2a1a0a,
+    roughness: 0.95,
+    metalness: 0.02,
+    emissive: 0x0a0604,
+    emissiveIntensity: 0.15,
+  });
+}
 
 function createBuilding(id, x, z, w, h, d) {
   const geo = new THREE.BoxGeometry(w, h, d);
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x2a2a3e, roughness: 0.7, metalness: 0.2,
-  });
+  const mat = _buildingMaterial(w, h, d);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(x, h / 2, z);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
 
+  // Edge wireframe — subtle cyan glow, brighter for tall buildings
   const wireGeo = new THREE.EdgesGeometry(geo);
-  const wireMat = new THREE.LineBasicMaterial({ color: CYAN, transparent: true, opacity: 0.15 });
+  const wireOpacity = h >= 16 ? 0.22 : 0.12;
+  const wireMat = new THREE.LineBasicMaterial({ color: CYAN, transparent: true, opacity: wireOpacity });
   const wireframe = new THREE.LineSegments(wireGeo, wireMat);
   wireframe.position.copy(mesh.position);
 
+  // Rooftop edge glow ring for tall buildings
+  let roofGlow = null;
+  if (h >= 12) {
+    const rGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 0.1, 0.1, d + 0.1));
+    const rMat = new THREE.LineBasicMaterial({
+      color: h >= 16 ? CYAN : 0x00aa88, transparent: true, opacity: 0.35,
+    });
+    roofGlow = new THREE.LineSegments(rGeo, rMat);
+    roofGlow.position.set(x, h + 0.05, z);
+    scene.add(roofGlow);
+  }
+
+  // Window dots — emissive point sprites
+  const winPositions = _buildWindowPositions(w, h, d);
+  const winGeo = new THREE.BufferGeometry();
+  winGeo.setAttribute('position', new THREE.BufferAttribute(winPositions, 3));
+  // Clone the shared material so per-building opacity can differ
+  const winMat = windowDotMat.clone();
+  const windowPoints = new THREE.Points(winGeo, winMat);
+  windowPoints.position.set(x, h / 2, z);
+
   scene.add(mesh);
   scene.add(wireframe);
-  buildings.set(id, { mesh, wireframe, mat });
+  scene.add(windowPoints);
+  buildings.set(id, { mesh, wireframe, mat, windowPoints, winMat, h, roofGlow, w, d });
 }
 
 // =========================================================================
@@ -1274,6 +1509,38 @@ function generateDemoFrame() {
     };
   }
 
+  // Static demo buildings — sent only on tick 1 so they don't get re-added each frame
+  const demoBuildings = demoTick === 1 ? [
+    { id: 'bld_a', x: -30, y: -10, w: 14, h: 10, d: 10, damage: 0 },
+    { id: 'bld_b', x: -10, y: -30, w:  8, h: 14, d:  8, damage: 0 },
+    { id: 'bld_c', x:  18, y: -15, w: 12, h:  8, d: 12, damage: 0 },
+    { id: 'bld_d', x:  35, y:  10, w: 10, h: 18, d:  8, damage: 0 },
+    { id: 'bld_e', x: -45, y:  20, w: 16, h:  6, d: 10, damage: 0 },
+  ] : (() => {
+    // After tick 1 only update damage state for existing buildings
+    const dmgFrame = [];
+    if (demoTick > 60) {
+      const baseDmg = Math.min(0.9, (demoTick - 60) * 0.002);
+      dmgFrame.push({ id: 'bld_c', x: 18, y: -15, w: 12, h: 8, d: 12, damage: baseDmg });
+    }
+    return dmgFrame;
+  })();
+
+  // Static map features — sent only on tick 1
+  const demoMapFeatures = demoTick === 1 ? [
+    // Roads
+    { id: 'road_1', type: 'road',   x:   0, y:   0, w: 140, h:  6, rotation: 0 },
+    { id: 'road_2', type: 'road',   x:   0, y:   0, w:   6, h: 140, rotation: Math.PI / 2 },
+    { id: 'road_3', type: 'road',   x:  50, y:  40, w:  70, h:  5, rotation: 0.25 },
+    // River
+    { id: 'river_1', type: 'river', x: -60, y:  30, w:  90, h:  8, rotation: 0.15 },
+    // Forests
+    { id: 'forest_1', type: 'forest', x: -70, y: -50, w: 30, h: 30 },
+    { id: 'forest_2', type: 'forest', x:  65, y: -60, w: 22, h: 22 },
+    { id: 'forest_3', type: 'forest', x:  60, y:  55, w: 18, h: 18 },
+    { id: 'forest_4', type: 'forest', x: -55, y:  70, w: 26, h: 26 },
+  ] : [];
+
   return {
     tick: demoTick, time: t,
     units, projectiles, effects, crowd,
@@ -1285,6 +1552,8 @@ function generateDemoFrame() {
     artillery: demoArtillery,
     narration: demoNarration,
     intel: demoIntel,
+    buildings: demoBuildings,
+    map_features: demoMapFeatures.length > 0 ? demoMapFeatures : undefined,
     ui: {
       wave: Math.floor(demoTick / 200) + 1,
       score: Math.floor(demoTick * 15),
@@ -1376,42 +1645,154 @@ function renderMapFeatures(features) {
   const mapGroup = new THREE.Group();
   mapGroup.name = 'map-features';
 
-  for (const f of features) {
-    const color = MAP_FEATURE_COLORS[f.type] || 0x888888;
-    const w = f.w || 2;
-    const h = f.h || 2;
+  // Shared materials
+  const roadMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2a2a, roughness: 0.95, metalness: 0.0,
+  });
+  const roadLineMat = new THREE.LineBasicMaterial({
+    color: 0xffffaa, transparent: true, opacity: 0.25,
+    depthWrite: false,
+  });
+  const riverMat = new THREE.MeshStandardMaterial({
+    color: 0x0a3a66, roughness: 0.1, metalness: 0.2,
+    transparent: true, opacity: 0.72,
+  });
+  const riverGlowMat = new THREE.MeshBasicMaterial({
+    color: 0x0055aa, transparent: true, opacity: 0.18,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const treeMat = new THREE.MeshStandardMaterial({
+    color: 0x1a5c1a, roughness: 0.9, metalness: 0.0,
+  });
+  const treeTrunkMat = new THREE.MeshStandardMaterial({
+    color: 0x3a2010, roughness: 0.95, metalness: 0.0,
+  });
 
-    if (f.type === 'road' || f.type === 'river') {
-      // Roads and rivers are flat rectangles
-      const geo = new THREE.PlaneGeometry(w, h);
-      const mat = new THREE.MeshBasicMaterial({
-        color, opacity: f.type === 'river' ? 0.6 : 0.4,
-        transparent: true, side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(f.x, 0.05, f.y);
-      mesh.rotation.x = -Math.PI / 2;
-      if (f.rotation) mesh.rotation.z = f.rotation;
-      mapGroup.add(mesh);
+  for (const f of features) {
+    const fx = f.x || (f.position && f.position.x) || 0;
+    // Server y maps to Three.js -Z
+    const fz = -(f.y || (f.position && f.position.y) || 0);
+    const fw = f.w || (f.size && f.size.w) || 4;
+    const fh = f.h || (f.size && f.size.h) || 4;
+    const rot = f.rotation || 0;
+
+    if (f.type === 'road') {
+      // Road surface — dark asphalt rectangle
+      const roadLen = Math.max(fw, fh);
+      const roadWidth = Math.min(fw, fh);
+      const surfGeo = new THREE.PlaneGeometry(roadLen, roadWidth);
+      const surf = new THREE.Mesh(surfGeo, roadMat);
+      surf.rotation.x = -Math.PI / 2;
+      surf.rotation.z = rot;
+      surf.position.set(fx, 0.03, fz);
+      surf.receiveShadow = true;
+      mapGroup.add(surf);
+
+      // Center dashed line along road length
+      const dashCount = Math.max(2, Math.floor(roadLen / 6));
+      const dashLen = roadLen / dashCount * 0.45;
+      for (let i = 0; i < dashCount; i++) {
+        const t = (i + 0.5) / dashCount;
+        const lx = (t - 0.5) * roadLen;
+        const pts = [
+          new THREE.Vector3(lx - dashLen / 2, 0, 0),
+          new THREE.Vector3(lx + dashLen / 2, 0, 0),
+        ];
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        const line = new THREE.Line(lineGeo, roadLineMat);
+        line.rotation.x = -Math.PI / 2;
+        line.rotation.z = rot;
+        line.position.set(fx, 0.04, fz);
+        mapGroup.add(line);
+      }
+
+    } else if (f.type === 'river' || f.type === 'water') {
+      // River surface — translucent blue
+      const rLen = Math.max(fw, fh);
+      const rWidth = Math.min(fw, fh);
+      const rivGeo = new THREE.PlaneGeometry(rLen, rWidth);
+      const riv = new THREE.Mesh(rivGeo, riverMat);
+      riv.rotation.x = -Math.PI / 2;
+      riv.rotation.z = rot;
+      riv.position.set(fx, 0.04, fz);
+      mapGroup.add(riv);
+
+      // Glow halo slightly larger
+      const glowGeo = new THREE.PlaneGeometry(rLen + 1.5, rWidth + 1.5);
+      const glow = new THREE.Mesh(glowGeo, riverGlowMat);
+      glow.rotation.x = -Math.PI / 2;
+      glow.rotation.z = rot;
+      glow.position.set(fx, 0.03, fz);
+      mapGroup.add(glow);
+
     } else if (f.type === 'forest') {
-      // Forest: small green cone (simplified tree)
-      const geo = new THREE.ConeGeometry(w * 0.3, h * 2, 6);
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.8 });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(f.x, h, f.y);
-      mapGroup.add(mesh);
+      // Forest cluster — scatter multiple cone trees within the feature area
+      const clusterR = Math.min(fw, fh) * 0.5;
+      const treeCount = Math.max(3, Math.floor(clusterR * clusterR * 0.18));
+      const rng = _seededRng(fx * 1000 + fz);
+
+      for (let t = 0; t < treeCount; t++) {
+        const angle = rng() * Math.PI * 2;
+        const r = rng() * clusterR * 0.92;
+        const tx = fx + Math.cos(angle) * r;
+        const tz = fz + Math.sin(angle) * r;
+        const treeH = 3.5 + rng() * 3.0;
+        const treeR = 1.0 + rng() * 0.8;
+
+        // Trunk
+        const trunkGeo = new THREE.CylinderGeometry(treeR * 0.12, treeR * 0.18, treeH * 0.35, 5);
+        const trunk = new THREE.Mesh(trunkGeo, treeTrunkMat);
+        trunk.position.set(tx, treeH * 0.175, tz);
+        trunk.castShadow = true;
+        mapGroup.add(trunk);
+
+        // Foliage — two stacked cones for a fuller silhouette
+        const cone1Geo = new THREE.ConeGeometry(treeR, treeH * 0.75, 6);
+        const cone1 = new THREE.Mesh(cone1Geo, treeMat);
+        cone1.position.set(tx, treeH * 0.35 + treeH * 0.375, tz);
+        cone1.castShadow = true;
+        mapGroup.add(cone1);
+
+        const cone2Geo = new THREE.ConeGeometry(treeR * 0.65, treeH * 0.55, 6);
+        const cone2 = new THREE.Mesh(cone2Geo, treeMat);
+        cone2.position.set(tx, treeH * 0.35 + treeH * 0.55 + treeH * 0.275, tz);
+        mapGroup.add(cone2);
+      }
+
+    } else if (f.type === 'building' || f.type === 'village') {
+      // Generic building box
+      const bh = Math.max(fh, 2);
+      const bGeo = new THREE.BoxGeometry(fw, bh, fw);
+      const bMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.7 });
+      const bMesh = new THREE.Mesh(bGeo, bMat);
+      bMesh.position.set(fx, bh / 2, fz);
+      bMesh.castShadow = true;
+      bMesh.receiveShadow = true;
+      mapGroup.add(bMesh);
+
     } else {
-      // Default: box
-      const geo = new THREE.BoxGeometry(w, Math.max(h, 2), w);
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(f.x, Math.max(h, 2) / 2, f.y);
-      mapGroup.add(mesh);
+      // Fallback: small marker box
+      const fGeo = new THREE.BoxGeometry(fw, 1.5, fw);
+      const fMat = new THREE.MeshStandardMaterial({
+        color: MAP_FEATURE_COLORS[f.type] || 0x888888, roughness: 0.7,
+      });
+      const fMesh = new THREE.Mesh(fGeo, fMat);
+      fMesh.position.set(fx, 0.75, fz);
+      mapGroup.add(fMesh);
     }
   }
 
   scene.add(mapGroup);
   console.log(`[MAP] Rendered ${features.length} map features`);
+}
+
+// Simple seeded pseudo-random for deterministic forest layouts
+function _seededRng(seed) {
+  let s = Math.abs(seed | 0) || 1;
+  return function() {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    return (s >>> 0) / 0xffffffff;
+  };
 }
 
 function processFrame(frame) {
@@ -1471,24 +1852,30 @@ function processFrame(frame) {
 }
 
 // =========================================================================
-// Unit rendering with InstancedMesh
+// Unit rendering with InstancedMesh — capsule infantry + glow on selection
 // =========================================================================
 function updateUnits(units) {
   let unitIdx = 0;
   let vehicleIdx = 0;
+  let glowIdx = 0;
+  let hlIdx = 0; // headlight / tail light index
 
   unitPositions.clear();
 
+  const now = performance.now();
+
   for (const u of units) {
-    const isVehicle = u.type === 'vehicle' || u.type === 'apc' || u.type === 'tank';
+    const isVehicle = u.type === 'vehicle' || u.type === 'apc' || u.type === 'tank'
+      || u.type === 'humvee' || u.type === 'technical' || u.type === 'btr80';
     const allianceColor = ALLIANCE_COLORS[u.alliance] || ALLIANCE_COLORS.unknown;
     const px = u.x || 0;
     const pz = -(u.y || 0); // sim Y -> Three.js -Z
-    const py = (u.z || 0) + (isVehicle ? 0.75 : 0.8);
+    // Capsule center: capsule has radius 0.45 + half-length 0.5 = 0.95 total half-height
+    const py = (u.z || 0) + (isVehicle ? 0.7 : 0.95);
     const heading = u.heading || 0;
     const scale = u.scale || 1;
+    const isSelected = u.id === selectedUnitId;
 
-    // Store for click detection
     unitPositions.set(u.id, {
       x: px, y: py, z: pz,
       type: u.type, alliance: u.alliance,
@@ -1497,15 +1884,66 @@ function updateUnits(units) {
     });
 
     if (isVehicle && vehicleIdx < 64) {
-      _pos.set(px, py, pz);
       _euler.set(0, -heading, 0);
       _quat.setFromEuler(_euler);
+
+      // Vehicle body (ground level, center at py)
+      _pos.set(px, py, pz);
       _scale.set(scale, scale, scale);
       _mat4.compose(_pos, _quat, _scale);
       vehicleInstances.setMatrixAt(vehicleIdx, _mat4);
       _color.setHex(allianceColor);
+      if (isSelected) _color.multiplyScalar(1.6);
       vehicleInstances.setColorAt(vehicleIdx, _color);
+
+      // Vehicle cabin (sits on top of body — offset +Y by body half + cabin half)
+      const cabinY = py + (1.4 * scale * 0.5) + (1.0 * scale * 0.5);
+      _pos.set(px, cabinY, pz);
+      _mat4.compose(_pos, _quat, _scale);
+      vehicleCabinInstances.setMatrixAt(vehicleIdx, _mat4);
+      // Cabin slightly darker than body
+      _color.setHex(allianceColor).multiplyScalar(isSelected ? 1.4 : 0.7);
+      vehicleCabinInstances.setColorAt(vehicleIdx, _color);
+
+      // Headlights (front, both sides)
+      if (hlIdx + 1 < 128) {
+        const cosH = Math.cos(-heading), sinH = Math.sin(-heading);
+        const fwdX = -sinH, fwdZ = -cosH;  // forward direction
+        const rightX = cosH, rightZ = -sinH; // right of vehicle
+        const frontDist = 1.0 * scale;
+        const hlY = py + 0.2;
+
+        const hl1x = px + fwdX * frontDist + rightX * 0.9 * scale;
+        const hl1z = pz + fwdZ * frontDist + rightZ * 0.9 * scale;
+        _pos.set(hl1x, hlY, hl1z);
+        _scale.set(scale, scale, scale);
+        _mat4.compose(_pos, _quat, _scale);
+        vehicleHLInstances.setMatrixAt(hlIdx, _mat4);
+
+        const hl2x = px + fwdX * frontDist - rightX * 0.9 * scale;
+        const hl2z = pz + fwdZ * frontDist - rightZ * 0.9 * scale;
+        _pos.set(hl2x, hlY, hl2z);
+        _mat4.compose(_pos, _quat, _scale);
+        vehicleHLInstances.setMatrixAt(hlIdx + 1, _mat4);
+
+        // Tail lights (rear)
+        const tl1x = px - fwdX * frontDist + rightX * 0.9 * scale;
+        const tl1z = pz - fwdZ * frontDist + rightZ * 0.9 * scale;
+        _pos.set(tl1x, hlY, tl1z);
+        _mat4.compose(_pos, _quat, _scale);
+        vehicleTLInstances.setMatrixAt(hlIdx, _mat4);
+
+        const tl2x = px - fwdX * frontDist - rightX * 0.9 * scale;
+        const tl2z = pz - fwdZ * frontDist - rightZ * 0.9 * scale;
+        _pos.set(tl2x, hlY, tl2z);
+        _mat4.compose(_pos, _quat, _scale);
+        vehicleTLInstances.setMatrixAt(hlIdx + 1, _mat4);
+
+        hlIdx += 2;
+      }
+
       vehicleIdx++;
+
     } else if (unitIdx < MAX_UNITS) {
       _pos.set(px, py, pz);
       _euler.set(0, -heading, 0);
@@ -1513,19 +1951,25 @@ function updateUnits(units) {
       _scale.set(scale, scale, scale);
       _mat4.compose(_pos, _quat, _scale);
       unitInstances.setMatrixAt(unitIdx, _mat4);
-      _color.setHex(allianceColor);
 
-      // Flash selected unit
-      if (u.id === selectedUnitId) {
-        const flash = Math.sin(performance.now() * 0.008) * 0.3 + 0.7;
-        _color.multiplyScalar(flash > 0.9 ? 1.5 : 1.0);
+      _color.setHex(allianceColor);
+      // Dim dead/wounded units slightly
+      const hp = u.health || 0;
+      if (hp < 0.3) _color.multiplyScalar(0.55 + hp);
+      unitInstances.setColorAt(unitIdx, _color);
+
+      // Glow layer for selected unit — pulsing opacity
+      if (isSelected && glowIdx < MAX_UNITS) {
+        unitGlowInstances.setMatrixAt(glowIdx, _mat4);
+        const pulse = Math.sin(now * 0.006) * 0.5 + 0.5; // 0..1
+        _color.setHex(allianceColor).multiplyScalar(1.0 + pulse * 0.8);
+        unitGlowInstances.setColorAt(glowIdx, _color);
+        glowIdx++;
       }
 
-      unitInstances.setColorAt(unitIdx, _color);
       unitIdx++;
     }
 
-    // Label + health bar
     updateUnitLabel(u, px, py, pz, allianceColor);
   }
 
@@ -1536,6 +1980,23 @@ function updateUnits(units) {
   vehicleInstances.count = vehicleIdx;
   vehicleInstances.instanceMatrix.needsUpdate = true;
   if (vehicleInstances.instanceColor) vehicleInstances.instanceColor.needsUpdate = true;
+
+  vehicleCabinInstances.count = vehicleIdx;
+  vehicleCabinInstances.instanceMatrix.needsUpdate = true;
+  if (vehicleCabinInstances.instanceColor) vehicleCabinInstances.instanceColor.needsUpdate = true;
+
+  vehicleHLInstances.count = hlIdx;
+  vehicleHLInstances.instanceMatrix.needsUpdate = true;
+
+  vehicleTLInstances.count = hlIdx;
+  vehicleTLInstances.instanceMatrix.needsUpdate = true;
+
+  // Glow layer
+  unitGlowInstances.count = glowIdx;
+  unitGlowInstances.instanceMatrix.needsUpdate = true;
+  if (unitGlowInstances.instanceColor) unitGlowInstances.instanceColor.needsUpdate = true;
+  // Only make glow visible when something is selected
+  unitGlowInstances.visible = glowIdx > 0;
 
   // Remove labels for units no longer present
   for (const [id, data] of unitLabels) {
@@ -1575,46 +2036,70 @@ function updateUnitLabel(u, px, py, pz, allianceColor) {
 }
 
 // =========================================================================
-// Projectile rendering
+// Projectile rendering — per-projectile fading history trails
 // =========================================================================
 function updateProjectiles(projectiles) {
-  let ptIdx = 0;
+  const activeIds = new Set();
   const tmpColor = new THREE.Color();
+  let poolIdx = 0;
 
   for (const p of projectiles) {
-    if (ptIdx + 6 > MAX_TRAIL_POINTS * 3) break;
+    if (poolIdx >= PROJ_TRAIL_POOL) break;
+    const id = p.id || ('p_' + poolIdx);
+    activeIds.add(id);
+
     const px = p.x || 0;
     const pz = -(p.y || 0);
     const py = (p.z || 0) + 0.5;
-    const vx = (p.vx || 0) * 0.1;
-    const vz = -(p.vy || 0) * 0.1;
-    const vy = (p.vz || 0) * 0.1;
 
-    // Line segment: tail -> head
-    trailPositions[ptIdx * 3] = px - vx;
-    trailPositions[ptIdx * 3 + 1] = py - vy;
-    trailPositions[ptIdx * 3 + 2] = pz - vz;
+    // Maintain per-projectile position history
+    if (!projHistories.has(id)) projHistories.set(id, []);
+    const hist = projHistories.get(id);
+    hist.push([px, py, pz]);
+    if (hist.length > TRAIL_HISTORY_LEN) hist.shift();
 
-    trailPositions[(ptIdx + 1) * 3] = px;
-    trailPositions[(ptIdx + 1) * 3 + 1] = py;
-    trailPositions[(ptIdx + 1) * 3 + 2] = pz;
+    // Assign a pool slot to this projectile
+    let slot = projTrailPool.find(s => s.projId === id);
+    if (!slot) {
+      // Find a free slot
+      slot = projTrailPool.find(s => s.projId === null);
+      if (!slot) slot = projTrailPool[poolIdx % PROJ_TRAIL_POOL]; // reclaim oldest
+      slot.projId = id;
+    }
 
+    const n = hist.length;
     tmpColor.set(p.color || '#ffaa00');
-    // Tail faded
-    trailColors[ptIdx * 3] = tmpColor.r * 0.3;
-    trailColors[ptIdx * 3 + 1] = tmpColor.g * 0.3;
-    trailColors[ptIdx * 3 + 2] = tmpColor.b * 0.3;
-    // Head bright
-    trailColors[(ptIdx + 1) * 3] = tmpColor.r;
-    trailColors[(ptIdx + 1) * 3 + 1] = tmpColor.g;
-    trailColors[(ptIdx + 1) * 3 + 2] = tmpColor.b;
 
-    ptIdx += 2;
+    // Write history into buffer: oldest (dim) -> newest (bright)
+    for (let i = 0; i < n; i++) {
+      const h = hist[i];
+      slot.pts[i * 3]     = h[0];
+      slot.pts[i * 3 + 1] = h[1];
+      slot.pts[i * 3 + 2] = h[2];
+      // Linear fade: 0.05 at tail, 1.0 at head
+      const brightness = 0.05 + (i / (n - 1 || 1)) * 0.95;
+      slot.colors[i * 3]     = tmpColor.r * brightness;
+      slot.colors[i * 3 + 1] = tmpColor.g * brightness;
+      slot.colors[i * 3 + 2] = tmpColor.b * brightness;
+    }
+
+    slot.geo.setDrawRange(0, n);
+    slot.geo.attributes.position.needsUpdate = true;
+    slot.geo.attributes.color.needsUpdate = true;
+    slot.line.visible = true;
+
+    poolIdx++;
   }
 
-  trailGeo.setDrawRange(0, ptIdx);
-  trailGeo.attributes.position.needsUpdate = true;
-  trailGeo.attributes.color.needsUpdate = true;
+  // Release slots for projectiles no longer in the frame
+  for (const slot of projTrailPool) {
+    if (slot.projId !== null && !activeIds.has(slot.projId)) {
+      slot.line.visible = false;
+      slot.geo.setDrawRange(0, 0);
+      projHistories.delete(slot.projId);
+      slot.projId = null;
+    }
+  }
 }
 
 // =========================================================================
@@ -1676,6 +2161,49 @@ function spawnExplosion(x, z, y, radius) {
   // Color: starts orange-white, fades to red
   exp.mat.color.setHex(0xff8800);
   exp.mat.opacity = 1.0;
+
+  // Also spawn an expanding shockwave ring
+  const sw = shockwavePool.find(s => !s.active);
+  if (sw) {
+    sw.active = true;
+    sw.age = 0;
+    sw.duration = 0.55;
+    sw.radius = radius;
+    sw.x = x; sw.y = y + 0.15; sw.z = z;
+    sw.ring.position.set(x, y + 0.15, z);
+    sw.ring.scale.set(0.1, 0.1, 0.1);
+    sw.ring.visible = true;
+    sw.ringMat.opacity = 0.9;
+    sw.ringMat.color.setHex(radius > 6 ? 0xff8800 : 0xff4400);
+    // Flash sphere
+    sw.flash.position.set(x, y + radius * 0.3, z);
+    sw.flash.scale.set(radius * 0.2, radius * 0.2, radius * 0.2);
+    sw.flash.visible = true;
+    sw.flashMat.opacity = 0.7;
+  }
+}
+
+function tickShockwaves(dt) {
+  for (const sw of shockwavePool) {
+    if (!sw.active) continue;
+    sw.age += dt;
+    if (sw.age >= sw.duration) {
+      sw.active = false;
+      sw.ring.visible = false;
+      sw.flash.visible = false;
+      continue;
+    }
+    const t = sw.age / sw.duration;
+    // Ring expands from 0.1 to radius units, fades out
+    const curScale = 0.1 + t * sw.radius;
+    sw.ring.scale.set(curScale, curScale, curScale);
+    sw.ringMat.opacity = 0.9 * (1.0 - t * t);
+    // Flash fades very quickly in first 25% of duration
+    sw.flash.visible = t < 0.3;
+    if (t < 0.3) {
+      sw.flashMat.opacity = 0.7 * (1.0 - t / 0.3);
+    }
+  }
 }
 
 function spawnSmoke(x, z, y, radius) {
@@ -1730,6 +2258,21 @@ function updateCrowd(crowd) {
 // =========================================================================
 // Weather rendering
 // =========================================================================
+// Track current hour for night detection
+let _currentHour = 12;
+
+function _applyWetRoad(isNight, isRaining) {
+  if (!groundMat) return;
+  const wet = isRaining && isNight;
+  groundMat.color.set(wet ? 0x111122 : 0x1a1a1a);
+  groundMat.metalness = wet ? 0.45 : 0.0;
+  groundMat.roughness = wet ? 0.45 : 0.9;
+  // Rain drizzle: emissive color shifts to blue-gray
+  if (rainDropMat) {
+    rainDropMat.emissiveIntensity = isNight ? 0.7 : 0.3;
+  }
+}
+
 function updateWeather(weather) {
   // Sky color
   if (weather.sky_color) {
@@ -1741,6 +2284,7 @@ function updateWeather(weather) {
   if (weather.ambient_light !== undefined) {
     ambientLight.intensity = weather.ambient_light;
     dirLight.intensity = Math.max(0.1, weather.ambient_light * 1.2);
+    hemiLight.intensity = Math.max(0.05, weather.ambient_light * 0.6);
   }
 
   // Fog
@@ -1752,12 +2296,10 @@ function updateWeather(weather) {
   if (weather.rain) {
     rainActive = true;
     rainIntensity = weather.rain.intensity || 0.5;
-    rainPoints.visible = true;
-    rainMat.opacity = 0.3 + rainIntensity * 0.3;
   } else {
     rainActive = false;
-    rainPoints.visible = false;
   }
+  _applyWetRoad(_currentHour < 6 || _currentHour >= 19, rainActive);
 }
 
 // =========================================================================
@@ -1765,17 +2307,33 @@ function updateWeather(weather) {
 // =========================================================================
 function updateBuildings(buildingList) {
   for (const b of buildingList) {
+    // Support both tactical sim format (b.w, b.h, b.d) and
+    // destruction format (b.w, b.d, b.h) and city sim format (b.width, b.depth, b.height)
+    const bw = b.w || b.width || 8;
+    const bh = b.h || b.height || 6;
+    const bd = b.d || b.depth || bw;
     if (!buildings.has(b.id)) {
-      createBuilding(b.id, b.x || 0, -(b.y || 0), b.w || 8, b.h || 6, b.d || 8);
+      createBuilding(b.id, b.x || 0, -(b.y || 0), bw, bh, bd);
     }
     const entry = buildings.get(b.id);
-    if (entry && b.damage !== undefined) {
-      // Color shift: white -> yellow -> orange -> red -> black based on damage
-      const dmg = Math.max(0, Math.min(1, b.damage));
-      const r = dmg < 0.5 ? 0.2 + dmg * 1.2 : 1.0 - (dmg - 0.5) * 1.5;
-      const g = dmg < 0.3 ? 0.2 + (0.3 - dmg) * 0.5 : Math.max(0, 0.3 - dmg * 0.4);
-      const gb = Math.max(0, 0.25 - dmg * 0.3);
+    if (!entry) continue;
+
+    // Damage-driven color shift: grey -> yellow -> orange -> charcoal
+    const dmg = Math.max(0, Math.min(1, b.damage !== undefined ? b.damage : (1 - (b.health_pct || b.health || 1))));
+    if (dmg > 0) {
+      const r = dmg < 0.5 ? 0.15 + dmg * 0.9 : 0.6 - (dmg - 0.5) * 1.1;
+      const g = dmg < 0.3 ? 0.15 + (0.3 - dmg) * 0.3 : Math.max(0, 0.24 - dmg * 0.3);
+      const gb = Math.max(0, 0.21 - dmg * 0.25);
       entry.mat.color.setRGB(Math.max(0, r), Math.max(0, g), Math.max(0, gb));
+    }
+
+    // Window flicker: damaged buildings have fewer lit windows
+    const hp = 1 - dmg;
+    entry.winMat._dmgFactor = hp; // store for night flicker system
+    entry.winMat.opacity = Math.max(0.05, hp * 0.85);
+    // On-fire buildings get a warm orange window tint
+    if (b.on_fire) {
+      entry.winMat.color.setHex(0xff8822);
     }
   }
 }
@@ -1786,35 +2344,55 @@ function updateBuildings(buildingList) {
 function updateWeatherFX(wx) {
   if (!wx) return;
 
-  // --- Sky gradient / day-night cycle ---
+  // Track hour for downstream use
+  if (wx.hour !== undefined) _currentHour = wx.hour;
+  const isNight = _currentHour < 6 || _currentHour >= 19;
+
+  // --- Sky color — use getSkyColor for smooth day/night transitions ---
+  const skyHex = getSkyColor(_currentHour);
+  const raining = !!(wx.rain);
+  const skyColor = raining ? 0x0a0e1a : skyHex;
+  scene.background.setHex(skyColor);
+  scene.fog.color.setHex(skyColor);
+
+  // --- Sun / lighting ---
   const sky = wx.sky;
-  if (sky && sky.gradient) {
+  if (sky && sky.sun) {
+    const sun = sky.sun;
+    const sunY = sun.y || 0;
+    const dayFactor = Math.max(0, sunY);
+    const rainDim = raining ? 0.7 : 1.0;
+
+    ambientLight.intensity = (0.15 + dayFactor * 0.4) * rainDim;
+    dirLight.intensity = (0.1 + dayFactor * 1.2) * rainDim;
+    hemiLight.intensity = (0.3 + dayFactor * 0.3) * rainDim;
+    // Sky/ground hemisphere colors shift with day/night
+    hemiLight.color.set(isNight ? 0x0a1020 : 0x88aacc);
+    hemiLight.groundColor.set(isNight ? 0x050810 : 0x112244);
+
+    if (sun.x !== undefined) {
+      dirLight.position.set(sun.x * 200, Math.max(10, sunY * 150), (sun.z || 0.2) * 200);
+    }
+  } else if (sky && sky.gradient) {
     const g = sky.gradient;
-    // gradient is {top: [r,g,b], horizon: [r,g,b], bottom: [r,g,b]}
-    // Use horizon color as scene background
-    if (g.horizon) {
+    if (g.horizon && !raining) {
       const [r, g2, b] = g.horizon;
       scene.background.setRGB(r, g2, b);
       scene.fog.color.setRGB(r, g2, b);
     }
-    // Adjust sun direction light from sun position if available
-    if (sky.sun) {
-      const sun = sky.sun;
-      // sun: {x, y, z} normalized direction
-      const intensity = Math.max(0.05, (sun.y || 0) + 0.1) * 1.2;
-      dirLight.intensity = intensity;
-      ambientLight.intensity = Math.max(0.05, (sun.y || 0) * 0.6 + 0.2);
-      if (sun.x !== undefined) {
-        dirLight.position.set(sun.x * 200, Math.max(10, (sun.y || 0.5) * 150), sun.z * 200);
-      }
-    }
   }
+
+  // Fog density
+  let baseFog = isNight ? 0.004 : 0.0015;
+  if (raining) baseFog = Math.max(baseFog, 0.004);
 
   // --- Fog ---
   if (wx.fog) {
     const fogData = wx.fog;
     const density = fogData.density !== undefined ? fogData.density : (fogData.density_grid ? 0.006 : 0.003);
-    scene.fog.density = Math.max(0.001, density * 0.012);
+    scene.fog.density = Math.max(baseFog, density * 0.012);
+  } else {
+    scene.fog.density = baseFog;
   }
 
   // --- Rain ---
@@ -1822,12 +2400,12 @@ function updateWeatherFX(wx) {
     const r = wx.rain;
     rainActive = true;
     rainIntensity = r.intensity !== undefined ? r.intensity : 0.5;
-    rainPoints.visible = true;
-    rainMat.opacity = 0.25 + rainIntensity * 0.4;
+    rainDropMat.opacity = 0.35 + rainIntensity * 0.35;
   } else {
     rainActive = false;
-    rainPoints.visible = false;
   }
+  // Wet road effect
+  _applyWetRoad(isNight, rainActive);
 
   // --- Snow ---
   if (wx.snow) {
@@ -1839,6 +2417,13 @@ function updateWeatherFX(wx) {
   } else {
     snowActive = false;
     snowPoints.visible = false;
+  }
+
+  // Night: boost window glow; day: dim it
+  for (const [, entry] of buildings) {
+    const baseOp = isNight ? 0.85 : 0.15;
+    const dmgFactor = entry.winMat._dmgFactor !== undefined ? entry.winMat._dmgFactor : 1.0;
+    entry.winMat.opacity = Math.max(0.05, baseOp * dmgFactor);
   }
 
   // --- Lightning ---
@@ -2454,17 +3039,30 @@ function tickMuzzleFlashes(dt) {
 }
 
 function tickRain(dt) {
-  if (!rainActive) return;
-  const count = Math.floor(rainIntensity * MAX_RAIN);
-  for (let i = 0; i < count; i++) {
-    rainPositions[i * 3 + 1] -= (8.0 + rainIntensity * 4.0) * dt;
-    if (rainPositions[i * 3 + 1] < 0) {
-      rainPositions[i * 3] = (Math.random() - 0.5) * MAP_SIZE * 2;
-      rainPositions[i * 3 + 1] = 60 + Math.random() * 20;
-      rainPositions[i * 3 + 2] = (Math.random() - 0.5) * MAP_SIZE * 2;
-    }
+  if (!rainActive) {
+    rainMesh.count = 0;
+    return;
   }
-  rainGeo.attributes.position.needsUpdate = true;
+  const count = Math.min(MAX_RAIN, Math.floor(rainIntensity * MAX_RAIN));
+  rainMesh.count = count;
+  for (let i = 0; i < count; i++) {
+    const drop = rainDrops[i];
+    drop.y -= drop.speed * dt;
+    if (drop.y < 0) {
+      drop.y = 80;
+      drop.x = (Math.random() - 0.5) * MAP_SIZE * 2;
+      drop.z = (Math.random() - 0.5) * MAP_SIZE * 2;
+      drop.speed = 20 + Math.random() * 25;
+    }
+    _pos.set(drop.x, drop.y, drop.z);
+    _quat.identity();
+    // Stretch along Y based on speed (faster = longer streak)
+    const yStretch = 1.0 + (drop.speed - 20) / 25.0;
+    _scale.set(1, yStretch, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    rainMesh.setMatrixAt(i, _mat4);
+  }
+  rainMesh.instanceMatrix.needsUpdate = true;
 }
 
 function tickSnow(dt) {
@@ -2518,6 +3116,24 @@ function tickControlPointMarkers(dt) {
   }
 }
 
+// =========================================================================
+// Window flicker tick — night buildings get random window on/off (city3d quality)
+// =========================================================================
+let _winFlickerAcc = 0;
+function tickWindowFlicker(dt) {
+  const isNight = _currentHour < 6 || _currentHour >= 19;
+  if (!isNight) return;
+  _winFlickerAcc += dt;
+  if (_winFlickerAcc < 8.0) return; // flicker every ~8 seconds
+  _winFlickerAcc = 0;
+  for (const [, entry] of buildings) {
+    if (Math.random() < 0.3) {
+      // Randomly toggle some window rows off/on — dim or yellow
+      entry.winMat.color.setHex(Math.random() < 0.25 ? 0x111111 : 0xffdd66);
+    }
+  }
+}
+
 // FPS counter
 function updateFPS(dt) {
   frameCount++;
@@ -2555,6 +3171,7 @@ function animate() {
 
   tickDemo(dt);
   tickExplosions(dt);
+  tickShockwaves(dt);
   tickFireParticles(dt);
   tickSmoke(dt);
   tickMuzzleFlashes(dt);
@@ -2565,6 +3182,7 @@ function animate() {
   tickControlPointMarkers(dt);
   tickArtilleryShells(dt);
   tickArtilleryImpacts(dt);
+  tickWindowFlicker(dt);
   updateFPS(dt);
 
   renderer.render(scene, camera);
