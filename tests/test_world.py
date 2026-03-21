@@ -678,11 +678,17 @@ class TestStatsAndSnapshot:
         assert s["dead"] == 1
         assert s["alive_friendly"] == 0
 
-    def test_stats_environment_description(self):
+    def test_stats_environment_snapshot(self):
         world = World()
         s = world.stats()
         assert "environment" in s
-        assert isinstance(s["environment"], str)
+        assert isinstance(s["environment"], dict)
+        assert "weather" in s["environment"]
+        assert "hour" in s["environment"]
+        assert "temperature" in s["environment"]
+        # Also has a human-readable description string
+        assert "environment_desc" in s
+        assert isinstance(s["environment_desc"], str)
 
     def test_snapshot_serializable(self):
         world = World(WorldConfig(seed=42))

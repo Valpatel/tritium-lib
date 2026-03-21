@@ -557,6 +557,46 @@ class TestToThreeJs:
         out = eng.to_three_js()
         assert len(out["debris"]) == 0
 
+    def test_structure_has_frontend_field_names(self):
+        """Frontend ensureBuildings() expects width/depth/height/destroyed."""
+        eng = _make_engine()
+        eng.add_structure(_make_structure(size=(20.0, 15.0, 10.0)))
+        out = eng.to_three_js()
+        s = out["structures"][0]
+        # Full names for the Three.js frontend
+        assert s["width"] == 20.0
+        assert s["depth"] == 15.0
+        assert s["height"] == 10.0
+        # Short aliases kept for backward compat
+        assert s["w"] == 20.0
+        assert s["d"] == 15.0
+        assert s["h"] == 10.0
+
+    def test_destroyed_flag_false_when_intact(self):
+        eng = _make_engine()
+        eng.add_structure(_make_structure(health=100, max_health=100))
+        out = eng.to_three_js()
+        assert out["structures"][0]["destroyed"] is False
+
+    def test_destroyed_flag_true_when_destroyed(self):
+        eng = _make_engine()
+        eng.add_structure(_make_structure(health=100, max_health=100))
+        eng.damage_structure("s1", 99, (0, 0))
+        out = eng.to_three_js()
+        s = out["structures"][0]
+        assert s["damage"] in ("destroyed", "collapsed", "critical")
+        # destroyed flag is True only for destroyed/collapsed
+        if s["damage"] in ("destroyed", "collapsed"):
+            assert s["destroyed"] is True
+
+    def test_destroyed_flag_true_when_collapsed(self):
+        eng = _make_engine()
+        eng.add_structure(_make_structure(health=100, max_health=100))
+        eng.damage_structure("s1", 200, (0, 0))  # overkill
+        out = eng.to_three_js()
+        s = out["structures"][0]
+        assert s["destroyed"] is True
+
 
 # ===========================================================================
 # get_blocked_positions

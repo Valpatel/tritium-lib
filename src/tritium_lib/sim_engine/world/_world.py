@@ -348,6 +348,7 @@ class World:
             weapon, unit.position, target_pos,
             accuracy_modifier=1.0 / max(0.1, acc_mod),
             rng=random.Random(self._rng.randint(0, 2**31)),
+            source_id=unit_id,
         )
 
         unit.state.last_attack_time = self.sim_time
@@ -773,7 +774,15 @@ class World:
             if proj.distance_traveled() < 5.0:
                 continue
 
+            # Determine shooter alliance to avoid friendly-fire hits
+            shooter_unit = alive.get(proj.source_id) or self.units.get(proj.source_id)
+            shooter_alliance = shooter_unit.alliance if shooter_unit else None
             for uid, unit in alive.items():
+                # Skip the shooter and same-alliance units (no friendly fire)
+                if uid == proj.source_id:
+                    continue
+                if shooter_alliance is not None and unit.alliance == shooter_alliance:
+                    continue
                 ux, uy = unit.position
                 # Point-to-segment distance
                 seg_dx = px - prev_x
@@ -796,6 +805,7 @@ class World:
                         "damage": proj.damage,
                         "effect": "hit",
                         "weapon_id": proj.weapon_id,
+                        "source_id": proj.source_id,
                     })
                     break
         return hits
@@ -809,6 +819,7 @@ class World:
             damage = impact.get("damage", 0.0)
             proj_type = impact.get("type", "bullet")
             weapon_id = impact.get("weapon_id", "")
+            shooter_id = impact.get("source_id", "")
 
             # Check if any unit is near the impact
             hit_radius = 2.0  # bullets need to be close
@@ -830,11 +841,15 @@ class World:
                         target_unit.apply_suppression(result.suppression_caused)
                         self.damage_tracker.record(result)
                         if not target_unit.is_alive():
+                            kill_source = shooter_id or result.source_id
                             self.events.append({
                                 "type": "unit_killed",
                                 "target_id": result.target_id,
-                                "source_id": result.source_id,
+                                "source_id": kill_source,
                             })
+                            killer = self.units.get(kill_source)
+                            if killer:
+                                killer.state.kill_count += 1
                             self._handle_unit_death(result.target_id)
 
                 # Damage structures
@@ -850,8 +865,16 @@ class World:
                 self.area_effects.add(create_explosion_effect(impact_pos, radius=8.0, duration=0.5))
             else:
                 # Bullet: direct hit on nearest unit within hit_radius
+                # Determine shooter alliance to avoid friendly fire
+                shooter_unit = self.units.get(shooter_id)
+                shooter_alliance = shooter_unit.alliance if shooter_unit else None
                 for uid, u in self.units.items():
                     if not u.is_alive():
+                        continue
+                    # Skip shooter and same-alliance units (no friendly fire)
+                    if uid == shooter_id:
+                        continue
+                    if shooter_alliance is not None and u.alliance == shooter_alliance:
                         continue
                     d = distance(impact_pos, u.position)
                     if d <= hit_radius:
@@ -861,7 +884,7 @@ class World:
                             hit=True, damage=actual,
                             damage_type=DamageType.KINETIC,
                             target_id=uid,
-                            source_id=weapon_id,
+                            source_id=shooter_id,
                             range_m=d,
                         )
                         self.damage_tracker.record(hit_result)
@@ -869,7 +892,12 @@ class World:
                             self.events.append({
                                 "type": "unit_killed",
                                 "target_id": uid,
+                                "source_id": shooter_id,
                             })
+                            # Credit the killer's kill_count
+                            killer = self.units.get(shooter_id)
+                            if killer:
+                                killer.state.kill_count += 1
                             self._handle_unit_death(uid)
                         break  # Only hit one unit per bullet
 
@@ -1116,7 +1144,8 @@ class World:
             "crowd_count": crowd_count,
             "active_projectiles": len(self.projectile_sim.projectiles),
             "active_effects": len(self.area_effects.effects),
-            "environment": self.environment.describe(),
+            "environment": self.environment.snapshot(),
+            "environment_desc": self.environment.describe(),
         }
 
 

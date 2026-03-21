@@ -312,16 +312,23 @@ class DestructionEngine:
         """Serialise the full destruction state to a Three.js-ready dict."""
         structures_out: list[dict] = []
         for s in self.structures:
+            destroyed = s.damage_level.value in ("destroyed", "collapsed")
             structures_out.append({
                 "id": s.structure_id,
                 "x": s.position[0],
                 "y": s.position[1],
+                # Full names used by the Three.js frontend (ensureBuildings)
+                "width": s.size[0],
+                "depth": s.size[1],
+                "height": s.size[2],
+                # Short aliases kept for backward compatibility
                 "w": s.size[0],
                 "d": s.size[1],
                 "h": s.size[2],
                 "rotation": s.rotation,
                 "material": s.material,
                 "damage": s.damage_level.value,
+                "destroyed": destroyed,
                 "health_pct": s.health / s.max_health if s.max_health > 0 else 0.0,
                 "on_fire": s.is_on_fire,
                 "holes": list(s.holes),

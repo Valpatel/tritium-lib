@@ -20,7 +20,7 @@ from typing import Any
 
 try:
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, Response
     _FASTAPI_AVAILABLE = True
 except ImportError:
     _FASTAPI_AVAILABLE = False
@@ -162,6 +162,7 @@ from tritium_lib.sim_engine.ai.behavior_tree import (
     Node as BTNode,
     Status as BTStatus,
     make_patrol_tree,
+    make_friendly_tree,
     make_hostile_tree,
     make_civilian_tree,
 )
@@ -464,7 +465,9 @@ class UnitAISystem:
             return
         if alliance == "hostile":
             self._trees[uid] = make_hostile_tree()
-        elif unit_type in ("infantry", "heavy", "sniper", "engineer"):
+        elif alliance == "friendly" and unit_type in ("infantry", "heavy", "sniper", "engineer", "scout"):
+            self._trees[uid] = make_friendly_tree()
+        elif unit_type in ("infantry", "heavy", "sniper", "engineer", "scout"):
             self._trees[uid] = make_patrol_tree()
         else:
             self._trees[uid] = make_civilian_tree()
@@ -823,19 +826,25 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         .enable_vehicles(True)
         .add_terrain_noise(octaves=4, amplitude=8.0, seed=42)
         .set_weather(Weather.RAIN)
-        # Friendly squad: 4 infantry + 1 sniper + 1 medic
+        # Friendly squad Alpha: 4 infantry + 1 heavy + 1 sniper + 1 medic
         # Positioned near the center for quick engagement
         .spawn_friendly_squad(
             "Alpha",
-            ["infantry", "infantry", "infantry", "infantry", "sniper", "medic"],
+            ["infantry", "infantry", "infantry", "infantry", "heavy", "sniper", "medic"],
             (200.0, 200.0),
             spacing=4.0,
         )
-        # Hostile squad: 6 infantry + 2 heavy
-        # Close enough for combat within ~10 seconds
+        # Friendly fire-team Bravo: 3 infantry + 1 scout flanking from south
+        .spawn_friendly_squad(
+            "Bravo",
+            ["infantry", "infantry", "infantry", "scout"],
+            (210.0, 230.0),
+            spacing=4.0,
+        )
+        # Hostile squad: 4 infantry + 1 heavy (balanced against 11 friendlies)
         .spawn_hostile_squad(
             "Tango",
-            ["infantry"] * 6 + ["heavy", "heavy"],
+            ["infantry"] * 4 + ["heavy"],
             (280.0, 280.0),
             spacing=4.0,
         )
@@ -1039,10 +1048,12 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # 15. Weather visual effects (rain, fog, lightning)
     gs.weather_fx = WeatherFXEngine()
 
-    # 15. Wave spawner — hostile reinforcement spawn points
+    # 15. Wave spawner — reinforcement spawn points for both sides
     gs.spawner = SpawnerEngine(seed=42)
-    gs.spawner.add_spawn_point(SpawnPoint(position=(450.0, 250.0)))
-    gs.spawner.add_spawn_point(SpawnPoint(position=(250.0, 450.0)))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(450.0, 250.0), alliance="hostile"))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(250.0, 450.0), alliance="hostile"))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(50.0, 200.0), alliance="friendly"))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(200.0, 50.0), alliance="friendly"))
 
     # 15. Collision world — unit and vehicle collisions
     gs.collision = CollisionWorld(cell_size=5.0)
@@ -1416,10 +1427,14 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
                 1 for u in gs.world.units.values()
                 if u.is_alive() and u.alliance.value == "hostile"
             )
+            friendly_dead = sum(
+                1 for u in gs.world.units.values()
+                if not u.is_alive() and u.alliance.value == "friendly"
+            )
             recs = gs.tactical_advisor.assess_situation({
                 "friendly_count": friendly_alive,
                 "hostile_count": hostile_alive,
-                "friendly_casualties": 0,
+                "friendly_casualties": friendly_dead,
                 "ammo_level": 0.7,
                 "visibility": 0.8,
             })
@@ -1707,6 +1722,12 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=GAME_HTML, status_code=200)
 
 
+@app.get("/favicon.ico")
+async def favicon() -> Response:
+    """Return an empty favicon to prevent 404 on page load."""
+    return Response(content=b"", media_type="image/x-icon", status_code=204)
+
+
 @app.get("/city", response_class=HTMLResponse)
 async def city_view() -> HTMLResponse:
     """Serve the city3d.html demo with WebSocket bridge injected.
@@ -1980,6 +2001,30 @@ async def api_city_event(body: dict) -> dict:
 async def ws_endpoint(ws: WebSocket) -> None:
     """WebSocket for streaming frame data at 10 fps."""
     await ws.accept()
+
+    # Send a welcome frame with one-time data that tick==1 already sent.
+    # Late joiners would otherwise never receive map_features / destruction.
+    try:
+        welcome: dict[str, Any] = {"type": "welcome", "tick": _game.tick_count}
+        if _game.generated_map is not None:
+            welcome["map_features"] = [
+                {
+                    "id": f.feature_id,
+                    "type": f.feature_type,
+                    "x": f.position[0],
+                    "y": f.position[1],
+                    "radius": f.radius,
+                    "density": f.density,
+                    "rotation": f.rotation,
+                }
+                for f in _game.generated_map.features
+            ]
+        if _game.world is not None and _game.world.destruction is not None:
+            welcome["destruction"] = _game.world.destruction.to_three_js()
+        await ws.send_text(json.dumps(welcome, default=str))
+    except Exception:
+        pass
+
     _ws_clients.append(ws)
     try:
         while True:
@@ -2930,7 +2975,8 @@ function processFrame(f) {
 // =========================================================================
 function updateHUD(f) {
   const st = f.stats || {};
-  const env = st.environment || {};
+  // environment is a snapshot dict with weather, hour, temperature, etc.
+  const env = (typeof st.environment === 'object' && st.environment) ? st.environment : {};
 
   document.getElementById('hud-tick').textContent = f.tick || 0;
   document.getElementById('hud-time').textContent = (f.sim_time || 0) + 's';
@@ -2940,8 +2986,27 @@ function updateHUD(f) {
   document.getElementById('hud-vehicles').textContent = st.total_vehicles || 0;
   document.getElementById('hud-crowd').textContent = st.crowd_count || 0;
   document.getElementById('hud-fires').textContent = st.active_fires || 0;
-  document.getElementById('hud-weather').textContent = env.weather || '-';
-  document.getElementById('hud-tod').textContent = env.time_of_day || (env.hour !== undefined ? env.hour.toFixed(1) + 'h' : '-');
+
+  // Weather from environment snapshot (e.g. "clear", "rain", "fog")
+  const weatherVal = env.weather || '-';
+  document.getElementById('hud-weather').textContent = weatherVal.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  // Time of day from hour field (0-24 float)
+  if (env.hour !== undefined) {
+    const h = env.hour;
+    let todLabel;
+    if (h >= 6 && h < 12) todLabel = 'Morning';
+    else if (h >= 12 && h < 17) todLabel = 'Afternoon';
+    else if (h >= 17 && h < 20) todLabel = 'Evening';
+    else todLabel = 'Night';
+    const hh = Math.floor(h);
+    const mm = Math.floor((h - hh) * 60);
+    todLabel += ' ' + String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+    document.getElementById('hud-tod').textContent = todLabel;
+  } else {
+    document.getElementById('hud-tod').textContent = '-';
+  }
+
   document.getElementById('hud-preset').textContent = f.preset || '-';
 
   // Kill feed

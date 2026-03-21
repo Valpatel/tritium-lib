@@ -526,8 +526,14 @@ class TestUnitFlankingBehaviour:
             f"No unit achieved meaningful lateral offset; max={max_lateral:.2f}m"
         )
 
-    def test_outnumbering_scenario_has_attackers_move(self):
-        """At least two of the three friendlies must have moved after 10 ticks."""
+    def test_outnumbering_scenario_has_attackers_engage(self):
+        """In a 3v1 flanking scenario, at least one flanks and others suppress.
+
+        When all three friendlies are within weapon range, the non-flankers
+        stay and fire (suppressing) while the flanker moves laterally.  We
+        check that at least 1 unit moved AND at least 1 is actively
+        attacking (stationary suppressor).
+        """
         world, u1, u2, u3, enemy = self._world_with_flanking_scenario()
         start_pos = {
             u.unit_id: u.position
@@ -543,6 +549,13 @@ class TestUnitFlankingBehaviour:
                 (world.units[uid].position[1] - pos[1]) ** 2
             ) > 0.1
         ]
-        assert len(movers) >= 2, (
-            f"Expected >=2 units to move in flanking scenario, got {len(movers)}"
+        attackers = [
+            uid for uid in start_pos
+            if world.units[uid].state.status == "attacking"
+        ]
+        assert len(movers) >= 1, (
+            f"Expected >=1 unit to flank, got {len(movers)}"
+        )
+        assert len(attackers) >= 1, (
+            f"Expected >=1 unit suppressing (attacking), got {len(attackers)}"
         )

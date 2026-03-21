@@ -385,6 +385,54 @@ def make_vehicle_tree() -> Node:
     ])
 
 
+def make_friendly_tree() -> Node:
+    """Friendly: engage threats, seek cover, approach detected enemies, patrol.
+
+    Similar to hostile tree but with slightly more defensive posture — seeks
+    cover first when a threat is in range, then engages.  Will proactively
+    approach detected threats rather than idling.
+
+    Priority (selector):
+      1. Badly hurt -> retreat
+      2. Threat in range -> seek cover (cooldown), then engage
+      3. Threat detected -> approach
+      4. Has waypoints -> patrol
+      5. Default -> idle
+    """
+    return Selector([
+        # Branch 1: retreat when hurt
+        Sequence([
+            Inverter(Condition(_is_healthy, "is_healthy")),
+            Action(_set_decision("retreat")),
+        ]),
+        # Branch 2: seek cover when threat in range (cooldown-gated)
+        Sequence([
+            Condition(_threat_in_range, "threat_in_range"),
+            Cooldown(
+                Action(_set_decision("seek_cover")),
+                seconds=6.0,
+            ),
+        ]),
+        # Branch 2b: engage when cover-seek is on cooldown
+        Sequence([
+            Condition(_threat_in_range, "threat_in_range"),
+            Action(_set_decision("engage")),
+        ]),
+        # Branch 3: approach detected threat
+        Sequence([
+            Condition(_has_threat, "has_threat"),
+            Action(_set_decision("approach")),
+        ]),
+        # Branch 4: patrol route
+        Sequence([
+            Condition(_has_waypoints, "has_waypoints"),
+            Action(_set_decision("patrol")),
+        ]),
+        # Branch 5: idle
+        Action(_set_decision("idle")),
+    ])
+
+
 def make_hostile_tree() -> Node:
     """Hostile: approach target -> find cover -> engage -> retreat when hurt -> regroup.
 

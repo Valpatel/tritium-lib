@@ -33,6 +33,7 @@ class RenderLayer(Enum):
     TERRAIN = "terrain"
     CROWD = "crowd"
     WEATHER = "weather"
+    DESTRUCTION = "destruction"
     UI = "ui"
     DEBUG = "debug"
 
@@ -645,6 +646,13 @@ class SimRenderer:
         if RenderLayer.CROWD in self.layers:
             crowd = sim_state.get("crowd", [])
             frame["crowd"] = self._crowd_renderer.render_crowd(crowd)
+
+        # Destruction / structures passthrough — already serialised by
+        # DestructionEngine.to_three_js() so we just forward the dict.
+        if RenderLayer.DESTRUCTION in self.layers:
+            destruction = sim_state.get("destruction", None)
+            if destruction is not None:
+                frame["destruction"] = destruction
 
         if RenderLayer.UI in self.layers:
             frame["ui"] = sim_state.get("ui", {})

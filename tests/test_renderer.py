@@ -630,12 +630,12 @@ class TestRenderDiff:
 
 class TestRenderLayer:
     def test_all_layers(self):
-        assert len(RenderLayer) == 8
+        assert len(RenderLayer) == 9
 
     def test_values(self):
         expected = {
             "units", "projectiles", "effects", "terrain",
-            "crowd", "weather", "ui", "debug",
+            "crowd", "weather", "destruction", "ui", "debug",
         }
         assert {layer.value for layer in RenderLayer} == expected
 
@@ -839,6 +839,59 @@ class TestSimRendererLayers:
         renderer = SimRenderer(layers={RenderLayer.TERRAIN})
         frame = renderer.render_frame({"tick": 1, "time": 0.1})
         assert frame["terrain"] == {}
+
+    def test_destruction_layer(self):
+        renderer = SimRenderer(layers={RenderLayer.DESTRUCTION})
+        destruction_data = {
+            "structures": [
+                {"id": "bldg_1", "x": 50, "y": 50, "width": 20,
+                 "depth": 15, "height": 10, "destroyed": False},
+            ],
+            "fires": [],
+            "debris": [],
+        }
+        frame = renderer.render_frame({
+            "tick": 1, "time": 0.1,
+            "destruction": destruction_data,
+        })
+        assert "destruction" in frame
+        assert frame["destruction"]["structures"][0]["id"] == "bldg_1"
+        assert "units" not in frame
+
+    def test_destruction_absent_when_not_in_state(self):
+        renderer = SimRenderer()
+        frame = renderer.render_frame({"tick": 1, "time": 0.1})
+        assert "destruction" not in frame
+
+    def test_destruction_passthrough_full_renderer(self):
+        renderer = SimRenderer()
+        destruction_data = {
+            "structures": [
+                {"id": "b1", "x": 10, "y": 20, "width": 30,
+                 "depth": 25, "height": 12, "destroyed": True},
+            ],
+            "fires": [{"id": "f1", "x": 10, "y": 20, "radius": 5}],
+            "debris": [],
+        }
+        state = {
+            "tick": 5, "time": 0.5,
+            "destruction": destruction_data,
+            "units": [{"id": "u1", "x": 0, "y": 0,
+                        "type": "infantry", "alliance": "friendly"}],
+        }
+        frame = renderer.render_frame(state)
+        assert "destruction" in frame
+        assert frame["destruction"] is destruction_data
+        assert "units" in frame
+
+    def test_destruction_excluded_when_layer_filtered(self):
+        renderer = SimRenderer(layers={RenderLayer.UNITS})
+        frame = renderer.render_frame({
+            "tick": 1, "time": 0.1,
+            "destruction": {"structures": [], "fires": [], "debris": []},
+            "units": [],
+        })
+        assert "destruction" not in frame
 
 
 # -----------------------------------------------------------------------

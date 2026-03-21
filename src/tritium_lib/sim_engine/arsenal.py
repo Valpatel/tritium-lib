@@ -170,6 +170,7 @@ class Projectile:
     is_active: bool = True
     tracer_color: str = "#ffaa00"
     max_range: float = 1000.0
+    source_id: str = ""  # unit_id of the shooter for kill attribution
 
     def distance_traveled(self) -> float:
         """Distance from origin to current position."""
@@ -227,6 +228,7 @@ class ProjectileSimulator:
         target: Vec2,
         accuracy_modifier: float = 1.0,
         rng: Optional[random.Random] = None,
+        source_id: str = "",
     ) -> Projectile:
         """Fire a projectile from *origin* toward *target*.
 
@@ -262,6 +264,7 @@ class ProjectileSimulator:
             projectile_type=weapon.projectile_type,
             tracer_color=weapon.tracer_color,
             max_range=weapon.max_range,
+            source_id=source_id,
         )
         self.projectiles.append(proj)
 

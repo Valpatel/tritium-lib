@@ -200,8 +200,8 @@ UNIT_TEMPLATES: dict[str, tuple[UnitType, UnitStats]] = {
     "medic": (
         UnitType.MEDIC,
         UnitStats(
-            max_health=80.0, armor=0.0, speed=5.0, detection_range=50.0,
-            attack_range=15.0, attack_damage=5.0, attack_cooldown=1.0, accuracy=0.7,
+            max_health=100.0, armor=0.1, speed=5.5, detection_range=50.0,
+            attack_range=20.0, attack_damage=8.0, attack_cooldown=1.0, accuracy=0.7,
         ),
     ),
     "scout": (
