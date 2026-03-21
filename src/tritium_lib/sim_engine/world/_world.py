@@ -994,6 +994,8 @@ class WorldBuilder:
                 world.sidewalk_graph = sg
             except Exception:
                 pass
+            # Note: CoverSystem terrain loading is done in game_server.py
+            # since CoverSystem is a GameState subsystem, not a World subsystem
         elif self._terrain_layer_ao_id is not None:
             try:
                 from tritium_lib.intelligence.geospatial.terrain_layer import TerrainLayer
@@ -1004,6 +1006,7 @@ class WorldBuilder:
                     sg = SidewalkGraph()
                     sg.build_from_terrain_layer(tl)
                     world.sidewalk_graph = sg
+                    # CoverSystem terrain loading done in game_server.py
             except Exception:
                 pass
 
