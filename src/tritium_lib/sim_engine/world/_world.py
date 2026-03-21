@@ -90,6 +90,13 @@ from tritium_lib.sim_engine.destruction import (
 from tritium_lib.sim_engine.renderer import SimRenderer
 from tritium_lib.sim_engine.ai.squad import Squad, SquadRole, SquadTactics, Order
 from tritium_lib.sim_engine.ai.tactics import TacticsEngine, TacticalAction
+from tritium_lib.sim_engine.ai.formations import (
+    FormationType,
+    FormationConfig,
+    FormationMover,
+    formation_to_three_js,
+    formation_mover_to_three_js,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +175,10 @@ class World:
         # --- geospatial terrain layer (optional) ---
         self.terrain_layer: Any = None  # TerrainLayer from intelligence.geospatial
         self.sidewalk_graph: Any = None  # SidewalkGraph for pedestrian nav
+
+        # --- formation movers ---
+        # squad_id -> FormationMover; updated each tick alongside squad AI
+        self._formation_movers: dict[str, FormationMover] = {}
 
         # --- bookkeeping ---
         self.tick_count: int = 0
@@ -250,6 +261,44 @@ class World:
 
         self.events.append({"type": "spawn_squad", "id": sid, "name": name, "size": len(unit_templates)})
         return squad
+
+    def assign_squad_formation(
+        self,
+        squad_id: str,
+        waypoints: list[Vec2],
+        formation: FormationType = FormationType.WEDGE,
+        spacing: float = 3.0,
+        max_speed: float = 5.0,
+    ) -> FormationMover | None:
+        """Attach a FormationMover to a squad so it moves in formation.
+
+        The mover is ticked each world tick. Formation slot positions are
+        nudged onto each living squad member every tick, and the formation
+        data is included in the render frame for Three.js to draw overlay
+        lines.
+
+        Args:
+            squad_id: ID of the squad to attach the mover to.
+            waypoints: Path for the formation leader to follow.
+            formation: FormationType to use (default WEDGE).
+            spacing: Metres between formation slots.
+            max_speed: Leader move speed in m/s.
+
+        Returns:
+            The new FormationMover, or None if the squad doesn't exist.
+        """
+        if squad_id not in self.squads:
+            return None
+        if not waypoints:
+            return None
+        mover = FormationMover(
+            waypoints=waypoints,
+            formation=formation,
+            spacing=spacing,
+            max_speed=max_speed,
+        )
+        self._formation_movers[squad_id] = mover
+        return mover
 
     def spawn_crowd(
         self,
@@ -378,7 +427,7 @@ class World:
     # -- Sub-tick methods ----------------------------------------------------
 
     def _tick_squads(self, dt: float) -> None:
-        """Update squad state: cohesion, morale, orders."""
+        """Update squad state: cohesion, morale, orders, and formation movers."""
         unit_positions: dict[str, Vec2] = {
             uid: u.position for uid, u in self.units.items() if u.is_alive()
         }
@@ -403,42 +452,168 @@ class World:
                 order = SquadTactics.recommend_order(squad, unit_positions, threats)
                 squad.issue_order(order)
 
+            # Tick formation mover and nudge member positions toward formation slots
+            mover = self._formation_movers.get(sid)
+            if mover is not None and not mover.is_complete():
+                member_pos: dict[str, Vec2] = {
+                    uid: unit_positions[uid]
+                    for uid in living
+                    if uid in unit_positions
+                }
+                if member_pos:
+                    targets = mover.tick(dt, member_pos)
+                    # Gently move each living member toward their formation slot
+                    for uid, target in targets.items():
+                        unit = self.units.get(uid)
+                        if unit is None or not unit.is_alive():
+                            continue
+                        # Skip units that are actively engaging — don't pull
+                        # them out of a firefight into formation
+                        if unit.state.status in ("attacking",):
+                            continue
+                        dx = target[0] - unit.position[0]
+                        dy = target[1] - unit.position[1]
+                        slot_dist = math.sqrt(dx * dx + dy * dy)
+                        if slot_dist > 0.5:  # only nudge if meaningfully off-slot
+                            # Converge at 20% of distance per tick, capped to speed
+                            step = min(slot_dist * 0.2, unit.effective_speed() * dt)
+                            frac = step / slot_dist
+                            unit.position = (
+                                unit.position[0] + dx * frac,
+                                unit.position[1] + dy * frac,
+                            )
+                            if unit.state.status not in ("attacking",):
+                                unit.state.status = "moving"
+
+    # -- Cover-position helpers ----------------------------------------------
+
+    def _get_cover_positions(self) -> list[Vec2]:
+        """Return known cover positions from the destruction engine (buildings)."""
+        if self.destruction is None:
+            return []
+        return [s.position for s in self.destruction.structures if s.health > 0]
+
+    def _find_nearest_cover(self, unit_pos: Vec2, cover_positions: list[Vec2]) -> Vec2 | None:
+        """Return the closest cover position, or None if none available."""
+        if not cover_positions:
+            return None
+        return min(cover_positions, key=lambda cp: distance(unit_pos, cp))
+
+    def _count_nearby_allies(self, uid: str, alive_units: dict, radius: float = 40.0) -> int:
+        """Count friendly units within *radius* of *uid*."""
+        unit = alive_units.get(uid)
+        if unit is None:
+            return 0
+        return sum(
+            1 for oid, other in alive_units.items()
+            if oid != uid and other.alliance == unit.alliance
+            and distance(unit.position, other.position) <= radius
+        )
+
+    def _compute_flank_position(self, unit_pos: Vec2, enemy_pos: Vec2) -> Vec2:
+        """Compute a flanking position 90° to the side of the enemy."""
+        to_enemy = _sub(enemy_pos, unit_pos)
+        # Perpendicular: rotate 90°
+        perp = (-to_enemy[1], to_enemy[0])
+        perp_norm = normalize(perp)
+        # Move 15m to the side of the enemy
+        flank = _add(enemy_pos, _scale(perp_norm, 15.0))
+        return flank
+
+    # -- Main unit tick -------------------------------------------------------
+
     def _tick_units(self, dt: float) -> None:
-        """Per-unit AI: find targets, decide action, execute."""
+        """Per-unit AI: find targets, decide action, execute.
+
+        Behaviour priority (evaluated top-to-bottom, first match wins):
+          1. Retreat if health < 30% AND morale < 0.30
+          2. Seek cover if under heavy suppression (suppression > 0.6) AND damaged (health < 60%)
+          3. Suppress enemy direction even without perfect LOS (fired-upon / nearby)
+          4. Flank when 2+ friendlies outnumber a lone visible enemy
+          5. Move-to-range and engage nearest visible enemy (standard)
+          6. Follow squad order when no enemies visible
+        """
         alive_units = {uid: u for uid, u in self.units.items() if u.is_alive()}
+        cover_positions = self._get_cover_positions()
 
         for uid, unit in alive_units.items():
             # Recover suppression
             unit.recover_suppression(dt)
 
-            # Find enemies
-            enemies: list[dict] = []
+            health_pct = unit.state.health / max(unit.stats.max_health, 1.0)
+            morale = unit.state.morale
+
+            # --- BEHAVIOUR 1: Retreat when critically low ---
+            if health_pct < 0.30 and morale < 0.30:
+                # Find retreat direction: away from all visible enemies
+                retreat_target = self._compute_retreat_pos(uid, alive_units)
+                if retreat_target is not None:
+                    self._move_unit_toward(unit, retreat_target, dt, status="retreating")
+                else:
+                    unit.state.status = "retreating"
+                continue
+
+            # --- BEHAVIOUR 2: Seek cover when under fire and damaged ---
+            if unit.state.suppression > 0.6 and health_pct < 0.60:
+                cover = self._find_nearest_cover(unit.position, cover_positions)
+                if cover is not None and distance(unit.position, cover) > 2.0:
+                    self._move_unit_toward(unit, cover, dt, status="moving")
+                    # Still try to suppress enemies while moving to cover
+                    # (below we allow firing without LOS)
+                    self._try_suppress_without_los(uid, unit, alive_units, dt)
+                    continue
+
+            # Find enemies (LOS-confirmed)
+            enemies_los: list[dict] = []
+            # Track all nearby enemies even without LOS for suppression
+            enemies_nearby: list[dict] = []
+            det_range = unit.stats.detection_range * self.environment.detection_range_modifier()
             for oid, other in alive_units.items():
                 if oid == uid:
                     continue
                 if other.alliance == unit.alliance:
                     continue
                 d = distance(unit.position, other.position)
-                # Check detection range modified by environment
-                det_range = unit.stats.detection_range * self.environment.detection_range_modifier()
                 if d > det_range:
                     continue
-                # LOS check
-                if self.los is not None:
-                    if not self.los.can_see(unit.position, other.position):
-                        continue
-                enemies.append({
+                entry = {
                     "id": oid,
                     "pos": other.position,
                     "damage": other.stats.attack_damage,
                     "health": other.state.health / other.stats.max_health,
                     "facing": other.heading,
-                })
+                    "dist": d,
+                }
+                enemies_nearby.append(entry)
+                # LOS check
+                if self.los is not None:
+                    if not self.los.can_see(unit.position, other.position):
+                        continue
+                enemies_los.append(entry)
 
-            if not enemies:
+            # --- BEHAVIOUR 3: Suppress enemies without LOS ---
+            # If suppressed and there are nearby enemies (heard but not seen),
+            # fire toward their last known direction even without LOS
+            if unit.state.suppression > 0.3 and enemies_nearby and not enemies_los:
+                nearest_heard = min(enemies_nearby, key=lambda e: e["dist"])
+                if unit.can_attack(self.sim_time):
+                    # Add random scatter to simulate suppression fire accuracy
+                    scatter_angle = self._rng.uniform(-0.3, 0.3)
+                    to_enemy = _sub(nearest_heard["pos"], unit.position)
+                    cos_s = math.cos(scatter_angle)
+                    sin_s = math.sin(scatter_angle)
+                    scattered = (
+                        to_enemy[0] * cos_s - to_enemy[1] * sin_s,
+                        to_enemy[0] * sin_s + to_enemy[1] * cos_s,
+                    )
+                    suppress_target = _add(unit.position, scattered)
+                    self.fire_weapon(uid, suppress_target)
+                    unit.state.status = "attacking"
+                continue
+
+            if not enemies_los:
                 # No targets visible — follow squad order to advance toward enemy
                 if unit.state.status not in ("dead",):
-                    # Find this unit's squad and follow its order
                     moved = False
                     for _sid, squad in self.squads.items():
                         if uid in squad.members and squad.current_order is not None:
@@ -446,7 +621,7 @@ class World:
                             if order.order_type in ("advance", "flank_left", "flank_right") and order.target_pos is not None:
                                 direction = _sub(order.target_pos, unit.position)
                                 d = distance(unit.position, order.target_pos)
-                                if d > 5.0:  # don't jitter at destination
+                                if d > 5.0:
                                     direction = normalize(direction)
                                     move_speed = unit.effective_speed() * self.environment.movement_speed_modifier()
                                     dx = direction[0] * move_speed * dt
@@ -460,24 +635,115 @@ class World:
                         unit.state.status = "idle"
                 continue
 
-            # Simple combat: engage nearest visible enemy
-            nearest = min(enemies, key=lambda e: distance(unit.position, e["pos"]))
-            nearest_dist = distance(unit.position, nearest["pos"])
+            # --- BEHAVIOUR 4: Flank when 2+ friendlies vs 1 visible enemy ---
+            if len(enemies_los) == 1:
+                allies_nearby = self._count_nearby_allies(uid, alive_units, radius=35.0)
+                if allies_nearby >= 2:
+                    # This unit flanks; allies will engage directly
+                    # Determine if this is the "flanker" (lowest morale — most
+                    # aggressive) or the "suppressor" (stays and fires)
+                    # Simple heuristic: units whose ID sorts last in the squad
+                    # become the flanker
+                    squad_mates = [
+                        oid for oid, other in alive_units.items()
+                        if oid != uid
+                        and other.alliance == unit.alliance
+                        and distance(unit.position, other.position) <= 35.0
+                    ]
+                    is_flanker = uid > max(squad_mates, default=uid)
+                    if is_flanker:
+                        enemy = enemies_los[0]
+                        flank_pos = self._compute_flank_position(unit.position, enemy["pos"])
+                        dist_to_flank = distance(unit.position, flank_pos)
+                        # Move toward flank position until within 5 m of it;
+                        # only switch to engaging once actually flanking
+                        if dist_to_flank > 5.0:
+                            self._move_unit_toward(unit, flank_pos, dt, status="moving")
+                        else:
+                            # Arrived at flank — fire at enemy
+                            if unit.can_attack(self.sim_time):
+                                self.fire_weapon(uid, enemy["pos"])
+                        continue
+                    # Non-flanker: suppress (fire at enemy) to cover the flanker
+                    nearest = enemies_los[0]
+                    if unit.can_attack(self.sim_time):
+                        self.fire_weapon(uid, nearest["pos"])
+                    else:
+                        nearest_dist = distance(unit.position, nearest["pos"])
+                        if nearest_dist > unit.stats.attack_range:
+                            self._move_unit_toward(unit, nearest["pos"], dt, status="moving")
+                    continue
 
-            # Move toward if out of attack range
+            # --- BEHAVIOUR 5: Standard engage ---
+            nearest = min(enemies_los, key=lambda e: e["dist"])
+            nearest_dist = nearest["dist"]
+
             if nearest_dist > unit.stats.attack_range:
-                direction = _sub(nearest["pos"], unit.position)
-                direction = normalize(direction)
-                move_speed = unit.effective_speed() * self.environment.movement_speed_modifier()
-                dx = direction[0] * move_speed * dt
-                dy = direction[1] * move_speed * dt
-                unit.position = (unit.position[0] + dx, unit.position[1] + dy)
-                unit.heading = math.atan2(direction[1], direction[0])
-                unit.state.status = "moving"
+                self._move_unit_toward(unit, nearest["pos"], dt, status="moving")
             else:
-                # In range: fire
                 if unit.can_attack(self.sim_time):
                     self.fire_weapon(uid, nearest["pos"])
+
+    # -- Movement helpers -----------------------------------------------------
+
+    def _move_unit_toward(self, unit: Any, target: Vec2, dt: float, status: str = "moving") -> None:
+        """Move *unit* one step toward *target* at its effective speed."""
+        direction = _sub(target, unit.position)
+        d = distance(unit.position, target)
+        if d < 0.01:
+            return
+        direction = normalize(direction)
+        move_speed = unit.effective_speed() * self.environment.movement_speed_modifier()
+        step = min(move_speed * dt, d)
+        unit.position = (
+            unit.position[0] + direction[0] * step,
+            unit.position[1] + direction[1] * step,
+        )
+        unit.heading = math.atan2(direction[1], direction[0])
+        unit.state.status = status
+
+    def _compute_retreat_pos(self, uid: str, alive_units: dict) -> Vec2 | None:
+        """Compute a retreat position away from the centroid of all visible enemies."""
+        unit = alive_units.get(uid)
+        if unit is None:
+            return None
+        enemy_positions = [
+            other.position
+            for oid, other in alive_units.items()
+            if oid != uid and other.alliance != unit.alliance
+        ]
+        if not enemy_positions:
+            return None
+        cx = sum(p[0] for p in enemy_positions) / len(enemy_positions)
+        cy = sum(p[1] for p in enemy_positions) / len(enemy_positions)
+        away = _sub(unit.position, (cx, cy))
+        away_norm = normalize(away)
+        mag = math.sqrt(away[0] ** 2 + away[1] ** 2)
+        if mag < 1e-6:
+            # Directly on top of enemy centroid — retreat north
+            away_norm = (0.0, 1.0)
+        return _add(unit.position, _scale(away_norm, 30.0))
+
+    def _try_suppress_without_los(
+        self, uid: str, unit: Any, alive_units: dict, dt: float
+    ) -> None:
+        """Fire suppression shots toward nearby enemies even without confirmed LOS."""
+        det_range = unit.stats.detection_range * self.environment.detection_range_modifier()
+        for oid, other in alive_units.items():
+            if oid == uid or other.alliance == unit.alliance:
+                continue
+            if distance(unit.position, other.position) > det_range:
+                continue
+            if unit.can_attack(self.sim_time):
+                scatter = self._rng.uniform(-0.4, 0.4)
+                to_e = _sub(other.position, unit.position)
+                cos_s, sin_s = math.cos(scatter), math.sin(scatter)
+                scattered_target = _add(unit.position, (
+                    to_e[0] * cos_s - to_e[1] * sin_s,
+                    to_e[0] * sin_s + to_e[1] * cos_s,
+                ))
+                self.fire_weapon(uid, scattered_target)
+            break  # suppress at most one target per tick
 
     def _check_projectile_hits(self) -> list[dict]:
         """Check active projectiles for hits using ray-segment vs circle test.
@@ -686,6 +952,38 @@ class World:
 
         frame = self.renderer.render_frame(sim_state)
         frame["events"] = list(self.events)
+
+        # Formation layer — one entry per active squad with a mover
+        formations_data: list[dict] = []
+        alive_unit_positions: dict[str, Vec2] = {
+            uid: u.position for uid, u in self.units.items() if u.is_alive()
+        }
+        for sid, mover in self._formation_movers.items():
+            squad = self.squads.get(sid)
+            if squad is None:
+                continue
+            living_members = [m for m in squad.members if m in alive_unit_positions]
+            if not living_members:
+                continue
+            # Build a snapshot config from current leader position + mover state
+            leader_uid = living_members[0]
+            leader_pos = alive_unit_positions[leader_uid]
+            config = FormationConfig(
+                formation_type=mover.formation,
+                spacing=mover.spacing,
+                facing=mover._facing,
+                leader_pos=leader_pos,
+                num_members=len(living_members),
+            )
+            f_data = formation_to_three_js(config, living_members)
+            f_data["squad_id"] = sid
+            f_data["squad_name"] = getattr(squad, "name", sid)
+            f_data["alliance"] = getattr(squad, "alliance", "unknown")
+            f_data["progress"] = mover.progress()
+            f_data["complete"] = mover.is_complete()
+            formations_data.append(f_data)
+        frame["formations"] = formations_data
+
         frame["vehicles"] = [
             {
                 "id": v.vehicle_id,

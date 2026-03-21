@@ -1296,6 +1296,36 @@ class UnitBehaviors:
         else:
             self._turret_behavior(turret, hostiles, vision_state=vision_state)
 
+    def to_three_js(self) -> dict:
+        """Export behavior system state for Three.js rendering.
+
+        Returns per-unit tactical state (rushing, flanking, detected)
+        as lists of Three.js-compatible position/color/type dicts.
+        Keeps output minimal — only units with notable state are included.
+        """
+        rushing: list[dict] = []
+        flanking: list[dict] = []
+        detected: list[dict] = []
+
+        for uid in self._group_rush_ids:
+            rushing.append({"unit_id": uid, "state": "group_rush", "color": "#ff2a6d"})
+
+        for uid in self._last_flank:
+            flanking.append({"unit_id": uid, "state": "flanking", "color": "#fcee0a"})
+
+        for uid in self._detected_ids:
+            detected.append({"unit_id": uid, "state": "detected_boost", "color": "#00f0ff"})
+
+        return {
+            "type": "behaviors",
+            "rushing_units": rushing,
+            "flanking_units": flanking,
+            "detected_units": detected,
+            "group_rush_count": len(self._group_rush_ids),
+            "flanking_count": len(self._last_flank),
+            "detected_count": len(self._detected_ids),
+        }
+
     def remove_unit(self, target_id: str) -> None:
         """Remove all per-unit state for a single unit."""
         self._last_dodge.pop(target_id, None)

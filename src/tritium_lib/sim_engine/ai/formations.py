@@ -707,3 +707,72 @@ class CoverMovement:
             })
 
         return phases
+
+
+# ---------------------------------------------------------------------------
+# to_three_js helpers — serialise formation state for the Three.js viewer
+# ---------------------------------------------------------------------------
+
+
+def formation_to_three_js(
+    config: FormationConfig,
+    member_ids: list[str] | None = None,
+) -> dict:
+    """Serialise a formation's slot positions for the Three.js viewer.
+
+    Returns a dict with:
+        - ``formation_type``: string name of the formation
+        - ``leader_pos``: [x, y] leader world position
+        - ``facing``: heading in radians
+        - ``slots``: list of {id, x, y} — one per member slot
+        - ``lines``: list of [[x0,y0],[x1,y1]] pairs for drawing formation lines
+
+    The ``lines`` array connects the leader to each follower, which is
+    enough for Three.js to draw the formation overlay without needing
+    full mesh geometry.
+    """
+    slots = get_formation_positions(config)
+    slot_data: list[dict] = []
+    for i, pos in enumerate(slots):
+        entry: dict = {"slot": i, "x": pos[0], "y": pos[1]}
+        if member_ids and i < len(member_ids):
+            entry["id"] = member_ids[i]
+        slot_data.append(entry)
+
+    # Lines: leader (slot 0) to each follower, plus adjacent followers
+    lines: list[list[list[float]]] = []
+    if len(slots) >= 2:
+        leader = slots[0]
+        for follower in slots[1:]:
+            lines.append([[leader[0], leader[1]], [follower[0], follower[1]]])
+
+    return {
+        "formation_type": config.formation_type.value,
+        "leader_pos": [config.leader_pos[0], config.leader_pos[1]],
+        "facing": config.facing,
+        "spacing": config.spacing,
+        "num_members": config.num_members,
+        "slots": slot_data,
+        "lines": lines,
+    }
+
+
+def formation_mover_to_three_js(mover: "FormationMover") -> dict:
+    """Serialise a FormationMover's current state for the Three.js viewer.
+
+    Returns the current formation snapshot including progress along the
+    path, so the viewer can animate formation movement.
+    """
+    config = FormationConfig(
+        formation_type=mover.formation,
+        spacing=mover.spacing,
+        facing=mover._facing,
+        leader_pos=mover._leader_pos,
+        num_members=len(mover._member_ids) if mover._member_ids else 1,
+    )
+    base = formation_to_three_js(config, mover._member_ids)
+    base["progress"] = mover.progress()
+    base["complete"] = mover.is_complete()
+    # Waypoints for path visualisation
+    base["waypoints"] = [[wp[0], wp[1]] for wp in mover.waypoints]
+    return base

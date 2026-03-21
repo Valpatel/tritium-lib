@@ -544,6 +544,29 @@ class WeaponFirer:
             "total_rounds_fired": self.total_rounds_fired,
         }
 
+    def to_three_js(self) -> dict:
+        """Export weapon firer state for Three.js rendering.
+
+        Returns position, heading, firing state, ammo, and muzzle
+        flash data suitable for a Three.js weapon HUD or world overlay.
+        """
+        ammo_pct = (self.ammo / self.max_ammo) if self.max_ammo > 0 else 0.0
+        return {
+            "type": "weapon_firer",
+            "position": [self.position[0], 0.0, self.position[1]],
+            "heading": round(self.heading, 3),
+            "weapon": self.weapon.name,
+            "fire_mode": self.weapon.fire_mode.value,
+            "is_firing": self.is_firing,
+            "ammo": self.ammo,
+            "max_ammo": self.max_ammo,
+            "ammo_pct": round(ammo_pct, 3),
+            "cooldown": round(self.cooldown, 3),
+            "spread_deg": round(self.current_spread_deg, 2),
+            "total_rounds_fired": self.total_rounds_fired,
+            "color": "#fcee0a" if self.is_firing else "#888888",
+        }
+
 
 # ---------------------------------------------------------------------------
 # Convenience factory

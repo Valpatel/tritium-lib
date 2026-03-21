@@ -82,8 +82,9 @@ class TestClickDetection:
             "city3d.html must call initInspect which searches for nearest unit to click point"
 
     def test_search_both_sides(self, source):
-        # Must search both protestors and police
-        assert "protestors" in source and "police" in source
+        # Must reference both protestors and police (case-insensitive: file uses
+        # camelCase "spawnProtestors" and class "protestor-val")
+        assert "protestor" in source.lower() and "police" in source.lower()
 
 
 # =========================================================================

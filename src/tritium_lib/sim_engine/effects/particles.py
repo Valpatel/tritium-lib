@@ -639,3 +639,37 @@ class EffectsManager:
     def clear(self) -> None:
         """Remove all emitters and particles."""
         self.emitters.clear()
+
+    def to_three_js(self, max_particles: int = 500) -> dict:
+        """Export particle state for Three.js rendering.
+
+        Returns positions, colors, sizes and lifetime fractions for all
+        living particles, capped at *max_particles* for frame-size safety.
+        """
+        all_particles = self.get_all_particles()
+        # Cap to keep frame payloads small
+        subset = all_particles[:max_particles]
+
+        positions: list[list[float]] = []
+        colors: list[str] = []
+        sizes: list[float] = []
+        ages: list[float] = []
+
+        for p in subset:
+            positions.append([p["x"], 0.0, p["y"]])
+            colors.append(
+                "#{:02x}{:02x}{:02x}".format(p["r"], p["g"], p["b"])
+            )
+            sizes.append(round(p["size"], 2))
+            ages.append(round(p["age"], 3))
+
+        return {
+            "type": "particles",
+            "count": len(subset),
+            "total": len(all_particles),
+            "active_emitters": self.active_count(),
+            "positions": positions,
+            "colors": colors,
+            "sizes": sizes,
+            "ages": ages,
+        }

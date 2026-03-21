@@ -451,7 +451,21 @@ class DetectionEngine:
                 )
 
         result = list(merged.values())
-        self.detections.extend(result)
+        # Replace detections for the same (owner, target) key rather than
+        # appending — prevents unbounded growth during fast simulation runs
+        # where the real-time decay hasn't fired yet.
+        existing_keys: dict[tuple[str, str], int] = {}
+        for i, d in enumerate(self.detections):
+            owner = self._sensor_owner(d.detector_id)
+            existing_keys[(owner, d.target_id)] = i
+        for det in result:
+            owner = self._sensor_owner(det.detector_id)
+            key = (owner, det.target_id)
+            if key in existing_keys:
+                self.detections[existing_keys[key]] = det
+            else:
+                existing_keys[key] = len(self.detections)
+                self.detections.append(det)
         return result
 
     def _sensor_owner(self, sensor_id: str) -> str:

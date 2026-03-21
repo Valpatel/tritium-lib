@@ -619,3 +619,122 @@ def create_fsm_for_type(asset_type: str, alliance: str = "friendly") -> StateMac
 
     # No FSM for unknown types
     return None
+
+
+# ============================================================================
+# to_three_js helpers — serialise per-unit FSM state for HUD display
+# ============================================================================
+
+#: Human-friendly labels for each FSM state name, used in HUD overlays.
+_STATE_LABELS: dict[str, str] = {
+    # Turret states
+    "idle": "Idle",
+    "scanning": "Scanning",
+    "tracking": "Tracking",
+    "engaging": "Engaging",
+    "cooldown": "Cooldown",
+    "reloading": "Reloading",
+    # Rover states
+    "patrolling": "Patrolling",
+    "pursuing": "Pursuing",
+    "retreating": "Retreating",
+    "rtb": "RTB",
+    # Drone states
+    "scouting": "Scouting",
+    "orbiting": "Orbiting",
+    "strafing": "Strafing",
+    # Hostile states
+    "spawning": "Spawning",
+    "advancing": "Advancing",
+    "reconning": "Reconning",
+    "flanking": "Flanking",
+    "suppressing": "Suppressing",
+    "retreating_under_fire": "Under Fire",
+    "fleeing": "Fleeing",
+    "approaching": "Approaching",
+    "attacking": "Attacking",
+    "dodging": "Dodging",
+}
+
+#: Cyberpunk colour per FSM state for HUD badge backgrounds.
+_STATE_COLORS: dict[str, str] = {
+    "idle": "#444444",
+    "scanning": "#00f0ff",      # cyan
+    "tracking": "#fcee0a",      # yellow
+    "engaging": "#ff2a6d",      # magenta
+    "attacking": "#ff2a6d",
+    "cooldown": "#888888",
+    "reloading": "#888888",
+    "patrolling": "#05ffa1",    # green
+    "pursuing": "#fcee0a",
+    "retreating": "#ff7700",
+    "retreating_under_fire": "#ff7700",
+    "rtb": "#888888",
+    "scouting": "#00f0ff",
+    "orbiting": "#00f0ff",
+    "strafing": "#ff2a6d",
+    "spawning": "#888888",
+    "advancing": "#fcee0a",
+    "reconning": "#00f0ff",
+    "flanking": "#ff2a6d",
+    "suppressing": "#ff2a6d",
+    "fleeing": "#ff7700",
+    "approaching": "#fcee0a",
+    "dodging": "#fcee0a",
+}
+
+
+def unit_state_to_three_js(unit_id: str, fsm: "StateMachine") -> dict:
+    """Serialise a unit's FSM state for Three.js HUD display.
+
+    Returns a dict with:
+        - ``unit_id``: the unit identifier
+        - ``state``: current state name (raw string)
+        - ``label``: human-readable state label
+        - ``color``: cyberpunk hex colour for HUD badge
+        - ``time_in_state``: seconds spent in current state
+        - ``available_states``: list of all registered state names
+
+    This is intentionally lightweight — it is called every render tick
+    alongside unit position data so the frontend can show a live state
+    badge without any extra round-trips.
+
+    Example usage::
+
+        from tritium_lib.sim_engine.behavior.unit_states import (
+            create_turret_fsm, unit_state_to_three_js,
+        )
+        fsm = create_turret_fsm()
+        fsm.tick(0.1, {"enemies_in_range": ["e1"]})
+        data = unit_state_to_three_js("turret_1", fsm)
+        # data == {"unit_id": "turret_1", "state": "scanning", ...}
+    """
+    # Import here to avoid circular at module level
+    from tritium_lib.sim_engine.core.state_machine import StateMachine  # noqa: F401
+
+    state_name = fsm.current_state
+    return {
+        "unit_id": unit_id,
+        "state": state_name,
+        "label": _STATE_LABELS.get(state_name, state_name.replace("_", " ").title()),
+        "color": _STATE_COLORS.get(state_name, "#444444"),
+        "time_in_state": round(fsm.time_in_state, 2),
+        "available_states": fsm.state_names,
+    }
+
+
+def units_states_to_three_js(
+    unit_fsm_map: "dict[str, StateMachine]",
+) -> list[dict]:
+    """Batch-serialise a mapping of unit_id -> StateMachine for the HUD.
+
+    Args:
+        unit_fsm_map: Dict keyed by unit ID, values are StateMachine instances.
+
+    Returns:
+        List of per-unit state dicts (same format as ``unit_state_to_three_js``).
+    """
+    return [
+        unit_state_to_three_js(uid, fsm)
+        for uid, fsm in unit_fsm_map.items()
+    ]
