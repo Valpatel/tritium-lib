@@ -18,8 +18,33 @@ import json
 import time
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+try:
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import HTMLResponse
+    _FASTAPI_AVAILABLE = True
+except ImportError:
+    _FASTAPI_AVAILABLE = False
+
+    class _NoOpDecorator:
+        """Stub that silently ignores all route/websocket decorator calls."""
+        title: str = ""
+        version: str = ""
+
+        def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401
+            pass
+
+        def _noop(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            def decorator(fn: Any) -> Any:  # noqa: ANN401
+                return fn
+            return decorator
+
+        get = post = put = delete = patch = websocket = on_event = _noop  # type: ignore[assignment]
+        add_middleware = include_router = _noop  # type: ignore[assignment]
+
+    FastAPI = _NoOpDecorator  # type: ignore[assignment,misc]
+    WebSocket = object  # type: ignore[assignment,misc]
+    WebSocketDisconnect = Exception  # type: ignore[assignment,misc]
+    HTMLResponse = None  # type: ignore[assignment,misc]
 
 # ---------------------------------------------------------------------------
 # CitySim backend — real sim_engine city simulation
@@ -132,6 +157,39 @@ from tritium_lib.sim_engine.renderer import SimRenderer, RenderLayer
 from tritium_lib.sim_engine.ai.tactics import TacticsEngine, TacticalAction
 # 26. ai/squad.py
 from tritium_lib.sim_engine.ai.squad import Squad, SquadRole, SquadTactics, Order
+# AI behavior systems — behavior trees, steering, formations, combat AI
+from tritium_lib.sim_engine.ai.behavior_tree import (
+    Node as BTNode,
+    Status as BTStatus,
+    make_patrol_tree,
+    make_hostile_tree,
+    make_civilian_tree,
+)
+from tritium_lib.sim_engine.ai.steering import (
+    seek as steering_seek,
+    flee as steering_flee,
+    arrive as steering_arrive,
+    wander as steering_wander,
+    distance as steering_distance,
+    magnitude as steering_magnitude,
+    normalize as steering_normalize,
+    truncate as steering_truncate,
+)
+from tritium_lib.sim_engine.ai.formations import (
+    FormationMover,
+    FormationType,
+    FormationConfig,
+    get_formation_positions,
+)
+from tritium_lib.sim_engine.ai.combat_ai import (
+    find_cover,
+    is_in_cover,
+    should_engage,
+    should_retreat as combat_should_retreat,
+    formation_positions as combat_formation_positions,
+    assign_targets,
+    compute_flank_position,
+)
 # 27. morale.py
 from tritium_lib.sim_engine.morale import MoraleEngine, MoraleEvent, MoraleEventType
 # 28. electronic_warfare.py
@@ -175,6 +233,519 @@ from tritium_lib.sim_engine.objectives import (
 from tritium_lib.sim_engine.territory import (
     InfluenceMap, TerritoryControl, ControlPoint, StrategicValue,
 )
+# 30. buildings.py — building interiors, floors, room-clearing CQB
+from tritium_lib.sim_engine.buildings import (
+    RoomClearingEngine, RoomType,
+)
+# 31. economy.py — resource management, build queues, tech trees
+from tritium_lib.sim_engine.economy import (
+    EconomyEngine, ECONOMY_PRESETS, UNIT_COSTS, TECH_TREE,
+)
+# 32. cyber.py — cyber/electronic warfare
+from tritium_lib.sim_engine.cyber import (
+    CyberWarfareEngine, create_asset_from_preset,
+)
+# 33. hud.py — minimap, compass, unit roster, kill feed
+from tritium_lib.sim_engine.hud import (
+    HUDEngine,
+)
+
+
+# ---------------------------------------------------------------------------
+# Economy / Cyber / CQB helpers — called from game_tick each frame
+# ---------------------------------------------------------------------------
+
+import random as _random
+
+_AUTO_PURCHASE_INTERVAL = 10  # ticks between auto-purchase attempts per faction
+_AUTO_CYBER_INTERVAL = 50     # ticks between random cyber attack launches
+
+# Unit pools each faction cycles through when buying
+_FACTION_UNIT_POOL: dict[str, list[str]] = {
+    "friendly": ["infantry", "scout", "medic", "sniper"],
+    "hostile": ["infantry", "infantry", "heavy", "scout"],
+}
+
+# Cyber capability map: asset_id -> list of capability_ids to try
+# Populated lazily the first time _auto_cyber_attack is called.
+_CYBER_ASSET_CAPS: dict[str, list[str]] = {}
+
+
+def _auto_purchase_units(gs: "GameState", tick: int) -> list[str]:
+    """Attempt to purchase one unit per faction every N ticks.
+
+    Returns list of ``"faction:template"`` strings for orders placed.
+    """
+    if gs.economy is None or tick % _AUTO_PURCHASE_INTERVAL != 0:
+        return []
+    placed: list[str] = []
+    for faction, pool in _FACTION_UNIT_POOL.items():
+        if faction not in gs.economy.pools:
+            continue
+        # Round-robin through the pool based on tick count
+        idx = (tick // _AUTO_PURCHASE_INTERVAL) % len(pool)
+        template = pool[idx]
+        if gs.economy.purchase_unit(faction, template):
+            placed.append(f"{faction}:{template}")
+    return placed
+
+
+def _auto_cyber_attack(gs: "GameState", tick: int, rng: _random.Random) -> list[str]:
+    """Periodically launch cyber attacks between opposing factions.
+
+    Each asset fires its first ready capability at a random enemy unit
+    position.  Returns list of attack type strings that were launched.
+    """
+    if gs.cyber is None or gs.world is None:
+        return []
+    if tick % _AUTO_CYBER_INTERVAL != 0:
+        return []
+
+    launched: list[str] = []
+
+    # Build per-alliance position pools
+    friendly_positions = [
+        u.position for u in gs.world.units.values()
+        if u.is_alive() and u.alliance.value == "friendly"
+    ]
+    hostile_positions = [
+        u.position for u in gs.world.units.values()
+        if u.is_alive() and u.alliance.value == "hostile"
+    ]
+
+    for asset in gs.cyber.assets.values():
+        # Pick a target position from the opposing side
+        if asset.alliance == "friendly":
+            targets = hostile_positions
+        else:
+            targets = friendly_positions
+        if not targets:
+            continue
+        target_pos = rng.choice(targets)
+
+        # Try each capability in order until one fires
+        for cap in asset.capabilities:
+            if not cap.is_ready:
+                continue
+            effect = gs.cyber.launch_attack(asset.asset_id, cap.capability_id, target_pos)
+            if effect is not None:
+                launched.append(effect.attack_type.value)
+                break  # one attack per asset per interval
+
+    return launched
+
+
+def _trigger_cqb(gs: "GameState", tick: int, rng: _random.Random) -> list[dict]:
+    """Check whether any infantry units have entered a building zone and
+    trigger CQB room clearing for the first uncleared room found.
+
+    Buildings are checked every 20 ticks to keep overhead low.
+    Returns a list of CQB result dicts (may be empty).
+    """
+    if gs.buildings is None or gs.world is None:
+        return []
+    if tick % 20 != 0:
+        return []
+
+    results: list[dict] = []
+
+    for bld_id, layout in gs.buildings.buildings.items():
+        if layout.is_fully_cleared:
+            continue
+
+        # Collect infantry near this building (within 30 m of building origin)
+        bx, by = layout.position
+        nearby_infantry: list[str] = []
+        for uid, unit in gs.world.units.items():
+            if not unit.is_alive():
+                continue
+            if unit.alliance.value != "friendly":
+                continue
+            ux, uy = unit.position
+            if ((ux - bx) ** 2 + (uy - by) ** 2) ** 0.5 < 30.0:
+                nearby_infantry.append(uid)
+
+        if len(nearby_infantry) < 2:
+            continue  # need at least 2 to clear
+
+        # Find first uncleared room
+        uncleared = gs.buildings.get_uncleared_rooms(bld_id)
+        if not uncleared:
+            continue
+        room = uncleared[0]
+
+        # Place hostile occupants probabilistically (50 % chance if building is_hostile)
+        if layout.is_hostile and rng.random() < 0.5:
+            hostile_unit_ids = [
+                uid for uid, u in gs.world.units.items()
+                if u.is_alive() and u.alliance.value == "hostile"
+            ]
+            if hostile_unit_ids:
+                h_id = rng.choice(hostile_unit_ids)
+                gs.buildings.hostile_ids.add(h_id)
+                if h_id not in room.occupants:
+                    room.occupants.append(h_id)
+                    gs.buildings._unit_locations[h_id] = (bld_id, room.room_id)
+
+        # Enter and clear
+        for uid in nearby_infantry[:3]:
+            gs.buildings.enter_building(uid, bld_id, entry_point=0)
+
+        use_flashbang = rng.random() < 0.3
+        result = gs.buildings.clear_room(
+            nearby_infantry[:3], room.room_id, building_id=bld_id,
+            flashbang=use_flashbang,
+        )
+        result["tick"] = tick
+        results.append(result)
+        break  # one building per interval
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Unit AI System — wires behavior trees, steering, formations, combat AI
+# ---------------------------------------------------------------------------
+
+import math as _math
+
+
+class UnitAISystem:
+    """Per-tick AI layer that runs behavior trees, steering, and formations.
+
+    Runs *before* world.tick() so decisions influence the world's own unit AI.
+    The world AI still fires weapons and resolves damage; this layer enriches
+    movement decisions and exposes AI state to the frontend.
+
+    Attributes:
+        _trees: behavior tree per unit_id
+        _bt_contexts: persisted context dicts (carry cooldown state between ticks)
+        _wander_velocities: last wander velocity per unit (needed for smooth wander)
+        _formation_movers: FormationMover per squad_id
+        _squad_formation_type: current formation per squad
+        _cover_cache: last-found cover position per unit_id
+        _engage_timers: how long a unit has been engaging (for flank trigger)
+    """
+
+    # Formation types assigned to squads by alliance
+    _FRIENDLY_FORMATION = FormationType.WEDGE
+    _HOSTILE_FORMATION = FormationType.WEDGE
+
+    # Steering constants
+    _MAX_SPEED = 5.0        # m/s — matches UnitStats default
+    _SLOW_RADIUS = 8.0      # arrive deceleration radius
+    _WANDER_RADIUS = 3.0
+    _WANDER_DIST = 6.0
+    _WANDER_JITTER = 0.5
+    _ENGAGE_RANGE = 30.0    # meters, mirrors attack_range default
+    _DETECT_RANGE = 50.0    # meters, mirrors detection_range default
+    _COVER_SEARCH_RANGE = 40.0
+    _FLANK_STALL_TIME = 8.0  # seconds before triggering flank
+    _FORMATION_SPACING = 5.0
+
+    def __init__(self) -> None:
+        self._trees: dict[str, BTNode] = {}
+        self._bt_contexts: dict[str, dict] = {}
+        self._wander_velocities: dict[str, tuple[float, float]] = {}
+        self._formation_movers: dict[str, FormationMover] = {}
+        self._squad_formation_type: dict[str, FormationType] = {}
+        self._cover_cache: dict[str, tuple[float, float] | None] = {}
+        self._engage_timers: dict[str, float] = {}
+        # AI state exported to the frame: unit_id -> {decision, formation, in_cover, ...}
+        self.ai_state: dict[str, dict] = {}
+
+    # ------------------------------------------------------------------
+    # Initialization helpers
+    # ------------------------------------------------------------------
+
+    def register_unit(self, uid: str, unit_type: str, alliance: str) -> None:
+        """Create a behavior tree for this unit."""
+        if uid in self._trees:
+            return
+        if alliance == "hostile":
+            self._trees[uid] = make_hostile_tree()
+        elif unit_type in ("infantry", "heavy", "sniper", "engineer"):
+            self._trees[uid] = make_patrol_tree()
+        else:
+            self._trees[uid] = make_civilian_tree()
+        self._bt_contexts[uid] = {}
+        self._wander_velocities[uid] = (1.0, 0.0)
+        self._engage_timers[uid] = 0.0
+
+    def register_squad(self, squad_id: str, alliance: str,
+                       waypoints: list[tuple[float, float]]) -> None:
+        """Create a FormationMover for this squad if it has waypoints."""
+        if squad_id in self._formation_movers:
+            return
+        if len(waypoints) < 2:
+            return
+        formation = (self._FRIENDLY_FORMATION if alliance == "friendly"
+                     else self._HOSTILE_FORMATION)
+        mover = FormationMover(
+            waypoints=waypoints,
+            formation=formation,
+            spacing=self._FORMATION_SPACING,
+            max_speed=self._MAX_SPEED,
+        )
+        self._formation_movers[squad_id] = mover
+        self._squad_formation_type[squad_id] = formation
+
+    # ------------------------------------------------------------------
+    # Per-tick update
+    # ------------------------------------------------------------------
+
+    def tick(
+        self,
+        dt: float,
+        world: Any,
+    ) -> dict[str, dict]:
+        """Run one AI tick across all alive units.
+
+        Mutates unit positions and headings via steering behaviors.
+        Returns the ai_state dict (unit_id -> info) for frame export.
+        """
+        if world is None:
+            return {}
+
+        alive_units = {uid: u for uid, u in world.units.items() if u.is_alive()}
+        sim_time = world.sim_time
+
+        # Build obstacle list from destructible structures (cover objects)
+        obstacles: list[tuple[tuple[float, float], float]] = []
+        if world.destruction is not None:
+            for s in world.destruction.structures:
+                if s.health > 0:
+                    obstacles.append((s.position, max(s.size[0], s.size[1]) / 2.0))
+
+        # Tick formation movers and collect slot targets
+        formation_targets: dict[str, tuple[float, float]] = {}
+        for squad_id, mover in self._formation_movers.items():
+            squad = world.squads.get(squad_id)
+            if squad is None:
+                continue
+            living_members = [m for m in squad.members if m in alive_units]
+            if not living_members:
+                continue
+            member_positions = {m: alive_units[m].position for m in living_members}
+            targets = mover.tick(dt, member_positions)
+            formation_targets.update(targets)
+
+        new_ai_state: dict[str, dict] = {}
+
+        for uid, unit in alive_units.items():
+            # Ensure registered
+            if uid not in self._trees:
+                self.register_unit(uid, unit.unit_type.value, unit.alliance.value)
+
+            # Build threat list (enemies within detection range)
+            threats = []
+            for oid, other in alive_units.items():
+                if oid == uid or other.alliance == unit.alliance:
+                    continue
+                d = steering_distance(unit.position, other.position)
+                if d <= unit.stats.detection_range:
+                    threats.append({
+                        "id": oid,
+                        "pos": other.position,
+                        "dist": d,
+                        "vel": self._wander_velocities.get(oid, (0.0, 0.0)),
+                        "health": other.state.health / max(other.stats.max_health, 1.0),
+                    })
+
+            threat_in_range = any(t["dist"] <= unit.stats.attack_range for t in threats)
+            health_ratio = unit.state.health / max(unit.stats.max_health, 1.0)
+            ammo_ratio = (unit.state.ammo / 60.0) if unit.state.ammo >= 0 else 1.0
+            allies_nearby = sum(
+                1 for oid, o in alive_units.items()
+                if oid != uid and o.alliance == unit.alliance
+                and steering_distance(unit.position, o.position) <= 40.0
+            )
+
+            # Cover check
+            in_cover = False
+            if obstacles and threats:
+                nearest_threat = min(threats, key=lambda t: t["dist"])
+                in_cover = is_in_cover(unit.position, nearest_threat["pos"], obstacles)
+            self._cover_cache.setdefault(uid, None)
+
+            # Engage timer update
+            if unit.state.status == "attacking":
+                self._engage_timers[uid] = self._engage_timers.get(uid, 0.0) + dt
+            else:
+                self._engage_timers[uid] = 0.0
+
+            # Build BT context
+            ctx = self._bt_contexts.setdefault(uid, {})
+            ctx.update({
+                "time": sim_time,
+                "unit": unit,
+                "threats": threats,
+                "threat_in_range": threat_in_range,
+                "health": health_ratio,
+                "retreat_threshold": 0.3,
+                "waypoints": bool(unit.squad_id),
+                "at_destination": False,
+                "recently_threatened": bool(threats),
+                # combat_ai fields
+                "enemies": threats,
+                "enemy_in_range": threat_in_range,
+                "in_cover": in_cover,
+                "ammo_ratio": ammo_ratio,
+                "enemies_visible": len(threats),
+                "allies_nearby": allies_nearby,
+                "is_flanking": False,
+                "is_suppressed": unit.state.suppression > 0.4,
+                "squad_members": allies_nearby > 0,
+                "engage_duration": self._engage_timers.get(uid, 0.0),
+                "stall_threshold": self._FLANK_STALL_TIME,
+            })
+
+            # Tick behavior tree
+            tree = self._trees[uid]
+            tree.tick(ctx)
+            decision = ctx.get("decision", "idle")
+
+            # Apply steering based on decision
+            new_pos, new_heading = self._apply_steering(
+                uid, unit, decision, threats, obstacles, formation_targets, dt,
+            )
+
+            # Only apply steering-driven movement for certain decisions where
+            # it adds genuine value (flee, wander, seek cover).  For engage/patrol
+            # the world._tick_units already handles it cleanly.
+            if decision in ("flee", "hide", "retreat", "wander", "seek_cover", "regroup"):
+                if new_pos != unit.position:
+                    unit.position = new_pos
+                    unit.heading = new_heading
+                    if unit.state.status not in ("attacking", "dead"):
+                        unit.state.status = "moving"
+
+            # Formation slot nudge for non-combat units
+            if uid in formation_targets and decision not in (
+                "engage", "flee", "retreat", "seek_cover", "hide",
+            ):
+                slot = formation_targets[uid]
+                d_slot = steering_distance(unit.position, slot)
+                if d_slot > 1.5 and unit.state.status not in ("attacking", "dead"):
+                    step_vec = steering_arrive(
+                        unit.position, slot, unit.effective_speed(), self._SLOW_RADIUS,
+                    )
+                    speed = steering_magnitude(step_vec)
+                    if speed > 1e-6:
+                        direction = steering_normalize(step_vec)
+                        move_dist = min(speed * dt, d_slot)
+                        unit.position = (
+                            unit.position[0] + direction[0] * move_dist,
+                            unit.position[1] + direction[1] * move_dist,
+                        )
+                        unit.heading = _math.atan2(direction[1], direction[0])
+                        if unit.state.status not in ("attacking", "dead"):
+                            unit.state.status = "moving"
+
+            # Determine squad formation label
+            formation_label = "none"
+            if unit.squad_id and unit.squad_id in self._squad_formation_type:
+                formation_label = self._squad_formation_type[unit.squad_id].value
+
+            new_ai_state[uid] = {
+                "decision": decision,
+                "formation": formation_label,
+                "in_cover": in_cover,
+                "threat_count": len(threats),
+                "engage_timer": round(self._engage_timers.get(uid, 0.0), 1),
+                "bt_status": ctx.get("state", ""),
+                "in_formation_slot": uid in formation_targets,
+            }
+
+        self.ai_state = new_ai_state
+        return new_ai_state
+
+    # ------------------------------------------------------------------
+    # Steering dispatcher
+    # ------------------------------------------------------------------
+
+    def _apply_steering(
+        self,
+        uid: str,
+        unit: Any,
+        decision: str,
+        threats: list[dict],
+        obstacles: list[tuple[tuple[float, float], float]],
+        formation_targets: dict[str, tuple[float, float]],
+        dt: float,
+    ) -> tuple[tuple[float, float], float]:
+        """Compute new position and heading for the given decision."""
+        pos = unit.position
+        vel = self._wander_velocities.get(uid, (1.0, 0.0))
+        speed = unit.effective_speed()
+
+        if decision in ("flee", "hide", "retreat") and threats:
+            nearest = min(threats, key=lambda t: t["dist"])
+            force = steering_flee(pos, nearest["pos"], speed)
+            return self._integrate(pos, vel, force, dt, uid, speed)
+
+        if decision == "wander":
+            force = steering_wander(pos, vel, self._WANDER_RADIUS,
+                                    self._WANDER_DIST, self._WANDER_JITTER)
+            return self._integrate(pos, vel, force, dt, uid, speed)
+
+        if decision == "seek_cover" and obstacles and threats:
+            nearest_threat = min(threats, key=lambda t: t["dist"])
+            cover_pos = find_cover(pos, nearest_threat["pos"], obstacles,
+                                   max_range=self._COVER_SEARCH_RANGE)
+            if cover_pos is not None:
+                self._cover_cache[uid] = cover_pos
+                force = steering_arrive(pos, cover_pos, speed, self._SLOW_RADIUS)
+                return self._integrate(pos, vel, force, dt, uid, speed)
+
+        if decision == "regroup" and uid in formation_targets:
+            slot = formation_targets[uid]
+            force = steering_arrive(pos, slot, speed, self._SLOW_RADIUS)
+            return self._integrate(pos, vel, force, dt, uid, speed)
+
+        # No steering override for other decisions
+        return pos, unit.heading
+
+    def _integrate(
+        self,
+        pos: tuple[float, float],
+        vel: tuple[float, float],
+        force: tuple[float, float],
+        dt: float,
+        uid: str,
+        max_speed: float,
+    ) -> tuple[tuple[float, float], float]:
+        """Apply force to position for one tick; update stored velocity."""
+        # Desired velocity is the force vector (steering returns desired vel)
+        new_vel = steering_truncate(force, max_speed)
+        speed = steering_magnitude(new_vel)
+        if speed < 1e-9:
+            return pos, _math.atan2(vel[1], vel[0])
+        new_pos = (
+            pos[0] + new_vel[0] * dt,
+            pos[1] + new_vel[1] * dt,
+        )
+        new_heading = _math.atan2(new_vel[1], new_vel[0])
+        self._wander_velocities[uid] = new_vel
+        return new_pos, new_heading
+
+    # ------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------
+
+    def to_three_js(self) -> dict:
+        """Return AI state dict for WebSocket frame inclusion."""
+        return {
+            "units": self.ai_state,
+            "formation_movers": {
+                sid: {
+                    "formation": self._squad_formation_type.get(sid, FormationType.WEDGE).value,
+                    "progress": mover.progress(),
+                    "complete": mover.is_complete(),
+                }
+                for sid, mover in self._formation_movers.items()
+            },
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -215,11 +786,20 @@ class GameState:
         self.objectives: ObjectiveEngine | None = None
         self.territory: TerritoryControl | None = None
         self.influence: InfluenceMap | None = None
+        self.buildings: RoomClearingEngine | None = None
+        self.economy: EconomyEngine | None = None
+        self.cyber: CyberWarfareEngine | None = None
+        self.hud: HUDEngine | None = None
+        self.unit_ai: UnitAISystem | None = None
         self.running: bool = False
         self.paused: bool = False
         self.tick_count: int = 0
         self.preset: str = ""
         self.start_time: float = 0.0
+        # Deterministic RNG shared by economy/cyber/CQB helpers
+        self._rng: _random.Random = _random.Random(42)
+        # Accumulated CQB results for the current frame
+        self.cqb_events: list[dict] = []
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +1118,9 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     gs.objectives.load_template("assault_chain")
 
     # 15. Territory — influence map and control points
-    gs.influence = InfluenceMap(width=500, height=500, cell_size=10.0)
+    # Map is 500×500 world units; cell_size=10 → 50×50 grid (2500 cells).
+    # Previously width/height were set to 500 (world units not cell count) — 250K cells!
+    gs.influence = InfluenceMap(width=50, height=50, cell_size=10.0)
     gs.territory = TerritoryControl()
     gs.territory.add_control_point(ControlPoint(
         point_id="cp_center", name="Central Objective",
@@ -548,6 +1130,71 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         point_id="cp_east", name="Eastern Approach",
         position=(350.0, 250.0), capture_radius=25.0,
     ))
+
+    # --- 30. Buildings — procedural interior layouts for CQB ---
+    gs.buildings = RoomClearingEngine()
+    # Generate a house and an office block near the action
+    gs.buildings.generate_layout(
+        floors=1, rooms_per_floor=4,
+        building_pos=(205.0, 205.0), template="house",
+    )
+    gs.buildings.generate_layout(
+        floors=2, rooms_per_floor=4,
+        building_pos=(290.0, 290.0), template="compound",
+    )
+
+    # --- 31. Economy — resource management for both factions ---
+    gs.economy = EconomyEngine()
+    gs.economy.setup_faction("friendly", ECONOMY_PRESETS["standard"])
+    gs.economy.setup_faction("hostile", ECONOMY_PRESETS["insurgent"])
+    gs.economy.register_unit_costs(UNIT_COSTS)
+    import copy as _copy
+    gs.economy.register_tech_tree("friendly", _copy.deepcopy(TECH_TREE))
+    gs.economy.register_tech_tree("hostile", _copy.deepcopy(TECH_TREE))
+
+    # --- 32. Cyber warfare — jammer + GPS spoofer ---
+    gs.cyber = CyberWarfareEngine(rng_seed=42)
+    # Friendly SIGINT post in the rear area
+    sigint = create_asset_from_preset(
+        "sigint_post", "sigint_friendly_1", (100.0, 100.0), "friendly",
+    )
+    gs.cyber.deploy_asset(sigint)
+    # Hostile GPS spoofer threatening drone routes
+    spoofer = create_asset_from_preset(
+        "gps_spoofer", "gps_spoofer_hostile_1", (380.0, 320.0), "hostile",
+    )
+    gs.cyber.deploy_asset(spoofer)
+    # Activate the spoofer immediately so effects show in first frame
+    gs.cyber.launch_attack(
+        "gps_spoofer_hostile_1",
+        "gps_spoofer_hostile_1_gps_spoof",
+        (250.0, 250.0),
+    )
+
+    # --- 33. HUD — minimap, compass, unit roster, notifications ---
+    gs.hud = HUDEngine(map_width=500.0, map_height=500.0, minimap_size=200)
+    gs.hud.add_notification("Mission started — ALPHA team deploy", priority="high", icon="alert")
+
+    # --- AI behavior system — behavior trees, steering, formations, combat AI ---
+    gs.unit_ai = UnitAISystem()
+    for uid, unit in gs.world.units.items():
+        gs.unit_ai.register_unit(uid, unit.unit_type.value, unit.alliance.value)
+    # Register squads with patrol waypoints for formation movement
+    for sid, squad in gs.world.squads.items():
+        if not squad.members:
+            continue
+        # Determine alliance from first member
+        first_uid = squad.members[0]
+        first_unit = gs.world.units.get(first_uid)
+        if first_unit is None:
+            continue
+        alliance = first_unit.alliance.value
+        # Build patrol waypoints: squad start pos -> center -> opposite side
+        leader_pos = first_unit.position
+        center = (250.0, 250.0)
+        opposite = (500.0 - leader_pos[0], 500.0 - leader_pos[1])
+        waypoints = [leader_pos, center, opposite, center, leader_pos]
+        gs.unit_ai.register_squad(sid, alliance, waypoints)
 
     gs.start_time = time.time()
     return gs
@@ -563,6 +1210,10 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         return {"error": "no_game"}
 
     gs.tick_count += 1
+
+    # 0. AI behavior systems — run before world tick so decisions influence movement
+    if gs.unit_ai is not None:
+        gs.unit_ai.tick(dt, gs.world)
 
     # 1. World tick (units, squads, vehicles, projectiles, destruction, crowd)
     frame = gs.world.tick(dt)
@@ -786,15 +1437,40 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     # 15. Abilities tick
     if gs.abilities is not None:
         ability_events = gs.abilities.tick(dt)
-        # Full ability data only on first frame (static descriptions are ~147KB)
+        # Ability data split: static catalog once on tick 1, dynamic state every tick.
+        # Static fields (description, icon, color, type, cost, range, radius) are
+        # per-ability-id and never change — send them once as ability_catalog.
+        # Dynamic fields (current_cooldown, progress, ready, toggled_on, is_channeling)
+        # are per-unit and change every tick — send compactly every frame.
+        _static_keys = {"description", "icon", "color", "ability_type", "target_type",
+                        "cooldown", "cost", "range", "radius", "name"}
         if gs.tick_count <= 1:
-            ability_fx = {}
+            # Build catalog: ability_id -> static fields (dedup across units)
+            catalog: dict[str, dict[str, Any]] = {}
             for uid in gs.world.units:
-                fx = gs.abilities.to_three_js(uid)
-                if fx:
-                    ability_fx[uid] = fx
-            if ability_fx:
-                frame["abilities"] = ability_fx
+                for ab_dict in gs.abilities.to_three_js(uid):
+                    ab_id = ab_dict["ability_id"]
+                    if ab_id not in catalog:
+                        catalog[ab_id] = {k: v for k, v in ab_dict.items() if k in _static_keys}
+                        catalog[ab_id]["ability_id"] = ab_id
+            if catalog:
+                frame["ability_catalog"] = catalog
+        # Send compact dynamic state only for abilities that are not idle-ready.
+        # An ability is "idle-ready" when: ready=True, progress=1.0, toggled_on=False,
+        # is_channeling=False, current_cooldown=0.  These don't need per-tick updates.
+        ability_state: dict[str, list[dict[str, Any]]] = {}
+        for uid in gs.world.units:
+            active = []
+            for ab_dict in gs.abilities.to_three_js(uid):
+                if (not ab_dict.get("ready", True)
+                        or ab_dict.get("current_cooldown", 0) > 0
+                        or ab_dict.get("toggled_on", False)
+                        or ab_dict.get("is_channeling", False)):
+                    active.append({k: v for k, v in ab_dict.items() if k not in _static_keys})
+            if active:
+                ability_state[uid] = active
+        if ability_state:
+            frame["abilities"] = ability_state
 
     # 15. Status effects tick
     if gs.status_effects is not None:
@@ -854,6 +1530,106 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         terr_events = gs.territory.tick(dt, terr_units)
         frame["territory"] = gs.territory.to_dict()
 
+    # 30. Buildings tick — visibility/lighting + CQB room-clearing triggers
+    if gs.buildings is not None:
+        gs.buildings.tick(dt)
+        # Trigger CQB when friendly infantry are near building zones
+        cqb_results = _trigger_cqb(gs, gs.tick_count, gs._rng)
+        if cqb_results:
+            gs.cqb_events.extend(cqb_results)
+        # Export first building for the frame (avoid sending all floor data each tick)
+        bld_ids = list(gs.buildings.buildings.keys())
+        if bld_ids:
+            bld_data = gs.buildings.to_three_js(bld_ids[0])
+            # Keep frame small: strip room occupants lists, keep summary
+            frame["buildings"] = {
+                "count": len(bld_ids),
+                "building_ids": bld_ids,
+                "sample": {
+                    "building_id": bld_data.get("building_id"),
+                    "total_floors": bld_data.get("total_floors"),
+                    "cleared_rooms": bld_data.get("cleared_rooms"),
+                    "total_rooms": bld_data.get("total_rooms"),
+                    "is_fully_cleared": bld_data.get("is_fully_cleared"),
+                },
+            }
+        # Include recent CQB events (last 5) in frame
+        if gs.cqb_events:
+            frame["cqb"] = gs.cqb_events[-5:]
+
+    # 31. Economy tick — income, upkeep, build queues, auto-purchase
+    if gs.economy is not None:
+        completed_units = gs.economy.tick(dt)
+        # Auto-purchase: each faction queues a unit every N ticks
+        auto_placed = _auto_purchase_units(gs, gs.tick_count)
+        if auto_placed:
+            completed_units = completed_units + [f"queued:{p}" for p in auto_placed]
+        # Export both faction economies
+        frame["economy"] = {
+            "friendly": gs.economy.to_three_js("friendly"),
+            "hostile": gs.economy.to_three_js("hostile"),
+            "completed_units": completed_units,
+        }
+
+    # 32. Cyber warfare tick — effects + periodic auto-attacks
+    if gs.cyber is not None:
+        unit_pos_cyber = {
+            uid: u.position for uid, u in gs.world.units.items() if u.is_alive()
+        }
+        drone_pos_cyber = {
+            vid: v.position for vid, v in gs.world.vehicles.items()
+            if not v.is_destroyed and getattr(v, "altitude", 0.0) > 0.0
+        }
+        cyber_events = gs.cyber.tick(dt, unit_pos_cyber, drone_pos_cyber)
+        # Periodically launch new attacks from each asset
+        auto_attacks = _auto_cyber_attack(gs, gs.tick_count, gs._rng)
+        frame["cyber"] = gs.cyber.to_three_js()
+        frame["cyber"]["auto_attacks_this_tick"] = auto_attacks
+        all_cyber_events = cyber_events + gs.cyber.drain_event_log()
+        if all_cyber_events:
+            frame["cyber_events"] = all_cyber_events[:20]  # cap for frame size
+
+    # 33. HUD tick
+    if gs.hud is not None:
+        # Assemble world_state dict for HUD from existing frame data
+        hud_units = [
+            {
+                "unit_id": uid,
+                "name": u.name,
+                "alliance": u.alliance.value,
+                "position": u.position,
+                "health": u.state.health,
+                "max_health": u.stats.max_health,
+                "is_alive": u.is_alive(),
+                "status": u.state.status if isinstance(u.state.status, str) else str(u.state.status),
+            }
+            for uid, u in gs.world.units.items()
+        ]
+        # Record kills in kill feed
+        for ev in frame.get("events", []):
+            if ev.get("type") == "unit_killed":
+                killer = ev.get("source_id", "unknown")
+                victim = ev.get("target_id", "unknown")
+                killer_unit = gs.world.units.get(killer)
+                victim_unit = gs.world.units.get(victim)
+                gs.hud.add_kill(
+                    killer=killer,
+                    victim=victim,
+                    killer_alliance=killer_unit.alliance.value if killer_unit else "unknown",
+                    victim_alliance=victim_unit.alliance.value if victim_unit else "unknown",
+                )
+        hud_world_state = {
+            "units": hud_units,
+            "camera_pos": (250.0, 250.0),
+            "camera_fov": 60.0,
+            "player_heading": 0.0,
+        }
+        frame["hud"] = gs.hud.render_frame(hud_world_state, player_alliance="friendly", dt=dt)
+
+    # AI behavior state — decision, formation, cover status per unit
+    if gs.unit_ai is not None:
+        frame["ai_behaviors"] = gs.unit_ai.to_three_js()
+
     # Add metadata
     frame["tick"] = gs.tick_count
     frame["sim_time"] = round(gs.world.sim_time, 2)
@@ -903,9 +1679,9 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
 # FastAPI application
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Tritium Sim Engine Demo", version="1.0.0")
+app = FastAPI(title="Tritium Sim Engine Demo", version="1.0.0")  # type: ignore[call-arg]
 _game: GameState = GameState()
-_ws_clients: list[WebSocket] = []
+_ws_clients: list[Any] = []
 _game_task: asyncio.Task | None = None
 
 # ---------------------------------------------------------------------------
