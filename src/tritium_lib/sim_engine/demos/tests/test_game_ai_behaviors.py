@@ -176,7 +176,9 @@ class TestBehaviorTreeDecisions:
         ai._trees["h1"].tick(ctx)
         assert ctx.get("decision") == "retreat"
 
-    def test_patrol_unit_engages_when_threat_in_range(self) -> None:
+    def test_friendly_unit_seeks_cover_when_threat_in_range(self) -> None:
+        """Friendly infantry uses make_friendly_tree: first seeks cover (cooldown-gated),
+        then engages when cooldown is active."""
         ai = UnitAISystem()
         ai.register_unit("p1", "infantry", "friendly")
         ctx = ai._bt_contexts["p1"]
@@ -191,9 +193,12 @@ class TestBehaviorTreeDecisions:
             "recently_threatened": True,
         })
         ai._trees["p1"].tick(ctx)
-        assert ctx.get("decision") == "engage"
+        # First tick: seek_cover (cooldown starts), subsequent ticks: engage
+        assert ctx.get("decision") == "seek_cover"
 
-    def test_patrol_unit_pursues_out_of_range_threat(self) -> None:
+    def test_friendly_unit_approaches_out_of_range_threat(self) -> None:
+        """Friendly infantry uses make_friendly_tree: approaches detected threats
+        that are out of weapon range (unlike patrol tree which uses 'pursue')."""
         ai = UnitAISystem()
         ai.register_unit("p1", "infantry", "friendly")
         ctx = ai._bt_contexts["p1"]
@@ -208,7 +213,7 @@ class TestBehaviorTreeDecisions:
             "recently_threatened": True,
         })
         ai._trees["p1"].tick(ctx)
-        assert ctx.get("decision") == "pursue"
+        assert ctx.get("decision") == "approach"
 
     def test_patrol_unit_patrols_when_no_threats(self) -> None:
         ai = UnitAISystem()

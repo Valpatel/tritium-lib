@@ -1,7 +1,10 @@
 # City3D / game.html — Feature Coverage Audit
 
-**Updated**: Wave 183 (2026-03-21)
+**Updated**: Wave 185 (2026-03-21)
 **Status**: 18 fully demonstrated, 22 partial, 22 missing (out of 62 modules)
+**Wave 184-185 additions**: economy.py, cyber.py, buildings.py CQB, ai/behavior_tree.py
+are all wired into game_server.py (frame keys: economy, cyber, buildings, ai_behaviors,
+cqb) but have NO frontend rendering in game.html yet. Backend-only.
 
 ## FULLY DEMONSTRATED (18 modules)
 
@@ -53,15 +56,15 @@ in-game selector).
 | HIGH | `objectives.py` | Populated objective markers + progress bars |
 | HIGH | `territory.py` | Control-point influence heatmap polygons |
 | MEDIUM | `artillery.py` | Mortar barrage arc + impact zone indicator |
-| MEDIUM | `economy.py` | Resource bars in HUD (police budget / supply points) |
+| MEDIUM | `economy.py` | Resource bars in HUD — **server-side wired (Wave 184)**, sends frame.economy with resource pools, build queues, tech tree per faction. Needs HUD renderer. |
 | MEDIUM | `fortifications.py` | Police barricades + riot barrier objects |
 | MEDIUM | `asymmetric.py` | IED / booby trap placement markers |
 | MEDIUM | `replay.py` | Record button + playback scrubber |
 | MEDIUM | `multiplayer.py` | Session sync, split-screen or networked control |
 | MEDIUM | `soundtrack.py` | Background music + reactive intensity |
 | MEDIUM | `status_effects.py` | Buff/debuff icon display above units |
-| LOW | `cyber.py` | Drone camera feed + jamming overlay |
-| LOW | `ai/behavior_tree.py` | Debug viz of AI decision tree |
+| LOW | `cyber.py` | Drone camera feed + jamming overlay — **server-side wired (Wave 184)**, sends frame.cyber with assets, effects, attack_lines. Needs jamming zone circles + attack line renderer. |
+| LOW | `ai/behavior_tree.py` | Debug viz of AI decision tree — **server-side wired (Wave 184)**, sends frame.ai_behaviors with per-unit decisions, formations. Needs AI panel renderer. |
 | LOW | `ai/behavior_profiles.py` | Personality display on unit info panel |
 | LOW | `ai/rf_signatures.py` | RF detection radius overlay |
 | LOW | `naval.py` | River/harbor patrol boats |
