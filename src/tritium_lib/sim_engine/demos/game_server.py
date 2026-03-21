@@ -154,7 +154,9 @@ from tritium_lib.sim_engine.collision import (
 from tritium_lib.sim_engine.spawner import (
     SpawnerEngine, SpawnPoint, EnemyComposition, SpawnPattern, WAVE_PRESETS,
 )
-# 18. Weather visual effects
+# 18. Procedural map generation
+from tritium_lib.sim_engine.mapgen import MapGenerator, MAP_PRESETS
+# 19. Weather visual effects
 from tritium_lib.sim_engine.weather_fx import WeatherFXEngine
 # 19. Artillery — fire support
 from tritium_lib.sim_engine.artillery import (
@@ -196,6 +198,7 @@ class GameState:
         self.morale: MoraleEngine | None = None
         self.ew: EWEngine | None = None
         self.supply_routes: SupplyRouteEngine | None = None
+        self.generated_map: object | None = None
         self.weather_fx: WeatherFXEngine | None = None
         self.spawner: SpawnerEngine | None = None
         self.collision: CollisionWorld | None = None
@@ -438,7 +441,15 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         if unit.alliance == Alliance.FRIENDLY:
             gs.supply_routes.register_unit(uid, alliance="friendly")
 
-    # 14. Weather visual effects (rain, fog, lightning)
+    # 14. Procedural map (roads, forest, river for visual richness)
+    mg = MapGenerator(width=500, height=500, seed=42)
+    mg.add_road((0, 250), (500, 250), width=8.0)  # main east-west road
+    mg.add_road((250, 0), (250, 500), width=6.0)  # main north-south road
+    mg.add_forest((400, 100), radius=60, density=0.6)  # forest NE
+    mg.add_river((0, 400), (500, 350), width=15.0)  # river south
+    gs.generated_map = mg.result()
+
+    # 15. Weather visual effects (rain, fog, lightning)
     gs.weather_fx = WeatherFXEngine()
 
     # 15. Wave spawner — hostile reinforcement spawn points
@@ -782,6 +793,21 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
             ]
         except Exception:
             pass
+
+    # Add generated map features on first frame
+    if gs.tick_count == 1 and gs.generated_map is not None:
+        frame["map_features"] = [
+            {
+                "id": f.feature_id,
+                "type": f.feature_type,
+                "x": f.position[0],
+                "y": f.position[1],
+                "w": f.size[0],
+                "h": f.size[1],
+                "rotation": f.rotation,
+            }
+            for f in gs.generated_map.features
+        ]
 
     return frame
 
