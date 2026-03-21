@@ -12,6 +12,29 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-21 — Wave 186: Maintenance
+
+| Change | Verification |
+|--------|-------------|
+| Created `docs/STATUS.md` with Wave 186 baselines: 227 test files, 146 sim_engine files, 343 total src files | Manual |
+| Redundancy scan: `steering.py` vs `steering_np.py` confirmed intentional (pure Python vs NumPy vectorized) | Manual |
+| Redundancy scan: zero TODO/FIXME/HACK comments in sim_engine | Manual |
+| Agent Trigger Schedule updated: maintenance/feature/visual-testing/quality set to Wave 186 | Manual |
+| Wave 185 CHANGELOG entry added: buildings fix, combat balance, kill attribution, weather HUD | Manual |
+
+---
+
+## 2026-03-21 — Wave 185: Fix Buildings + Balance + Weather HUD + Kill Attribution
+
+| Change | Verification |
+|--------|-------------|
+| Buildings rendering fix — late WebSocket connections now receive welcome frame with map_features + destruction data | Consumer Tested |
+| Combat balance — friendly-fire bug patched, faction IDs compared correctly before applying damage | Consumer Tested |
+| Kill attribution — kill events now record attacker ID, propagated to HUD kill feed | Consumer Tested |
+| Weather HUD — weather state surfaced to frontend overlay | Consumer Tested |
+
+---
+
 ## 2026-03-21 — Wave 183: Maintenance
 
 | Change | Verification |
