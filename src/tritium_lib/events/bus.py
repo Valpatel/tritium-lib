@@ -3,10 +3,12 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """Thread-safe event bus — publish/subscribe for internal events.
 
-Provides both synchronous (EventBus) and async (AsyncEventBus) variants.
+Provides both synchronous (EventBus) and async (AsyncEventBus) variants,
+plus QueueEventBus for queue-based pub/sub (used by tritium-sc).
 """
 
 import asyncio
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -154,3 +156,54 @@ class AsyncEventBus:
             if EventBus._pattern_matches(pattern.split("."), parts):
                 matched.extend(callbacks)
         return matched
+
+
+class QueueEventBus:
+    """Thread-safe queue-based pub/sub for pushing events to subscribers.
+
+    Each subscriber gets a ``queue.Queue`` that receives all published events
+    as plain dicts: ``{"type": event_type, "data": ...}``.
+
+    This is the API originally used by tritium-sc's ``engine.comms.event_bus``.
+    It is kept here in tritium-lib so that SC can shim to it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._subscribers: list[queue.Queue] = []
+
+    def subscribe(self, _filter: str | None = None) -> queue.Queue:
+        """Subscribe to events. Returns a Queue that receives all events.
+
+        The optional ``_filter`` parameter is accepted for API compatibility
+        but is currently ignored — the caller must filter events itself.
+        """
+        q: queue.Queue = queue.Queue(maxsize=1000)
+        with self._lock:
+            self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._lock:
+            try:
+                self._subscribers.remove(q)
+            except ValueError:
+                pass
+
+    def publish(self, event_type: str, data: dict | None = None) -> None:
+        msg = {"type": event_type}
+        if data is not None:
+            msg["data"] = data
+        with self._lock:
+            for q in self._subscribers:
+                try:
+                    q.put_nowait(msg)
+                except queue.Full:
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        q.put_nowait(msg)
+                    except queue.Full:
+                        pass
