@@ -1404,6 +1404,36 @@ const _color = new THREE.Color();
 const _euler = new THREE.Euler();
 
 // =========================================================================
+// Delta-frame merge: apply a server diff onto the client's last full frame
+// =========================================================================
+const _DIFF_LIST_KEYS = new Set(['units', 'projectiles', 'effects', 'crowd']);
+
+function mergeDiffFrame(base, diff) {
+  // Start from a shallow clone of the base so we don't mutate in place
+  const merged = Object.assign({}, base);
+  for (const key of Object.keys(diff)) {
+    if (key === 'frame_type' || key === 'is_diff') continue;
+
+    const val = diff[key];
+    // For list-keyed fields the server sends {changed:[], removed:[]}
+    if (_DIFF_LIST_KEYS.has(key) && val && typeof val === 'object' && !Array.isArray(val) && val.changed) {
+      const prev = Array.isArray(merged[key]) ? merged[key] : [];
+      const byId = {};
+      for (const item of prev) { if (item && item.id != null) byId[item.id] = item; }
+      // Apply changed items (update or add)
+      for (const item of (val.changed || [])) { if (item && item.id != null) byId[item.id] = item; }
+      // Remove deleted items
+      const removedSet = new Set(val.removed || []);
+      merged[key] = Object.values(byId).filter(item => !removedSet.has(String(item.id)));
+    } else {
+      // Scalar or full-replacement value
+      merged[key] = val;
+    }
+  }
+  return merged;
+}
+
+// =========================================================================
 // WebSocket connection
 // =========================================================================
 function connectWS() {
@@ -1435,7 +1465,14 @@ function connectWS() {
         }
         return;
       }
-      processFrame(frame);
+      // Delta-frame handling: merge diffs into the last known full frame
+      if (frame.frame_type === 'diff' && lastFrame) {
+        const merged = mergeDiffFrame(lastFrame, frame);
+        processFrame(merged);
+      } else {
+        // Keyframe or first frame — use as-is
+        processFrame(frame);
+      }
     } catch (e) {
       console.warn('Bad frame:', e);
     }

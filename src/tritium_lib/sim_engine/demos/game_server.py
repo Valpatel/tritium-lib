@@ -2410,6 +2410,11 @@ _game: GameState = GameState()
 _ws_clients: list[Any] = []
 _game_task: asyncio.Task | None = None
 
+# Delta-frame state: previous frame cache for diff computation
+_prev_game_frame: dict[str, Any] | None = None
+_prev_city_frame: dict[str, Any] | None = None
+_KEYFRAME_INTERVAL: int = 50  # Send full frame every N ticks
+
 # ---------------------------------------------------------------------------
 # CitySim state — separate from the tactical GameState
 # ---------------------------------------------------------------------------
@@ -2421,12 +2426,13 @@ _city_mode: bool = False  # When True, WS streams city frames instead of game fr
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """Serve the game client HTML page. Auto-starts the game."""
-    global _game, _game_task
+    global _game, _game_task, _prev_game_frame
     if _game.world is None or not _game.running:
         import os
         preset = os.environ.get("SIM_PRESET", "urban_combat")
         _game = build_full_game(preset)
         _game.running = True
+        _prev_game_frame = None  # Reset delta-frame cache
         if _game_task is not None and not _game_task.done():
             _game_task.cancel()
         _game_task = asyncio.create_task(_game_loop())
@@ -2453,13 +2459,14 @@ async def city_view() -> HTMLResponse:
     Auto-starts the CitySim backend so the frontend receives real sim frames
     instead of running its own JS-side simulation.
     """
-    global _city_sim, _city_task, _city_mode
+    global _city_sim, _city_task, _city_mode, _prev_city_frame
 
     # Auto-start CitySim when someone visits /city
     if _city_sim is None:
         _city_sim = CitySim(seed=42)
         _city_sim.setup()
         _city_mode = True
+        _prev_city_frame = None  # Reset delta-frame cache
         if _city_task is not None and not _city_task.done():
             _city_task.cancel()
         _city_task = asyncio.create_task(_city_loop())
@@ -2530,12 +2537,13 @@ async def api_status() -> dict:
 @app.post("/api/start")
 async def api_start(body: dict | None = None) -> dict:
     """Start a new game."""
-    global _game, _game_task
+    global _game, _game_task, _prev_game_frame
     if body is None:
         body = {}
     preset = body.get("preset", "urban_combat")
     _game = build_full_game(preset)
     _game.running = True
+    _prev_game_frame = None  # Reset delta-frame cache for new game
     # Start the game loop
     if _game_task is not None and not _game_task.done():
         _game_task.cancel()
@@ -2628,7 +2636,7 @@ async def api_aar() -> dict:
 @app.post("/api/city/start")
 async def api_city_start(body: dict | None = None) -> dict:
     """Start the CitySim backend simulation."""
-    global _city_sim, _city_task, _city_mode
+    global _city_sim, _city_task, _city_mode, _prev_city_frame
     if body is None:
         body = {}
     seed = body.get("seed", None)
@@ -2639,6 +2647,7 @@ async def api_city_start(body: dict | None = None) -> dict:
     _city_sim = CitySim(width=width, height=height, seed=seed, hour=hour)
     _city_sim.setup()
     _city_mode = True
+    _prev_city_frame = None  # Reset delta-frame cache
 
     # Start the city loop
     if _city_task is not None and not _city_task.done():
@@ -2767,12 +2776,36 @@ async def ws_endpoint(ws: WebSocket) -> None:
 # ---------------------------------------------------------------------------
 
 async def _game_loop() -> None:
-    """Background asyncio task: tick the game at 10 fps."""
+    """Background asyncio task: tick the game at 10 fps.
+
+    Uses delta-frame encoding: most ticks send only the diff from the
+    previous frame (~2-5 KB instead of ~32 KB).  Every ``_KEYFRAME_INTERVAL``
+    ticks a full keyframe is sent so late-joining clients can sync.
+    """
+    global _prev_game_frame
     dt = 0.1  # 10 fps
     while _game.running:
         if not _game.paused and _game.world is not None:
             frame = game_tick(_game, dt)
-            payload = json.dumps(frame, default=str)
+
+            # Decide: keyframe or delta
+            is_keyframe = (
+                _prev_game_frame is None
+                or _game.tick_count <= 1
+                or _game.tick_count % _KEYFRAME_INTERVAL == 0
+            )
+
+            if is_keyframe:
+                frame["frame_type"] = "keyframe"
+                send_frame = frame
+            else:
+                diff = SimRenderer.render_diff(_prev_game_frame, frame)
+                diff["frame_type"] = "diff"
+                send_frame = diff
+
+            _prev_game_frame = frame
+
+            payload = json.dumps(send_frame, default=str)
             # Broadcast to all WS clients
             disconnected: list[WebSocket] = []
             for ws in _ws_clients:
@@ -2787,11 +2820,34 @@ async def _game_loop() -> None:
 
 
 async def _city_loop() -> None:
-    """Background asyncio task: tick the CitySim at 10 fps."""
+    """Background asyncio task: tick the CitySim at 10 fps.
+
+    Uses delta-frame encoding identical to ``_game_loop``.
+    """
+    global _prev_city_frame
+    _city_tick_count = 0
     dt = 0.1  # 10 fps
     while _city_mode and _city_sim is not None:
         frame = _city_sim.tick(dt)
-        payload = json.dumps(frame, default=str)
+        _city_tick_count += 1
+
+        is_keyframe = (
+            _prev_city_frame is None
+            or _city_tick_count <= 1
+            or _city_tick_count % _KEYFRAME_INTERVAL == 0
+        )
+
+        if is_keyframe:
+            frame["frame_type"] = "keyframe"
+            send_frame = frame
+        else:
+            diff = SimRenderer.render_diff(_prev_city_frame, frame)
+            diff["frame_type"] = "diff"
+            send_frame = diff
+
+        _prev_city_frame = frame
+
+        payload = json.dumps(send_frame, default=str)
         disconnected: list[WebSocket] = []
         for ws in _ws_clients:
             try:
@@ -3715,6 +3771,30 @@ function updateCrowd(crowdData) {
 }
 
 // =========================================================================
+// Delta-frame merge: apply a server diff onto the last full frame
+// =========================================================================
+const _DIFF_LIST_KEYS = new Set(['units', 'projectiles', 'effects', 'crowd']);
+
+function mergeDiffFrame(base, diff) {
+  const merged = Object.assign({}, base);
+  for (const key of Object.keys(diff)) {
+    if (key === 'frame_type' || key === 'is_diff') continue;
+    const val = diff[key];
+    if (_DIFF_LIST_KEYS.has(key) && val && typeof val === 'object' && !Array.isArray(val) && val.changed) {
+      const prev = Array.isArray(merged[key]) ? merged[key] : [];
+      const byId = {};
+      for (const item of prev) { if (item && item.id != null) byId[item.id] = item; }
+      for (const item of (val.changed || [])) { if (item && item.id != null) byId[item.id] = item; }
+      const removedSet = new Set(val.removed || []);
+      merged[key] = Object.values(byId).filter(item => !removedSet.has(String(item.id)));
+    } else {
+      merged[key] = val;
+    }
+  }
+  return merged;
+}
+
+// =========================================================================
 // Process a frame from the server
 // =========================================================================
 const seenUnits = new Set();
@@ -3933,7 +4013,13 @@ function connectWS() {
   ws.onmessage = (ev) => {
     try {
       const frame = JSON.parse(ev.data);
-      processFrame(frame);
+      // Delta-frame handling: merge diffs into last known full frame
+      if (frame.frame_type === 'diff' && lastFrame) {
+        const merged = mergeDiffFrame(lastFrame, frame);
+        processFrame(merged);
+      } else {
+        processFrame(frame);
+      }
     } catch (e) {
       console.error('Frame parse error:', e);
     }
