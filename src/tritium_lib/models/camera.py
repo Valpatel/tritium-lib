@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CameraSourceType(str, Enum):
@@ -35,8 +35,8 @@ class CameraFrameFormat(str, Enum):
 
 class CameraPosition(BaseModel):
     """Geographic position and orientation of a camera."""
-    lat: Optional[float] = None
-    lng: Optional[float] = None
+    lat: Optional[float] = Field(None, ge=-90.0, le=90.0)
+    lng: Optional[float] = Field(None, ge=-180.0, le=180.0)
     alt: Optional[float] = None  # altitude in meters
 
 
@@ -102,9 +102,23 @@ class CameraDetection(BaseModel):
     Detections are produced by the SC vision pipeline and associated
     back to the source camera and timestamp for correlation.
     """
-    source_id: str
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "source_id": "cam-front-01",
+                    "class_name": "person",
+                    "confidence": 0.92,
+                    "bbox": {"x": 100, "y": 50, "w": 80, "h": 200},
+                }
+            ]
+        }
+    )
+
+    source_id: str = Field(..., min_length=1)
     class_name: str = ""  # detected object class, e.g. "person", "vehicle"
-    confidence: float = 0.0  # 0.0 to 1.0
+    confidence: float = Field(0.0, ge=0.0, le=1.0)  # 0.0 to 1.0
     bbox: BoundingBox = Field(default_factory=BoundingBox)
     timestamp: Optional[datetime] = None
 
@@ -112,3 +126,11 @@ class CameraDetection(BaseModel):
     def is_high_confidence(self) -> bool:
         """True if detection confidence is above 0.7."""
         return self.confidence > 0.7
+
+    def to_summary(self) -> str:
+        """Human-readable one-line summary."""
+        return (
+            f"Detection [{self.source_id}] {self.class_name} "
+            f"conf={self.confidence:.2f} bbox=({self.bbox.x:.0f},{self.bbox.y:.0f},"
+            f"{self.bbox.w:.0f},{self.bbox.h:.0f})"
+        )

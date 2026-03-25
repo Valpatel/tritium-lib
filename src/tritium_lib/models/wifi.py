@@ -10,11 +10,14 @@ laptops, IoT gadgets, mobile hotspots, etc.) without any active interaction.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
 
 class WiFiNetworkType(str, Enum):
@@ -36,14 +39,44 @@ class WiFiProbeRequest(BaseModel):
     reveals the MAC address of the sender and (optionally) the SSID it is
     looking for.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "mac": "AA:BB:CC:DD:EE:FF",
+                    "ssid_probed": "MyNetwork",
+                    "rssi": -65,
+                    "channel": 6,
+                    "observer_id": "esp32-001",
+                }
+            ]
+        }
+    )
+
     mac: str
     ssid_probed: str = ""
-    rssi: int = -100
+    rssi: int = Field(-100, ge=-127, le=0)
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
-    channel: int = 0
+    channel: int = Field(0, ge=0, le=196)
     observer_id: str = ""
+
+    @field_validator("mac")
+    @classmethod
+    def _validate_mac(cls, v: str) -> str:
+        v = v.upper()
+        if not _MAC_RE.match(v):
+            raise ValueError(
+                f"Invalid MAC address '{v}' — expected format AA:BB:CC:DD:EE:FF"
+            )
+        return v
+
+    def to_summary(self) -> str:
+        """Human-readable one-line summary."""
+        ssid = self.ssid_probed or "(broadcast)"
+        return f"Probe {self.mac} -> {ssid} rssi={self.rssi} ch={self.channel}"
 
 
 class WiFiNetwork(BaseModel):
@@ -54,14 +87,32 @@ class WiFiNetwork(BaseModel):
     """
     bssid: str
     ssid: str = ""
-    rssi: int = -100
-    channel: int = 0
+    rssi: int = Field(-100, ge=-127, le=0)
+    channel: int = Field(0, ge=0, le=196)
     auth_type: str = "open"
     network_type: WiFiNetworkType = WiFiNetworkType.UNKNOWN
     observer_id: str = ""
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
+
+    @field_validator("bssid")
+    @classmethod
+    def _validate_bssid(cls, v: str) -> str:
+        v = v.upper()
+        if not _MAC_RE.match(v):
+            raise ValueError(
+                f"Invalid BSSID '{v}' — expected format AA:BB:CC:DD:EE:FF"
+            )
+        return v
+
+    def to_summary(self) -> str:
+        """Human-readable one-line summary."""
+        ssid = self.ssid or "(hidden)"
+        return (
+            f"AP {self.bssid} {ssid} rssi={self.rssi} ch={self.channel} "
+            f"auth={self.auth_type} type={self.network_type.value}"
+        )
 
 
 class WiFiFingerprint(BaseModel):
@@ -83,4 +134,24 @@ class WiFiFingerprint(BaseModel):
     )
     device_type_hint: str = "unknown"
     observer_id: str = ""
-    probe_count: int = 0
+    probe_count: int = Field(0, ge=0)
+
+    @field_validator("mac")
+    @classmethod
+    def _validate_mac(cls, v: str) -> str:
+        v = v.upper()
+        if not _MAC_RE.match(v):
+            raise ValueError(
+                f"Invalid MAC address '{v}' — expected format AA:BB:CC:DD:EE:FF"
+            )
+        return v
+
+    def to_summary(self) -> str:
+        """Human-readable one-line summary."""
+        ssids = ", ".join(self.probed_ssids[:3])
+        if len(self.probed_ssids) > 3:
+            ssids += f" (+{len(self.probed_ssids) - 3} more)"
+        return (
+            f"Fingerprint {self.mac} type={self.device_type_hint} "
+            f"probes={self.probe_count} ssids=[{ssids}]"
+        )
