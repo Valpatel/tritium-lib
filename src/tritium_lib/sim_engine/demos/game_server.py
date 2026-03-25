@@ -290,6 +290,22 @@ from tritium_lib.sim_engine.soundtrack import SoundtrackEngine
 from tritium_lib.sim_engine.event_bus import SimEventBus, SimEvent, SimEventType
 # 36. replay.py — replay recording for playback/analysis
 from tritium_lib.sim_engine.replay import ReplayRecorder
+# 37. physics/collision.py — NumPy-vectorized 2D collision detection
+from tritium_lib.sim_engine.physics.collision import (
+    PhysicsWorld as PhysicsWorld2D, CollisionEvent as PhysCollisionEvent,
+)
+# 38. physics/vehicle.py — bicycle-model vehicle dynamics
+from tritium_lib.sim_engine.physics.vehicle import VehiclePhysics
+# 39. behavior/unit_states.py — FSM-driven unit AI state machines
+from tritium_lib.sim_engine.behavior.unit_states import (
+    create_fsm_for_type, unit_state_to_three_js,
+)
+# 40. core/inventory.py — per-unit item inventory and loadouts
+from tritium_lib.sim_engine.core.inventory import (
+    build_loadout, UnitInventory, select_best_weapon,
+)
+# 41. telemetry.py — session performance telemetry
+from tritium_lib.sim_engine.telemetry import TelemetrySession
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +853,14 @@ class GameState:
         self.event_bus: SimEventBus | None = None
         self.replay: ReplayRecorder | None = None
         self.unit_ai: UnitAISystem | None = None
+        # --- Newly wired orphaned modules ---
+        self.physics_2d: PhysicsWorld2D | None = None
+        self.vehicle_physics: dict[str, VehiclePhysics] = {}
+        self.vehicle_body_ids: dict[str, int] = {}
+        self.unit_body_ids: dict[str, int] = {}
+        self.unit_fsms: dict[str, object] = {}  # unit_id -> StateMachine
+        self.inventories: dict[str, UnitInventory] = {}
+        self.telemetry: TelemetrySession | None = None
         # --- AI strategy, pathfinding, behavior profiles ---
         self.road_network: RoadNetwork | None = None
         self.walkable_area: WalkableArea | None = None
@@ -1361,6 +1385,68 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # --- Debug overlay (collects all debug streams) ---
     gs.debug_overlay = DebugOverlay()
     gs.debug_overlay.register(gs.effects.debug)
+
+    # --- 37. Physics 2D — NumPy collision world for unit/vehicle bodies ---
+    gs.physics_2d = PhysicsWorld2D(max_bodies=256, cell_size=8.0)
+    for uid, unit in gs.world.units.items():
+        body_id = gs.physics_2d.add_body(
+            pos=unit.position, vel=(0.0, 0.0),
+            mass=80.0, radius=0.8, restitution=0.3, static=False,
+        )
+        gs.unit_body_ids[uid] = body_id
+
+    # --- 38. Vehicle physics — bicycle-model dynamics per vehicle ---
+    for vid, veh in gs.world.vehicles.items():
+        vp = VehiclePhysics(
+            mass=veh.mass if hasattr(veh, "mass") else 1500.0,
+            max_speed=veh.max_speed if hasattr(veh, "max_speed") else 15.0,
+        )
+        vp.position[:] = veh.position
+        vp.heading = veh.heading
+        gs.vehicle_physics[vid] = vp
+        body_id = gs.physics_2d.add_body(
+            pos=veh.position, vel=(0.0, 0.0),
+            mass=vp.mass, radius=2.5, restitution=0.2, static=False,
+        )
+        gs.vehicle_body_ids[vid] = body_id
+
+    # --- 39. Unit FSMs — state machines per combatant unit type ---
+    # Map sim_engine unit types to FSM asset types (person → hostile FSM,
+    # infantry/sniper/medic/heavy/scout → rover FSM for mobile ground units,
+    # drone → drone FSM)
+    _FSM_TYPE_MAP: dict[str, str] = {
+        "infantry": "rover", "heavy": "rover", "sniper": "rover",
+        "medic": "rover", "scout": "rover", "engineer": "rover",
+    }
+    for uid, unit in gs.world.units.items():
+        raw_type = unit.unit_type.value
+        alliance = unit.alliance.value
+        # Hostile ground units → hostile FSM
+        if alliance == "hostile" and raw_type in _FSM_TYPE_MAP:
+            from tritium_lib.sim_engine.behavior.unit_states import create_hostile_fsm
+            fsm = create_hostile_fsm()
+        else:
+            mapped_type = _FSM_TYPE_MAP.get(raw_type, raw_type)
+            fsm = create_fsm_for_type(mapped_type, alliance)
+        if fsm is not None:
+            gs.unit_fsms[uid] = fsm
+
+    # --- 40. Inventories — per-unit loadouts (armor, weapons, devices) ---
+    # Map sim_engine unit types to inventory asset types.
+    # Person-class combatants (infantry, sniper, etc.) → "person" for loadout
+    _INV_TYPE_MAP: dict[str, str] = {
+        "infantry": "person", "heavy": "person", "sniper": "person",
+        "medic": "person", "scout": "person", "engineer": "person",
+    }
+    for uid, unit in gs.world.units.items():
+        inv_type = _INV_TYPE_MAP.get(unit.unit_type.value, unit.unit_type.value)
+        inv = build_loadout(uid, inv_type, unit.alliance.value)
+        gs.inventories[uid] = inv
+
+    # --- 41. Telemetry — session performance recording ---
+    gs.telemetry = TelemetrySession(
+        metadata={"preset": preset, "units": len(gs.world.units)},
+    )
 
     gs.start_time = time.time()
     return gs
@@ -1914,6 +2000,156 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
             "frames_captured": len(gs.replay.frames),
             "max_frames": gs.replay.max_frames,
         }
+
+    # 40. Physics 2D — sync positions into physics bodies, tick, read back
+    if gs.physics_2d is not None:
+        # Sync unit positions into physics bodies
+        for uid, body_id in gs.unit_body_ids.items():
+            unit = gs.world.units.get(uid)
+            if unit and unit.is_alive():
+                gs.physics_2d.positions[body_id] = unit.position
+            else:
+                gs.physics_2d.active[body_id] = False
+        # Sync vehicle positions into physics bodies
+        for vid, body_id in gs.vehicle_body_ids.items():
+            veh = gs.world.vehicles.get(vid)
+            if veh and not veh.is_destroyed:
+                gs.physics_2d.positions[body_id] = veh.position
+            else:
+                gs.physics_2d.active[body_id] = False
+        # Tick physics
+        phys_events = gs.physics_2d.tick(dt)
+        # Read corrected positions back (resolve overlaps)
+        for uid, body_id in gs.unit_body_ids.items():
+            unit = gs.world.units.get(uid)
+            if unit and unit.is_alive() and gs.physics_2d.active[body_id]:
+                unit.position = (
+                    float(gs.physics_2d.positions[body_id][0]),
+                    float(gs.physics_2d.positions[body_id][1]),
+                )
+        if phys_events:
+            frame["physics_collisions"] = [
+                {
+                    "body_a": e.body_a,
+                    "body_b": e.body_b,
+                    "impulse": round(e.impulse, 2),
+                    "speed": round(e.relative_speed, 2),
+                }
+                for e in phys_events[:15]
+            ]
+
+    # 41. Vehicle physics — bicycle-model tick for each vehicle
+    if gs.vehicle_physics:
+        vp_data: list[dict] = []
+        for vid, vp in gs.vehicle_physics.items():
+            veh = gs.world.vehicles.get(vid)
+            if veh is None or veh.is_destroyed:
+                continue
+            # Set controls from vehicle state (throttle from speed ratio)
+            vp.throttle = min(1.0, max(-1.0, getattr(veh, "throttle", 0.5)))
+            vp.steering = min(1.0, max(-1.0, getattr(veh, "steering", 0.0)))
+            vp.tick(dt)
+            # Sync bicycle model back into vehicle state
+            veh.position = (float(vp.position[0]), float(vp.position[1]))
+            veh.heading = vp.heading
+            # Also sync into physics body for collision
+            body_id = gs.vehicle_body_ids.get(vid)
+            if body_id is not None and gs.physics_2d is not None:
+                vp.sync_to_world(gs.physics_2d, body_id)
+            vp_data.append({
+                "vehicle_id": vid,
+                "speed": round(vp.speed, 2),
+                "heading": round(vp.heading, 3),
+                "throttle": round(vp.throttle, 2),
+                "steering": round(vp.steering, 2),
+            })
+        if vp_data:
+            frame["vehicle_physics"] = vp_data
+
+    # 42. Unit FSMs — tick state machines and export state labels to frame
+    if gs.unit_fsms:
+        fsm_data: dict[str, dict] = {}
+        for uid, fsm in gs.unit_fsms.items():
+            unit = gs.world.units.get(uid)
+            if unit is None or not unit.is_alive():
+                continue
+            # Build context for FSM transitions
+            enemies_in_range = [
+                oid for oid, o in gs.world.units.items()
+                if oid != uid and o.is_alive() and o.alliance != unit.alliance
+                and steering_distance(unit.position, o.position) <= unit.stats.detection_range
+            ]
+            enemy_in_weapon = any(
+                steering_distance(unit.position, gs.world.units[oid].position) <= unit.stats.attack_range
+                for oid in enemies_in_range
+            )
+            health_pct = unit.state.health / max(unit.stats.max_health, 1.0)
+            fsm_ctx = {
+                "enemies_in_range": enemies_in_range,
+                "enemy_in_weapon_range": enemy_in_weapon,
+                "aimed_at_target": enemy_in_weapon,
+                "just_fired": unit.state.status == "attacking",
+                "weapon_ready": True,
+                "has_waypoints": bool(unit.squad_id),
+                "health_pct": health_pct,
+                "nearest_enemy_stationary": False,
+                "degradation": 0.0,
+            }
+            fsm.tick(dt, fsm_ctx)
+            fsm_data[uid] = unit_state_to_three_js(uid, fsm)
+        if fsm_data:
+            frame["unit_fsms"] = fsm_data
+
+    # 43. Inventories — export loadout summaries + apply armor to damage
+    if gs.inventories:
+        inv_summary: dict[str, dict] = {}
+        for uid, inv in gs.inventories.items():
+            unit = gs.world.units.get(uid)
+            if unit is None or not unit.is_alive():
+                continue
+            # Auto-switch weapon when out of ammo
+            inv.auto_switch_weapon()
+            active_weapon = inv.get_active_weapon()
+            armor_dr = inv.total_damage_reduction()
+            inv_summary[uid] = {
+                "weapon": active_weapon.name if active_weapon else "unarmed",
+                "ammo": active_weapon.ammo if active_weapon else 0,
+                "armor_dr": round(armor_dr, 2),
+                "item_count": len(inv.items),
+            }
+            # Apply armor damage reduction to recent hits
+            for ev in frame.get("events", []):
+                if ev.get("type") == "unit_hit" and ev.get("target_id") == uid:
+                    if armor_dr > 0:
+                        inv.damage_armor(1)
+                        ev["armor_mitigated"] = round(armor_dr, 2)
+        if inv_summary:
+            frame["inventories"] = inv_summary
+
+    # 44. Telemetry — record frame performance metrics
+    if gs.telemetry is not None:
+        gs.telemetry.set_tick(gs.tick_count, gs.world.sim_time)
+        alive_count = sum(1 for u in gs.world.units.values() if u.is_alive())
+        event_count = len(frame.get("events", []))
+        effects_data = frame.get("effects", {})
+        if isinstance(effects_data, dict):
+            particle_count = len(effects_data.get("particles", []))
+        elif isinstance(effects_data, list):
+            particle_count = len(effects_data)
+        else:
+            particle_count = 0
+        section_count = len(frame)
+        gs.telemetry.record_frame(
+            fps=10.0,  # target FPS of the game loop
+            frame_time=dt * 1000.0,
+            entity_count=alive_count,
+            particle_count=particle_count,
+        )
+        for ev in frame.get("events", []):
+            gs.telemetry.record_event(ev.get("type", "unknown"), ev)
+        # Export telemetry summary every 100 ticks
+        if gs.tick_count % 100 == 0:
+            frame["telemetry"] = gs.telemetry.summary()
 
     # AI behavior state — decision, formation, cover status per unit
     if gs.unit_ai is not None:
@@ -2577,8 +2813,13 @@ def _count_active_modules(gs: GameState) -> int:
         "asymmetric", "civilians", "intel", "diplomacy", "campaign",
         "morale", "ew", "supply_routes",
         "effects", "combat_stats", "difficulty", "debug_overlay",
+        "physics_2d", "telemetry",
     ):
         if getattr(gs, attr, None) is not None:
+            count += 1
+    # Dict-based modules: count if they have entries
+    for attr in ("vehicle_physics", "unit_fsms", "inventories"):
+        if getattr(gs, attr, None):
             count += 1
     return count
 
