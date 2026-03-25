@@ -17,6 +17,11 @@ from tritium_lib.sim_engine.demos.city_sim_backend import (
     CivilianAgent,
     CityVehicle,
     CityEntity,
+    ScheduleGoal,
+    _generate_routine,
+    _pick_role,
+    _current_goal,
+    CIVILIAN_ROLES,
 )
 from tritium_lib.sim_engine.environment import Weather
 from tritium_lib.sim_engine.crowd import CrowdMood
@@ -645,3 +650,253 @@ class TestMapGenIntegration:
     def test_map_has_spawn_points(self, city: CitySim):
         assert "police" in city.map_data.spawn_points
         assert "civilian" in city.map_data.spawn_points
+
+
+# ---------------------------------------------------------------------------
+# Daily routine system
+# ---------------------------------------------------------------------------
+
+class TestDailyRoutineSystem:
+    """Tests for the NPC daily routine / schedule system."""
+
+    def test_pick_role_returns_valid(self):
+        import random
+        rng = random.Random(42)
+        valid_roles = {r for r, _ in CIVILIAN_ROLES}
+        for _ in range(100):
+            role = _pick_role(rng)
+            assert role in valid_roles
+
+    def test_pick_role_distribution(self):
+        """All roles should appear over many samples."""
+        import random
+        rng = random.Random(42)
+        seen = set()
+        for _ in range(500):
+            seen.add(_pick_role(rng))
+        valid_roles = {r for r, _ in CIVILIAN_ROLES}
+        assert seen == valid_roles
+
+    def test_generate_routine_all_roles(self):
+        """Every role should produce a non-empty routine."""
+        import random
+        rng = random.Random(42)
+        for role, _ in CIVILIAN_ROLES:
+            routine = _generate_routine(role, rng)
+            assert len(routine) > 0, f"Empty routine for role: {role}"
+            for goal in routine:
+                assert isinstance(goal, ScheduleGoal)
+                assert goal.start_hour >= 0
+                assert goal.destination
+
+    def test_routine_starts_at_home(self):
+        """All routines should start at home (hour 0)."""
+        import random
+        rng = random.Random(42)
+        for role, _ in CIVILIAN_ROLES:
+            routine = _generate_routine(role, rng)
+            assert routine[0].destination == "home"
+            assert routine[0].start_hour == 0
+
+    def test_current_goal_morning(self):
+        """At 8 AM, resident should be heading to work."""
+        import random
+        rng = random.Random(100)
+        routine = _generate_routine("resident", rng)
+        goal = _current_goal(routine, 8.5)
+        assert goal is not None
+        # By 8:30, should be past the wake-up and heading to or at work
+        assert goal.destination in ("work", "commercial")
+
+    def test_current_goal_night(self):
+        """At 23:00, should be at home sleeping."""
+        import random
+        rng = random.Random(42)
+        routine = _generate_routine("resident", rng)
+        goal = _current_goal(routine, 23.0)
+        assert goal is not None
+        assert goal.destination == "home"
+        assert goal.action == "stay_at"
+
+    def test_current_goal_empty_routine(self):
+        assert _current_goal([], 12.0) is None
+
+    def test_schedule_goal_fields(self):
+        g = ScheduleGoal("go_to", "work", 8.0, 1.0, "walk", "hurried")
+        assert g.action == "go_to"
+        assert g.destination == "work"
+        assert g.start_hour == 8.0
+        assert g.transport == "walk"
+        assert g.mood == "hurried"
+
+
+# ---------------------------------------------------------------------------
+# Civilian schedule integration
+# ---------------------------------------------------------------------------
+
+class TestCivilianScheduleIntegration:
+    """Tests that CivilianAgent correctly follows daily routines."""
+
+    def test_civilian_has_role(self, city: CitySim):
+        """All civilians should have a role assigned."""
+        for civ in city.civilians:
+            assert civ.role in {r for r, _ in CIVILIAN_ROLES}
+
+    def test_civilian_has_routine(self, city: CitySim):
+        """All civilians should have a non-empty routine."""
+        for civ in city.civilians:
+            assert len(civ.routine) > 0, f"{civ.agent_id} has no routine"
+
+    def test_civilian_has_poi_locations(self, city: CitySim):
+        """All civilians should have POI locations assigned."""
+        for civ in city.civilians:
+            assert "home" in civ._poi_locations
+            assert "work" in civ._poi_locations
+            assert "park" in civ._poi_locations
+
+    def test_civilian_frame_includes_role(self, city: CitySim):
+        """Frame output should include role and activity."""
+        frame = city.to_frame()
+        for civ_data in frame["civilians"]:
+            assert "role" in civ_data
+            assert "activity" in civ_data
+            assert "destination" in civ_data
+
+    def test_schedule_transition_changes_target(self):
+        """Transitioning to a new goal should change the target."""
+        import random
+        rng = random.Random(42)
+
+        home = (50.0, 50.0)
+        work = (200.0, 200.0)
+        poi_locs = {
+            "home": home, "work": work,
+            "park": (150.0, 100.0), "commercial": (100.0, 200.0),
+            "school": (80.0, 80.0),
+        }
+
+        civ = CivilianAgent(
+            agent_id="test_civ",
+            position=home,
+            target=home,
+        )
+        routine = [
+            ScheduleGoal("stay_at", "home", 0, 7),
+            ScheduleGoal("go_to", "work", 7.0, transport="walk", mood="hurried"),
+        ]
+        civ.assign_schedule("worker", routine, poi_locs)
+
+        # At hour 0, should stay at home
+        civ.tick(0.1, rng, (300, 300), sim_hour=3.0)
+        assert civ.destination == "home"
+
+        # At hour 7, should transition to going to work
+        civ.tick(0.1, rng, (300, 300), sim_hour=7.5)
+        assert civ.state == "walking"
+        # Target should be near work
+        assert abs(civ.target[0] - work[0]) < 1 and abs(civ.target[1] - work[1]) < 1
+
+    def test_wander_action(self):
+        """Wander goal should set walking state near the POI."""
+        import random
+        rng = random.Random(42)
+
+        park = (150.0, 150.0)
+        poi_locs = {
+            "home": (50.0, 50.0), "work": (200.0, 200.0),
+            "park": park, "commercial": (100.0, 200.0),
+            "school": (80.0, 80.0),
+        }
+
+        civ = CivilianAgent(
+            agent_id="test_civ",
+            position=park,
+            target=park,
+        )
+        routine = [
+            ScheduleGoal("stay_at", "home", 0, 6),
+            ScheduleGoal("wander", "park", 6.0, 1.0),
+        ]
+        civ.assign_schedule("jogger", routine, poi_locs)
+
+        civ.tick(0.1, rng, (300, 300), sim_hour=6.5)
+        assert civ.state == "walking"
+        # Target should be near park (within wander range)
+        assert abs(civ.target[0] - park[0]) < 30
+        assert abs(civ.target[1] - park[1]) < 30
+
+    def test_stay_at_poi(self):
+        """stay_at goal should put civilian in at_poi state when close."""
+        import random
+        rng = random.Random(42)
+
+        home = (50.0, 50.0)
+        poi_locs = {
+            "home": home, "work": (200.0, 200.0),
+            "park": (150.0, 100.0), "commercial": (100.0, 200.0),
+            "school": (80.0, 80.0),
+        }
+
+        civ = CivilianAgent(
+            agent_id="test_civ",
+            position=home,
+            target=home,
+        )
+        routine = [ScheduleGoal("stay_at", "home", 0, 24)]
+        civ.assign_schedule("resident", routine, poi_locs)
+
+        civ.tick(0.1, rng, (300, 300), sim_hour=3.0)
+        assert civ.state == "at_poi"
+        assert civ.activity == "at_home"
+
+    def test_stats_include_roles_and_activities(self, city: CitySim):
+        """Stats should include role and activity distributions."""
+        stats = city.stats()
+        assert "civilian_roles" in stats
+        assert "civilian_activities" in stats
+        assert isinstance(stats["civilian_roles"], dict)
+        assert sum(stats["civilian_roles"].values()) == len(city.civilians)
+
+    def test_time_driven_activity_changes(self):
+        """Civilians should change activity as time progresses."""
+        sim = CitySim(width=300, height=300, seed=42, hour=6.0)
+        sim.setup()
+
+        # Tick at 6 AM — most should be at home
+        for _ in range(5):
+            sim.tick(0.05)
+        stats_6am = sim.stats()
+
+        # Jump to noon
+        sim.set_time(12.0)
+        for _ in range(20):
+            sim.tick(0.05)
+        stats_noon = sim.stats()
+
+        # Activities should differ between 6 AM and noon
+        assert stats_6am["civilian_activities"] != stats_noon["civilian_activities"]
+
+    def test_backward_compat_no_schedule(self):
+        """CivilianAgent without a schedule should still work (random walk)."""
+        import random
+        rng = random.Random(42)
+        civ = CivilianAgent(
+            agent_id="legacy_civ",
+            position=(50.0, 50.0),
+            target=(100.0, 100.0),
+            speed=2.0,
+        )
+        # No schedule assigned — should behave like the old random walker
+        civ.tick(1.0, rng, (200, 200))
+        assert civ.position[0] > 50.0  # Should move toward target
+
+    def test_poi_zones_computed(self, city: CitySim):
+        """_compute_poi_zones should return zones with entries."""
+        zones = city._compute_poi_zones()
+        assert "work" in zones
+        assert "park" in zones
+        assert "school" in zones
+        assert "commercial" in zones
+        # All zones should have at least one entry
+        for key, positions in zones.items():
+            assert len(positions) > 0, f"Empty zone: {key}"

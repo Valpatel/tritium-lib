@@ -205,6 +205,26 @@ from tritium_lib.sim_engine.ai.combat_ai import (
     assign_targets,
     compute_flank_position,
 )
+# AI pathfinding — road network A* and pedestrian visibility-graph navigation
+from tritium_lib.sim_engine.ai.pathfinding import (
+    RoadNetwork,
+    WalkableArea,
+    plan_patrol_route,
+)
+# AI strategy — faction-level strategic planner
+from tritium_lib.sim_engine.ai.strategy import (
+    StrategicAI,
+    StrategicGoal,
+    StrategicPlan,
+    STRATEGY_PROFILES,
+)
+# AI behavior profiles — per-unit personality archetypes
+from tritium_lib.sim_engine.ai.behavior_profiles import (
+    BehaviorEngine,
+    BehaviorProfile,
+    BehaviorTrait,
+    PROFILES as BEHAVIOR_PROFILES,
+)
 # 27. morale.py
 from tritium_lib.sim_engine.morale import MoraleEngine, MoraleEvent, MoraleEventType
 # 28. electronic_warfare.py
@@ -808,6 +828,14 @@ class GameState:
         self.cyber: CyberWarfareEngine | None = None
         self.hud: HUDEngine | None = None
         self.unit_ai: UnitAISystem | None = None
+        # --- AI strategy, pathfinding, behavior profiles ---
+        self.road_network: RoadNetwork | None = None
+        self.walkable_area: WalkableArea | None = None
+        self.strategic_ai_friendly: StrategicAI | None = None
+        self.strategic_ai_hostile: StrategicAI | None = None
+        self.current_plan_friendly: StrategicPlan | None = None
+        self.current_plan_hostile: StrategicPlan | None = None
+        self.behavior_engine: BehaviorEngine | None = None
         # --- Subpackage systems: effects, audio, game stats, debug ---
         self.effects: EffectsManager | None = None
         self.combat_stats: StatsTracker | None = None
@@ -1229,6 +1257,58 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         opposite = (-leader_pos[0], -leader_pos[1])
         waypoints = [leader_pos, center, opposite, center, leader_pos]
         gs.unit_ai.register_squad(sid, alliance, waypoints)
+
+    # --- Road network + walkable area (pathfinding) ---
+    gs.road_network = RoadNetwork()
+    # Build road graph from the procedural map roads.
+    # Split long roads at intersections so A* can route through junctions.
+    # Main E-W road split at origin
+    gs.road_network.add_road((-250.0, 0.0), (0.0, 0.0), speed_limit=13.4)
+    gs.road_network.add_road((0.0, 0.0), (250.0, 0.0), speed_limit=13.4)
+    # Main N-S road split at origin
+    gs.road_network.add_road((0.0, -250.0), (0.0, 0.0), speed_limit=11.2)
+    gs.road_network.add_road((0.0, 0.0), (0.0, 250.0), speed_limit=11.2)
+    # Cross-roads near objectives
+    gs.road_network.add_road((-100.0, 0.0), (0.0, 100.0), speed_limit=8.9)
+    gs.road_network.add_road((0.0, 0.0), (70.0, 70.0), speed_limit=8.9)
+    gs.road_network.add_road((0.0, 0.0), (-25.0, 15.0), speed_limit=6.7)
+    gs.road_network.add_road((70.0, 70.0), (100.0, 25.0), speed_limit=8.9)
+
+    # Walkable area with building obstacles for pedestrian navigation
+    gs.walkable_area = WalkableArea(bounds=((-250.0, -250.0), (250.0, 250.0)))
+    if gs.world.destruction is not None:
+        for structure in gs.world.destruction.structures:
+            if structure.health > 0:
+                sx, sy = structure.position
+                hw, hh = structure.size[0] / 2.0, structure.size[1] / 2.0
+                gs.walkable_area.add_obstacle([
+                    (sx - hw, sy - hh), (sx + hw, sy - hh),
+                    (sx + hw, sy + hh), (sx - hw, sy + hh),
+                ])
+
+    # --- Strategic AI — faction-level planning ---
+    gs.strategic_ai_friendly = StrategicAI(profile="balanced")
+    gs.strategic_ai_hostile = StrategicAI(profile="aggressive")
+
+    # --- Behavior profiles — per-unit personality archetypes ---
+    gs.behavior_engine = BehaviorEngine(profiles=BEHAVIOR_PROFILES)
+    # Assign profiles based on unit type and alliance
+    _UNIT_PROFILE_MAP = {
+        ("sniper", "friendly"): "sniper_patient",
+        ("sniper", "hostile"): "sniper_patient",
+        ("medic", "friendly"): "medic_angel",
+        ("heavy", "friendly"): "veteran_steady",
+        ("heavy", "hostile"): "berserker",
+        ("scout", "friendly"): "scout_ghost",
+        ("scout", "hostile"): "guerrilla",
+        ("engineer", "friendly"): "engineer_builder",
+        ("infantry", "friendly"): "elite_operator",
+        ("infantry", "hostile"): "conscript",
+    }
+    for uid, unit in gs.world.units.items():
+        key = (unit.unit_type.value, unit.alliance.value)
+        profile_id = _UNIT_PROFILE_MAP.get(key, "veteran_steady")
+        gs.behavior_engine.assign_profile(uid, profile_id)
 
     # --- Effects (particle system) — muzzle flashes, explosions, smoke ---
     gs.effects = EffectsManager(max_emitters=256)
@@ -1695,6 +1775,118 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     # AI behavior state — decision, formation, cover status per unit
     if gs.unit_ai is not None:
         frame["ai_behaviors"] = gs.unit_ai.to_three_js()
+
+    # --- Strategic AI tick (every 30 ticks to avoid overhead) ---
+    if gs.tick_count % 30 == 1:
+        for faction, strat_ai, plan_attr in [
+            ("friendly", gs.strategic_ai_friendly, "current_plan_friendly"),
+            ("hostile", gs.strategic_ai_hostile, "current_plan_hostile"),
+        ]:
+            if strat_ai is None:
+                continue
+            # Build world state for strategic assessment
+            f_squads = []
+            e_squads = []
+            for sid, squad in gs.world.squads.items():
+                living = [m for m in squad.members if m in gs.world.units and gs.world.units[m].is_alive()]
+                if not living:
+                    continue
+                positions = [gs.world.units[m].position for m in living]
+                cx = sum(p[0] for p in positions) / len(positions)
+                cy = sum(p[1] for p in positions) / len(positions)
+                first_alliance = gs.world.units[living[0]].alliance.value
+                squad_data = {
+                    "id": sid,
+                    "position": (cx, cy),
+                    "strength": float(len(living)),
+                    "morale": 0.7,
+                    "ammo": 0.6,
+                }
+                if first_alliance == faction:
+                    f_squads.append(squad_data)
+                else:
+                    e_squads.append(squad_data)
+            objectives = []
+            if gs.territory is not None:
+                for cp in gs.territory.control_points:
+                    objectives.append({
+                        "position": cp.position,
+                        "owner": getattr(cp, "owner", None) or "contested",
+                        "value": 1.0,
+                    })
+            world_state = {
+                "friendly_squads": f_squads,
+                "enemy_squads": e_squads,
+                "objectives": objectives,
+                "fog_of_war": True,
+            }
+            assessment = strat_ai.assess(world_state)
+            plan = strat_ai.plan(faction, assessment)
+            setattr(gs, plan_attr, plan)
+
+    # Export strategy + pathfinding + behavior profile data in the frame
+    strategy_data: dict[str, Any] = {}
+    for faction, plan in [
+        ("friendly", gs.current_plan_friendly),
+        ("hostile", gs.current_plan_hostile),
+    ]:
+        if plan is not None:
+            strategy_data[faction] = {
+                "goal": plan.goal.value,
+                "confidence": round(plan.confidence, 2),
+                "reasoning": plan.reasoning,
+                "primary_target": plan.primary_target,
+                "priority": plan.priority,
+            }
+    if strategy_data:
+        frame["strategy"] = strategy_data
+
+    # Pathfinding data — send road network topology on first tick
+    if gs.tick_count == 1 and gs.road_network is not None:
+        frame["road_network"] = {
+            "node_count": gs.road_network.node_count,
+            "nodes": [list(n) for n in gs.road_network.nodes[:50]],
+        }
+
+    # Behavior profile decisions — per-unit personality-driven actions (every 10 ticks)
+    if gs.behavior_engine is not None and gs.tick_count % 10 == 0:
+        profile_decisions: dict[str, dict] = {}
+        for uid, unit in gs.world.units.items():
+            if not unit.is_alive():
+                continue
+            # Build situation dict from live unit state
+            health_ratio = unit.state.health / max(unit.stats.max_health, 1.0)
+            ammo_ratio = (unit.state.ammo / 60.0) if unit.state.ammo >= 0 else 1.0
+            threats_nearby = sum(
+                1 for oid, o in gs.world.units.items()
+                if oid != uid and o.is_alive() and o.alliance != unit.alliance
+                and steering_distance(unit.position, o.position) <= unit.stats.detection_range
+            )
+            allies_nearby = sum(
+                1 for oid, o in gs.world.units.items()
+                if oid != uid and o.is_alive() and o.alliance == unit.alliance
+                and steering_distance(unit.position, o.position) <= 40.0
+            )
+            situation = {
+                "health": health_ratio,
+                "ammo": ammo_ratio,
+                "threats": threats_nearby,
+                "allies": allies_nearby,
+                "in_cover": False,
+                "suppressed": unit.state.suppression > 0.4,
+                "enemy_distance": 50.0,
+                "has_objective": True,
+                "morale": 0.7,
+            }
+            decision = gs.behavior_engine.decide(uid, situation)
+            profile = gs.behavior_engine.get_profile(uid)
+            profile_decisions[uid] = {
+                "action": decision["action"],
+                "reasoning": decision["reasoning"],
+                "profile": profile.name if profile else "unknown",
+            }
+        if profile_decisions:
+            frame["behavior_profiles"] = profile_decisions
 
     # --- Effects (particle system) tick ---
     if gs.effects is not None:

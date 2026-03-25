@@ -109,13 +109,13 @@ class NPCThinker:
             except Exception:
                 pass
 
-        # Fall back to Ollama
+        # Fall back to ollama (legacy)
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get("http://localhost:11434/api/tags", timeout=aiohttp.ClientTimeout(total=2)) as resp:
                     if resp.status == 200:
                         self._api_type = "ollama"
-                        logger.info("NPCThinker: using Ollama at localhost:11434")
+                        logger.info("NPCThinker: using ollama at localhost:11434 (legacy — migrate to llama-server)")
                         return "http://localhost:11434"
         except Exception:
             pass

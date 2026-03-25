@@ -108,34 +108,252 @@ class CityEntity:
 
 
 # ---------------------------------------------------------------------------
-# CivilianAgent — a walking civilian with simple waypoint behavior
+# Daily routine system for civilians
+# ---------------------------------------------------------------------------
+
+# Roles and their distribution weights
+CIVILIAN_ROLES = [
+    ("resident", 0.35),
+    ("worker", 0.20),
+    ("student", 0.10),
+    ("shopkeeper", 0.08),
+    ("jogger", 0.10),
+    ("dogwalker", 0.07),
+    ("retired", 0.10),
+]
+
+
+@dataclass
+class ScheduleGoal:
+    """A single goal in a civilian's daily schedule.
+
+    Mirrors the JS daily-routine.js RoutineGoal structure.
+    """
+    action: str          # 'go_to', 'stay_at', 'wander', 'idle'
+    destination: str     # POI type: 'home', 'work', 'park', 'commercial', 'school'
+    start_hour: float    # When this goal begins (0-24)
+    duration: float = 1.0
+    transport: str = "walk"  # 'walk', 'car'
+    mood: str = "calm"       # 'calm', 'hurried', 'relaxed'
+
+
+def _generate_routine(role: str, rng: random.Random) -> list[ScheduleGoal]:
+    """Generate a daily routine for a civilian role.
+
+    Mirrors the JS generateDailyRoutine() function.
+    """
+    r = rng.random
+    if role == "worker":
+        return _worker_routine(rng)
+    elif role == "student":
+        return _student_routine(rng)
+    elif role == "shopkeeper":
+        return _shopkeeper_routine(rng)
+    elif role == "jogger":
+        return _jogger_routine(rng)
+    elif role == "dogwalker":
+        return _dogwalker_routine(rng)
+    elif role == "retired":
+        return _retired_routine(rng)
+    else:  # resident (default)
+        return _resident_routine(rng)
+
+
+def _resident_routine(rng: random.Random) -> list[ScheduleGoal]:
+    wake = 6.5 + rng.random() * 2
+    work_start = wake + 0.5 + rng.random() * 0.5
+    lunch = 12 + rng.random() * 0.5
+    work_end = 17 + rng.random()
+    goals = [
+        ScheduleGoal("stay_at", "home", 0, wake),
+        ScheduleGoal("go_to", "work", wake, transport="walk", mood="hurried"),
+        ScheduleGoal("stay_at", "work", work_start, lunch - work_start),
+        ScheduleGoal("go_to", "commercial", lunch, transport="walk", mood="relaxed"),
+        ScheduleGoal("stay_at", "commercial", lunch + 0.1, 0.7),
+        ScheduleGoal("go_to", "work", lunch + 0.8, transport="walk"),
+        ScheduleGoal("stay_at", "work", lunch + 1, work_end - lunch - 1),
+        ScheduleGoal("go_to", "home", work_end, transport="walk"),
+    ]
+    if rng.random() < 0.4:
+        dest = "park" if rng.random() < 0.5 else "commercial"
+        goals.append(ScheduleGoal("go_to", dest, work_end + 0.5, transport="walk", mood="relaxed"))
+        goals.append(ScheduleGoal("wander", dest, work_end + 0.7, 0.5 + rng.random()))
+        goals.append(ScheduleGoal("go_to", "home", work_end + 1.5 + rng.random(), transport="walk"))
+    goals.append(ScheduleGoal("stay_at", "home", 21, 10))
+    return goals
+
+
+def _worker_routine(rng: random.Random) -> list[ScheduleGoal]:
+    goals = _resident_routine(rng)
+    for g in goals:
+        if g.transport != "walk":
+            g.transport = "car"
+    return goals
+
+
+def _student_routine(rng: random.Random) -> list[ScheduleGoal]:
+    wake = 7 + rng.random() * 0.5
+    return [
+        ScheduleGoal("stay_at", "home", 0, wake),
+        ScheduleGoal("go_to", "school", wake, transport="walk", mood="calm"),
+        ScheduleGoal("stay_at", "school", wake + 0.3, 7),
+        ScheduleGoal("go_to", "park" if rng.random() < 0.5 else "home", 15, transport="walk", mood="relaxed"),
+        ScheduleGoal("wander", "park", 15.3, 1 + rng.random()),
+        ScheduleGoal("go_to", "home", 17, transport="walk"),
+        ScheduleGoal("stay_at", "home", 17.5, 13),
+    ]
+
+
+def _shopkeeper_routine(rng: random.Random) -> list[ScheduleGoal]:
+    open_h = 9 + rng.random() * 0.5
+    close_h = 18 + rng.random() * 2
+    return [
+        ScheduleGoal("stay_at", "home", 0, open_h - 0.5),
+        ScheduleGoal("go_to", "commercial", open_h - 0.5, transport="walk"),
+        ScheduleGoal("stay_at", "commercial", open_h, close_h - open_h),
+        ScheduleGoal("go_to", "home", close_h, transport="walk", mood="relaxed"),
+        ScheduleGoal("stay_at", "home", close_h + 0.3, 24 - close_h),
+    ]
+
+
+def _jogger_routine(rng: random.Random) -> list[ScheduleGoal]:
+    jog_h = 6 + rng.random() * 2
+    return [
+        ScheduleGoal("stay_at", "home", 0, jog_h),
+        ScheduleGoal("go_to", "park", jog_h, transport="walk", mood="hurried"),
+        ScheduleGoal("wander", "park", jog_h + 0.2, 0.5 + rng.random() * 0.5),
+        ScheduleGoal("go_to", "home", jog_h + 1, transport="walk", mood="relaxed"),
+        # Rest of day: stay home or go to work
+        ScheduleGoal("stay_at", "home", jog_h + 1.5, 2),
+        ScheduleGoal("go_to", "work", jog_h + 3.5, transport="walk"),
+        ScheduleGoal("stay_at", "work", jog_h + 4, 17 - (jog_h + 4)),
+        ScheduleGoal("go_to", "home", 17, transport="walk"),
+        ScheduleGoal("stay_at", "home", 17.5, 13.5),
+    ]
+
+
+def _dogwalker_routine(rng: random.Random) -> list[ScheduleGoal]:
+    walk_h = 7 + rng.random()
+    eve_walk = 18 + rng.random()
+    return [
+        ScheduleGoal("stay_at", "home", 0, walk_h),
+        ScheduleGoal("go_to", "park", walk_h, transport="walk", mood="calm"),
+        ScheduleGoal("wander", "park", walk_h + 0.2, 0.4 + rng.random() * 0.3),
+        ScheduleGoal("go_to", "home", walk_h + 0.7, transport="walk"),
+        ScheduleGoal("stay_at", "home", walk_h + 1, eve_walk - walk_h - 1),
+        ScheduleGoal("go_to", "park", eve_walk, transport="walk", mood="relaxed"),
+        ScheduleGoal("wander", "park", eve_walk + 0.2, 0.3),
+        ScheduleGoal("go_to", "home", eve_walk + 0.6, transport="walk"),
+        ScheduleGoal("stay_at", "home", 21, 10),
+    ]
+
+
+def _retired_routine(rng: random.Random) -> list[ScheduleGoal]:
+    return [
+        ScheduleGoal("stay_at", "home", 0, 6),
+        ScheduleGoal("go_to", "park", 6.5, transport="walk", mood="calm"),
+        ScheduleGoal("wander", "park", 6.7, 0.8),
+        ScheduleGoal("go_to", "home", 7.5, transport="walk"),
+        ScheduleGoal("stay_at", "home", 8, 4),
+        ScheduleGoal("go_to", "commercial", 12, transport="walk", mood="relaxed"),
+        ScheduleGoal("stay_at", "commercial", 12.3, 0.7),
+        ScheduleGoal("go_to", "home", 13, transport="walk"),
+        ScheduleGoal("stay_at", "home", 13.5, 2.5),
+        ScheduleGoal("go_to", "park", 16, transport="walk", mood="relaxed"),
+        ScheduleGoal("wander", "park", 16.2, 0.8),
+        ScheduleGoal("go_to", "home", 17, transport="walk"),
+        ScheduleGoal("stay_at", "home", 17.5, 13.5),
+    ]
+
+
+def _pick_role(rng: random.Random) -> str:
+    """Pick a civilian role based on weighted distribution."""
+    r = rng.random()
+    cumulative = 0.0
+    for role, weight in CIVILIAN_ROLES:
+        cumulative += weight
+        if r < cumulative:
+            return role
+    return "resident"
+
+
+def _current_goal(routine: list[ScheduleGoal], hour: float) -> ScheduleGoal | None:
+    """Get the active goal for a given hour."""
+    active: ScheduleGoal | None = None
+    for goal in routine:
+        if hour >= goal.start_hour:
+            active = goal
+        else:
+            break
+    return active
+
+
+# ---------------------------------------------------------------------------
+# CivilianAgent — a walking civilian with daily routine behavior
 # ---------------------------------------------------------------------------
 
 @dataclass
 class CivilianAgent:
-    """A civilian walking on sidewalks with simple waypoint navigation."""
+    """A civilian walking on sidewalks with daily-routine-driven behavior.
+
+    Each civilian has a role (resident, worker, student, etc.) and a daily
+    schedule that determines where they go at what time. The schedule is
+    checked each tick against the sim clock to trigger goal transitions.
+    """
 
     agent_id: str
     position: Vec2
     target: Vec2
     speed: float = 1.2   # m/s walking speed
     heading: float = 0.0
-    state: str = "walking"  # walking, idle, waiting
+    state: str = "walking"  # walking, idle, waiting, at_poi
     waypoints: list[Vec2] = field(default_factory=list)
     _waypoint_idx: int = 0
     _idle_timer: float = 0.0
 
-    def tick(self, dt: float, rng: random.Random, bounds: tuple[float, float]) -> None:
-        """Advance the civilian by dt seconds."""
+    # Daily routine fields
+    role: str = "resident"
+    routine: list[ScheduleGoal] = field(default_factory=list)
+    activity: str = "idle"       # Current high-level activity description
+    destination: str = "home"    # Current destination POI type
+    _current_goal_idx: int = -1  # Index of current goal in routine
+    _poi_locations: dict[str, Vec2] = field(default_factory=dict)  # POI type -> position
+
+    def assign_schedule(
+        self, role: str, routine: list[ScheduleGoal],
+        poi_locations: dict[str, Vec2],
+    ) -> None:
+        """Assign a daily routine to this civilian."""
+        self.role = role
+        self.routine = routine
+        self._poi_locations = poi_locations
+        self._current_goal_idx = -1
+
+    def tick(self, dt: float, rng: random.Random, bounds: tuple[float, float],
+             sim_hour: float | None = None) -> None:
+        """Advance the civilian by dt seconds.
+
+        If sim_hour is provided and a routine is assigned, the civilian
+        follows their daily schedule. Otherwise falls back to random walking.
+        """
+        # Check schedule transitions
+        if sim_hour is not None and self.routine:
+            self._check_schedule(sim_hour, rng, bounds)
+
+        if self.state == "at_poi":
+            # Staying at a point of interest — don't move
+            return
+
         if self.state == "idle":
             self._idle_timer -= dt
             if self._idle_timer <= 0:
                 self.state = "walking"
-                # Pick a new random target
-                self.target = (
-                    rng.uniform(10, bounds[0] - 10),
-                    rng.uniform(10, bounds[1] - 10),
-                )
+                # Pick a new random target if no routine drives us
+                if not self.routine:
+                    self.target = (
+                        rng.uniform(10, bounds[0] - 10),
+                        rng.uniform(10, bounds[1] - 10),
+                    )
             return
 
         dx = self.target[0] - self.position[0]
@@ -148,10 +366,29 @@ class CivilianAgent:
                 self._waypoint_idx += 1
                 self.target = self.waypoints[self._waypoint_idx]
             else:
-                # Go idle for a bit, then pick new destination
-                self.state = "idle"
-                self._idle_timer = rng.uniform(2.0, 8.0)
-                # Prepare new waypoints for when we resume
+                # Arrived at destination
+                goal = _current_goal(self.routine, 0) if not self.routine else None
+                if self.routine and self._current_goal_idx >= 0:
+                    goal = self.routine[self._current_goal_idx]
+
+                if goal and goal.action == "stay_at":
+                    self.state = "at_poi"
+                    self.activity = f"at_{goal.destination}"
+                elif goal and goal.action == "wander":
+                    # Wander: pick random nearby point
+                    self.target = (
+                        self.position[0] + rng.uniform(-30, 30),
+                        self.position[1] + rng.uniform(-30, 30),
+                    )
+                    self.target = (
+                        max(10, min(bounds[0] - 10, self.target[0])),
+                        max(10, min(bounds[1] - 10, self.target[1])),
+                    )
+                    self.state = "walking"
+                    self.activity = f"wandering_{goal.destination}"
+                else:
+                    self.state = "idle"
+                    self._idle_timer = rng.uniform(2.0, 8.0)
                 self.waypoints = []
                 self._waypoint_idx = 0
             return
@@ -165,6 +402,77 @@ class CivilianAgent:
             self.position[1] + ny * move,
         )
 
+    def _check_schedule(self, hour: float, rng: random.Random,
+                        bounds: tuple[float, float]) -> None:
+        """Check if the civilian should transition to a new goal."""
+        goal = _current_goal(self.routine, hour)
+        if goal is None:
+            return
+
+        # Find index of this goal
+        try:
+            goal_idx = self.routine.index(goal)
+        except ValueError:
+            return
+
+        if goal_idx == self._current_goal_idx:
+            return  # Already executing this goal
+
+        # Transition to new goal
+        self._current_goal_idx = goal_idx
+        self.destination = goal.destination
+        self.activity = f"{goal.action}_{goal.destination}"
+
+        if goal.action in ("go_to", "wander"):
+            # Navigate to the destination POI
+            dest_pos = self._poi_locations.get(goal.destination)
+            if dest_pos is None:
+                # Fallback: random position
+                dest_pos = (
+                    rng.uniform(20, bounds[0] - 20),
+                    rng.uniform(20, bounds[1] - 20),
+                )
+            if goal.action == "wander":
+                # Wander near the POI
+                dest_pos = (
+                    dest_pos[0] + rng.uniform(-25, 25),
+                    dest_pos[1] + rng.uniform(-25, 25),
+                )
+                dest_pos = (
+                    max(10, min(bounds[0] - 10, dest_pos[0])),
+                    max(10, min(bounds[1] - 10, dest_pos[1])),
+                )
+            self.target = dest_pos
+            self.state = "walking"
+            self.speed = 1.8 if goal.mood == "hurried" else (1.0 if goal.mood == "relaxed" else 1.2)
+            self.waypoints = []
+            self._waypoint_idx = 0
+
+        elif goal.action == "stay_at":
+            # If already near destination, stay put. Otherwise travel there.
+            dest_pos = self._poi_locations.get(goal.destination)
+            if dest_pos is not None:
+                dist_to = math.hypot(
+                    self.position[0] - dest_pos[0],
+                    self.position[1] - dest_pos[1],
+                )
+                if dist_to > 5.0:
+                    self.target = dest_pos
+                    self.state = "walking"
+                    self.waypoints = []
+                    self._waypoint_idx = 0
+                else:
+                    self.state = "at_poi"
+                    self.activity = f"at_{goal.destination}"
+            else:
+                self.state = "at_poi"
+                self.activity = f"at_{goal.destination}"
+
+        elif goal.action == "idle":
+            self.state = "idle"
+            self._idle_timer = goal.duration * 3600.0  # Convert hours to seconds
+            self.activity = "idle"
+
     def to_dict(self) -> dict[str, Any]:
         """Three.js-compatible output."""
         return {
@@ -175,6 +483,9 @@ class CivilianAgent:
             "heading": round(self.heading, 3),
             "speed": self.speed if self.state == "walking" else 0.0,
             "state": self.state,
+            "role": self.role,
+            "activity": self.activity,
+            "destination": self.destination,
         }
 
 
@@ -496,23 +807,86 @@ class CitySim:
                     ))
 
     def _spawn_civilians(self, count: int) -> None:
-        """Spawn civilians walking on sidewalks."""
+        """Spawn civilians with daily routine schedules.
+
+        Each civilian is assigned a random role and a full daily routine
+        that drives their behavior throughout the sim day. POI locations
+        (home, work, park, etc.) are assigned from the building list.
+        """
+        # Pre-compute POI zones from buildings for schedule destinations
+        poi_zones = self._compute_poi_zones()
+
         for _ in range(count):
-            pos = (
+            role = _pick_role(self._rng)
+            routine = _generate_routine(role, self._rng)
+
+            # Assign personal POI locations (home, work, etc.)
+            home_pos = (
                 self._rng.uniform(20, self.width - 20),
                 self._rng.uniform(20, self.height - 20),
             )
-            target = (
-                self._rng.uniform(20, self.width - 20),
-                self._rng.uniform(20, self.height - 20),
-            )
+            poi_locs: dict[str, Vec2] = {"home": home_pos}
+
+            # Assign other POIs from building zones or random positions
+            for poi_type in ("work", "school", "commercial", "park"):
+                if poi_type in poi_zones and poi_zones[poi_type]:
+                    base = self._rng.choice(poi_zones[poi_type])
+                    poi_locs[poi_type] = (
+                        base[0] + self._rng.uniform(-10, 10),
+                        base[1] + self._rng.uniform(-10, 10),
+                    )
+                else:
+                    poi_locs[poi_type] = (
+                        self._rng.uniform(20, self.width - 20),
+                        self._rng.uniform(20, self.height - 20),
+                    )
+
             agent = CivilianAgent(
                 agent_id=self._gen_id("civ"),
-                position=pos,
-                target=target,
+                position=home_pos,
+                target=home_pos,
                 speed=self._rng.uniform(0.8, 1.5),
             )
+            agent.assign_schedule(role, routine, poi_locs)
             self.civilians.append(agent)
+
+    def _compute_poi_zones(self) -> dict[str, list[Vec2]]:
+        """Extract POI positions from buildings for schedule destinations."""
+        zones: dict[str, list[Vec2]] = {
+            "work": [],
+            "school": [],
+            "commercial": [],
+            "park": [],
+        }
+        if self.map_data is None:
+            return zones
+        for feat in self.map_data.features:
+            if feat.feature_type != "building":
+                continue
+            btype = feat.properties.get("building_type", "")
+            pos = feat.position
+            if btype in ("office", "commercial", "industrial"):
+                zones["work"].append(pos)
+                zones["commercial"].append(pos)
+            elif btype in ("school", "university"):
+                zones["school"].append(pos)
+            elif btype in ("retail", "shop", "restaurant"):
+                zones["commercial"].append(pos)
+
+        # Parks: use green spaces or fallback to random open areas
+        for feat in self.map_data.features:
+            if feat.feature_type in ("park", "forest", "green"):
+                zones["park"].append(feat.position)
+
+        # Ensure every zone has at least one location
+        for key in zones:
+            if not zones[key]:
+                zones[key] = [(
+                    self._rng.uniform(30, self.width - 30),
+                    self._rng.uniform(30, self.height - 30),
+                )]
+
+        return zones
 
     def _spawn_cars(self, count: int) -> None:
         """Spawn civilian cars on roads."""
@@ -604,9 +978,10 @@ class CitySim:
         # 1. Environment (weather, time of day)
         self.environment.update(dt)
 
-        # 2. Civilians walk
+        # 2. Civilians follow daily routines
+        sim_hour = self.environment.time.hour
         for civ in self.civilians:
-            civ.tick(dt, self._rng, (self.width, self.height))
+            civ.tick(dt, self._rng, (self.width, self.height), sim_hour=sim_hour)
 
         # 3. Vehicles drive
         for veh in self.city_vehicles:
@@ -793,9 +1168,20 @@ class CitySim:
         """Quick simulation statistics."""
         walking_civs = sum(1 for c in self.civilians if c.state == "walking")
         idle_civs = sum(1 for c in self.civilians if c.state == "idle")
+        at_poi_civs = sum(1 for c in self.civilians if c.state == "at_poi")
         moving_vehicles = sum(1 for v in self.city_vehicles if v.speed > 0.5)
         crowd_count = len(self.crowd.members) if self.crowd else 0
         crowd_mood = self.crowd.overall_mood.name.lower() if self.crowd else "none"
+
+        # Role distribution
+        role_counts: dict[str, int] = {}
+        for c in self.civilians:
+            role_counts[c.role] = role_counts.get(c.role, 0) + 1
+
+        # Activity distribution
+        activity_counts: dict[str, int] = {}
+        for c in self.civilians:
+            activity_counts[c.activity] = activity_counts.get(c.activity, 0) + 1
 
         return {
             "tick": self.tick_count,
@@ -803,6 +1189,7 @@ class CitySim:
             "total_civilians": len(self.civilians),
             "walking_civilians": walking_civs,
             "idle_civilians": idle_civs,
+            "at_poi_civilians": at_poi_civs,
             "total_vehicles": len(self.city_vehicles),
             "moving_vehicles": moving_vehicles,
             "total_police": len(self.police_units),
@@ -811,6 +1198,8 @@ class CitySim:
             "total_buildings": len(self.buildings),
             "total_trees": len(self.trees),
             "environment": self.environment.describe(),
+            "civilian_roles": role_counts,
+            "civilian_activities": activity_counts,
         }
 
     def inject_crowd_event(self, event_type: str, position: Vec2,
