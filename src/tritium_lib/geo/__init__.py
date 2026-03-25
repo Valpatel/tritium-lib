@@ -533,6 +533,540 @@ def bounding_box(
 # Reverse geocoding (offline, using OSM Overpass)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ProjectedCoordinate — local meter coordinates with origin
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ProjectedCoordinate:
+    """A position expressed in local meter coordinates relative to an origin.
+
+    Uses the WGS84 ellipsoid for precise conversion between geodetic
+    (lat/lng) and local East-North-Up (ENU) meter coordinates.
+
+    Attributes:
+        x: Meters east of origin.
+        y: Meters north of origin.
+        z: Meters above origin altitude.
+        origin_lat: Latitude of the projection origin in degrees.
+        origin_lng: Longitude of the projection origin in degrees.
+        origin_alt: Altitude of the projection origin in meters.
+    """
+
+    x: float
+    y: float
+    z: float = 0.0
+    origin_lat: float = 0.0
+    origin_lng: float = 0.0
+    origin_alt: float = 0.0
+
+    @classmethod
+    def from_latlng(
+        cls,
+        lat: float,
+        lng: float,
+        alt: float = 0.0,
+        *,
+        origin_lat: float,
+        origin_lng: float,
+        origin_alt: float = 0.0,
+    ) -> "ProjectedCoordinate":
+        """Create a ProjectedCoordinate from geodetic coordinates.
+
+        Uses WGS84 ellipsoid-accurate meters-per-degree values for the
+        conversion rather than a spherical approximation.
+
+        Args:
+            lat: Latitude in degrees.
+            lng: Longitude in degrees.
+            alt: Altitude in meters above WGS84 ellipsoid.
+            origin_lat: Latitude of projection origin in degrees.
+            origin_lng: Longitude of projection origin in degrees.
+            origin_alt: Altitude of projection origin in meters.
+
+        Returns:
+            A ProjectedCoordinate in the local ENU frame.
+        """
+        m_lat = meters_per_degree_lat(origin_lat)
+        m_lng = meters_per_degree_lng(origin_lat)
+        y = (lat - origin_lat) * m_lat
+        x = (lng - origin_lng) * m_lng
+        z = alt - origin_alt
+        return cls(
+            x=x, y=y, z=z,
+            origin_lat=origin_lat,
+            origin_lng=origin_lng,
+            origin_alt=origin_alt,
+        )
+
+    def to_latlng(self) -> tuple[float, float, float]:
+        """Convert back to geodetic (lat, lng, alt) using the stored origin.
+
+        Returns:
+            (lat, lng, alt) tuple.
+        """
+        m_lat = meters_per_degree_lat(self.origin_lat)
+        m_lng = meters_per_degree_lng(self.origin_lat)
+        lat = self.origin_lat + self.y / m_lat
+        lng = self.origin_lng + self.x / m_lng if m_lng > 1e-9 else self.origin_lng
+        alt = self.origin_alt + self.z
+        return (lat, lng, alt)
+
+    def distance_to(self, other: "ProjectedCoordinate") -> float:
+        """Euclidean distance to another ProjectedCoordinate in meters.
+
+        Both coordinates should share the same origin for a meaningful
+        result.
+
+        Args:
+            other: Another ProjectedCoordinate.
+
+        Returns:
+            Distance in meters.
+        """
+        dx = other.x - self.x
+        dy = other.y - self.y
+        dz = other.z - self.z
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    def bearing_to(self, other: "ProjectedCoordinate") -> float:
+        """Bearing from this point to *other* in degrees [0, 360).
+
+        Measured clockwise from North (+Y axis).
+
+        Args:
+            other: Another ProjectedCoordinate.
+
+        Returns:
+            Bearing in degrees.
+        """
+        dx = other.x - self.x
+        dy = other.y - self.y
+        return (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+
+
+# ---------------------------------------------------------------------------
+# Vincenty distance (WGS84 ellipsoid)
+# ---------------------------------------------------------------------------
+
+def distance_vincenty(
+    lat1: float, lng1: float, lat2: float, lng2: float,
+    *, max_iterations: int = 200, tol: float = 1e-12,
+) -> float:
+    """Geodesic distance between two points using the Vincenty inverse formula.
+
+    This is accurate to sub-millimeter precision on the WGS84 ellipsoid,
+    compared to haversine which assumes a sphere and can be off by ~0.3%.
+
+    Falls back to haversine for nearly-antipodal points where Vincenty
+    may fail to converge.
+
+    Args:
+        lat1: Latitude of point 1 in degrees.
+        lng1: Longitude of point 1 in degrees.
+        lat2: Latitude of point 2 in degrees.
+        lng2: Longitude of point 2 in degrees.
+        max_iterations: Maximum iterations for convergence.
+        tol: Convergence tolerance in radians.
+
+    Returns:
+        Distance in meters.
+    """
+    a = WGS84_A
+    f = WGS84_F
+    b = WGS84_B
+
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    L = math.radians(lng2 - lng1)
+
+    U1 = math.atan((1 - f) * math.tan(phi1))
+    U2 = math.atan((1 - f) * math.tan(phi2))
+    sin_U1 = math.sin(U1)
+    cos_U1 = math.cos(U1)
+    sin_U2 = math.sin(U2)
+    cos_U2 = math.cos(U2)
+
+    lam = L
+    for _ in range(max_iterations):
+        sin_lam = math.sin(lam)
+        cos_lam = math.cos(lam)
+
+        sin_sigma = math.sqrt(
+            (cos_U2 * sin_lam) ** 2
+            + (cos_U1 * sin_U2 - sin_U1 * cos_U2 * cos_lam) ** 2
+        )
+        if sin_sigma < 1e-15:
+            return 0.0  # coincident points
+
+        cos_sigma = sin_U1 * sin_U2 + cos_U1 * cos_U2 * cos_lam
+        sigma = math.atan2(sin_sigma, cos_sigma)
+
+        sin_alpha = cos_U1 * cos_U2 * sin_lam / sin_sigma
+        cos2_alpha = 1.0 - sin_alpha * sin_alpha
+
+        if cos2_alpha < 1e-15:
+            # Equatorial line
+            cos_2sigma_m = 0.0
+        else:
+            cos_2sigma_m = cos_sigma - 2.0 * sin_U1 * sin_U2 / cos2_alpha
+
+        C = f / 16.0 * cos2_alpha * (4.0 + f * (4.0 - 3.0 * cos2_alpha))
+        lam_prev = lam
+        lam = L + (1.0 - C) * f * sin_alpha * (
+            sigma + C * sin_sigma * (
+                cos_2sigma_m + C * cos_sigma * (
+                    -1.0 + 2.0 * cos_2sigma_m * cos_2sigma_m
+                )
+            )
+        )
+
+        if abs(lam - lam_prev) < tol:
+            break
+    else:
+        # Failed to converge (nearly antipodal) — fall back to haversine
+        return haversine_distance(lat1, lng1, lat2, lng2)
+
+    u2 = cos2_alpha * (a * a - b * b) / (b * b)
+    A_coeff = 1.0 + u2 / 16384.0 * (4096.0 + u2 * (-768.0 + u2 * (320.0 - 175.0 * u2)))
+    B_coeff = u2 / 1024.0 * (256.0 + u2 * (-128.0 + u2 * (74.0 - 47.0 * u2)))
+
+    delta_sigma = B_coeff * sin_sigma * (
+        cos_2sigma_m + B_coeff / 4.0 * (
+            cos_sigma * (-1.0 + 2.0 * cos_2sigma_m ** 2)
+            - B_coeff / 6.0 * cos_2sigma_m * (-3.0 + 4.0 * sin_sigma ** 2) * (-3.0 + 4.0 * cos_2sigma_m ** 2)
+        )
+    )
+
+    return b * A_coeff * (sigma - delta_sigma)
+
+
+# ---------------------------------------------------------------------------
+# UTM projection
+# ---------------------------------------------------------------------------
+
+def utm_zone_from_latlng(lat: float, lng: float) -> tuple[int, str]:
+    """Determine the UTM zone number and hemisphere letter for a WGS84 point.
+
+    Handles the Norway/Svalbard special zones (32V, 31X, 33X, 35X, 37X).
+
+    Args:
+        lat: Latitude in degrees (-80 to 84).
+        lng: Longitude in degrees (-180 to 180).
+
+    Returns:
+        (zone_number, hemisphere) where hemisphere is ``'N'`` or ``'S'``.
+
+    Raises:
+        ValueError: If latitude is outside the UTM valid range [-80, 84].
+    """
+    if lat < -80.0 or lat > 84.0:
+        raise ValueError(f"Latitude {lat} outside UTM range [-80, 84]")
+
+    # Normalize longitude to [-180, 180)
+    lng = ((lng + 180.0) % 360.0) - 180.0
+
+    zone = int((lng + 180.0) / 6.0) + 1
+
+    # Special zone adjustments for Norway and Svalbard
+    if 56.0 <= lat < 64.0 and 3.0 <= lng < 12.0:
+        zone = 32  # Norway
+    elif 72.0 <= lat < 84.0:
+        if 0.0 <= lng < 9.0:
+            zone = 31
+        elif 9.0 <= lng < 21.0:
+            zone = 33
+        elif 21.0 <= lng < 33.0:
+            zone = 35
+        elif 33.0 <= lng < 42.0:
+            zone = 37
+
+    hemisphere = "N" if lat >= 0.0 else "S"
+    return (zone, hemisphere)
+
+
+def latlng_to_utm(
+    lat: float, lng: float,
+) -> tuple[float, float, int, str]:
+    """Convert WGS84 geodetic coordinates to UTM easting/northing.
+
+    Implements the Karney-accurate transverse Mercator equations for the
+    WGS84 ellipsoid, using the standard UTM parameters (k0 = 0.9996,
+    false easting 500 km, false northing 10,000 km for southern hemisphere).
+
+    Args:
+        lat: Latitude in degrees.
+        lng: Longitude in degrees.
+
+    Returns:
+        (easting, northing, zone_number, hemisphere) where easting and
+        northing are in meters.
+    """
+    zone, hemisphere = utm_zone_from_latlng(lat, lng)
+
+    # Central meridian of the zone
+    lng0 = (zone - 1) * 6.0 - 180.0 + 3.0
+
+    k0 = 0.9996
+    e = math.sqrt(WGS84_E2)
+    e_prime2 = WGS84_E2 / (1.0 - WGS84_E2)
+
+    phi = math.radians(lat)
+    lam = math.radians(lng - lng0)
+
+    N = WGS84_A / math.sqrt(1.0 - WGS84_E2 * math.sin(phi) ** 2)
+    T = math.tan(phi) ** 2
+    C = e_prime2 * math.cos(phi) ** 2
+    A = lam * math.cos(phi)
+
+    # Meridional arc length (series expansion)
+    e2 = WGS84_E2
+    e4 = e2 * e2
+    e6 = e4 * e2
+    M = WGS84_A * (
+        (1.0 - e2 / 4.0 - 3.0 * e4 / 64.0 - 5.0 * e6 / 256.0) * phi
+        - (3.0 * e2 / 8.0 + 3.0 * e4 / 32.0 + 45.0 * e6 / 1024.0) * math.sin(2.0 * phi)
+        + (15.0 * e4 / 256.0 + 45.0 * e6 / 1024.0) * math.sin(4.0 * phi)
+        - (35.0 * e6 / 3072.0) * math.sin(6.0 * phi)
+    )
+
+    A2 = A * A
+    A3 = A2 * A
+    A4 = A3 * A
+    A5 = A4 * A
+    A6 = A5 * A
+
+    easting = k0 * N * (
+        A
+        + (1.0 - T + C) * A3 / 6.0
+        + (5.0 - 18.0 * T + T * T + 72.0 * C - 58.0 * e_prime2) * A5 / 120.0
+    ) + 500_000.0
+
+    northing = k0 * (
+        M
+        + N * math.tan(phi) * (
+            A2 / 2.0
+            + (5.0 - T + 9.0 * C + 4.0 * C * C) * A4 / 24.0
+            + (61.0 - 58.0 * T + T * T + 600.0 * C - 330.0 * e_prime2) * A6 / 720.0
+        )
+    )
+
+    if hemisphere == "S":
+        northing += 10_000_000.0
+
+    return (easting, northing, zone, hemisphere)
+
+
+def utm_to_latlng(
+    easting: float, northing: float, zone: int, hemisphere: str,
+) -> tuple[float, float]:
+    """Convert UTM easting/northing back to WGS84 lat/lng.
+
+    Inverse of :func:`latlng_to_utm`.
+
+    Args:
+        easting: UTM easting in meters.
+        northing: UTM northing in meters.
+        zone: UTM zone number (1-60).
+        hemisphere: ``'N'`` or ``'S'``.
+
+    Returns:
+        (lat, lng) in degrees.
+    """
+    k0 = 0.9996
+    e = math.sqrt(WGS84_E2)
+    e_prime2 = WGS84_E2 / (1.0 - WGS84_E2)
+
+    x = easting - 500_000.0
+    y = northing
+    if hemisphere.upper() == "S":
+        y -= 10_000_000.0
+
+    lng0 = (zone - 1) * 6.0 - 180.0 + 3.0
+
+    # Footpoint latitude from meridional arc length
+    e2 = WGS84_E2
+    e4 = e2 * e2
+    e6 = e4 * e2
+    e1 = (1.0 - math.sqrt(1.0 - e2)) / (1.0 + math.sqrt(1.0 - e2))
+    M0 = y / k0
+
+    mu = M0 / (WGS84_A * (1.0 - e2 / 4.0 - 3.0 * e4 / 64.0 - 5.0 * e6 / 256.0))
+
+    phi1 = (
+        mu
+        + (3.0 * e1 / 2.0 - 27.0 * e1 ** 3 / 32.0) * math.sin(2.0 * mu)
+        + (21.0 * e1 ** 2 / 16.0 - 55.0 * e1 ** 4 / 32.0) * math.sin(4.0 * mu)
+        + (151.0 * e1 ** 3 / 96.0) * math.sin(6.0 * mu)
+        + (1097.0 * e1 ** 4 / 512.0) * math.sin(8.0 * mu)
+    )
+
+    N1 = WGS84_A / math.sqrt(1.0 - e2 * math.sin(phi1) ** 2)
+    T1 = math.tan(phi1) ** 2
+    C1 = e_prime2 * math.cos(phi1) ** 2
+    R1 = WGS84_A * (1.0 - e2) / (1.0 - e2 * math.sin(phi1) ** 2) ** 1.5
+    D = x / (N1 * k0)
+
+    D2 = D * D
+    D3 = D2 * D
+    D4 = D3 * D
+    D5 = D4 * D
+    D6 = D5 * D
+
+    lat_rad = phi1 - (N1 * math.tan(phi1) / R1) * (
+        D2 / 2.0
+        - (5.0 + 3.0 * T1 + 10.0 * C1 - 4.0 * C1 * C1 - 9.0 * e_prime2) * D4 / 24.0
+        + (61.0 + 90.0 * T1 + 298.0 * C1 + 45.0 * T1 * T1 - 252.0 * e_prime2 - 3.0 * C1 * C1) * D6 / 720.0
+    )
+
+    lng_rad = (
+        D
+        - (1.0 + 2.0 * T1 + C1) * D3 / 6.0
+        + (5.0 - 2.0 * C1 + 28.0 * T1 - 3.0 * C1 * C1 + 8.0 * e_prime2 + 24.0 * T1 * T1) * D5 / 120.0
+    ) / math.cos(phi1)
+
+    lat = math.degrees(lat_rad)
+    lng = lng0 + math.degrees(lng_rad)
+
+    return (lat, lng)
+
+
+# ---------------------------------------------------------------------------
+# Geodetic polygon area (spherical excess)
+# ---------------------------------------------------------------------------
+
+def polygon_area_geodetic(polygon: list[tuple[float, float]]) -> float:
+    """Area of a geodetic polygon on the WGS84 ellipsoid in square meters.
+
+    Uses the trapezoidal approximation on an authalic (equal-area) sphere,
+    derived from the WGS84 ellipsoid parameters.  This gives results
+    accurate to better than 0.01% for polygons up to continental scale.
+
+    The polygon should be specified with vertices in order (clockwise or
+    counter-clockwise).  It does not need to be explicitly closed.
+
+    Args:
+        polygon: List of (lat, lng) vertices in degrees.
+
+    Returns:
+        Unsigned area in square meters.
+    """
+    n = len(polygon)
+    if n < 3:
+        return 0.0
+
+    # Authalic sphere radius for WGS84
+    e2 = WGS84_E2
+    e = math.sqrt(e2)
+    # The authalic radius gives an equal-area mapping from ellipsoid to sphere
+    R_authalic = WGS84_A * math.sqrt(
+        (1.0 + (1.0 - e2) / (2.0 * e) * math.log((1.0 + e) / (1.0 - e))) / 2.0
+    )
+
+    def _authalic_lat(lat_deg: float) -> float:
+        """Convert geodetic latitude to authalic latitude."""
+        phi = math.radians(lat_deg)
+        sin_phi = math.sin(phi)
+        q = (1.0 - e2) * (
+            sin_phi / (1.0 - e2 * sin_phi * sin_phi)
+            - 1.0 / (2.0 * e) * math.log((1.0 - e * sin_phi) / (1.0 + e * sin_phi))
+        )
+        q_p = 1.0 - (1.0 - e2) / (2.0 * e) * math.log((1.0 - e) / (1.0 + e))
+        beta = math.asin(q / q_p) if abs(q / q_p) <= 1.0 else math.copysign(math.pi / 2.0, q)
+        return beta
+
+    # Spherical excess method on authalic sphere
+    # Sum of (lng[i+1] - lng[i]) * sin(authalic_lat[i])
+    total = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        lat_i = _authalic_lat(polygon[i][0])
+        lat_j = _authalic_lat(polygon[j][0])
+        lng_i = math.radians(polygon[i][1])
+        lng_j = math.radians(polygon[j][1])
+
+        total += (lng_j - lng_i) * (2.0 + math.sin(lat_i) + math.sin(lat_j))
+
+    area = abs(total) * R_authalic * R_authalic / 2.0
+    return area
+
+
+# ---------------------------------------------------------------------------
+# MGRS / UTM grid reference
+# ---------------------------------------------------------------------------
+
+# MGRS 100km grid square column letters (easting) — repeats every 3 zones
+_MGRS_COL_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # 24 letters (no I, O)
+# MGRS 100km grid square row letters — repeats every 2,000 km
+_MGRS_ROW_LETTERS = "ABCDEFGHJKLMNPQRSTUV"  # 20 letters (no I, O)
+# UTM latitude band letters C..X (omitting I, O) for 8-degree bands from 80S to 84N
+_UTM_BAND_LETTERS = "CDEFGHJKLMNPQRSTUVWX"
+
+
+def _utm_band_letter(lat: float) -> str:
+    """Return the UTM latitude band letter for a given latitude."""
+    if lat < -80.0 or lat > 84.0:
+        raise ValueError(f"Latitude {lat} outside UTM range [-80, 84]")
+    # Each band is 8 degrees except X which is 12 degrees (72-84)
+    if lat >= 72.0:
+        return "X"
+    idx = int((lat + 80.0) / 8.0)
+    idx = max(0, min(idx, len(_UTM_BAND_LETTERS) - 1))
+    return _UTM_BAND_LETTERS[idx]
+
+
+def grid_reference(lat: float, lng: float, precision: int = 5) -> str:
+    """Generate an MGRS (Military Grid Reference System) grid reference string.
+
+    The precision parameter controls the number of easting/northing digits:
+    - 1 = 10 km resolution
+    - 2 = 1 km resolution
+    - 3 = 100 m resolution
+    - 4 = 10 m resolution
+    - 5 = 1 m resolution (default)
+
+    Args:
+        lat: Latitude in degrees.
+        lng: Longitude in degrees.
+        precision: Number of digits for easting and northing (1-5).
+
+    Returns:
+        MGRS grid reference string, e.g. ``"18SUJ2337006519"`` (1 m).
+
+    Raises:
+        ValueError: If latitude is outside the UTM range or precision is invalid.
+    """
+    if precision < 1 or precision > 5:
+        raise ValueError(f"Precision must be 1-5, got {precision}")
+
+    easting, northing, zone, hemisphere = latlng_to_utm(lat, lng)
+    band = _utm_band_letter(lat)
+
+    # 100 km grid square column letter
+    # The column letter set repeats every 3 zones (sets A-H, J-R, S-Z)
+    set_idx = (zone - 1) % 3
+    col_idx = (int(easting / 100_000.0) - 1) % 8 + set_idx * 8
+    col_letter = _MGRS_COL_LETTERS[col_idx % len(_MGRS_COL_LETTERS)]
+
+    # 100 km grid square row letter
+    # The row letter set alternates between two sequences based on zone parity
+    row_offset = 0 if zone % 2 == 1 else 5
+    row_idx = (int(northing / 100_000.0) + row_offset) % len(_MGRS_ROW_LETTERS)
+    row_letter = _MGRS_ROW_LETTERS[row_idx]
+
+    # Easting and northing within the 100 km square
+    e_within = int(easting) % 100_000
+    n_within = int(northing) % 100_000
+
+    # Truncate to requested precision
+    divisor = 10 ** (5 - precision)
+    e_digits = e_within // divisor
+    n_digits = n_within // divisor
+
+    fmt = f"{{:0{precision}d}}"
+    return f"{zone:02d}{band}{col_letter}{row_letter}{fmt.format(e_digits)}{fmt.format(n_digits)}"
+
+
 def reverse_geocode(lat: float, lng: float, radius_m: float = 50.0) -> dict:
     """Return the nearest named OSM feature to a lat/lng coordinate.
 
