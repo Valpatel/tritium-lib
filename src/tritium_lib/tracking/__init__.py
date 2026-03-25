@@ -34,9 +34,19 @@ from .correlation_strategies import (
     SignalPatternStrategy,
     WiFiProbeStrategy,
     DossierStrategy,
+    ConfidenceCalibrator,
+    CalibrationRecord,
 )
 from .ble_classifier import BLEClassifier, BLEClassification, CLASSIFICATION_LEVELS
 from .vehicle_tracker import VehicleBehavior, VehicleTrackingManager, VEHICLE_CLASSES
+from .vehicle_pipeline import (
+    VehiclePipeline,
+    VehicleClassification,
+    RouteEstimate,
+    ParkingEvent,
+    ConvoyResult,
+    WiFiProbeRecord,
+)
 from .convoy_detector import ConvoyDetector, TargetMotion
 from .threat_scoring import ThreatScorer, BehaviorProfile
 from .escalation import (
@@ -54,6 +64,13 @@ from .patrol import PatrolRoute, PatrolAssignment, PatrolManager
 from .network_analysis import NetworkAnalyzer, DeviceProfile, ProbeRecord, COMMON_SSIDS
 from .proximity_monitor import ProximityMonitor
 from .sensor_health_monitor import SensorHealthMonitor
+from .person_reid import (
+    ReIDEngine,
+    PersonProfile,
+    MatchResult,
+    MergeRecord,
+    STRATEGY_WEIGHTS as REID_STRATEGY_WEIGHTS,
+)
 try:
     from .obstacles import BuildingObstacles, _latlng_to_local, _segments_intersect
 except ImportError:
@@ -115,6 +132,9 @@ __all__ = [
     "SignalPatternStrategy",
     "WiFiProbeStrategy",
     "DossierStrategy",
+    # Calibration
+    "ConfidenceCalibrator",
+    "CalibrationRecord",
     # BLE classifier
     "BLEClassifier",
     "BLEClassification",
@@ -123,6 +143,13 @@ __all__ = [
     "VehicleBehavior",
     "VehicleTrackingManager",
     "VEHICLE_CLASSES",
+    # Vehicle pipeline
+    "VehiclePipeline",
+    "VehicleClassification",
+    "RouteEstimate",
+    "ParkingEvent",
+    "ConvoyResult",
+    "WiFiProbeRecord",
     # Convoy detector
     "ConvoyDetector",
     "TargetMotion",
@@ -158,4 +185,10 @@ __all__ = [
     "_segments_intersect",
     # Street graph
     "StreetGraph",
+    # Person re-identification
+    "ReIDEngine",
+    "PersonProfile",
+    "MatchResult",
+    "MergeRecord",
+    "REID_STRATEGY_WEIGHTS",
 ]

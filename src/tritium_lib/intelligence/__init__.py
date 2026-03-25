@@ -34,6 +34,12 @@ from tritium_lib.intelligence.anomaly import (
     AutoencoderDetector,
     SimpleThresholdDetector,
 )
+from tritium_lib.intelligence.anomaly_engine import (
+    AnomalyAlert,
+    AnomalyEngine,
+    KnownPattern,
+    ZoneBaseline,
+)
 from tritium_lib.intelligence.base_learner import BaseLearner
 from tritium_lib.intelligence.model_registry import ModelRegistry
 from tritium_lib.intelligence.pattern_learning import (
@@ -41,6 +47,16 @@ from tritium_lib.intelligence.pattern_learning import (
     PredictionResult,
     TrainingExample,
     PATTERN_FEATURES,
+)
+from tritium_lib.intelligence.behavioral_pattern_learner import (
+    BehavioralPatternLearner,
+    BehavioralProfile,
+    DeviationResult,
+    FrequentZone,
+    LearnedRoute,
+    LearnedSchedule,
+    LearnedWaypoint,
+    ScheduleObservation,
 )
 from tritium_lib.intelligence.scorer import (
     CorrelationFeatures,
@@ -70,6 +86,14 @@ from tritium_lib.intelligence.threat_model import (
     ThreatSignal,
     score_to_threat_level,
 )
+from tritium_lib.intelligence.zone_analysis import (
+    ActivityPrediction,
+    Hotspot,
+    ZoneAnalyzer,
+    ZoneComparison,
+    ZoneEvent,
+    ZoneReport,
+)
 
 __all__ = [
     "EXTENDED_FEATURE_NAMES",
@@ -80,7 +104,9 @@ __all__ = [
     "time_similarity",
     "wifi_probe_temporal_correlation",
     "Anomaly",
+    "AnomalyAlert",
     "AnomalyDetector",
+    "AnomalyEngine",
     "AutoencoderDetector",
     "BaseLearner",
     "CorrelationFeatures",
@@ -105,11 +131,29 @@ __all__ = [
     "ThreatSignal",
     "TrainingExample",
     "TrainingSnapshot",
+    "KnownPattern",
+    "ZoneBaseline",
     "score_to_threat_level",
+    # Behavioral pattern learning
+    "BehavioralPatternLearner",
+    "BehavioralProfile",
+    "DeviationResult",
+    "FrequentZone",
+    "LearnedRoute",
+    "LearnedSchedule",
+    "LearnedWaypoint",
+    "ScheduleObservation",
     # Position estimation (sensor fusion)
     "estimate_from_multiple_anchors",
     "estimate_from_single_anchor",
     "fusion_rssi_to_distance",
+    # Zone analysis
+    "ActivityPrediction",
+    "Hotspot",
+    "ZoneAnalyzer",
+    "ZoneComparison",
+    "ZoneEvent",
+    "ZoneReport",
     # Geospatial segmentation (subpackage)
     "geospatial",
 ]

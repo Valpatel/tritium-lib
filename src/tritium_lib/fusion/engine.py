@@ -153,6 +153,8 @@ class FusionEngine:
         self,
         event_bus=None,
         *,
+        tracker: TargetTracker | None = None,
+        geofence: GeofenceEngine | None = None,
         correlation_interval: float = 5.0,
         correlation_threshold: float = 0.3,
         correlation_radius: float = 5.0,
@@ -162,10 +164,12 @@ class FusionEngine:
         self._event_bus = event_bus
         self._lock = threading.Lock()
 
-        # Core components
+        # Core components — accept externally-managed instances so the engine
+        # can wrap an existing TargetTracker (e.g. Amy's tracker in SC) instead
+        # of creating its own.
         self._dossier_store = DossierStore()
-        self._tracker = TargetTracker(event_bus=event_bus)
-        self._geofence = GeofenceEngine(event_bus=event_bus)
+        self._tracker = tracker if tracker is not None else TargetTracker(event_bus=event_bus)
+        self._geofence = geofence if geofence is not None else GeofenceEngine(event_bus=event_bus)
         self._heatmap = HeatmapEngine(retention_seconds=heatmap_retention)
         self._network_analyzer = NetworkAnalyzer()
         self._fusion_metrics = FusionMetrics()
