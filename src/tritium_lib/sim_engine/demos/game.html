@@ -566,22 +566,221 @@ function createGround() {
 createGround();
 
 // =========================================================================
-// InstancedMesh pools — units, vehicles, crowd
+// Type-specific 3D unit model builders (inlined from web/map/three-units/)
+// Each returns a THREE.Group with the model's mesh hierarchy.
+// =========================================================================
+
+/** Helper: box mesh */
+function _uBox(w, h, d, color) {
+  return new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshLambertMaterial({ color })
+  );
+}
+/** Helper: cylinder mesh */
+function _uCyl(rTop, rBot, h, color, seg = 12) {
+  return new THREE.Mesh(
+    new THREE.CylinderGeometry(rTop, rBot, h, seg),
+    new THREE.MeshLambertMaterial({ color })
+  );
+}
+/** Helper: sphere mesh */
+function _uSph(r, color, seg = 10) {
+  return new THREE.Mesh(
+    new THREE.SphereGeometry(r, seg, seg),
+    new THREE.MeshLambertMaterial({ color })
+  );
+}
+
+/** Person model — cylinder body + sphere head (infantry, scout, civilian, engineer) */
+function buildPersonModel(color) {
+  const g = new THREE.Group();
+  g.add(_uCyl(0.12, 0.15, 0.5, color));
+  const head = _uSph(0.1, 0xddbbaa);
+  head.position.y = 0.4;
+  g.add(head);
+  return g;
+}
+
+/** Sniper model — thin tall person + scope cylinder */
+function buildSniperModel(color) {
+  const g = new THREE.Group();
+  // Slimmer body
+  g.add(_uCyl(0.09, 0.12, 0.55, color));
+  const head = _uSph(0.09, 0xddbbaa);
+  head.position.y = 0.42;
+  g.add(head);
+  // Scope — horizontal cylinder on shoulder
+  const scope = _uCyl(0.02, 0.02, 0.35, 0x222222, 6);
+  scope.rotation.z = Math.PI / 2;
+  scope.position.set(0.15, 0.25, 0);
+  g.add(scope);
+  // Scope lens
+  const lens = _uSph(0.03, 0x4488ff, 6);
+  lens.position.set(0.32, 0.25, 0);
+  g.add(lens);
+  return g;
+}
+
+/** Heavy/tank model — box hull + turret cylinder + barrel */
+function buildHeavyModel(color) {
+  const g = new THREE.Group();
+  // Hull
+  g.add(_uBox(1.2, 0.3, 0.7, color));
+  // Turret dome
+  const turret = _uCyl(0.25, 0.3, 0.2, color);
+  turret.position.y = 0.25;
+  g.add(turret);
+  // Barrel
+  const barrel = _uCyl(0.05, 0.05, 1.0, 0x333333);
+  barrel.rotation.z = Math.PI / 2;
+  barrel.position.set(0.6, 0.3, 0);
+  g.add(barrel);
+  // Tracks
+  for (const z of [0.35, -0.35]) {
+    const track = _uBox(1.3, 0.15, 0.12, 0x222222);
+    track.position.set(0, -0.1, z);
+    g.add(track);
+  }
+  return g;
+}
+
+/** Medic model — person body + red/white cross on back */
+function buildMedicModel(color) {
+  const g = new THREE.Group();
+  g.add(_uCyl(0.13, 0.16, 0.5, color));
+  const head = _uSph(0.1, 0xddbbaa);
+  head.position.y = 0.4;
+  g.add(head);
+  // Cross — vertical bar + horizontal bar (bright white/red)
+  const crossV = _uBox(0.04, 0.22, 0.04, 0xff3333);
+  crossV.position.set(0, 0.15, -0.17);
+  g.add(crossV);
+  const crossH = _uBox(0.16, 0.04, 0.04, 0xff3333);
+  crossH.position.set(0, 0.20, -0.17);
+  g.add(crossH);
+  return g;
+}
+
+/** Turret model — platform + pedestal + sphere head + barrel */
+function buildTurretModel(color) {
+  const g = new THREE.Group();
+  const dark = 0x003344;
+  // Base platform
+  g.add(_uCyl(0.6, 0.7, 0.3, dark));
+  // Pedestal
+  const ped = _uCyl(0.25, 0.35, 0.6, color);
+  ped.position.y = 0.45;
+  g.add(ped);
+  // Head sphere
+  const head = _uSph(0.3, color);
+  head.position.y = 0.9;
+  g.add(head);
+  // Barrel
+  const barrel = _uCyl(0.06, 0.06, 0.8, dark);
+  barrel.rotation.z = Math.PI / 2;
+  barrel.position.set(0.5, 0.9, 0);
+  g.add(barrel);
+  return g;
+}
+
+/** Drone model — flat body + camera pod + 4 rotor discs */
+function buildDroneModel(color) {
+  const g = new THREE.Group();
+  // Body
+  g.add(_uBox(0.4, 0.15, 0.4, color));
+  // Camera pod
+  const cam = _uSph(0.08, 0x222222);
+  cam.position.set(0, -0.1, 0.15);
+  g.add(cam);
+  // 4 rotor arms + discs
+  const armPos = [[0.3,0,0.3],[-0.3,0,0.3],[0.3,0,-0.3],[-0.3,0,-0.3]];
+  g._rotors = [];
+  for (const [ax, ay, az] of armPos) {
+    const arm = _uBox(0.05, 0.05, 0.3, 0x333333);
+    arm.position.set(ax * 0.5, 0.05, az * 0.5);
+    g.add(arm);
+    const rotor = _uCyl(0.18, 0.18, 0.02, color, 16);
+    rotor.position.set(ax, 0.12, az);
+    g.add(rotor);
+    g._rotors.push(rotor);
+  }
+  return g;
+}
+
+/** Rover model — chassis + 4 wheels + sensor mast */
+function buildRoverModel(color) {
+  const g = new THREE.Group();
+  // Chassis
+  g.add(_uBox(0.8, 0.25, 0.5, color));
+  // Wheels
+  for (const [wx, wz] of [[0.3,0.3],[0.3,-0.3],[-0.3,0.3],[-0.3,-0.3]]) {
+    const wheel = _uCyl(0.12, 0.12, 0.08, 0x222222);
+    wheel.rotation.x = Math.PI / 2;
+    wheel.position.set(wx, -0.1, wz);
+    g.add(wheel);
+  }
+  // Sensor mast
+  const mast = _uCyl(0.03, 0.03, 0.4, 0x444444);
+  mast.position.set(0, 0.32, 0);
+  g.add(mast);
+  const sensor = _uSph(0.06, 0x00f0ff);
+  sensor.position.set(0, 0.55, 0);
+  g.add(sensor);
+  return g;
+}
+
+/**
+ * Build the appropriate 3D model for a unit type.
+ * @param {string} unitType — unit type string from the server
+ * @param {number} color — alliance hex color
+ * @returns {THREE.Group}
+ */
+function buildUnitModel(unitType, color) {
+  switch (unitType) {
+    case 'sniper':       return buildSniperModel(color);
+    case 'heavy':        return buildHeavyModel(color);
+    case 'medic':        return buildMedicModel(color);
+    case 'turret':       return buildTurretModel(color);
+    case 'drone':        return buildDroneModel(color);
+    case 'rover':        return buildRoverModel(color);
+    default:             return buildPersonModel(color);  // infantry, scout, civilian, engineer
+  }
+}
+
+/** Cache of per-unit 3D model groups: unitId -> { group, type, alliance } */
+const unitModelCache = new Map();
+/** Reusable color for per-unit recoloring (avoids allocation per frame) */
+const _unitRecolor = new THREE.Color();
+
+/** Dispose and remove a cached unit model */
+function disposeUnitModel(entry) {
+  if (!entry || !entry.group) return;
+  entry.group.traverse(child => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) {
+      if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+      else child.material.dispose();
+    }
+  });
+  scene.remove(entry.group);
+}
+
+// =========================================================================
+// InstancedMesh pools — vehicles, crowd (infantry now uses per-unit models)
 // =========================================================================
 const MAX_UNITS = 256;
 const MAX_PROJECTILES = 512;
 const MAX_CROWD = 512;
 
-// Unit mesh — capsule for infantry (body shape), separate emissive glow instance
-// CapsuleGeometry(radius, length, capSegments, radialSegments)
+// Legacy unit instanced mesh kept at zero count (glow uses it)
 const unitGeo = new THREE.CapsuleGeometry(0.45, 1.0, 4, 8);
 const unitMat = new THREE.MeshStandardMaterial({
   color: 0xffffff, roughness: 0.55, metalness: 0.15,
 });
 const unitInstances = new THREE.InstancedMesh(unitGeo, unitMat, MAX_UNITS);
 unitInstances.count = 0;
-unitInstances.castShadow = true;
-unitInstances.receiveShadow = true;
+unitInstances.visible = false; // replaced by per-unit models
 scene.add(unitInstances);
 
 // Selected unit glow — slightly larger transparent capsule, additive blending
@@ -1924,10 +2123,12 @@ function processFrame(frame) {
 }
 
 // =========================================================================
-// Unit rendering with InstancedMesh — capsule infantry + glow on selection
+// Unit rendering — type-specific 3D models + instanced vehicles
+// Each unit type gets a distinct mesh built from the three-units module
+// designs: tank hull for heavy, turret pedestal for turrets, quad-rotor
+// for drones, cross-bearing medic, scoped sniper, person for infantry.
 // =========================================================================
 function updateUnits(units) {
-  let unitIdx = 0;
   let vehicleIdx = 0;
   let glowIdx = 0;
   let hlIdx = 0; // headlight / tail light index
@@ -1935,6 +2136,7 @@ function updateUnits(units) {
   unitPositions.clear();
 
   const now = performance.now();
+  const activeUnitIds = new Set();
 
   for (const u of units) {
     const isVehicle = u.type === 'vehicle' || u.type === 'apc' || u.type === 'tank'
@@ -1942,11 +2144,25 @@ function updateUnits(units) {
     const allianceColor = ALLIANCE_COLORS[u.alliance] || ALLIANCE_COLORS.unknown;
     const px = u.x || 0;
     const pz = -(u.y || 0); // sim Y -> Three.js -Z
-    // Capsule center: capsule has radius 0.45 + half-length 0.5 = 0.95 total half-height
-    const py = (u.z || 0) + (isVehicle ? 0.7 : 0.95);
     const heading = u.heading || 0;
     const scale = u.scale || 1;
     const isSelected = u.id === selectedUnitId;
+
+    // Height offset depends on model type
+    let py;
+    if (isVehicle) {
+      py = (u.z || 0) + 0.7;
+    } else if (u.type === 'drone') {
+      py = (u.z || 0) + 3.0; // drones hover high
+    } else if (u.type === 'heavy') {
+      py = (u.z || 0) + 0.3; // tank hull sits low
+    } else if (u.type === 'turret') {
+      py = (u.z || 0) + 0.15; // turret sits on ground
+    } else if (u.type === 'rover') {
+      py = (u.z || 0) + 0.25;
+    } else {
+      py = (u.z || 0) + 0.25; // person models are shorter than the old capsule
+    }
 
     unitPositions.set(u.id, {
       x: px, y: py, z: pz,
@@ -2016,38 +2232,90 @@ function updateUnits(units) {
 
       vehicleIdx++;
 
-    } else if (unitIdx < MAX_UNITS) {
-      _pos.set(px, py, pz);
-      _euler.set(0, -heading, 0);
-      _quat.setFromEuler(_euler);
-      _scale.set(scale, scale, scale);
-      _mat4.compose(_pos, _quat, _scale);
-      unitInstances.setMatrixAt(unitIdx, _mat4);
+    } else {
+      // ── Per-unit type-specific 3D model ──
+      activeUnitIds.add(u.id);
+      let cached = unitModelCache.get(u.id);
 
-      _color.setHex(allianceColor);
-      // Dim dead/wounded units slightly
+      // Rebuild if type or alliance changed (e.g., unit switched sides)
+      if (cached && (cached.type !== u.type || cached.alliance !== u.alliance)) {
+        disposeUnitModel(cached);
+        unitModelCache.delete(u.id);
+        cached = null;
+      }
+
+      if (!cached) {
+        const group = buildUnitModel(u.type, allianceColor);
+        group.castShadow = true;
+        group.receiveShadow = true;
+        scene.add(group);
+        cached = { group, type: u.type, alliance: u.alliance };
+        unitModelCache.set(u.id, cached);
+      }
+
+      // Position, rotation, scale
+      cached.group.position.set(px, py, pz);
+      cached.group.rotation.set(0, -heading, 0);
+      cached.group.scale.set(scale, scale, scale);
+      cached.group.visible = true;
+
+      // Recolor by alliance (update colorable LambertMaterial children)
       const hp = u.health || 0;
-      if (hp < 0.3) _color.multiplyScalar(0.55 + hp);
-      unitInstances.setColorAt(unitIdx, _color);
+      const dimFactor = hp < 0.3 ? (0.55 + hp) : 1.0;
+      const brightFactor = isSelected ? 1.6 : dimFactor;
+      _unitRecolor.setHex(allianceColor).multiplyScalar(brightFactor);
 
-      // Glow layer for selected unit — pulsing opacity
+      // Tag colorable meshes on first creation so we skip the check each frame
+      if (!cached._tagged) {
+        cached._tagged = true;
+        cached._colorable = [];
+        // Structural/detail colors that should NOT be recolored by alliance
+        const skipColors = new Set([
+          0x222222, 0x333333, 0x003344, 0x444444, 0xddbbaa, 0xff3333, 0x4488ff, 0x00f0ff,
+        ]);
+        cached.group.traverse(child => {
+          if (child.isMesh && child.material && child.material.isMeshLambertMaterial
+              && !skipColors.has(child.material.color.getHex())) {
+            cached._colorable.push(child.material);
+          }
+        });
+      }
+      for (const mat of cached._colorable) {
+        mat.color.copy(_unitRecolor);
+      }
+
+      // Animate drone rotors
+      if (u.type === 'drone' && cached.group._rotors) {
+        const dt = 0.016; // ~60fps assumed
+        for (const r of cached.group._rotors) {
+          r.rotation.y += dt * 30;
+        }
+      }
+
+      // Glow layer for selected unit — pulsing transparent capsule
       if (isSelected && glowIdx < MAX_UNITS) {
+        _pos.set(px, py + 0.5, pz);
+        _euler.set(0, -heading, 0);
+        _quat.setFromEuler(_euler);
+        _scale.set(scale * 1.5, scale * 1.5, scale * 1.5);
+        _mat4.compose(_pos, _quat, _scale);
         unitGlowInstances.setMatrixAt(glowIdx, _mat4);
-        const pulse = Math.sin(now * 0.006) * 0.5 + 0.5; // 0..1
+        const pulse = Math.sin(now * 0.006) * 0.5 + 0.5;
         _color.setHex(allianceColor).multiplyScalar(1.0 + pulse * 0.8);
         unitGlowInstances.setColorAt(glowIdx, _color);
         glowIdx++;
       }
-
-      unitIdx++;
     }
 
     updateUnitLabel(u, px, py, pz, allianceColor);
   }
 
-  unitInstances.count = unitIdx;
-  unitInstances.instanceMatrix.needsUpdate = true;
-  if (unitInstances.instanceColor) unitInstances.instanceColor.needsUpdate = true;
+  // Hide/remove models for units no longer in the frame
+  for (const [id, entry] of unitModelCache) {
+    if (!activeUnitIds.has(id)) {
+      entry.group.visible = false;
+    }
+  }
 
   vehicleInstances.count = vehicleIdx;
   vehicleInstances.instanceMatrix.needsUpdate = true;
@@ -2067,7 +2335,6 @@ function updateUnits(units) {
   unitGlowInstances.count = glowIdx;
   unitGlowInstances.instanceMatrix.needsUpdate = true;
   if (unitGlowInstances.instanceColor) unitGlowInstances.instanceColor.needsUpdate = true;
-  // Only make glow visible when something is selected
   unitGlowInstances.visible = glowIdx > 0;
 
   // Remove labels for units no longer present
