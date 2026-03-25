@@ -122,6 +122,64 @@ _ESCALATION_RIOTING_RATIO = 0.50
 
 
 # ---------------------------------------------------------------------------
+# Spatial hash for O(1) neighbor queries
+# ---------------------------------------------------------------------------
+
+class _CrowdGrid:
+    """Lightweight spatial hash for CrowdMember neighbor queries.
+
+    Avoids O(n^2) scans in mood propagation and separation by partitioning
+    members into grid cells.  Rebuilt once per tick, queried many times.
+    """
+
+    __slots__ = ("_cell_size", "_inv_cell_size", "_cells")
+
+    def __init__(self, cell_size: float = 5.0) -> None:
+        self._cell_size = cell_size
+        self._inv_cell_size = 1.0 / cell_size
+        self._cells: dict[tuple[int, int], list[CrowdMember]] = {}
+
+    def rebuild(self, members: list[CrowdMember]) -> None:
+        """Clear and re-insert all members."""
+        cells: dict[tuple[int, int], list[CrowdMember]] = {}
+        inv = self._inv_cell_size
+        for m in members:
+            key = (int(math.floor(m.position[0] * inv)),
+                   int(math.floor(m.position[1] * inv)))
+            bucket = cells.get(key)
+            if bucket is None:
+                bucket = []
+                cells[key] = bucket
+            bucket.append(m)
+        self._cells = cells
+
+    def query_radius(self, pos: Vec2, radius: float) -> list[CrowdMember]:
+        """Return all members within *radius* of *pos*."""
+        px, py = pos
+        r2 = radius * radius
+        inv = self._inv_cell_size
+
+        min_cx = int(math.floor((px - radius) * inv))
+        max_cx = int(math.floor((px + radius) * inv))
+        min_cy = int(math.floor((py - radius) * inv))
+        max_cy = int(math.floor((py + radius) * inv))
+
+        result: list[CrowdMember] = []
+        cells = self._cells
+        for cx in range(min_cx, max_cx + 1):
+            for cy in range(min_cy, max_cy + 1):
+                bucket = cells.get((cx, cy))
+                if bucket is None:
+                    continue
+                for m in bucket:
+                    dx = m.position[0] - px
+                    dy = m.position[1] - py
+                    if dx * dx + dy * dy <= r2:
+                        result.append(m)
+        return result
+
+
+# ---------------------------------------------------------------------------
 # Simulator
 # ---------------------------------------------------------------------------
 
@@ -144,6 +202,7 @@ class CrowdSimulator:
         self.overall_mood: CrowdMood = CrowdMood.CALM
         self._time: float = 0.0
         self._exits: list[Vec2] = self._compute_exits()
+        self._grid = _CrowdGrid(cell_size=5.0)
 
     # -- helpers -------------------------------------------------------------
 
@@ -280,6 +339,12 @@ class CrowdSimulator:
         """
         self._time += dt
 
+        # Rebuild spatial grid once per tick for O(1) neighbor queries
+        self._grid.rebuild(self.members)
+
+        # Precompute group centers (avoids O(n) scan per member)
+        self._group_center_cache = self._compute_group_centers()
+
         # 1. Mood propagation
         self._propagate_moods(dt)
 
@@ -296,37 +361,48 @@ class CrowdSimulator:
         self._update_overall_mood()
 
     def _propagate_moods(self, dt: float) -> None:
-        """Neighbors within range influence each other's aggression/fear."""
+        """Neighbors within range influence each other's aggression/fear.
+
+        Uses the spatial grid for O(k) neighbor lookups instead of O(n) scans.
+        """
         n = len(self.members)
         if n == 0:
             return
 
         # Accumulate deltas then apply (avoid order-dependent bias)
-        agg_deltas = [0.0] * n
-        fear_deltas = [0.0] * n
+        agg_deltas: dict[int, float] = {}
+        fear_deltas: dict[int, float] = {}
 
+        # Build id->index map for delta accumulation
+        id_to_idx: dict[int, int] = {id(m): i for i, m in enumerate(self.members)}
+
+        grid = self._grid
         for i in range(n):
             mi = self.members[i]
             radius = _NEIGHBOR_RADIUS * (_LEADER_RADIUS_MULT if mi.is_leader else 1.0)
             influence = _PROPAGATION_STRENGTH * (_LEADER_INFLUENCE_MULT if mi.is_leader else 1.0)
 
-            for j in range(n):
-                if i == j:
+            neighbors = grid.query_radius(mi.position, radius)
+            for mj in neighbors:
+                if mj is mi:
                     continue
-                mj = self.members[j]
                 d = distance(mi.position, mj.position)
-                if d > radius or d < 1e-6:
+                if d < 1e-6:
                     continue
 
                 falloff = 1.0 - (d / radius)
+                j = id_to_idx[id(mj)]
                 # i influences j
-                agg_deltas[j] += (mi.aggression - mj.aggression) * influence * falloff * dt
-                fear_deltas[j] += (mi.fear - mj.fear) * influence * falloff * dt
+                agg_deltas[j] = agg_deltas.get(j, 0.0) + (mi.aggression - mj.aggression) * influence * falloff * dt
+                fear_deltas[j] = fear_deltas.get(j, 0.0) + (mi.fear - mj.fear) * influence * falloff * dt
 
-        for i in range(n):
-            m = self.members[i]
-            m.aggression = max(0.0, min(1.0, m.aggression + agg_deltas[i]))
-            m.fear = max(0.0, min(1.0, m.fear + fear_deltas[i]))
+        for j, delta in agg_deltas.items():
+            m = self.members[j]
+            m.aggression = max(0.0, min(1.0, m.aggression + delta))
+        for j, delta in fear_deltas.items():
+            m = self.members[j]
+            m.fear = max(0.0, min(1.0, m.fear + delta))
+        for m in self.members:
             m.mood = self._resolve_mood(m)
 
     def _move_members(self, dt: float) -> None:
@@ -399,21 +475,44 @@ class CrowdSimulator:
             new_pos = _add(m.position, _scale(m.velocity, dt))
             m.position = self._clamp_to_bounds(new_pos)
 
+    def _compute_group_centers(self) -> dict[str, Vec2]:
+        """Precompute center position for each group, biased toward leaders.
+
+        Returns a dict mapping group_id -> center Vec2.  Called once per tick.
+        """
+        # Accumulate sums per group for leaders and all members separately
+        leader_sums: dict[str, tuple[float, float, int]] = {}  # (sum_x, sum_y, count)
+        all_sums: dict[str, tuple[float, float, int]] = {}
+
+        for m in self.members:
+            gid = m.group_id
+            if not gid:
+                continue
+            px, py = m.position
+            prev = all_sums.get(gid, (0.0, 0.0, 0))
+            all_sums[gid] = (prev[0] + px, prev[1] + py, prev[2] + 1)
+            if m.is_leader:
+                prev_l = leader_sums.get(gid, (0.0, 0.0, 0))
+                leader_sums[gid] = (prev_l[0] + px, prev_l[1] + py, prev_l[2] + 1)
+
+        centers: dict[str, Vec2] = {}
+        for gid, (sx, sy, cnt) in all_sums.items():
+            ldata = leader_sums.get(gid)
+            if ldata and ldata[2] > 0:
+                centers[gid] = (ldata[0] / ldata[2], ldata[1] / ldata[2])
+            elif cnt > 0:
+                centers[gid] = (sx / cnt, sy / cnt)
+        return centers
+
     def _group_center(self, member: CrowdMember) -> Vec2:
-        """Center of this member's group, biased toward leaders."""
-        same_group = [m for m in self.members if m.group_id == member.group_id and m is not member]
-        if not same_group:
-            return member.position
+        """Center of this member's group, biased toward leaders.
 
-        leaders = [m for m in same_group if m.is_leader]
-        if leaders:
-            cx = sum(m.position[0] for m in leaders) / len(leaders)
-            cy = sum(m.position[1] for m in leaders) / len(leaders)
-            return (cx, cy)
-
-        cx = sum(m.position[0] for m in same_group) / len(same_group)
-        cy = sum(m.position[1] for m in same_group) / len(same_group)
-        return (cx, cy)
+        Uses precomputed cache from _compute_group_centers().
+        """
+        cache = getattr(self, "_group_center_cache", None)
+        if cache and member.group_id in cache:
+            return cache[member.group_id]
+        return member.position
 
     def _nearest_threat(self, member: CrowdMember) -> Vec2 | None:
         """Position of the nearest fear-inducing event."""
@@ -424,11 +523,15 @@ class CrowdSimulator:
         return nearest.position
 
     def _separation_force(self, member: CrowdMember) -> Vec2:
-        """Repulsion force from nearby crowd members."""
+        """Repulsion force from nearby crowd members.
+
+        Uses the spatial grid for O(k) neighbor lookups instead of O(n) scans.
+        """
         sep_radius = 1.5
         force = (0.0, 0.0)
         count = 0
-        for m in self.members:
+        neighbors = self._grid.query_radius(member.position, sep_radius)
+        for m in neighbors:
             if m is member:
                 continue
             d = distance(member.position, m.position)
