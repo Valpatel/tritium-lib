@@ -13,13 +13,20 @@ Strategies:
   - SignalPatternStrategy: appearance/disappearance timing correlation
   - DossierStrategy: known prior associations from DossierStore
   - WiFiProbeStrategy: WiFi probe + BLE correlation
+
+Calibration:
+  - ConfidenceCalibrator: tracks historical accuracy per strategy and
+    adjusts raw scores to calibrated probabilities.  Supports threshold
+    auto-tuning based on false-positive rate.
 """
 
 from __future__ import annotations
 
 import math
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 
 from .target_history import TargetHistory
 from .target_tracker import TrackedTarget
@@ -32,6 +39,168 @@ class StrategyScore:
     strategy_name: str
     score: float  # 0.0 to 1.0
     detail: str  # human-readable explanation
+
+
+# ---------------------------------------------------------------------------
+# Confidence calibration — historical accuracy tracking per strategy
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CalibrationRecord:
+    """One recorded outcome for a strategy prediction."""
+
+    strategy_name: str
+    predicted_score: float
+    actual_match: bool  # True = confirmed same entity, False = false positive
+    timestamp: float = field(default_factory=time.monotonic)
+
+
+class ConfidenceCalibrator:
+    """Track historical accuracy per strategy and calibrate raw scores.
+
+    For each strategy, we maintain a rolling window of outcomes — what the
+    strategy predicted vs. whether the correlation was correct.  This lets
+    us compute per-strategy precision and recall, and adjust raw scores so
+    that a score of X actually means "X% chance the targets are the same
+    entity".
+
+    The calibrator also supports threshold auto-tuning: given a target
+    false-positive rate, it recommends the minimum combined confidence
+    threshold.
+    """
+
+    MAX_HISTORY = 500  # rolling window per strategy
+
+    def __init__(self, *, target_fpr: float = 0.05) -> None:
+        self._history: dict[str, deque[CalibrationRecord]] = {}
+        self.target_fpr = target_fpr  # desired false-positive rate
+
+    def record_outcome(
+        self,
+        strategy_name: str,
+        predicted_score: float,
+        actual_match: bool,
+    ) -> None:
+        """Record the outcome of a correlation decision."""
+        if strategy_name not in self._history:
+            self._history[strategy_name] = deque(maxlen=self.MAX_HISTORY)
+        self._history[strategy_name].append(
+            CalibrationRecord(
+                strategy_name=strategy_name,
+                predicted_score=predicted_score,
+                actual_match=actual_match,
+            )
+        )
+
+    def precision(self, strategy_name: str, threshold: float = 0.3) -> float:
+        """Precision for a strategy at the given threshold.
+
+        precision = true_positives / (true_positives + false_positives)
+        Returns 1.0 if no data available (optimistic default).
+        """
+        records = self._history.get(strategy_name)
+        if not records:
+            return 1.0
+        tp = sum(1 for r in records if r.predicted_score >= threshold and r.actual_match)
+        fp = sum(1 for r in records if r.predicted_score >= threshold and not r.actual_match)
+        denom = tp + fp
+        return tp / denom if denom > 0 else 1.0
+
+    def recall(self, strategy_name: str, threshold: float = 0.3) -> float:
+        """Recall for a strategy at the given threshold.
+
+        recall = true_positives / (true_positives + false_negatives)
+        Returns 1.0 if no data available.
+        """
+        records = self._history.get(strategy_name)
+        if not records:
+            return 1.0
+        tp = sum(1 for r in records if r.predicted_score >= threshold and r.actual_match)
+        fn = sum(1 for r in records if r.predicted_score < threshold and r.actual_match)
+        denom = tp + fn
+        return tp / denom if denom > 0 else 1.0
+
+    def false_positive_rate(self, strategy_name: str, threshold: float = 0.3) -> float:
+        """FPR = false_positives / (false_positives + true_negatives)."""
+        records = self._history.get(strategy_name)
+        if not records:
+            return 0.0
+        fp = sum(1 for r in records if r.predicted_score >= threshold and not r.actual_match)
+        tn = sum(1 for r in records if r.predicted_score < threshold and not r.actual_match)
+        denom = fp + tn
+        return fp / denom if denom > 0 else 0.0
+
+    def calibrate_score(self, strategy_name: str, raw_score: float) -> float:
+        """Apply isotonic-style calibration to a raw strategy score.
+
+        Uses binned precision: divides the [0, 1] range into 10 bins and
+        maps the raw score to the observed precision in that bin.  Falls
+        back to the raw score when insufficient data is available.
+        """
+        records = self._history.get(strategy_name)
+        if not records or len(records) < 10:
+            return raw_score  # not enough data to calibrate
+
+        # Find the bin (0.0-0.1, 0.1-0.2, ..., 0.9-1.0)
+        bin_idx = min(9, int(raw_score * 10))
+        bin_low = bin_idx * 0.1
+        bin_high = bin_low + 0.1
+
+        in_bin = [r for r in records if bin_low <= r.predicted_score < bin_high]
+        if len(in_bin) < 3:
+            return raw_score  # not enough samples in this bin
+
+        actual_rate = sum(1 for r in in_bin if r.actual_match) / len(in_bin)
+        return max(0.0, min(1.0, actual_rate))
+
+    def recommend_threshold(self) -> float:
+        """Recommend a confidence threshold to achieve the target FPR.
+
+        Scans thresholds from 0.1 to 0.9 and returns the lowest threshold
+        where the overall FPR (across all strategies) is at or below
+        the target FPR.  Returns 0.3 as default when data is insufficient.
+        """
+        all_records: list[CalibrationRecord] = []
+        for q in self._history.values():
+            all_records.extend(q)
+
+        if len(all_records) < 20:
+            return 0.3  # default, not enough data
+
+        best_threshold = 0.3
+        for candidate in [i / 10.0 for i in range(1, 10)]:
+            fp = sum(1 for r in all_records if r.predicted_score >= candidate and not r.actual_match)
+            tn = sum(1 for r in all_records if r.predicted_score < candidate and not r.actual_match)
+            denom = fp + tn
+            fpr = fp / denom if denom > 0 else 0.0
+            if fpr <= self.target_fpr:
+                best_threshold = candidate
+                break
+
+        return best_threshold
+
+    def strategy_stats(self, strategy_name: str) -> dict:
+        """Return a summary of calibration stats for a strategy."""
+        records = self._history.get(strategy_name)
+        if not records:
+            return {
+                "strategy": strategy_name,
+                "sample_count": 0,
+                "precision": 1.0,
+                "recall": 1.0,
+                "fpr": 0.0,
+            }
+        return {
+            "strategy": strategy_name,
+            "sample_count": len(records),
+            "precision": self.precision(strategy_name),
+            "recall": self.recall(strategy_name),
+            "fpr": self.false_positive_rate(strategy_name),
+        }
+
+    def all_stats(self) -> list[dict]:
+        """Return calibration stats for all tracked strategies."""
+        return [self.strategy_stats(name) for name in sorted(self._history.keys())]
 
 
 class CorrelationStrategy(ABC):

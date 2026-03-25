@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 
 from .correlation_strategies import (
+    ConfidenceCalibrator,
     CorrelationStrategy,
     DossierStrategy,
     SignalPatternStrategy,
@@ -63,6 +64,8 @@ class CorrelationRecord:
     timestamp: float = field(default_factory=time.monotonic)
     strategy_scores: list[StrategyScore] = field(default_factory=list)
     dossier_uuid: str = ""
+    explanation: str = ""  # human-readable why these targets were correlated
+    calibrated_confidence: float = 0.0  # score after calibration adjustments
 
 
 # Default strategy weights
@@ -112,6 +115,8 @@ class TargetCorrelator:
         graph_store: object | None = None,
         training_store_fn=None,
         learned_strategy_fn=None,
+        calibrator: ConfidenceCalibrator | None = None,
+        auto_tune_threshold: bool = False,
     ) -> None:
         self.tracker = tracker
         self.radius = radius
@@ -123,6 +128,8 @@ class TargetCorrelator:
         self.graph_store = graph_store
         self._training_store_fn = training_store_fn
         self._training_store_cache = None
+        self.calibrator = calibrator or ConfidenceCalibrator()
+        self.auto_tune_threshold = auto_tune_threshold
 
         if strategies is not None:
             self.strategies = list(strategies)
@@ -195,6 +202,17 @@ class TargetCorrelator:
         targets = self.tracker.get_all()
         now = time.monotonic()
 
+        # Auto-tune threshold if enabled and calibrator has enough data
+        if self.auto_tune_threshold:
+            recommended = self.calibrator.recommend_threshold()
+            if recommended != self.confidence_threshold:
+                logger.debug(
+                    "Auto-tuning threshold: %.2f -> %.2f",
+                    self.confidence_threshold,
+                    recommended,
+                )
+                self.confidence_threshold = recommended
+
         recent = [t for t in targets if (now - t.last_seen) <= self.max_age]
 
         new_correlations: list[CorrelationRecord] = []
@@ -215,6 +233,11 @@ class TargetCorrelator:
                 scores = self._evaluate_pair(primary, secondary)
                 weighted_confidence = self._weighted_score(scores)
 
+                # Calibrate individual strategy scores and compute calibrated
+                # combined confidence
+                calibrated_scores = self._calibrate_scores(scores)
+                calibrated_confidence = self._weighted_score(calibrated_scores)
+
                 self._log_correlation_decision(
                     primary, secondary, scores, weighted_confidence,
                     correlated=weighted_confidence >= self.confidence_threshold,
@@ -229,6 +252,10 @@ class TargetCorrelator:
                     f"{primary.source}+{secondary.source} "
                     f"[{', '.join(reason_parts)}] "
                     f"combined={weighted_confidence:.2f}"
+                )
+
+                explanation = self._build_explanation(
+                    primary, secondary, scores, weighted_confidence,
                 )
 
                 dossier = self.dossier_store.create_or_update(
@@ -254,6 +281,8 @@ class TargetCorrelator:
                     reason=reason,
                     strategy_scores=list(scores),
                     dossier_uuid=dossier.uuid,
+                    explanation=explanation,
+                    calibrated_confidence=calibrated_confidence,
                 )
                 new_correlations.append(record)
                 consumed.add(secondary.target_id)
@@ -267,11 +296,12 @@ class TargetCorrelator:
                 self.tracker.remove(secondary.target_id)
 
                 logger.info(
-                    "Correlated %s + %s -> dossier %s (confidence=%.2f)",
+                    "Correlated %s + %s -> dossier %s (confidence=%.2f, calibrated=%.2f)",
                     primary.target_id,
                     secondary.target_id,
                     dossier.uuid[:8],
                     weighted_confidence,
+                    calibrated_confidence,
                 )
 
         with self._lock:
@@ -356,6 +386,101 @@ class TargetCorrelator:
             return 0.0
 
         return min(1.0, total_score / total_weight)
+
+    def _calibrate_scores(self, scores: list[StrategyScore]) -> list[StrategyScore]:
+        """Return calibrated copies of strategy scores using the calibrator."""
+        calibrated: list[StrategyScore] = []
+        for s in scores:
+            cal_score = self.calibrator.calibrate_score(s.strategy_name, s.score)
+            calibrated.append(
+                StrategyScore(
+                    strategy_name=s.strategy_name,
+                    score=cal_score,
+                    detail=s.detail,
+                )
+            )
+        return calibrated
+
+    def _build_explanation(
+        self,
+        primary: TrackedTarget,
+        secondary: TrackedTarget,
+        scores: list[StrategyScore],
+        weighted_confidence: float,
+    ) -> str:
+        """Build a human-readable explanation for why two targets were correlated.
+
+        The explanation is structured as a natural-language paragraph that
+        a human operator can read in a dossier or investigation panel.
+        """
+        parts: list[str] = []
+
+        # Header
+        parts.append(
+            f"{primary.name} ({primary.source}) was correlated with "
+            f"{secondary.name} ({secondary.source}) at "
+            f"{weighted_confidence:.0%} confidence."
+        )
+
+        # Describe each contributing strategy
+        contributing = sorted(
+            [s for s in scores if s.score > 0],
+            key=lambda s: s.score,
+            reverse=True,
+        )
+        if contributing:
+            strongest = contributing[0]
+            w = self.weights.get(strongest.strategy_name, 0.0)
+            parts.append(
+                f"Strongest signal: {strongest.strategy_name} "
+                f"(score={strongest.score:.2f}, weight={w:.0%}): "
+                f"{strongest.detail}."
+            )
+
+        if len(contributing) > 1:
+            supporting = [
+                f"{s.strategy_name} ({s.score:.2f}: {s.detail})"
+                for s in contributing[1:]
+            ]
+            parts.append("Supporting evidence: " + "; ".join(supporting) + ".")
+
+        # Note non-contributing strategies
+        non_contributing = [s for s in scores if s.score == 0]
+        if non_contributing:
+            names = [s.strategy_name for s in non_contributing]
+            parts.append(f"No signal from: {', '.join(names)}.")
+
+        # Confidence quality assessment
+        if weighted_confidence >= 0.8:
+            parts.append("Assessment: HIGH confidence -- strong multi-signal correlation.")
+        elif weighted_confidence >= 0.5:
+            parts.append("Assessment: MEDIUM confidence -- plausible but additional evidence recommended.")
+        else:
+            parts.append("Assessment: LOW confidence -- tentative link, may be coincidental.")
+
+        return " ".join(parts)
+
+    def record_outcome(
+        self,
+        record: CorrelationRecord,
+        actual_match: bool,
+    ) -> None:
+        """Record whether a correlation was actually correct (for calibration).
+
+        This should be called when a human operator confirms or denies a
+        correlation, or when automated validation determines the outcome.
+        The data feeds the ConfidenceCalibrator for future accuracy.
+        """
+        for s in record.strategy_scores:
+            self.calibrator.record_outcome(
+                strategy_name=s.strategy_name,
+                predicted_score=s.score,
+                actual_match=actual_match,
+            )
+
+    def get_calibration_stats(self) -> list[dict]:
+        """Return calibration statistics for all strategies."""
+        return self.calibrator.all_stats()
 
     def get_correlations(self) -> list[CorrelationRecord]:
         """Return all correlation records."""
