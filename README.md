@@ -2,7 +2,7 @@
 
 Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel/tritium) unified operating picture system. Provides models, tracking, inference, simulation, events, MQTT topics, auth, and reusable frontend components used by tritium-sc (Command Center), tritium-edge (ESP32 firmware/fleet server), and tritium-addons.
 
-**376 Python modules | 54 JS modules | 344 test files (11,411+ tests) | 101 Pydantic models | 152 sim engine files | 10 standalone demos**
+**539 Python modules | 54 JS modules | 380 test files (15,020+ tests) | 278 Pydantic models | 170 sim engine files | 13 standalone demos**
 
 Copyright 2026 Matthew Valancy / Valpatel Software LLC / AGPL-3.0
 
@@ -23,8 +23,8 @@ pip install -e ".[full]"            # All optional deps
 
 ```
 tritium-lib/
-├── src/tritium_lib/           # Python packages (376 modules)
-│   ├── models/                # 101 Pydantic v2 models -- THE canonical data contracts
+├── src/tritium_lib/           # Python packages (539 modules, 63 packages)
+│   ├── models/                # 278 Pydantic v2 models -- THE canonical data contracts
 │   ├── tracking/              # Target tracker, correlator, geofence, Kalman, dossiers
 │   ├── inference/             # LLM client, fleet inference, model router
 │   ├── intelligence/          # Acoustic classifier, anomaly, RL metrics, fusion, position
@@ -52,7 +52,7 @@ tritium-lib/
 │   ├── utils/                 # Feature extraction, memory helpers
 │   ├── web/                   # Cyberpunk HTML theme engine + dashboard components
 │   ├── testing/               # Visual regression checks, ESP32 device automation
-│   └── sim_engine/            # Tactical simulation engine (152 files)
+│   └── sim_engine/            # Tactical simulation engine (170 files)
 │       ├── ai/                # Combat AI, behavior trees, pathfinding, steering
 │       ├── behavior/          # NPC behaviors, unit states, missions
 │       ├── combat/            # Combat resolution, squads, weapons
@@ -67,8 +67,8 @@ tritium-lib/
 │       └── demos/             # Demo apps + HTML frontends
 ├── web/                       # Shared JS/CSS frontend library (54 modules)
 │   ├── css/                   # Cyberpunk themes (cybercore v1 + v2)
-│   ├── map/                   # Tactical map components (MapLibre GL)
-│   ├── sim/                   # City simulation (IDM, MOBIL, pedestrians, protest)
+│   ├── map/                   # Tactical map components (MapLibre GL, 31 modules)
+│   ├── sim/                   # City simulation (IDM, MOBIL, pedestrians, protest, 15 modules)
 │   ├── panels/                # Draggable/resizable panel system
 │   ├── events.js              # Frontend EventBus (pub/sub)
 │   ├── store.js               # ReactiveStore (dot-path state, RAF-batched)
@@ -76,25 +76,28 @@ tritium-lib/
 │   ├── command-palette.js     # Fuzzy search command palette (Ctrl+K)
 │   ├── layout-manager.js      # Panel layout save/restore/import/export
 │   └── utils.js               # _esc, _timeAgo, _badge, _fetchJson
-└── tests/                     # 344 test files (320 Python + 24 JS)
+└── tests/                     # 380 test files (15,020+ tests)
 ```
 
 ## Standalone Demos
 
-Ten self-contained demos prove each major subsystem works independently of tritium-sc. Each starts its own HTTP server with a cyberpunk UI.
+Thirteen self-contained demos prove each major subsystem works independently of tritium-sc. Each starts its own HTTP server with a cyberpunk UI.
 
 | # | Demo | Command | Port | Description |
 |---|------|---------|------|-------------|
-| 1 | Tracking | `python -m tritium_lib.tracking.demos.tracking_demo` | 8090 | Target tracking pipeline -- BLE/WiFi/camera fusion, correlation, geofencing |
-| 2 | Intelligence | `python -m tritium_lib.intelligence.demos.pipeline_demo` | 8091 | Sensor fusion, anomaly detection, acoustic classification, threat assessment |
-| 3 | MQTT | `python -m tritium_lib.mqtt.demos.mqtt_demo` | 8092 | Sensor-to-fusion pipeline with mock or live MQTT broker |
-| 4 | CoT/TAK | `python -m tritium_lib.cot.demos.cot_demo` | 8093 | MIL-STD-2045 Cursor on Target XML codec -- TAK/ATAK interoperability |
-| 5 | Firmware | `python -m tritium_lib.firmware.demos.firmware_demo` | 8094 | Device discovery, OTA flash progress, fleet firmware management |
+| 1 | Tracking | `python -m tritium_lib.tracking.demos.tracking_demo` | 9091 | Target tracking pipeline -- BLE/WiFi/camera fusion, correlation, geofencing |
+| 2 | Intelligence | `python -m tritium_lib.intelligence.demos.pipeline_demo` | 8090 | Sensor fusion, anomaly detection, acoustic classification, threat assessment |
+| 3 | MQTT | `python -m tritium_lib.mqtt.demos.mqtt_demo` | 9092 | Sensor-to-fusion pipeline with mock or live MQTT broker |
+| 4 | CoT/TAK | `python -m tritium_lib.cot.demos.cot_demo` | 9094 | MIL-STD-2045 Cursor on Target XML codec -- TAK/ATAK interoperability |
+| 5 | Firmware | `python -m tritium_lib.firmware.demos.firmware_demo` | 8098 | Device discovery, OTA flash progress, fleet firmware management |
 | 6 | Graph | `python -m tritium_lib.graph.demos.graph_demo` | 8099 | Entity-relationship storage, querying, SVG visualization |
-| 7 | Notifications | `python -m tritium_lib.notifications.demos.notification_demo` | 8095 | Geofence alerts, threat scoring, sensor health, notification routing |
-| 8 | SDR | `python -m tritium_lib.sdr.demos.sdr_demo` | 8096 | SDR spectrum analyzer simulation and signal analysis |
+| 7 | Notifications | `python -m tritium_lib.notifications.demos.notification_demo` | 9092 | Geofence alerts, threat scoring, sensor health, notification routing |
+| 8 | SDR | `python -m tritium_lib.sdr.demos.sdr_demo` | 9092 | SDR spectrum analyzer simulation and signal analysis |
 | 9 | City Sim | `python -m tritium_lib.sim_engine.demos.demo_city` | -- | City simulation with traffic (IDM/MOBIL) and pedestrians |
 | 10 | Tactical Sim | `python -m tritium_lib.sim_engine.demos.demo_full` | 9090 | Full 3D combat sim -- squads, weapons, AI, morale, effects |
+| 11 | Auth | `python -m tritium_lib.auth.demos.auth_demo` | 9097 | JWT login, refresh tokens, API keys, RBAC, cyberpunk login page |
+| 12 | Sitaware | `python -m tritium_lib.sitaware.demos.sitaware_demo` | 9095 | Full operating picture -- tracking, fusion, intelligence, alerting, reporting |
+| 13 | Integrated | `python -m tritium_lib.sim_engine.demos.integrated_demo` | 8099 | City sim to sensor fusion end-to-end pipeline with correlation and geofencing |
 
 Additional sim engine utilities:
 
@@ -120,7 +123,7 @@ Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_
 
 | Module | Import | Description |
 |--------|--------|-------------|
-| `models` | `from tritium_lib.models import Device, BleSighting` | 101 Pydantic v2 models for devices, BLE, mesh, cameras, alerts, CoT, sensors, floorplans, dossiers, and more |
+| `models` | `from tritium_lib.models import Device, BleSighting` | 278 Pydantic v2 models for devices, BLE, mesh, cameras, alerts, CoT, sensors, floorplans, dossiers, and more |
 | `events` | `from tritium_lib.events import EventBus, AsyncEventBus` | Thread-safe and async pub/sub with wildcard topic matching |
 | `mqtt` | `from tritium_lib.mqtt import TritiumTopics` | MQTT topic hierarchy builder (`tritium/{site}/{domain}/{device}/{type}`) |
 | `auth` | `from tritium_lib.auth import create_token, decode_token` | JWT creation/decoding and API key management |
@@ -164,7 +167,7 @@ Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_
 | `nodes` | `from tritium_lib.nodes import BaseNode` | Node base classes |
 | `comms` | `from tritium_lib.comms import Speaker` | Communication abstractions (TTS) |
 
-### Simulation Engine (152 Python files + 14 JS modules)
+### Simulation Engine (170 Python files + 15 JS modules)
 
 | Subpackage | Description |
 |------------|-------------|
@@ -257,18 +260,18 @@ The `web/` directory contains 54 vanilla ES modules (no build step) used by trit
 
 | Package | Modules | Purpose |
 |---------|---------|---------|
-| `web/map/` | 28 | Tactical map: coords, layers, draw tools, battle HUD, asset types, effects, 3D units, providers |
-| `web/sim/` | 14 | City simulation: IDM car-following, MOBIL lane changes, pedestrians, protest, traffic, weather |
+| `web/map/` | 31 | Tactical map: coords, layers, draw tools, battle HUD, asset types, effects, 3D units, providers |
+| `web/sim/` | 15 | City simulation: IDM car-following, MOBIL lane changes, pedestrians, protest, traffic, weather |
 | `web/panels/` | 2 | Draggable/resizable panel system with tabs |
 | `web/css/` | 2 | Cyberpunk theme stylesheets (cybercore v1 + v2) |
-| root | 5 | EventBus, ReactiveStore, TritiumWebSocket, CommandPalette, LayoutManager, utils |
+| root | 6 | EventBus, ReactiveStore, TritiumWebSocket, CommandPalette, LayoutManager, utils |
 
 SC serves these at `/lib/` via a StaticFiles mount or symlink.
 
 ## Tests
 
 ```bash
-pytest tests/                          # Run all 344 test files (11,411+ tests)
+pytest tests/                          # Run all 380 test files (15,020+ tests)
 pytest tests/ -x --tb=short           # Stop on first failure
 pytest tests/test_models.py           # Single file
 pytest tests/ -k "tracking"           # Pattern match
