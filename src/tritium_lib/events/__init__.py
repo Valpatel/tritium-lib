@@ -7,6 +7,20 @@ Both tritium-sc and tritium-edge use the same event bus pattern.
 This is the shared interface; each project can extend with custom events.
 """
 
-from .bus import EventBus, AsyncEventBus, Event, QueueEventBus
+from .bus import (
+    AsyncEventBus,
+    Event,
+    EventBus,
+    EventFilter,
+    QueueEventBus,
+    DEFAULT_PRIORITY,
+)
 
-__all__ = ["EventBus", "AsyncEventBus", "Event", "QueueEventBus"]
+__all__ = [
+    "AsyncEventBus",
+    "Event",
+    "EventBus",
+    "EventFilter",
+    "QueueEventBus",
+    "DEFAULT_PRIORITY",
+]

@@ -5,12 +5,19 @@
 
 Provides both synchronous (EventBus) and async (AsyncEventBus) variants,
 plus QueueEventBus for queue-based pub/sub (used by tritium-sc).
+
+Advanced features (opt-in, backward compatible):
+  - Wildcard topic matching: '#' multi-level, '*' single-level
+  - Event history: retain last N events per topic for late subscribers
+  - Event filtering: subscribers can provide a predicate on event data
+  - Priority ordering: higher-priority subscribers are called first
 """
 
 import asyncio
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
@@ -28,6 +35,28 @@ class Event:
 Subscriber = Callable[[Event], None]
 AsyncSubscriber = Callable[[Event], Coroutine[Any, Any, None]]
 
+# Filter predicate type — takes an Event, returns True to deliver
+EventFilter = Callable[[Event], bool]
+
+# Default priority (middle of range)
+DEFAULT_PRIORITY = 0
+
+
+@dataclass
+class _SubscriberEntry:
+    """Internal record for a subscriber with optional priority and filter."""
+    callback: Subscriber
+    priority: int = DEFAULT_PRIORITY
+    filter_fn: EventFilter | None = None
+
+
+@dataclass
+class _AsyncSubscriberEntry:
+    """Internal record for an async subscriber with optional priority and filter."""
+    callback: AsyncSubscriber
+    priority: int = DEFAULT_PRIORITY
+    filter_fn: EventFilter | None = None
+
 
 class EventBus:
     """Thread-safe pub/sub event bus.
@@ -36,46 +65,162 @@ class EventBus:
       - "device.heartbeat"  -- exact match
       - "device.*"          -- single-level wildcard
       - "device.#"          -- multi-level wildcard
+
+    Advanced opt-in features:
+      - history_size: retain last N events per topic (default 0 = off)
+      - priority: subscribers with higher priority are called first
+      - filter_fn: predicate to filter events before delivery
     """
 
-    def __init__(self):
-        self._subscribers: dict[str, list[Subscriber]] = {}
+    def __init__(self, history_size: int = 0):
+        self._subscribers: dict[str, list[_SubscriberEntry]] = {}
         self._lock = threading.Lock()
+        self._history_size = max(0, history_size)
+        self._history: dict[str, deque[Event]] = {}
+        self._history_lock = threading.Lock()
 
-    def subscribe(self, topic: str, callback: Subscriber) -> None:
-        """Subscribe to a topic pattern."""
+    # -- History management ---------------------------------------------------
+
+    @property
+    def history_size(self) -> int:
+        """Maximum number of events retained per topic."""
+        return self._history_size
+
+    def get_history(self, topic: str) -> list[Event]:
+        """Return a copy of the event history for a specific topic.
+
+        Only returns events whose topic exactly equals the given topic.
+        For wildcard retrieval, use get_history_matching().
+        """
+        with self._history_lock:
+            if topic in self._history:
+                return list(self._history[topic])
+            return []
+
+    def get_history_matching(self, pattern: str) -> list[Event]:
+        """Return events from history matching a wildcard pattern.
+
+        Events are returned sorted by timestamp (oldest first).
+        """
+        pattern_parts = pattern.split(".")
+        result: list[Event] = []
+        with self._history_lock:
+            for topic, events in self._history.items():
+                if self._pattern_matches(pattern_parts, topic.split(".")):
+                    result.extend(events)
+        result.sort(key=lambda e: e.timestamp)
+        return result
+
+    def clear_history(self, topic: str | None = None) -> None:
+        """Clear event history. If topic is None, clear all history."""
+        with self._history_lock:
+            if topic is None:
+                self._history.clear()
+            elif topic in self._history:
+                self._history[topic].clear()
+
+    def _record_history(self, event: Event) -> None:
+        """Record an event in the history buffer if history is enabled."""
+        if self._history_size <= 0:
+            return
+        with self._history_lock:
+            if event.topic not in self._history:
+                self._history[event.topic] = deque(maxlen=self._history_size)
+            self._history[event.topic].append(event)
+
+    def replay_history(self, topic: str, callback: Subscriber) -> int:
+        """Replay stored history for a topic to a callback.
+
+        Returns the number of events replayed. Useful for late subscribers
+        that want to catch up on recent events.
+        """
+        events = self.get_history(topic)
+        for event in events:
+            try:
+                callback(event)
+            except Exception:
+                pass
+        return len(events)
+
+    def replay_history_matching(self, pattern: str, callback: Subscriber) -> int:
+        """Replay history for all topics matching a wildcard pattern.
+
+        Returns the number of events replayed.
+        """
+        events = self.get_history_matching(pattern)
+        for event in events:
+            try:
+                callback(event)
+            except Exception:
+                pass
+        return len(events)
+
+    # -- Subscribe / Unsubscribe ----------------------------------------------
+
+    def subscribe(
+        self,
+        topic: str,
+        callback: Subscriber,
+        priority: int = DEFAULT_PRIORITY,
+        filter_fn: EventFilter | None = None,
+    ) -> None:
+        """Subscribe to a topic pattern.
+
+        Args:
+            topic: Topic pattern (supports '*' and '#' wildcards).
+            callback: Function called with Event when a matching event fires.
+            priority: Higher values are called first (default 0).
+            filter_fn: Optional predicate — callback only invoked if
+                       filter_fn(event) returns True.
+        """
+        entry = _SubscriberEntry(
+            callback=callback, priority=priority, filter_fn=filter_fn
+        )
         with self._lock:
             if topic not in self._subscribers:
                 self._subscribers[topic] = []
-            self._subscribers[topic].append(callback)
+            self._subscribers[topic].append(entry)
 
     def unsubscribe(self, topic: str, callback: Subscriber) -> None:
         """Unsubscribe from a topic pattern."""
         with self._lock:
             if topic in self._subscribers:
                 self._subscribers[topic] = [
-                    cb for cb in self._subscribers[topic] if cb is not callback
+                    e for e in self._subscribers[topic] if e.callback is not callback
                 ]
+
+    # -- Publish --------------------------------------------------------------
 
     def publish(self, topic: str, data: Any = None, source: str = "") -> Event:
         """Publish an event. Returns the event object."""
         event = Event(topic=topic, data=data, source=source)
-        callbacks = self._match(topic)
-        for cb in callbacks:
+        self._record_history(event)
+        entries = self._match(topic)
+        for entry in entries:
+            if entry.filter_fn is not None:
+                try:
+                    if not entry.filter_fn(event):
+                        continue
+                except Exception:
+                    continue
             try:
-                cb(event)
+                entry.callback(event)
             except Exception:
                 pass  # Don't let one bad subscriber break the bus
         return event
 
-    def _match(self, topic: str) -> list[Subscriber]:
-        """Find all subscribers matching a topic."""
+    # -- Matching -------------------------------------------------------------
+
+    def _match(self, topic: str) -> list[_SubscriberEntry]:
+        """Find all subscriber entries matching a topic, sorted by priority (high first)."""
         with self._lock:
-            matched = []
+            matched: list[_SubscriberEntry] = []
             parts = topic.split(".")
-            for pattern, callbacks in self._subscribers.items():
+            for pattern, entries in self._subscribers.items():
                 if self._pattern_matches(pattern.split("."), parts):
-                    matched.extend(callbacks)
+                    matched.extend(entries)
+            # Sort by priority descending (highest first), stable sort
+            matched.sort(key=lambda e: e.priority, reverse=True)
             return matched
 
     @staticmethod
@@ -99,31 +244,126 @@ class AsyncEventBus:
       - "device.heartbeat"  -- exact match
       - "device.*"          -- single-level wildcard
       - "device.#"          -- multi-level wildcard
+
+    Advanced opt-in features:
+      - history_size: retain last N events per topic (default 0 = off)
+      - priority: subscribers with higher priority are called first
+      - filter_fn: predicate to filter events before delivery
     """
 
-    def __init__(self):
-        self._subscribers: dict[str, list[AsyncSubscriber]] = {}
+    def __init__(self, history_size: int = 0):
+        self._subscribers: dict[str, list[_AsyncSubscriberEntry]] = {}
+        self._history_size = max(0, history_size)
+        self._history: dict[str, deque[Event]] = {}
 
-    def subscribe(self, topic: str, callback: AsyncSubscriber) -> None:
-        """Subscribe an async callback to a topic pattern."""
+    # -- History management ---------------------------------------------------
+
+    @property
+    def history_size(self) -> int:
+        """Maximum number of events retained per topic."""
+        return self._history_size
+
+    def get_history(self, topic: str) -> list[Event]:
+        """Return a copy of the event history for a specific topic."""
+        if topic in self._history:
+            return list(self._history[topic])
+        return []
+
+    def get_history_matching(self, pattern: str) -> list[Event]:
+        """Return events from history matching a wildcard pattern."""
+        pattern_parts = pattern.split(".")
+        result: list[Event] = []
+        for topic, events in self._history.items():
+            if EventBus._pattern_matches(pattern_parts, topic.split(".")):
+                result.extend(events)
+        result.sort(key=lambda e: e.timestamp)
+        return result
+
+    def clear_history(self, topic: str | None = None) -> None:
+        """Clear event history. If topic is None, clear all history."""
+        if topic is None:
+            self._history.clear()
+        elif topic in self._history:
+            self._history[topic].clear()
+
+    def _record_history(self, event: Event) -> None:
+        """Record an event in the history buffer if history is enabled."""
+        if self._history_size <= 0:
+            return
+        if event.topic not in self._history:
+            self._history[event.topic] = deque(maxlen=self._history_size)
+        self._history[event.topic].append(event)
+
+    async def replay_history(self, topic: str, callback: AsyncSubscriber) -> int:
+        """Replay stored history for a topic to an async callback."""
+        events = self.get_history(topic)
+        for event in events:
+            try:
+                await callback(event)
+            except Exception:
+                pass
+        return len(events)
+
+    async def replay_history_matching(
+        self, pattern: str, callback: AsyncSubscriber
+    ) -> int:
+        """Replay history for all topics matching a wildcard pattern."""
+        events = self.get_history_matching(pattern)
+        for event in events:
+            try:
+                await callback(event)
+            except Exception:
+                pass
+        return len(events)
+
+    # -- Subscribe / Unsubscribe ----------------------------------------------
+
+    def subscribe(
+        self,
+        topic: str,
+        callback: AsyncSubscriber,
+        priority: int = DEFAULT_PRIORITY,
+        filter_fn: EventFilter | None = None,
+    ) -> None:
+        """Subscribe an async callback to a topic pattern.
+
+        Args:
+            topic: Topic pattern (supports '*' and '#' wildcards).
+            callback: Async function called with Event.
+            priority: Higher values are called first (default 0).
+            filter_fn: Optional predicate — callback only invoked if
+                       filter_fn(event) returns True.
+        """
+        entry = _AsyncSubscriberEntry(
+            callback=callback, priority=priority, filter_fn=filter_fn
+        )
         if topic not in self._subscribers:
             self._subscribers[topic] = []
-        self._subscribers[topic].append(callback)
+        self._subscribers[topic].append(entry)
 
     def unsubscribe(self, topic: str, callback: AsyncSubscriber) -> None:
         """Unsubscribe an async callback from a topic pattern."""
         if topic in self._subscribers:
             self._subscribers[topic] = [
-                cb for cb in self._subscribers[topic] if cb is not callback
+                e for e in self._subscribers[topic] if e.callback is not callback
             ]
+
+    # -- Publish --------------------------------------------------------------
 
     async def publish(self, topic: str, data: Any = None, source: str = "") -> Event:
         """Publish an event and await all matching async subscribers."""
         event = Event(topic=topic, data=data, source=source)
-        callbacks = self._match(topic)
-        for cb in callbacks:
+        self._record_history(event)
+        entries = self._match(topic)
+        for entry in entries:
+            if entry.filter_fn is not None:
+                try:
+                    if not entry.filter_fn(event):
+                        continue
+                except Exception:
+                    continue
             try:
-                await cb(event)
+                await entry.callback(event)
             except Exception:
                 pass  # Don't let one bad subscriber break the bus
         return event
@@ -133,12 +373,20 @@ class AsyncEventBus:
     ) -> Event:
         """Publish an event and run all matching subscribers concurrently."""
         event = Event(topic=topic, data=data, source=source)
-        callbacks = self._match(topic)
-        if callbacks:
+        self._record_history(event)
+        entries = self._match(topic)
+        if entries:
             tasks = []
-            for cb in callbacks:
-                tasks.append(asyncio.create_task(self._safe_call(cb, event)))
-            await asyncio.gather(*tasks)
+            for entry in entries:
+                if entry.filter_fn is not None:
+                    try:
+                        if not entry.filter_fn(event):
+                            continue
+                    except Exception:
+                        continue
+                tasks.append(asyncio.create_task(self._safe_call(entry.callback, event)))
+            if tasks:
+                await asyncio.gather(*tasks)
         return event
 
     @staticmethod
@@ -148,13 +396,14 @@ class AsyncEventBus:
         except Exception:
             pass
 
-    def _match(self, topic: str) -> list[AsyncSubscriber]:
-        """Find all subscribers matching a topic."""
-        matched = []
+    def _match(self, topic: str) -> list[_AsyncSubscriberEntry]:
+        """Find all subscribers matching a topic, sorted by priority (high first)."""
+        matched: list[_AsyncSubscriberEntry] = []
         parts = topic.split(".")
-        for pattern, callbacks in self._subscribers.items():
+        for pattern, entries in self._subscribers.items():
             if EventBus._pattern_matches(pattern.split("."), parts):
-                matched.extend(callbacks)
+                matched.extend(entries)
+        matched.sort(key=lambda e: e.priority, reverse=True)
         return matched
 
 
