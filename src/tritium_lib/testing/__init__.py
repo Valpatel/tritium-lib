@@ -12,6 +12,19 @@ _LAZY_IMPORTS = {
     "LayoutIssue": ".visual",
     "FlickerAnalyzer": ".flicker",
     "FlickerResult": ".flicker",
+    "ScreenshotAnalyzer": ".visual_testing",
+    "AnalysisReport": ".visual_testing",
+    "BlankScreenResult": ".visual_testing",
+    "UIElementResult": ".visual_testing",
+    "ColorDistributionResult": ".visual_testing",
+    "TextReadabilityResult": ".visual_testing",
+    "OverlapResult": ".visual_testing",
+    "BaselineComparisonResult": ".visual_testing",
+    "MapTileResult": ".visual_testing",
+    "MarkerResult": ".visual_testing",
+    "LLMVisualAnalyzer": ".llm_visual",
+    "VisionResult": ".llm_visual",
+    "ScreenshotAnalysis": ".llm_visual",
 }
 
 

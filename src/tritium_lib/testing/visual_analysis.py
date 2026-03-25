@@ -10,7 +10,7 @@ This module handles STRUCTURAL analysis that Playwright can't do:
 2. OVERLAP DETECTION — find elements that shouldn't be on top of each other
 3. LAYOUT VALIDATION — verify element positions match expected zones
 4. VIDEO ANALYSIS — analyze frame sequences for animation/performance issues
-5. VISION MODEL — semantic validation via llava (Ollama)
+5. VISION MODEL — semantic validation via llama-server vision models
 
 Design principle: each function takes an image (path or numpy array) and returns
 structured data. No browser interaction. No side effects.

@@ -2602,14 +2602,10 @@ async def index() -> HTMLResponse:
         if _game_task is not None and not _game_task.done():
             _game_task.cancel()
         _game_task = asyncio.create_task(_game_loop())
-    # Serve standalone game.html from disk (has all rendering improvements)
-    from pathlib import Path
-    game_html_path = Path(__file__).parent / "game.html"
-    if game_html_path.exists():
-        html_content = game_html_path.read_text(encoding="utf-8")
-    else:
-        html_content = GAME_HTML  # fallback to embedded copy
-    return HTMLResponse(content=html_content, status_code=200)
+    # Always serve the inline GAME_HTML — it contains all rendering fixes
+    # (camera centered on MAP_SIZE, effects dict handling, diff-frame guards).
+    # The disk game.html is kept as a reference but is NOT served.
+    return HTMLResponse(content=GAME_HTML, status_code=200)
 
 
 @app.get("/favicon.ico")
@@ -3331,8 +3327,9 @@ scene.background = new THREE.Color(VOID_BG);
 scene.fog = new THREE.FogExp2(VOID_BG, 0.0015);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 2000);
-camera.position.set(MAP_SIZE * 0.5 + 80, 180, MAP_SIZE * 0.5 + 160);
-camera.lookAt(MAP_SIZE / 2, 0, MAP_SIZE / 2);
+// Units spawn near origin (-30..100), so centre camera on the action
+camera.position.set(40, 120, 140);
+camera.lookAt(30, 0, 30);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
@@ -3345,7 +3342,7 @@ document.body.prepend(renderer.domElement);
 
 // OrbitControls
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(MAP_SIZE / 2, 0, MAP_SIZE / 2);
+controls.target.set(30, 0, 30);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.minDistance = 30;
@@ -3386,18 +3383,18 @@ const groundMat = new THREE.MeshStandardMaterial({
 });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2;
-ground.position.set(MAP_SIZE / 2, -0.05, MAP_SIZE / 2);
+ground.position.set(0, -0.05, 0);
 ground.receiveShadow = true;
 scene.add(ground);
 
 // Grid lines
 const gridHelper = new THREE.GridHelper(MAP_SIZE, 10, 0x1a1a2e, 0x12121a);
-gridHelper.position.set(MAP_SIZE / 2, 0.01, MAP_SIZE / 2);
+gridHelper.position.set(0, 0.01, 0);
 scene.add(gridHelper);
 
 // Fine grid
 const fineGrid = new THREE.GridHelper(MAP_SIZE, 50, 0x0e0e14, 0x0e0e14);
-fineGrid.position.set(MAP_SIZE / 2, 0.005, MAP_SIZE / 2);
+fineGrid.position.set(0, 0.005, 0);
 scene.add(fineGrid);
 
 // =========================================================================
@@ -4052,9 +4049,26 @@ function processFrame(f) {
   // Projectiles
   updateProjectiles(f.projectiles || []);
 
-  // Effects — only pass NEW effects each frame
-  if (f.effects && f.effects.length > 0) {
-    updateEffects(f.effects);
+  // Effects — server sends dict {type,count,positions,colors,sizes,ages}
+  // or array of individual effect events; handle both formats
+  if (f.effects) {
+    if (Array.isArray(f.effects)) {
+      if (f.effects.length > 0) updateEffects(f.effects);
+    } else if (f.effects.positions && f.effects.positions.length > 0) {
+      // Convert particle dict → array of point effects for updateEffects
+      const pts = f.effects.positions;
+      const cols = f.effects.colors || [];
+      const szs = f.effects.sizes || [];
+      const efxArr = [];
+      for (let i = 0; i < pts.length; i++) {
+        efxArr.push({
+          x: pts[i][0], y: pts[i][2] != null ? pts[i][2] : pts[i][1],
+          radius: (szs[i] || 1) * 0.5,
+          color: cols[i] || '#ff4400'
+        });
+      }
+      if (efxArr.length > 0) updateEffects(efxArr);
+    }
   }
 
   // Crowd
@@ -4243,8 +4257,8 @@ fetch('/api/presets').then(r => r.json()).then(d => {
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') {
     // Reset camera
-    camera.position.set(MAP_SIZE * 0.5 + 80, 180, MAP_SIZE * 0.5 + 160);
-    controls.target.set(MAP_SIZE / 2, 0, MAP_SIZE / 2);
+    camera.position.set(40, 120, 140);
+    controls.target.set(30, 0, 30);
     controls.update();
   }
 });
