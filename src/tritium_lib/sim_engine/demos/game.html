@@ -444,7 +444,7 @@ const CYAN    = 0x00f0ff;
 const MAGENTA = 0xff2a6d;
 const GREEN   = 0x05ffa1;
 const YELLOW  = 0xfcee0a;
-const VOID_BG = 0x0a0a0f;
+const VOID_BG = 0x141828;  // Brighter dark blue — prevents near-black scene
 
 const ALLIANCE_COLORS = {
   friendly: 0x05ffa1,
@@ -473,12 +473,12 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.4;
+renderer.toneMappingExposure = 2.2;
 document.body.insertBefore(renderer.domElement, document.getElementById('hud'));
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(VOID_BG);
-scene.fog = new THREE.FogExp2(VOID_BG, 0.003);
+scene.fog = new THREE.FogExp2(VOID_BG, 0.0015);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.5, 2000);
 // Default: elevated isometric-ish view framing the central action area
@@ -508,11 +508,11 @@ controls.target.set(0, 0, 0);
 // =========================================================================
 // Lighting
 // =========================================================================
-const ambientLight = new THREE.AmbientLight(0x334455, 0.4);
+const ambientLight = new THREE.AmbientLight(0x667799, 0.9);
 scene.add(ambientLight);
 
-const dirLight = new THREE.DirectionalLight(0xffdd88, 0.8);
-dirLight.position.set(50, 100, 30);
+const dirLight = new THREE.DirectionalLight(0xffeedd, 1.5);
+dirLight.position.set(50, 120, 30);
 dirLight.castShadow = true;
 dirLight.shadow.mapSize.set(2048, 2048);
 dirLight.shadow.camera.left = -HALF_MAP;
@@ -521,12 +521,12 @@ dirLight.shadow.camera.top = HALF_MAP;
 dirLight.shadow.camera.bottom = -HALF_MAP;
 scene.add(dirLight);
 
-const fillLight = new THREE.DirectionalLight(0x2244ff, 0.15);
+const fillLight = new THREE.DirectionalLight(0x4466cc, 0.35);
 fillLight.position.set(-30, 40, -50);
 scene.add(fillLight);
 
 // Hemisphere light — sky/ground ambient gradient (city3d quality)
-const hemiLight = new THREE.HemisphereLight(0x00f0ff, 0x112244, 0.5);
+const hemiLight = new THREE.HemisphereLight(0x00f0ff, 0x334466, 0.9);
 scene.add(hemiLight);
 
 // =========================================================================
@@ -537,8 +537,8 @@ const _skyColorB = new THREE.Color();
 
 function getSkyColor(h) {
   // h = hour 0..24
-  if (h >= 7 && h < 17) return 0x1a2a3e;  // daytime — deep tactical blue
-  if (h >= 19 || h < 5) return 0x141828;  // night — visible dark blue
+  if (h >= 7 && h < 17) return 0x1e3348;  // daytime — deep tactical blue, slightly brighter
+  if (h >= 19 || h < 5) return 0x1a2238;  // night — visible dark blue, brighter than void
   if (h >= 5 && h < 6) {
     _skyColorA.set(0x0a0a2e); _skyColorB.set(0xff6622);
     _skyColorA.lerp(_skyColorB, h - 5); return _skyColorA.getHex();
@@ -564,8 +564,8 @@ let groundMat;
 function createGround() {
   const groundGeo = new THREE.PlaneGeometry(MAP_SIZE * 2, MAP_SIZE * 2);
   groundMat = new THREE.MeshStandardMaterial({
-    color: 0x3a3a40,  // medium asphalt — visible in all conditions
-    roughness: 0.85,
+    color: 0x5a5a68,  // lighter asphalt — clearly distinct from void
+    roughness: 0.75,
     metalness: 0.05,
   });
   const ground = new THREE.Mesh(groundGeo, groundMat);
@@ -575,13 +575,13 @@ function createGround() {
   scene.add(ground);
 
   // Grid lines — brighter cyan tint for cyberpunk feel
-  const gridHelper = new THREE.GridHelper(MAP_SIZE * 2, 40, 0x002222, 0x001a1a);
+  const gridHelper = new THREE.GridHelper(MAP_SIZE * 2, 40, 0x004444, 0x003333);
   gridHelper.position.y = 0.01;
   scene.add(gridHelper);
 
   // Subtle bright-cyan major axis lines (every 50 units)
   const axisMat = new THREE.LineBasicMaterial({
-    color: CYAN, transparent: true, opacity: 0.08,
+    color: CYAN, transparent: true, opacity: 0.15,
   });
   for (let offset = -HALF_MAP; offset <= HALF_MAP; offset += 50) {
     const hGeo = new THREE.BufferGeometry().setFromPoints([
@@ -1096,40 +1096,40 @@ function _buildingMaterial(w, h, d) {
   // Tall: h >= 16 → office glass with cyan cyberpunk glow
   if (h >= 16) {
     return new THREE.MeshStandardMaterial({
-      color: 0x1a2535,
-      roughness: 0.35,
-      metalness: 0.55,
-      emissive: 0x003344,
-      emissiveIntensity: 1.2,
+      color: 0x3a5575,
+      roughness: 0.30,
+      metalness: 0.45,
+      emissive: 0x1a7788,
+      emissiveIntensity: 2.0,
     });
   }
   // Medium: h 8..16 → concrete gray with magenta undertone
   if (h >= 8) {
     return new THREE.MeshStandardMaterial({
-      color: 0x2a2a35,
-      roughness: 0.80,
+      color: 0x5a5a6a,
+      roughness: 0.70,
       metalness: 0.15,
-      emissive: 0x1a0a1a,
-      emissiveIntensity: 0.9,
+      emissive: 0x3a1838,
+      emissiveIntensity: 1.5,
     });
   }
   // Small wide (shop): w >= 12 → brick red-orange with warm glow
   if (w >= 12 || d >= 12) {
     return new THREE.MeshStandardMaterial({
-      color: 0x3a1a10,
-      roughness: 0.90,
+      color: 0x6a4030,
+      roughness: 0.80,
       metalness: 0.05,
-      emissive: 0x2a0a04,
-      emissiveIntensity: 0.75,
+      emissive: 0x4a2010,
+      emissiveIntensity: 1.2,
     });
   }
   // Small low → wood brown with faint amber glow
   return new THREE.MeshStandardMaterial({
-    color: 0x2a1a0a,
-    roughness: 0.95,
+    color: 0x5a4028,
+    roughness: 0.85,
     metalness: 0.02,
-    emissive: 0x180e02,
-    emissiveIntensity: 0.65,
+    emissive: 0x382010,
+    emissiveIntensity: 1.0,
   });
 }
 
@@ -1144,7 +1144,7 @@ function createBuilding(id, x, z, w, h, d) {
   // Edge wireframe — cyberpunk cyan/magenta glow, clearly visible at night
   const wireGeo = new THREE.EdgesGeometry(geo);
   const wireColor = h >= 16 ? CYAN : (h >= 8 ? 0xff2a6d : CYAN);
-  const wireOpacity = h >= 16 ? 0.75 : (h >= 8 ? 0.60 : 0.45);
+  const wireOpacity = h >= 16 ? 0.90 : (h >= 8 ? 0.75 : 0.60);
   const wireMat = new THREE.LineBasicMaterial({ color: wireColor, transparent: true, opacity: wireOpacity });
   const wireframe = new THREE.LineSegments(wireGeo, wireMat);
   wireframe.position.copy(mesh.position);
@@ -1684,9 +1684,9 @@ function generateDemoFrame() {
   const isSnowing = demoTick > 350 && demoTick < 500;
   const isStorming = demoTick > 290 && demoTick < 360;
   const weather = {
-    sky_color: hour > 18 || hour < 6 ? '#0a0a1e' : '#1a2a3e',
-    ambient_light: hour > 6 && hour < 18 ? 0.6 : 0.15,
-    fog_density: isRaining ? 0.005 : 0.003,
+    sky_color: hour > 18 || hour < 6 ? '#1a2238' : '#1e3348',
+    ambient_light: hour > 6 && hour < 18 ? 0.7 : 0.45,
+    fog_density: isRaining ? 0.003 : 0.0015,
   };
   if (isRaining) weather.rain = { intensity: 0.6 };
 
@@ -1883,7 +1883,7 @@ function generateDemoFrame() {
     demoIntel.fog_grid = {
       width: 100, height: 100, cell_size: 5.0,
       visible: visibleCells, explored: exploredCells,
-      fog_color: '#0a0a0f', explored_alpha: 0.5, hidden_alpha: 0.9,
+      fog_color: '#141828', explored_alpha: 0.3, hidden_alpha: 0.6,
     };
   }
 
@@ -2141,7 +2141,7 @@ function renderMapFeatures(features) {
       // Generic building box
       const bh = Math.max(fh, 2);
       const bGeo = new THREE.BoxGeometry(fw, bh, fw);
-      const bMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.7 });
+      const bMat = new THREE.MeshStandardMaterial({ color: 0x5a5a66, roughness: 0.7, emissive: 0x111118, emissiveIntensity: 0.5 });
       const bMesh = new THREE.Mesh(bGeo, bMat);
       bMesh.position.set(fx, bh / 2, fz);
       bMesh.castShadow = true;
@@ -2681,13 +2681,13 @@ function spawnExplosion(x, z, y, radius) {
     sw.ring.position.set(x, y + 0.15, z);
     sw.ring.scale.set(0.1, 0.1, 0.1);
     sw.ring.visible = true;
-    sw.ringMat.opacity = 0.4;  // Reduced from 0.9 to prevent scene washout
+    sw.ringMat.opacity = 0.3;  // Reduced further to prevent scene washout
     sw.ringMat.color.setHex(radius > 6 ? 0xff8800 : 0xff4400);
     // Flash sphere
     sw.flash.position.set(x, y + radius * 0.3, z);
-    sw.flash.scale.set(radius * 0.2, radius * 0.2, radius * 0.2);
+    sw.flash.scale.set(radius * 0.15, radius * 0.15, radius * 0.15);
     sw.flash.visible = true;
-    sw.flashMat.opacity = 0.3;  // Reduced from 0.7
+    sw.flashMat.opacity = 0.2;  // Reduced further
   }
 }
 
@@ -2705,11 +2705,11 @@ function tickShockwaves(dt) {
     // Ring expands from 0.1 to radius units, fades out
     const curScale = 0.1 + t * sw.radius;
     sw.ring.scale.set(curScale, curScale, curScale);
-    sw.ringMat.opacity = 0.9 * (1.0 - t * t);
+    sw.ringMat.opacity = 0.35 * (1.0 - t * t);
     // Flash fades very quickly in first 25% of duration
-    sw.flash.visible = t < 0.3;
-    if (t < 0.3) {
-      sw.flashMat.opacity = 0.7 * (1.0 - t / 0.3);
+    sw.flash.visible = t < 0.25;
+    if (t < 0.25) {
+      sw.flashMat.opacity = 0.25 * (1.0 - t / 0.25);
     }
   }
 }
@@ -2772,7 +2772,7 @@ let _currentHour = 12;
 function _applyWetRoad(isNight, isRaining) {
   if (!groundMat) return;
   const wet = isRaining && isNight;
-  groundMat.color.set(wet ? 0x1a1a2e : 0x2a2a2e);
+  groundMat.color.set(wet ? 0x3a3a50 : 0x5a5a68);
   groundMat.metalness = wet ? 0.45 : 0.0;
   groundMat.roughness = wet ? 0.45 : 0.9;
   // Rain drizzle: emissive color shifts to blue-gray
@@ -2788,11 +2788,11 @@ function updateWeather(weather) {
     scene.fog.color.set(weather.sky_color);
   }
 
-  // Ambient light
+  // Ambient light — enforce minimum so scene is never too dark
   if (weather.ambient_light !== undefined) {
-    ambientLight.intensity = weather.ambient_light;
-    dirLight.intensity = Math.max(0.1, weather.ambient_light * 1.2);
-    hemiLight.intensity = Math.max(0.05, weather.ambient_light * 0.6);
+    ambientLight.intensity = Math.max(0.5, weather.ambient_light);
+    dirLight.intensity = Math.max(0.4, weather.ambient_light * 1.4);
+    hemiLight.intensity = Math.max(0.4, weather.ambient_light * 0.8);
   }
 
   // Fog
@@ -2884,12 +2884,12 @@ function updateWeatherFX(wx) {
 
     // Night minimum light levels ensure buildings/ground stay visible
     // Boosted minimums so buildings are always distinguishable from void
-    ambientLight.intensity = (0.5 + dayFactor * 0.3) * rainDim;
-    dirLight.intensity = (0.4 + dayFactor * 0.8) * rainDim;
-    hemiLight.intensity = (0.6 + dayFactor * 0.2) * rainDim;
+    ambientLight.intensity = (0.75 + dayFactor * 0.25) * rainDim;
+    dirLight.intensity = (0.8 + dayFactor * 0.8) * rainDim;
+    hemiLight.intensity = (0.75 + dayFactor * 0.25) * rainDim;
     // Sky/ground hemisphere colors shift with day/night — brighter at night for visibility
-    hemiLight.color.set(isNight ? 0x2a3850 : 0x88aacc);
-    hemiLight.groundColor.set(isNight ? 0x1a2030 : 0x112244);
+    hemiLight.color.set(isNight ? 0x4a5a78 : 0x88aacc);
+    hemiLight.groundColor.set(isNight ? 0x3a4058 : 0x334466);
 
     if (sun.x !== undefined) {
       dirLight.position.set(sun.x * 200, Math.max(10, sunY * 150), (sun.z || 0.2) * 200);
@@ -2904,8 +2904,8 @@ function updateWeatherFX(wx) {
   }
 
   // Fog density
-  let baseFog = isNight ? 0.004 : 0.0015;
-  if (raining) baseFog = Math.max(baseFog, 0.004);
+  let baseFog = isNight ? 0.002 : 0.001;
+  if (raining) baseFog = Math.max(baseFog, 0.003);
 
   // --- Fog ---
   if (wx.fog) {
@@ -4103,18 +4103,18 @@ function updateFogOfWar(intel) {
 
   fowCtx.clearRect(0, 0, fowCanvas.width, fowCanvas.height);
 
-  // Full darkness overlay
-  fowCtx.fillStyle = 'rgba(6, 6, 14, 0.82)';
+  // Darkness overlay — low opacity so 3D scene stays clearly visible
+  fowCtx.fillStyle = 'rgba(14, 18, 30, 0.25)';
   fowCtx.fillRect(0, 0, fowCanvas.width, fowCanvas.height);
 
-  // Punch out explored cells (50% transparency kept — light fog)
+  // Punch out explored cells (more transparent — light fog only)
   fowCtx.globalCompositeOperation = 'destination-out';
   for (const cell of explored) {
     const col = cell[0], row = cell[1];
     const wx = (col + 0.5) * cellSize;
     const wy = (row + 0.5) * cellSize;
     const [px, py, cellPx] = _worldToCanvas(wx, wy, cellSize);
-    fowCtx.fillStyle = 'rgba(0,0,0,0.5)';
+    fowCtx.fillStyle = 'rgba(0,0,0,0.7)';
     fowCtx.fillRect(px - cellPx / 2, py - cellPx / 2, cellPx, cellPx);
   }
 

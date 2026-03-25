@@ -19,9 +19,11 @@ import hashlib
 import hmac
 import logging
 import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("privacy.anonymizer")
@@ -119,12 +121,18 @@ class Anonymizer:
 
     def __init__(
         self,
-        secret: str = "tritium-default-secret",
+        secret: str | None = None,
         default_level: AnonymizationLevel = AnonymizationLevel.PSEUDONYMIZE,
         hash_algorithm: str = "sha256",
         location_precision: int = 3,
         extra_pii_fields: Optional[set[str]] = None,
     ) -> None:
+        if secret == "tritium-default-secret":
+            logger.warning(
+                "Using hardcoded anonymizer secret — not safe for production"
+            )
+        if secret is None:
+            secret = self._load_or_create_secret()
         self._secret = secret.encode("utf-8")
         self._default_level = default_level
         self._hash_algorithm = hash_algorithm
@@ -223,6 +231,18 @@ class Anonymizer:
         self._stats_fields = 0
 
     # -- internals ----------------------------------------------------------
+
+    @staticmethod
+    def _load_or_create_secret() -> str:
+        """Load a persistent random secret, or create one on first use."""
+        secret_path = Path.home() / ".tritium" / "anonymizer_secret"
+        if secret_path.exists():
+            return secret_path.read_text().strip()
+        secret = secrets.token_hex(32)
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        secret_path.write_text(secret)
+        secret_path.chmod(0o600)
+        return secret
 
     def _hash_value(self, value: str) -> str:
         """HMAC hash of a value using the secret."""
