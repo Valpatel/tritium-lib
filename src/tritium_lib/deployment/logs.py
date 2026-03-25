@@ -125,7 +125,13 @@ class LogCollector:
         file_patterns: list[str] | None = None,
         max_lines: int = 10000,
     ) -> None:
-        self.log_dirs = log_dirs or []
+        # Validate log directory paths do not contain null bytes
+        clean_dirs = []
+        for d in (log_dirs or []):
+            if "\x00" in str(d):
+                continue  # silently skip paths with null bytes
+            clean_dirs.append(d)
+        self.log_dirs = clean_dirs
         self.file_patterns = file_patterns or [".log", ".txt"]
         self.max_lines = max_lines
 
@@ -133,15 +139,23 @@ class LogCollector:
         """Find all log files in configured directories.
 
         Returns absolute paths to all matching log files.
+        Skips symlinks that resolve outside the configured log directory
+        to prevent directory traversal via crafted symlinks.
         """
         log_files: list[str] = []
         for log_dir in self.log_dirs:
             if not os.path.isdir(log_dir):
                 continue
-            for root, _dirs, files in os.walk(log_dir):
+            real_base = os.path.realpath(log_dir)
+            for root, _dirs, files in os.walk(log_dir, followlinks=False):
                 for fname in files:
+                    fpath = os.path.join(root, fname)
+                    # Ensure file resolves under the configured log dir
+                    real_fpath = os.path.realpath(fpath)
+                    if not (real_fpath == real_base or real_fpath.startswith(real_base + os.sep)):
+                        continue  # skip symlinks escaping the log dir
                     if any(fname.endswith(pat) for pat in self.file_patterns):
-                        log_files.append(os.path.join(root, fname))
+                        log_files.append(fpath)
         return sorted(log_files)
 
     def parse_line(

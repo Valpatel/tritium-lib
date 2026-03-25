@@ -112,6 +112,55 @@ class BackupManifest:
         return stored == computed
 
 
+def _validate_safe_path(base_dir: str, child: str, label: str = "path") -> str:
+    """Validate that a child path resolves under base_dir.
+
+    Prevents path traversal attacks where a crafted child path
+    (e.g., containing '..') could escape the base directory.
+
+    Returns the resolved absolute path.
+
+    Raises
+    ------
+    ValueError:
+        If the resolved path escapes base_dir.
+    """
+    base = os.path.realpath(base_dir)
+    resolved = os.path.realpath(os.path.join(base_dir, child))
+    # Ensure resolved path is under base_dir (exact match or subdir)
+    if not (resolved == base or resolved.startswith(base + os.sep)):
+        raise ValueError(
+            f"Path traversal detected in {label}: "
+            f"'{child}' resolves outside '{base_dir}'"
+        )
+    return resolved
+
+
+def _validate_backup_id(backup_id: str) -> str:
+    """Validate a backup ID contains only safe characters.
+
+    Backup IDs should be UUIDs or similar safe identifiers.
+
+    Raises
+    ------
+    ValueError:
+        If the backup ID contains unsafe characters.
+    """
+    import re
+    if not backup_id:
+        raise ValueError("Backup ID must not be empty")
+    if "\x00" in backup_id:
+        raise ValueError("Backup ID contains null bytes")
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", backup_id):
+        raise ValueError(
+            f"Backup ID contains unsafe characters: '{backup_id}'. "
+            "Only alphanumeric, hyphens, and underscores are allowed."
+        )
+    if ".." in backup_id:
+        raise ValueError(f"Backup ID contains path traversal: '{backup_id}'")
+    return backup_id
+
+
 class BackupManager:
     """Create and restore backups of Tritium data directories.
 
@@ -230,9 +279,11 @@ class BackupManager:
         FileNotFoundError:
             If the backup directory or manifest is not found.
         ValueError:
-            If the manifest checksum verification fails.
+            If the manifest checksum verification fails, or if the
+            backup_id or file paths contain path traversal attempts.
         """
-        backup_path = os.path.join(self.backup_dir, backup_id)
+        _validate_backup_id(backup_id)
+        backup_path = _validate_safe_path(self.backup_dir, backup_id, "backup_id")
         manifest_path = os.path.join(backup_path, "manifest.json")
 
         if not os.path.isfile(manifest_path):
@@ -255,6 +306,10 @@ class BackupManager:
         os.makedirs(target_dir, exist_ok=True)
 
         for rel_path in manifest.files:
+            # Validate each rel_path to prevent path traversal on restore
+            _validate_safe_path(data_path, rel_path, "backup file source")
+            _validate_safe_path(target_dir, rel_path, "restore file target")
+
             src_file = os.path.join(data_path, rel_path)
             dst_file = os.path.join(target_dir, rel_path)
             if os.path.isfile(src_file):
@@ -274,6 +329,11 @@ class BackupManager:
             return manifests
 
         for entry in os.listdir(self.backup_dir):
+            # Skip entries with unsafe names
+            try:
+                _validate_backup_id(entry)
+            except ValueError:
+                continue
             manifest_path = os.path.join(
                 self.backup_dir, entry, "manifest.json"
             )
@@ -292,8 +352,14 @@ class BackupManager:
         """Delete a backup by ID.
 
         Returns True if the backup was found and deleted.
+
+        Raises
+        ------
+        ValueError:
+            If the backup_id contains path traversal characters.
         """
-        backup_path = os.path.join(self.backup_dir, backup_id)
+        _validate_backup_id(backup_id)
+        backup_path = _validate_safe_path(self.backup_dir, backup_id, "backup_id")
         if os.path.isdir(backup_path):
             shutil.rmtree(backup_path)
             return True

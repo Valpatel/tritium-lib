@@ -73,8 +73,26 @@ class Recorder:
         Extra metadata to include in the session header.
     """
 
+    # Allowed extensions for recording output files
+    _ALLOWED_EXTENSIONS = frozenset({".jsonl", ".json", ".log", ".rec"})
+
     def __init__(self, path: str | Path, metadata: Optional[dict[str, Any]] = None):
-        self._path = Path(path)
+        resolved = Path(path).resolve()
+        # Block path traversal: reject paths containing '..' components
+        if ".." in Path(path).parts:
+            raise ValueError(
+                f"Path contains directory traversal components: {path}"
+            )
+        # Validate extension to prevent writing to unexpected file types
+        if resolved.suffix and resolved.suffix not in self._ALLOWED_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported file extension '{resolved.suffix}'. "
+                f"Allowed: {sorted(self._ALLOWED_EXTENSIONS)}"
+            )
+        # Reject null bytes which can truncate paths at the OS level
+        if "\x00" in str(path):
+            raise ValueError("Path contains null bytes")
+        self._path = resolved
         self._metadata = metadata or {}
         self._state = _RecordingState()
         self._lock = threading.Lock()

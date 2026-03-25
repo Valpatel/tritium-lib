@@ -50,6 +50,22 @@ from ..store.event_store import EventStore, TacticalEvent
 _EXPORT_VERSION = "1.0.0"
 _MAGIC = "tritium-data-exchange"
 
+# Safety limits for imported data
+_MAX_FIELD_LENGTH = 10_000       # Max length of any single string field
+_MAX_JSON_DOC_SIZE = 50_000_000  # 50 MB max for JSON import documents
+_MAX_CSV_ROWS = 1_000_000       # Max rows in a CSV import
+
+
+def _sanitize_str(value: Any, max_len: int = _MAX_FIELD_LENGTH) -> str:
+    """Sanitize a string field value by truncating and stripping null bytes."""
+    if not isinstance(value, str):
+        value = str(value) if value is not None else ""
+    # Strip null bytes which can cause issues in databases/filesystems
+    value = value.replace("\x00", "")
+    if len(value) > max_len:
+        value = value[:max_len]
+    return value
+
 
 def _make_header(
     scope: str,
@@ -606,6 +622,15 @@ class TritiumImporter:
         """
         result = ImportResult()
 
+        # Guard against excessively large documents
+        if len(json_str) > _MAX_JSON_DOC_SIZE:
+            result.success = False
+            result.errors.append(
+                f"JSON document too large ({len(json_str)} bytes, "
+                f"max {_MAX_JSON_DOC_SIZE})"
+            )
+            return result
+
         try:
             doc = json.loads(json_str)
         except json.JSONDecodeError as exc:
@@ -647,7 +672,7 @@ class TritiumImporter:
             result.targets_skipped += 1
             return
 
-        target_id = data.get("target_id")
+        target_id = _sanitize_str(data.get("target_id", ""), max_len=256)
         if not target_id:
             result.targets_skipped += 1
             result.warnings.append("Target missing target_id — skipped")
@@ -663,10 +688,10 @@ class TritiumImporter:
 
             self._targets.record_sighting(
                 target_id=target_id,
-                name=data.get("name", ""),
-                alliance=data.get("alliance", ""),
-                asset_type=data.get("asset_type", ""),
-                source=data.get("source", ""),
+                name=_sanitize_str(data.get("name", ""), max_len=512),
+                alliance=_sanitize_str(data.get("alliance", ""), max_len=64),
+                asset_type=_sanitize_str(data.get("asset_type", ""), max_len=128),
+                source=_sanitize_str(data.get("source", ""), max_len=256),
                 position_x=_safe_float(data.get("position_x")),
                 position_y=_safe_float(data.get("position_y")),
                 position_confidence=_safe_float(data.get("position_confidence")),
@@ -711,7 +736,7 @@ class TritiumImporter:
             result.dossiers_skipped += 1
             return
 
-        dossier_id = data.get("dossier_id")
+        dossier_id = _sanitize_str(data.get("dossier_id", ""), max_len=256)
         if not dossier_id:
             result.dossiers_skipped += 1
             result.warnings.append("Dossier missing dossier_id — skipped")
@@ -754,11 +779,11 @@ class TritiumImporter:
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         dossier_id,
-                        data.get("name", "Unknown"),
-                        data.get("entity_type", "unknown"),
+                        _sanitize_str(data.get("name", "Unknown"), max_len=512),
+                        _sanitize_str(data.get("entity_type", "unknown"), max_len=64),
                         _safe_float(data.get("confidence")) or 0.0,
-                        data.get("alliance", "unknown"),
-                        data.get("threat_level", "none"),
+                        _sanitize_str(data.get("alliance", "unknown"), max_len=64),
+                        _sanitize_str(data.get("threat_level", "none"), max_len=64),
                         ts,
                         _safe_float(data.get("last_seen")) or ts,
                         json.dumps(identifiers if isinstance(identifiers, dict) else {}),
@@ -808,7 +833,7 @@ class TritiumImporter:
             result.events_skipped += 1
             return
 
-        event_type = data.get("event_type")
+        event_type = _sanitize_str(data.get("event_type", ""), max_len=128)
         if not event_type:
             result.events_skipped += 1
             result.warnings.append("Event missing event_type — skipped")
@@ -817,17 +842,17 @@ class TritiumImporter:
         try:
             self._events.record(
                 event_type=event_type,
-                severity=data.get("severity", "info"),
-                source=data.get("source", ""),
-                target_id=data.get("target_id", ""),
-                operator=data.get("operator", ""),
-                summary=data.get("summary", ""),
+                severity=_sanitize_str(data.get("severity", "info"), max_len=32),
+                source=_sanitize_str(data.get("source", ""), max_len=256),
+                target_id=_sanitize_str(data.get("target_id", ""), max_len=256),
+                operator=_sanitize_str(data.get("operator", ""), max_len=256),
+                summary=_sanitize_str(data.get("summary", "")),
                 data=data.get("data"),
                 position_lat=_safe_float(data.get("position_lat")),
                 position_lng=_safe_float(data.get("position_lng")),
-                site_id=data.get("site_id", ""),
+                site_id=_sanitize_str(data.get("site_id", ""), max_len=128),
                 timestamp=_safe_float(data.get("timestamp")),
-                event_id=data.get("event_id"),
+                event_id=_sanitize_str(data.get("event_id", ""), max_len=256) or None,
             )
             result.events_imported += 1
         except Exception as exc:
@@ -868,7 +893,14 @@ class TritiumImporter:
             )
             return result
 
+        row_count = 0
         for row in reader:
+            row_count += 1
+            if row_count > _MAX_CSV_ROWS:
+                result.warnings.append(
+                    f"CSV import truncated at {_MAX_CSV_ROWS} rows"
+                )
+                break
             handler(dict(row), result)
 
         return result

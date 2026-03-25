@@ -24,6 +24,29 @@ from .integrity import compute_sha256
 from .models import Evidence
 
 
+def _sanitize_filename(name: str) -> str:
+    """Sanitize a string for safe use as a filename component.
+
+    Prevents path traversal by stripping directory separators and
+    parent-directory references. Only allows alphanumeric characters,
+    hyphens, underscores, and dots. Raises ValueError if the result
+    is empty or resolves to a reserved name.
+    """
+    import re
+    # Strip any directory components — only keep the basename
+    name = name.replace("\\", "/")
+    name = name.split("/")[-1]
+    # Remove parent-directory references
+    name = name.replace("..", "")
+    # Allow only safe characters: alphanumeric, hyphen, underscore, dot
+    name = re.sub(r"[^a-zA-Z0-9_\-.]", "_", name)
+    # Collapse multiple underscores
+    name = re.sub(r"_+", "_", name).strip("_.")
+    if not name:
+        raise ValueError("Sanitized filename is empty — invalid evidence ID")
+    return name
+
+
 class ExportEntry(object):
     """A single file entry in an export package.
 
@@ -89,13 +112,14 @@ class EvidenceExporter:
         # Export individual evidence items
         evidence_hashes: dict[str, str] = {}
         for eid, ev in collection.evidence.items():
+            safe_eid = _sanitize_filename(eid)
             ev_data = ev.model_dump(mode="json")
             ev_json = json.dumps(ev_data, indent=2, sort_keys=True, default=str)
             ev_bytes = ev_json.encode("utf-8")
             ev_hash = compute_sha256(ev_data)
             evidence_hashes[eid] = ev_hash
             entries.append(ExportEntry(
-                filename=f"evidence/{eid}.json",
+                filename=f"evidence/{safe_eid}.json",
                 content=ev_bytes,
                 sha256=ev_hash,
             ))
@@ -108,11 +132,12 @@ class EvidenceExporter:
         # Export custody chains
         if include_chains:
             for eid, chain in collection.chains.items():
+                safe_eid = _sanitize_filename(eid)
                 chain_data = chain.model_dump(mode="json")
                 chain_json = json.dumps(chain_data, indent=2, sort_keys=True, default=str)
                 chain_bytes = chain_json.encode("utf-8")
                 entries.append(ExportEntry(
-                    filename=f"chains/{eid}.json",
+                    filename=f"chains/{safe_eid}.json",
                     content=chain_bytes,
                     sha256=compute_sha256(chain_data),
                 ))
@@ -165,6 +190,7 @@ class EvidenceExporter:
             List of ExportEntry objects.
         """
         entries: list[ExportEntry] = []
+        safe_eid = _sanitize_filename(evidence.evidence_id)
 
         ev_data = evidence.model_dump(mode="json")
         ev_json = json.dumps(ev_data, indent=2, sort_keys=True, default=str)
@@ -172,7 +198,7 @@ class EvidenceExporter:
         ev_hash = compute_sha256(ev_data)
 
         entries.append(ExportEntry(
-            filename=f"evidence/{evidence.evidence_id}.json",
+            filename=f"evidence/{safe_eid}.json",
             content=ev_bytes,
             sha256=ev_hash,
         ))
@@ -182,7 +208,7 @@ class EvidenceExporter:
             chain_data = chain.model_dump(mode="json")
             chain_json = json.dumps(chain_data, indent=2, sort_keys=True, default=str)
             entries.append(ExportEntry(
-                filename=f"chains/{evidence.evidence_id}.json",
+                filename=f"chains/{safe_eid}.json",
                 content=chain_json.encode("utf-8"),
                 sha256=compute_sha256(chain_data),
             ))

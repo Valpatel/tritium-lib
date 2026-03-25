@@ -355,12 +355,14 @@ canvas { display: block; }
 
   <div id="key-hints">
     <span>WASD</span> Pan  |
+    <span>Q/E</span> Up/Down  |
     <span>Scroll</span> Zoom  |
     <span>RMB</span> Rotate  |
     <span>Click</span> Select  |
     <span>B</span> Battle  |
     <span>Space</span> Pause  |
-    <span>1/2/3</span> Camera
+    <span>R</span> Reset  |
+    <span>2/3</span> Follow
   </div>
 
   <div id="fps-counter">-- FPS</div>
@@ -479,8 +481,9 @@ scene.background = new THREE.Color(VOID_BG);
 scene.fog = new THREE.FogExp2(VOID_BG, 0.003);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.5, 2000);
-camera.position.set(0, 120, 120);
-camera.lookAt(0, 0, 0);
+// Default: elevated isometric-ish view framing the central action area
+camera.position.set(40, 80, 80);
+camera.lookAt(0, 5, 0);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 // Expose to window for debugging / external control
@@ -489,14 +492,17 @@ window._controls = controls;
 window._unitPositions = null; // will be set after first frame
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.maxPolarAngle = Math.PI * 0.45;
-controls.minDistance = 20;
-controls.maxDistance = 500;
+controls.maxPolarAngle = Math.PI * 0.48;
+controls.minDistance = 10;
+controls.maxDistance = 400;
 controls.mouseButtons = {
   LEFT: THREE.MOUSE.PAN,
   MIDDLE: THREE.MOUSE.DOLLY,
   RIGHT: THREE.MOUSE.ROTATE,
 };
+// Scroll wheel zoom
+controls.enableZoom = true;
+controls.zoomSpeed = 1.2;
 controls.target.set(0, 0, 0);
 
 // =========================================================================
@@ -3453,9 +3459,10 @@ document.addEventListener('keydown', (e) => {
     case 'KeyB':
       sendCommand('start');
       break;
+    case 'KeyR':
     case 'Digit1':
       cameraMode = 0;
-      camera.position.set(0, 120, 120);
+      camera.position.set(40, 80, 80);
       controls.target.set(0, 0, 0);
       break;
     case 'Digit2':
@@ -3472,14 +3479,15 @@ document.addEventListener('keydown', (e) => {
 });
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-// Camera pan with WASD
+// Camera pan with WASD + Q/E vertical
 function updateCameraKeys(dt) {
-  const speed = 50 * dt;
+  const speed = 60 * dt;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   dir.y = 0;
   dir.normalize();
   const right = new THREE.Vector3().crossVectors(dir, camera.up).normalize();
+  const up = new THREE.Vector3(0, 1, 0);
 
   if (keys['KeyW'] || keys['ArrowUp']) {
     controls.target.addScaledVector(dir, speed);
@@ -3497,6 +3505,14 @@ function updateCameraKeys(dt) {
     controls.target.addScaledVector(right, speed);
     camera.position.addScaledVector(right, speed);
   }
+  if (keys['KeyQ']) {
+    controls.target.addScaledVector(up, -speed);
+    camera.position.addScaledVector(up, -speed);
+  }
+  if (keys['KeyE']) {
+    controls.target.addScaledVector(up, speed);
+    camera.position.addScaledVector(up, speed);
+  }
 }
 
 // Follow camera mode
@@ -3511,10 +3527,10 @@ function updateFollowCamera() {
   const tz = -(target.y || 0);
   const ty = (target.z || 0);
 
-  controls.target.lerp(new THREE.Vector3(tx, ty, tz), 0.05);
-  const offset = new THREE.Vector3(15, 20, 15);
+  controls.target.lerp(new THREE.Vector3(tx, ty + 2, tz), 0.05);
+  const offset = new THREE.Vector3(20, 30, 25);
   const desiredPos = new THREE.Vector3(tx + offset.x, ty + offset.y, tz + offset.z);
-  camera.position.lerp(desiredPos, 0.03);
+  camera.position.lerp(desiredPos, 0.04);
 }
 
 // =========================================================================
