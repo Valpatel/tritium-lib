@@ -56,6 +56,20 @@ from tritium_lib.sim_engine.demos.city_sim_backend import CitySim
 # Import EVERY sim_engine module
 # ---------------------------------------------------------------------------
 
+# --- Subpackage imports: effects, audio, game, debug ---
+from tritium_lib.sim_engine.effects import (
+    EffectsManager, explosion as fx_explosion, muzzle_flash as fx_muzzle_flash,
+    tracer as fx_tracer, smoke as fx_smoke, fire as fx_fire,
+    blood_splatter as fx_blood, debris as fx_debris, sparks as fx_sparks,
+)
+from tritium_lib.sim_engine.audio.spatial import (
+    SoundEvent, distance_attenuation, stereo_pan, propagation_delay,
+    gunshot_layers, explosion_parameters,
+)
+from tritium_lib.sim_engine.game.stats import StatsTracker
+from tritium_lib.sim_engine.game.difficulty import DifficultyScaler
+from tritium_lib.sim_engine.debug import DebugOverlay
+
 # 1. world.py
 from tritium_lib.sim_engine.world import (
     World, WorldConfig, WorldBuilder, WORLD_PRESETS,
@@ -794,6 +808,12 @@ class GameState:
         self.cyber: CyberWarfareEngine | None = None
         self.hud: HUDEngine | None = None
         self.unit_ai: UnitAISystem | None = None
+        # --- Subpackage systems: effects, audio, game stats, debug ---
+        self.effects: EffectsManager | None = None
+        self.combat_stats: StatsTracker | None = None
+        self.difficulty: DifficultyScaler | None = None
+        self.debug_overlay: DebugOverlay | None = None
+        self.sound_events: list[SoundEvent] = []
         self.running: bool = False
         self.paused: bool = False
         self.tick_count: int = 0
@@ -819,45 +839,45 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         WorldBuilder()
         .set_map_size(500, 500)
         .set_seed(42)
-        .set_time(hour=2.0)  # night
+        .set_time(hour=10.0)  # daytime — visible scene
         .enable_destruction(True)
         .enable_crowds(True)
         .enable_los(True)
         .enable_vehicles(True)
         .add_terrain_noise(octaves=4, amplitude=8.0, seed=42)
-        .set_weather(Weather.RAIN)
+        .set_weather(Weather.CLEAR)
         # Friendly squad Alpha: 4 infantry + 1 heavy + 1 sniper + 1 medic
         # Positioned near the center for quick engagement
         .spawn_friendly_squad(
             "Alpha",
             ["infantry", "infantry", "infantry", "infantry", "heavy", "sniper", "medic"],
-            (200.0, 200.0),
+            (-20.0, -10.0),
             spacing=4.0,
         )
         # Friendly fire-team Bravo: 3 infantry + 1 scout flanking from south
         .spawn_friendly_squad(
             "Bravo",
             ["infantry", "infantry", "infantry", "scout"],
-            (210.0, 230.0),
+            (-10.0, 20.0),
             spacing=4.0,
         )
         # Hostile squad: 4 infantry + 1 heavy (balanced against 11 friendlies)
         .spawn_hostile_squad(
             "Tango",
             ["infantry"] * 4 + ["heavy"],
-            (280.0, 280.0),
+            (70.0, 70.0),
             spacing=4.0,
         )
         # 4. Vehicles — humvee (friendly), technical (hostile)
-        .add_vehicle("humvee", "Humvee-Alpha", "friendly", (190.0, 190.0))
-        .add_vehicle("technical", "Technical-1", "hostile", (290.0, 290.0))
-        # 10. Destruction — 4 buildings
-        .add_building((200.0, 200.0), (20, 15, 10), "concrete")
-        .add_building((220.0, 180.0), (15, 10, 8), "concrete")
-        .add_building((180.0, 220.0), (12, 8, 6), "wood")
-        .add_building((240.0, 240.0), (10, 10, 5), "brick")
+        .add_vehicle("humvee", "Humvee-Alpha", "friendly", (-30.0, -20.0))
+        .add_vehicle("technical", "Technical-1", "hostile", (80.0, 80.0))
+        # 10. Destruction — 4 buildings centered around origin
+        .add_building((0.0, 0.0), (20, 15, 10), "concrete")
+        .add_building((30.0, -20.0), (15, 10, 8), "concrete")
+        .add_building((-25.0, 15.0), (12, 8, 6), "wood")
+        .add_building((50.0, 40.0), (10, 10, 5), "brick")
         # 9. Crowd — 50 civilians in market area
-        .add_crowd((250.0, 250.0), 50, 30.0, CrowdMood.CALM)
+        .add_crowd((40.0, 30.0), 50, 30.0, CrowdMood.CALM)
     )
 
     # Try to load geospatial terrain layer if cached data exists
@@ -885,11 +905,14 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
 
     gs.world = builder.build()
 
+    print(f"[SIM] Initialized: {len(gs.world.destruction.structures if gs.world.destruction else [])} buildings, "
+          f"{len(gs.world.units)} units, {len(gs.world.crowd.members) if gs.world.crowd else 0} crowd")
+
     # 4b. Drone (friendly quadcopter)
-    drone_v = gs.world.spawn_vehicle("quadcopter", "Recon-1", "friendly", (105.0, 95.0))
+    drone_v = gs.world.spawn_vehicle("quadcopter", "Recon-1", "friendly", (-40.0, -30.0))
     drone_v.altitude = 50.0
     drone_ctrl = DroneController(drone_v)
-    drone_ctrl.orbit((250.0, 250.0), radius=80.0, altitude=50.0)
+    drone_ctrl.orbit((25.0, 25.0), radius=80.0, altitude=50.0)
     gs.world.drone_controllers[drone_v.vehicle_id] = drone_ctrl
 
     # --- 21. Scoring ---
@@ -973,13 +996,13 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # --- 18. Asymmetric ---
     gs.asymmetric = AsymmetricEngine()
     gs.asymmetric.place_trap(
-        TrapType.IED_ROADSIDE, (300.0, 300.0), "hostile",
+        TrapType.IED_ROADSIDE, (60.0, 60.0), "hostile",
         trigger_type="proximity", damage=120.0, blast_radius=8.0,
     )
 
     # --- 19. Civilian ---
     gs.civilians = CivilianSimulator()
-    gs.civilians.spawn_population((250.0, 250.0), 50, 40.0, with_infrastructure=True)
+    gs.civilians.spawn_population((25.0, 25.0), 50, 40.0, with_infrastructure=True)
 
     # --- 20. Intel ---
     gs.intel = IntelEngine(grid_size=(100, 100), cell_size=5.0)
@@ -1019,7 +1042,7 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # Hostile jammer near the center of the map
     gs.ew.place_jammer(EWJammer(
         jammer_id="hostile_jammer_1",
-        position=(350.0, 350.0),
+        position=(120.0, 120.0),
         radius=80.0,
         jammer_type=JammerType.COMMUNICATIONS,
         alliance="hostile",
@@ -1029,7 +1052,7 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     gs.supply_routes = SupplyRouteEngine()
     gs.supply_routes.add_supply_line(SupplyLine(
         line_id="main_supply",
-        waypoints=[(50.0, 50.0), (95.0, 95.0), (100.0, 100.0)],
+        waypoints=[(-80.0, -80.0), (-40.0, -40.0), (-20.0, -20.0)],
         source_cache_id="cache_alpha",
         alliance="friendly",
     ))
@@ -1039,10 +1062,10 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
 
     # 14. Procedural map (roads, forest, river for visual richness)
     mg = MapGenerator(width=500, height=500, seed=42)
-    mg.add_road((0, 250), (500, 250), width=8.0)  # main east-west road
-    mg.add_road((250, 0), (250, 500), width=6.0)  # main north-south road
-    mg.add_forest((400, 100), radius=60, density=0.6)  # forest NE
-    mg.add_river((0, 400), (500, 350), width=15.0)  # river south
+    mg.add_road((-250, 0), (250, 0), width=8.0)  # main east-west road
+    mg.add_road((0, -250), (0, 250), width=6.0)  # main north-south road
+    mg.add_forest((150, -150), radius=60, density=0.6)  # forest NE
+    mg.add_river((-250, 150), (250, 100), width=15.0)  # river south
     gs.generated_map = mg.result()
 
     # 15. Weather visual effects (rain, fog, lightning)
@@ -1050,10 +1073,10 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
 
     # 15. Wave spawner — reinforcement spawn points for both sides
     gs.spawner = SpawnerEngine(seed=42)
-    gs.spawner.add_spawn_point(SpawnPoint(position=(450.0, 250.0), alliance="hostile"))
-    gs.spawner.add_spawn_point(SpawnPoint(position=(250.0, 450.0), alliance="hostile"))
-    gs.spawner.add_spawn_point(SpawnPoint(position=(50.0, 200.0), alliance="friendly"))
-    gs.spawner.add_spawn_point(SpawnPoint(position=(200.0, 50.0), alliance="friendly"))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(200.0, 0.0), alliance="hostile"))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(0.0, 200.0), alliance="hostile"))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(-200.0, 0.0), alliance="friendly"))
+    gs.spawner.add_spawn_point(SpawnPoint(position=(0.0, -200.0), alliance="friendly"))
 
     # 15. Collision world — unit and vehicle collisions
     gs.collision = CollisionWorld(cell_size=5.0)
@@ -1073,7 +1096,7 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     mortar_tmpl = ARTILLERY_TEMPLATES[ArtilleryType.MORTAR_60MM]
     gs.artillery.add_piece(ArtilleryPiece(
         piece_id="mortar_1", artillery_type=ArtilleryType.MORTAR_60MM,
-        alliance="friendly", position=(180.0, 180.0), heading=0.7,
+        alliance="friendly", position=(-30.0, -30.0), heading=0.7,
         min_range=mortar_tmpl["min_range"], max_range=mortar_tmpl["max_range"],
         damage=mortar_tmpl["damage"], blast_radius=mortar_tmpl["blast_radius"],
         reload_time=mortar_tmpl["reload_time"], ammo=mortar_tmpl["max_ammo"],
@@ -1084,7 +1107,7 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     mortar_tmpl_81 = ARTILLERY_TEMPLATES[ArtilleryType.MORTAR_81MM]
     gs.artillery.add_piece(ArtilleryPiece(
         piece_id="mortar_hostile_1", artillery_type=ArtilleryType.MORTAR_81MM,
-        alliance="hostile", position=(320.0, 310.0), heading=3.9,
+        alliance="hostile", position=(100.0, 90.0), heading=3.9,
         min_range=mortar_tmpl_81["min_range"], max_range=mortar_tmpl_81["max_range"],
         damage=mortar_tmpl_81["damage"], blast_radius=mortar_tmpl_81["blast_radius"],
         reload_time=mortar_tmpl_81["reload_time"], ammo=mortar_tmpl_81["max_ammo"],
@@ -1094,10 +1117,10 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # Queue initial fire missions
     try:
         gs.artillery.request_fire_mission(
-            "mortar_1", (280.0, 280.0), mission_type="barrage", rounds=5, interval=3.0,
+            "mortar_1", (70.0, 70.0), mission_type="barrage", rounds=5, interval=3.0,
         )
         gs.artillery.request_fire_mission(
-            "mortar_hostile_1", (200.0, 200.0), mission_type="area", rounds=3, interval=4.0,
+            "mortar_hostile_1", (-20.0, -20.0), mission_type="area", rounds=3, interval=4.0,
         )
     except ValueError:
         pass  # out of range in some presets
@@ -1135,11 +1158,11 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     gs.territory = TerritoryControl()
     gs.territory.add_control_point(ControlPoint(
         point_id="cp_center", name="Central Objective",
-        position=(250.0, 250.0), capture_radius=30.0,
+        position=(25.0, 25.0), capture_radius=30.0,
     ))
     gs.territory.add_control_point(ControlPoint(
         point_id="cp_east", name="Eastern Approach",
-        position=(350.0, 250.0), capture_radius=25.0,
+        position=(100.0, 25.0), capture_radius=25.0,
     ))
 
     # --- 30. Buildings — procedural interior layouts for CQB ---
@@ -1147,11 +1170,11 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # Generate a house and an office block near the action
     gs.buildings.generate_layout(
         floors=1, rooms_per_floor=4,
-        building_pos=(205.0, 205.0), template="house",
+        building_pos=(5.0, 5.0), template="house",
     )
     gs.buildings.generate_layout(
         floors=2, rooms_per_floor=4,
-        building_pos=(290.0, 290.0), template="compound",
+        building_pos=(60.0, 60.0), template="compound",
     )
 
     # --- 31. Economy — resource management for both factions ---
@@ -1167,19 +1190,19 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     gs.cyber = CyberWarfareEngine(rng_seed=42)
     # Friendly SIGINT post in the rear area
     sigint = create_asset_from_preset(
-        "sigint_post", "sigint_friendly_1", (100.0, 100.0), "friendly",
+        "sigint_post", "sigint_friendly_1", (-50.0, -50.0), "friendly",
     )
     gs.cyber.deploy_asset(sigint)
     # Hostile GPS spoofer threatening drone routes
     spoofer = create_asset_from_preset(
-        "gps_spoofer", "gps_spoofer_hostile_1", (380.0, 320.0), "hostile",
+        "gps_spoofer", "gps_spoofer_hostile_1", (130.0, 90.0), "hostile",
     )
     gs.cyber.deploy_asset(spoofer)
     # Activate the spoofer immediately so effects show in first frame
     gs.cyber.launch_attack(
         "gps_spoofer_hostile_1",
         "gps_spoofer_hostile_1_gps_spoof",
-        (250.0, 250.0),
+        (25.0, 25.0),
     )
 
     # --- 33. HUD — minimap, compass, unit roster, notifications ---
@@ -1202,10 +1225,34 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
         alliance = first_unit.alliance.value
         # Build patrol waypoints: squad start pos -> center -> opposite side
         leader_pos = first_unit.position
-        center = (250.0, 250.0)
-        opposite = (500.0 - leader_pos[0], 500.0 - leader_pos[1])
+        center = (25.0, 25.0)
+        opposite = (-leader_pos[0], -leader_pos[1])
         waypoints = [leader_pos, center, opposite, center, leader_pos]
         gs.unit_ai.register_squad(sid, alliance, waypoints)
+
+    # --- Effects (particle system) — muzzle flashes, explosions, smoke ---
+    gs.effects = EffectsManager(max_emitters=256)
+    # Seed with a few persistent smoke emitters at building positions
+    for bld_id, layout in gs.buildings.buildings.items():
+        if layout.is_hostile:
+            gs.effects.add(fx_smoke(layout.position, duration=30.0))
+
+    # --- Combat stats (StatsTracker from game subpackage) ---
+    gs.combat_stats = StatsTracker()
+    for uid, unit in gs.world.units.items():
+        gs.combat_stats.register_unit(
+            uid, unit.name, unit.alliance.value, unit.unit_type.value,
+        )
+    # Start wave tracking
+    hostile_start = sum(1 for u in gs.world.units.values() if u.alliance.value == "hostile")
+    gs.combat_stats.on_wave_start(1, "initial_engagement", hostile_start)
+
+    # --- Difficulty scaler ---
+    gs.difficulty = DifficultyScaler()
+
+    # --- Debug overlay (collects all debug streams) ---
+    gs.debug_overlay = DebugOverlay()
+    gs.debug_overlay.register(gs.effects.debug)
 
     gs.start_time = time.time()
     return gs
@@ -1228,6 +1275,10 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
 
     # 1. World tick (units, squads, vehicles, projectiles, destruction, crowd)
     frame = gs.world.tick(dt)
+
+    # Ensure destruction/building data is always in frame for Three.js
+    if gs.world.destruction is not None and "destruction" not in frame:
+        frame["destruction"] = gs.world.destruction.to_three_js()
 
     # 2. Detection tick
     if gs.detection is not None:
@@ -1635,7 +1686,7 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
                 )
         hud_world_state = {
             "units": hud_units,
-            "camera_pos": (250.0, 250.0),
+            "camera_pos": (25.0, 25.0),
             "camera_fov": 60.0,
             "player_heading": 0.0,
         }
@@ -1644,6 +1695,95 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     # AI behavior state — decision, formation, cover status per unit
     if gs.unit_ai is not None:
         frame["ai_behaviors"] = gs.unit_ai.to_three_js()
+
+    # --- Effects (particle system) tick ---
+    if gs.effects is not None:
+        # Spawn particles from combat events this tick
+        # Event types from World.tick(): "fire" (unit_id, weapon, target),
+        # "unit_killed" (source_id, target_id), "explosion" (position, radius)
+        for ev in frame.get("events", []):
+            etype = ev.get("type", "")
+            if etype == "fire":
+                # Muzzle flash at shooter position
+                shooter_id = ev.get("unit_id", "")
+                shooter_unit = gs.world.units.get(shooter_id) if gs.world else None
+                if shooter_unit and shooter_unit.is_alive():
+                    gs.effects.add(fx_muzzle_flash(shooter_unit.position, shooter_unit.heading))
+                # Sparks/impact at target position
+                target_pos = ev.get("target", None)
+                if target_pos:
+                    gs.effects.add(fx_sparks(target_pos, direction=(0.0, 1.0)))
+            elif etype == "unit_killed":
+                # Blood splatter at victim position
+                victim_id = ev.get("target_id", "")
+                victim_unit = gs.world.units.get(victim_id) if gs.world else None
+                if victim_unit:
+                    gs.effects.add(fx_blood(victim_unit.position, direction=(0.0, 1.0)))
+            elif etype == "explosion":
+                pos = ev.get("position", None)
+                if pos:
+                    radius = ev.get("radius", 5.0)
+                    gs.effects.add(fx_explosion(pos, radius=radius))
+                    gs.effects.add(fx_debris(pos, num_pieces=15))
+        gs.effects.tick(dt)
+        frame["effects"] = gs.effects.to_three_js(max_particles=300)
+
+    # --- Spatial audio events ---
+    # Collect sound events from combat (gunshots, explosions) for this tick
+    sounds: list[dict] = []
+    listener_pos = (25.0, 25.0)  # camera / player position
+    for ev in frame.get("events", []):
+        etype = ev.get("type", "")
+        if etype == "fire":
+            # Gunshot sound at shooter position
+            shooter_id = ev.get("unit_id", "")
+            shooter_unit = gs.world.units.get(shooter_id) if gs.world else None
+            if shooter_unit and shooter_unit.is_alive():
+                weapon = ev.get("weapon", "rifle_shot")
+                se = SoundEvent(weapon, shooter_unit.position, volume=0.8, category="weapon")
+                computed = se.compute_for_listener(listener_pos)
+                sounds.append(computed)
+        elif etype == "explosion":
+            pos = ev.get("position", None)
+            if pos:
+                se = SoundEvent("explosion", pos, volume=1.0, category="weapon")
+                computed = se.compute_for_listener(listener_pos)
+                sounds.append(computed)
+    if sounds:
+        frame["spatial_audio"] = sounds[:20]  # cap for frame size
+
+    # --- Combat stats (game.StatsTracker) tick ---
+    if gs.combat_stats is not None:
+        for ev in frame.get("events", []):
+            etype = ev.get("type", "")
+            if etype == "fire":
+                # Each "fire" event = one shot fired (may or may not hit)
+                shooter_id = ev.get("unit_id", "")
+                if shooter_id:
+                    gs.combat_stats.on_shot_fired(shooter_id)
+            elif etype == "unit_killed":
+                killer = ev.get("source_id", "")
+                victim = ev.get("target_id", "")
+                if killer and victim:
+                    # Record as both a hit and a kill
+                    gs.combat_stats.on_shot_hit(killer, victim, 100.0)
+                    gs.combat_stats.on_kill(killer, victim)
+                victim_unit = gs.world.units.get(victim) if gs.world else None
+                if victim_unit and victim_unit.alliance.value == "friendly":
+                    gs.combat_stats.on_friendly_loss()
+        gs.combat_stats.tick(dt)
+        # Export compact stats summary + per-unit leaderboard
+        frame["combat_stats"] = gs.combat_stats.get_summary()
+        # Send full per-unit stats every 50 ticks (avoid bloating every frame)
+        if gs.tick_count % 50 == 0:
+            frame["combat_stats_detail"] = gs.combat_stats.to_dict()
+
+    # --- Difficulty scaler state ---
+    if gs.difficulty is not None:
+        frame["difficulty"] = {
+            "multiplier": round(gs.difficulty.get_multiplier(), 3),
+            "waves_tracked": len(gs.difficulty.wave_history),
+        }
 
     # Add metadata
     frame["tick"] = gs.tick_count
@@ -1719,7 +1859,14 @@ async def index() -> HTMLResponse:
         if _game_task is not None and not _game_task.done():
             _game_task.cancel()
         _game_task = asyncio.create_task(_game_loop())
-    return HTMLResponse(content=GAME_HTML, status_code=200)
+    # Serve standalone game.html from disk (has all rendering improvements)
+    from pathlib import Path
+    game_html_path = Path(__file__).parent / "game.html"
+    if game_html_path.exists():
+        html_content = game_html_path.read_text(encoding="utf-8")
+    else:
+        html_content = GAME_HTML  # fallback to embedded copy
+    return HTMLResponse(content=html_content, status_code=200)
 
 
 @app.get("/favicon.ico")
@@ -2013,8 +2160,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     "type": f.feature_type,
                     "x": f.position[0],
                     "y": f.position[1],
-                    "radius": f.radius,
-                    "density": f.density,
+                    "w": f.size[0],
+                    "h": f.size[1],
                     "rotation": f.rotation,
                 }
                 for f in _game.generated_map.features
@@ -2094,6 +2241,7 @@ def _count_active_modules(gs: GameState) -> int:
         "logistics", "naval", "air_combat", "engineering",
         "asymmetric", "civilians", "intel", "diplomacy", "campaign",
         "morale", "ew", "supply_routes",
+        "effects", "combat_stats", "difficulty", "debug_overlay",
     ):
         if getattr(gs, attr, None) is not None:
             count += 1
@@ -2340,7 +2488,7 @@ const unitMeshes = {};    // id -> { cone, ring, label }
 const vehicleMeshes = {}; // id -> { body, cabin }
 const projectileMeshes = []; // array of line objects
 const effectMeshes = [];     // array of sphere objects
-const crowdPoints = null;    // single Points object
+// crowdInstCalm/Agitated/Rioting/Fleeing handle civilian rendering
 const buildingMeshes = {};   // id/index -> mesh
 
 // Reusable helpers
@@ -2381,7 +2529,7 @@ controls.update();
 // =========================================================================
 // Lights
 // =========================================================================
-scene.add(new THREE.AmbientLight(0x8899bb, 0.45));
+scene.add(new THREE.AmbientLight(0x8899bb, 0.65));
 
 const sunLight = new THREE.DirectionalLight(0xffeedd, 1.0);
 sunLight.position.set(200, 400, 100);
@@ -2458,11 +2606,31 @@ const matVehHostile = new THREE.MeshStandardMaterial({ color: 0xa01848, roughnes
 const matVehDestroyed = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
 const matVehCabin = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.7, metalness: 0.3 });
 const matProjectile = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-const matBuilding = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05 });
-const matBuildingRoof = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9 });
+const matBuilding = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05, emissive: 0x111122, emissiveIntensity: 0.3 });
+const matBuildingRoof = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9, emissive: 0x0a0a15, emissiveIntensity: 0.2 });
 const matBuildingDestroyed = new THREE.MeshStandardMaterial({ color: 0x3a1010, roughness: 0.9 });
 const matRing = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.5 });
-const matCrowd = new THREE.PointsMaterial({ color: YELLOW, size: 1.2, sizeAttenuation: true });
+
+// Crowd: instanced cylinders so civilians are visible at any zoom level
+const crowdMaxCount = 200;
+const crowdGeoInst = new THREE.CylinderGeometry(0.4, 0.5, 1.8, 6, 1);
+const crowdMatCalm      = new THREE.MeshStandardMaterial({ color: 0x05ffa1, emissive: 0x052a1a, emissiveIntensity: 0.5 });
+const crowdMatAgitated  = new THREE.MeshStandardMaterial({ color: YELLOW,   emissive: 0x2a1a00, emissiveIntensity: 0.5 });
+const crowdMatRioting   = new THREE.MeshStandardMaterial({ color: MAGENTA,  emissive: 0x2a0012, emissiveIntensity: 0.6 });
+const crowdMatFleeing   = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x1a1a1a, emissiveIntensity: 0.3 });
+const crowdInstCalm     = new THREE.InstancedMesh(crowdGeoInst, crowdMatCalm,     crowdMaxCount);
+const crowdInstAgitated = new THREE.InstancedMesh(crowdGeoInst, crowdMatAgitated, crowdMaxCount);
+const crowdInstRioting  = new THREE.InstancedMesh(crowdGeoInst, crowdMatRioting,  crowdMaxCount);
+const crowdInstFleeing  = new THREE.InstancedMesh(crowdGeoInst, crowdMatFleeing,  crowdMaxCount);
+crowdInstCalm.count     = 0;
+crowdInstAgitated.count = 0;
+crowdInstRioting.count  = 0;
+crowdInstFleeing.count  = 0;
+crowdInstCalm.castShadow     = true;
+crowdInstAgitated.castShadow = true;
+crowdInstRioting.castShadow  = true;
+crowdInstFleeing.castShadow  = true;
+scene.add(crowdInstCalm, crowdInstAgitated, crowdInstRioting, crowdInstFleeing);
 
 // Building colors (cyberpunk palette)
 const BLDG_COLORS = [0x2a2a3e, 0x1e2d3e, 0x2e1e3e, 0x1a2e2e, 0x2e2a1e, 0x3e2e2e];
@@ -2501,15 +2669,75 @@ for (let i = 0; i < MAX_EXPLOSIONS; i++) {
   explosionPool.push({ mesh, active: false, age: 0, maxAge: 0.5, targetRadius: 5 });
 }
 
+// Crowd instanced meshes already set up above with crowdInstCalm/Agitated/Rioting/Fleeing
+
 // =========================================================================
-// Crowd particle system
+// Map features (roads, forests, rivers) — rendered once
 // =========================================================================
-const crowdMaxCount = 200;
-const crowdPositions = new Float32Array(crowdMaxCount * 3);
-const crowdGeo = new THREE.BufferGeometry();
-crowdGeo.setAttribute('position', new THREE.BufferAttribute(crowdPositions, 3));
-const crowdMesh = new THREE.Points(crowdGeo, matCrowd);
-scene.add(crowdMesh);
+function renderMapFeatures(features) {
+  if (!features || features.length === 0) return;
+  const mapGroup = new THREE.Group();
+  mapGroup.name = 'map-features';
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.95 });
+  const roadLineMat = new THREE.LineBasicMaterial({ color: 0xffffaa, transparent: true, opacity: 0.25 });
+  const riverMat = new THREE.MeshStandardMaterial({ color: 0x0a3a66, roughness: 0.1, transparent: true, opacity: 0.72 });
+  const treeMat = new THREE.MeshStandardMaterial({ color: 0x1a5c1a, roughness: 0.9 });
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3a2010, roughness: 0.95 });
+
+  for (const f of features) {
+    const fx = f.x || 0;
+    const fz = f.y || 0;  // server y -> Three.js z
+    const fw = f.w || 4;
+    const fh = f.h || 4;
+    const rot = f.rotation || 0;
+
+    if (f.type === 'road') {
+      const len = Math.max(fw, fh), wid = Math.min(fw, fh);
+      const geo = new THREE.PlaneGeometry(len, wid);
+      const mesh = new THREE.Mesh(geo, roadMat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.rotation.z = rot;
+      mesh.position.set(fx, 0.03, fz);
+      mesh.receiveShadow = true;
+      mapGroup.add(mesh);
+    } else if (f.type === 'river' || f.type === 'water') {
+      const len = Math.max(fw, fh), wid = Math.min(fw, fh);
+      const geo = new THREE.PlaneGeometry(len, wid);
+      const mesh = new THREE.Mesh(geo, riverMat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.rotation.z = rot;
+      mesh.position.set(fx, 0.04, fz);
+      mapGroup.add(mesh);
+    } else if (f.type === 'forest') {
+      // Scatter tree cones
+      const cr = Math.min(fw, fh) * 0.5;
+      const count = Math.max(2, Math.floor(cr * cr * 0.15));
+      let s = Math.abs((fx * 1000 + fz) | 0) || 1;
+      const rng = () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+      for (let t = 0; t < count; t++) {
+        const a = rng() * Math.PI * 2, r = rng() * cr * 0.9;
+        const tx = fx + Math.cos(a) * r, tz = fz + Math.sin(a) * r;
+        const th = 3 + rng() * 3, tr = 0.8 + rng() * 0.6;
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(tr*0.12, tr*0.18, th*0.35, 5), trunkMat);
+        trunk.position.set(tx, th*0.175, tz);
+        mapGroup.add(trunk);
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(tr, th*0.7, 6), treeMat);
+        cone.position.set(tx, th*0.35 + th*0.35, tz);
+        mapGroup.add(cone);
+      }
+    } else if (f.type === 'building' || f.type === 'village') {
+      const bh = Math.max(fh, 2);
+      const geo = new THREE.BoxGeometry(fw, bh, fw);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x444466, roughness: 0.7, emissive: 0x111122, emissiveIntensity: 0.2 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(fx, bh / 2, fz);
+      mesh.castShadow = true;
+      mapGroup.add(mesh);
+    }
+  }
+  scene.add(mapGroup);
+  console.log('[MAP] Rendered ' + features.length + ' map features');
+}
 
 // =========================================================================
 // Building management
@@ -2549,9 +2777,9 @@ function ensureBuildings(structures) {
       roof.castShadow = true;
       scene.add(roof);
 
-      // Emissive window strips on sides
+      // Emissive window strips on sides — bright so buildings visible at night
       const windowMat = new THREE.MeshBasicMaterial({
-        color: 0xffdd66, transparent: true, opacity: 0.6
+        color: 0xffdd88, transparent: true, opacity: 0.85
       });
       const floors = Math.floor(h / 4);
       for (let f = 1; f <= floors; f++) {
@@ -2869,21 +3097,45 @@ function tickExplosions(dt) {
 }
 
 // =========================================================================
-// Crowd update
+// Crowd update — instanced cylinders coloured by mood
 // =========================================================================
+const _crowdDummy = new THREE.Object3D();
 function updateCrowd(crowdData) {
-  if (!crowdData) {
-    crowdGeo.setDrawRange(0, 0);
-    return;
+  // Reset instance counts
+  crowdInstCalm.count     = 0;
+  crowdInstAgitated.count = 0;
+  crowdInstRioting.count  = 0;
+  crowdInstFleeing.count  = 0;
+  if (!crowdData || crowdData.length === 0) return;
+
+  const idxCalm = { v: 0 }, idxAgi = { v: 0 }, idxRiot = { v: 0 }, idxFlee = { v: 0 };
+
+  for (let i = 0; i < crowdData.length; i++) {
+    const c = crowdData[i];
+    const mood = c.mood || 'calm';
+    _crowdDummy.position.set(c.x, 0.9, c.y);
+    _crowdDummy.rotation.y = c.heading || 0;
+    _crowdDummy.updateMatrix();
+
+    if (mood === 'rioting' && idxRiot.v < crowdMaxCount) {
+      crowdInstRioting.setMatrixAt(idxRiot.v++, _crowdDummy.matrix);
+    } else if ((mood === 'fleeing' || mood === 'panicked') && idxFlee.v < crowdMaxCount) {
+      crowdInstFleeing.setMatrixAt(idxFlee.v++, _crowdDummy.matrix);
+    } else if ((mood === 'agitated' || mood === 'uneasy') && idxAgi.v < crowdMaxCount) {
+      crowdInstAgitated.setMatrixAt(idxAgi.v++, _crowdDummy.matrix);
+    } else if (idxCalm.v < crowdMaxCount) {
+      crowdInstCalm.setMatrixAt(idxCalm.v++, _crowdDummy.matrix);
+    }
   }
-  const count = Math.min(crowdData.length, crowdMaxCount);
-  for (let i = 0; i < count; i++) {
-    crowdPositions[i * 3] = crowdData[i].x;
-    crowdPositions[i * 3 + 1] = 0.8;
-    crowdPositions[i * 3 + 2] = crowdData[i].y;
-  }
-  crowdGeo.attributes.position.needsUpdate = true;
-  crowdGeo.setDrawRange(0, count);
+
+  crowdInstCalm.count     = idxCalm.v;
+  crowdInstAgitated.count = idxAgi.v;
+  crowdInstRioting.count  = idxRiot.v;
+  crowdInstFleeing.count  = idxFlee.v;
+  crowdInstCalm.instanceMatrix.needsUpdate     = true;
+  crowdInstAgitated.instanceMatrix.needsUpdate = true;
+  crowdInstRioting.instanceMatrix.needsUpdate  = true;
+  crowdInstFleeing.instanceMatrix.needsUpdate  = true;
 }
 
 // =========================================================================
@@ -2898,6 +3150,12 @@ function processFrame(f) {
   // Buildings (only need to create once, then update destruction)
   if (f.destruction && f.destruction.structures) {
     ensureBuildings(f.destruction.structures);
+  }
+
+  // Map features (roads, forests, rivers) — render once from first frame or welcome
+  if (f.map_features && !window._mapFeaturesRendered) {
+    renderMapFeatures(f.map_features);
+    window._mapFeaturesRendered = true;
   }
 
   // Units
@@ -2968,6 +3226,9 @@ function processFrame(f) {
 
   // Update HUD
   updateHUD(f);
+
+  // Auto-restart check
+  checkAutoRestart(f.stats);
 }
 
 // =========================================================================
@@ -3177,6 +3438,55 @@ function animate() {
 }
 
 animate();
+
+// =========================================================================
+// Auto-connect WebSocket — game auto-starts on page load
+// =========================================================================
+(function autoConnect() {
+  // Check if a game is already running, then immediately connect WS
+  fetch('/api/status').then(r => r.json()).then(d => {
+    if (d.running) {
+      connectWS();
+      const splash = document.getElementById('splash');
+      if (splash) splash.style.display = 'none';
+    }
+  }).catch(() => {});
+})();
+
+// =========================================================================
+// Auto-restart — when all friendlies die, restart after 5 seconds
+// =========================================================================
+let _restartScheduled = false;
+function checkAutoRestart(stats) {
+  if (!stats) return;
+  const friendlyAlive = stats.alive_friendly || 0;
+  const totalUnits = stats.total_units || 0;
+  if (totalUnits > 0 && friendlyAlive === 0 && !_restartScheduled) {
+    _restartScheduled = true;
+    const msgEl = document.createElement('div');
+    msgEl.id = 'restart-msg';
+    msgEl.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+      'background:rgba(10,10,15,0.92);border:1px solid #ff2a6d;color:#ff2a6d;' +
+      'padding:24px 40px;font-family:monospace;font-size:20px;z-index:9999;text-align:center;' +
+      'border-radius:4px;box-shadow:0 0 30px #ff2a6d44;';
+    msgEl.innerHTML = '<div style="font-size:28px;font-weight:bold;margin-bottom:8px">ALL UNITS KIA</div>' +
+      '<div style="color:#00f0ff;font-size:14px">Restarting in 5 seconds...</div>';
+    document.body.appendChild(msgEl);
+    setTimeout(() => {
+      _restartScheduled = false;
+      const existing = document.getElementById('restart-msg');
+      if (existing) existing.remove();
+      const preset = document.getElementById('preset-select').value;
+      fetch('/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset })
+      }).then(r => r.json()).then(() => {
+        connectWS();
+      });
+    }, 5000);
+  }
+}
 </script>
 </body>
 </html>"""

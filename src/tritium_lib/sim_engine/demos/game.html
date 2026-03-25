@@ -448,7 +448,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 1.4;
 document.body.insertBefore(renderer.domElement, document.getElementById('hud'));
 
 const scene = new THREE.Scene();
@@ -505,7 +505,7 @@ const _skyColorB = new THREE.Color();
 function getSkyColor(h) {
   // h = hour 0..24
   if (h >= 7 && h < 17) return 0x1a2a3e;  // daytime — deep tactical blue
-  if (h >= 19 || h < 5) return 0x0a0a0f;  // night — near black
+  if (h >= 19 || h < 5) return 0x141828;  // night — visible dark blue
   if (h >= 5 && h < 6) {
     _skyColorA.set(0x0a0a2e); _skyColorB.set(0xff6622);
     _skyColorA.lerp(_skyColorB, h - 5); return _skyColorA.getHex();
@@ -531,9 +531,9 @@ let groundMat;
 function createGround() {
   const groundGeo = new THREE.PlaneGeometry(MAP_SIZE * 2, MAP_SIZE * 2);
   groundMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1a1a,  // dark asphalt — matches city3d aesthetic
-    roughness: 0.9,
-    metalness: 0.0,
+    color: 0x3a3a40,  // medium asphalt — visible in all conditions
+    roughness: 0.85,
+    metalness: 0.05,
   });
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;
@@ -785,8 +785,8 @@ for (let i = 0; i < SMOKE_POOL; i++) {
 const MAX_RAIN = 2000;
 const rainDropGeo = new THREE.BoxGeometry(0.08, 1.5, 0.08);
 const rainDropMat = new THREE.MeshStandardMaterial({
-  color: 0xccddff, emissive: 0x667799, emissiveIntensity: 0.4,
-  transparent: true, opacity: 0.55, depthWrite: false,
+  color: 0xccddff, emissive: 0x88aacc, emissiveIntensity: 0.8,
+  transparent: true, opacity: 0.6, depthWrite: false,
 });
 const rainMesh = new THREE.InstancedMesh(rainDropGeo, rainDropMat, MAX_RAIN);
 rainMesh.count = 0;
@@ -813,7 +813,7 @@ const buildings = new Map(); // id -> { mesh, wireframe, mat, windowPoints }
 
 // Window dot material — shared across all buildings
 const windowDotMat = new THREE.PointsMaterial({
-  color: 0xffffaa, size: 0.35, transparent: true, opacity: 0.85,
+  color: 0xffffff, size: 0.55, transparent: true, opacity: 0.98,
   blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
 });
 
@@ -856,43 +856,43 @@ function _buildWindowPositions(w, h, d) {
 // Building material types by height/size — concrete=gray, wood=brown, brick=red/orange,
 // office glass=blue-steel for tall buildings.
 function _buildingMaterial(w, h, d) {
-  // Tall: h >= 16 → office glass with blue-steel tint
+  // Tall: h >= 16 → office glass with cyan cyberpunk glow
   if (h >= 16) {
     return new THREE.MeshStandardMaterial({
       color: 0x1a2535,
       roughness: 0.35,
       metalness: 0.55,
-      emissive: 0x0a1020,
-      emissiveIntensity: 0.4,
+      emissive: 0x003344,
+      emissiveIntensity: 1.2,
     });
   }
-  // Medium: h 8..16 → concrete gray
+  // Medium: h 8..16 → concrete gray with magenta undertone
   if (h >= 8) {
     return new THREE.MeshStandardMaterial({
       color: 0x2a2a35,
       roughness: 0.80,
       metalness: 0.15,
-      emissive: 0x08080f,
-      emissiveIntensity: 0.25,
+      emissive: 0x1a0a1a,
+      emissiveIntensity: 0.9,
     });
   }
-  // Small wide (shop): w >= 12 → brick red-orange
+  // Small wide (shop): w >= 12 → brick red-orange with warm glow
   if (w >= 12 || d >= 12) {
     return new THREE.MeshStandardMaterial({
       color: 0x3a1a10,
       roughness: 0.90,
       metalness: 0.05,
-      emissive: 0x0f0508,
-      emissiveIntensity: 0.2,
+      emissive: 0x2a0a04,
+      emissiveIntensity: 0.75,
     });
   }
-  // Small low → wood brown
+  // Small low → wood brown with faint amber glow
   return new THREE.MeshStandardMaterial({
     color: 0x2a1a0a,
     roughness: 0.95,
     metalness: 0.02,
-    emissive: 0x0a0604,
-    emissiveIntensity: 0.15,
+    emissive: 0x180e02,
+    emissiveIntensity: 0.65,
   });
 }
 
@@ -904,10 +904,11 @@ function createBuilding(id, x, z, w, h, d) {
   mesh.castShadow = true;
   mesh.receiveShadow = true;
 
-  // Edge wireframe — subtle cyan glow, brighter for tall buildings
+  // Edge wireframe — cyberpunk cyan/magenta glow, clearly visible at night
   const wireGeo = new THREE.EdgesGeometry(geo);
-  const wireOpacity = h >= 16 ? 0.22 : 0.12;
-  const wireMat = new THREE.LineBasicMaterial({ color: CYAN, transparent: true, opacity: wireOpacity });
+  const wireColor = h >= 16 ? CYAN : (h >= 8 ? 0xff2a6d : CYAN);
+  const wireOpacity = h >= 16 ? 0.75 : (h >= 8 ? 0.60 : 0.45);
+  const wireMat = new THREE.LineBasicMaterial({ color: wireColor, transparent: true, opacity: wireOpacity });
   const wireframe = new THREE.LineSegments(wireGeo, wireMat);
   wireframe.position.copy(mesh.position);
 
@@ -916,7 +917,7 @@ function createBuilding(id, x, z, w, h, d) {
   if (h >= 12) {
     const rGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 0.1, 0.1, d + 0.1));
     const rMat = new THREE.LineBasicMaterial({
-      color: h >= 16 ? CYAN : 0x00aa88, transparent: true, opacity: 0.35,
+      color: h >= 16 ? CYAN : 0x05ffa1, transparent: true, opacity: 0.85,
     });
     roofGlow = new THREE.LineSegments(rGeo, rMat);
     roofGlow.position.set(x, h + 0.05, z);
@@ -1201,6 +1202,17 @@ function connectWS() {
   ws.onmessage = (evt) => {
     try {
       const frame = JSON.parse(evt.data);
+      // Handle welcome frame from late-joining clients
+      if (frame.type === 'welcome') {
+        if (frame.map_features && !window._mapFeaturesRendered) {
+          renderMapFeatures(frame.map_features);
+          window._mapFeaturesRendered = true;
+        }
+        if (frame.destruction && frame.destruction.structures) {
+          updateBuildings(frame.destruction.structures);
+        }
+        return;
+      }
       processFrame(frame);
     } catch (e) {
       console.warn('Bad frame:', e);
@@ -1863,8 +1875,12 @@ function processFrame(frame) {
   // Weather
   updateWeather(frame.weather || {});
 
-  // Buildings
-  if (frame.buildings) updateBuildings(frame.buildings);
+  // Buildings — from destruction engine (server sends frame.destruction.structures)
+  if (frame.destruction && frame.destruction.structures) {
+    updateBuildings(frame.destruction.structures);
+  } else if (frame.buildings && Array.isArray(frame.buildings)) {
+    updateBuildings(frame.buildings);
+  }
 
   // Terrain polygons from geospatial segmentation (first frame only)
   if (frame.terrain_geojson && !window._terrainRendered) {
@@ -2320,7 +2336,7 @@ let _currentHour = 12;
 function _applyWetRoad(isNight, isRaining) {
   if (!groundMat) return;
   const wet = isRaining && isNight;
-  groundMat.color.set(wet ? 0x111122 : 0x1a1a1a);
+  groundMat.color.set(wet ? 0x1a1a2e : 0x2a2a2e);
   groundMat.metalness = wet ? 0.45 : 0.0;
   groundMat.roughness = wet ? 0.45 : 0.9;
   // Rain drizzle: emissive color shifts to blue-gray
@@ -2375,7 +2391,18 @@ function updateBuildings(buildingList) {
     if (!entry) continue;
 
     // Damage-driven color shift: grey -> yellow -> orange -> charcoal
-    const dmg = Math.max(0, Math.min(1, b.damage !== undefined ? b.damage : (1 - (b.health_pct || b.health || 1))));
+    // b.damage can be a string ("intact","light","moderate","heavy","destroyed","collapsed")
+    // or a float 0-1. Convert string to float using health_pct when available.
+    let rawDmg = 0;
+    if (typeof b.damage === 'number') {
+      rawDmg = b.damage;
+    } else if (typeof b.damage === 'string') {
+      const dmgMap = { intact: 0, light: 0.2, moderate: 0.4, heavy: 0.6, destroyed: 0.9, collapsed: 1.0 };
+      rawDmg = dmgMap[b.damage] ?? (1 - (b.health_pct || 1));
+    } else {
+      rawDmg = 1 - (b.health_pct || b.health || 1);
+    }
+    const dmg = Math.max(0, Math.min(1, rawDmg));
     if (dmg > 0) {
       const r = dmg < 0.5 ? 0.15 + dmg * 0.9 : 0.6 - (dmg - 0.5) * 1.1;
       const g = dmg < 0.3 ? 0.15 + (0.3 - dmg) * 0.3 : Math.max(0, 0.24 - dmg * 0.3);
@@ -2419,12 +2446,14 @@ function updateWeatherFX(wx) {
     const dayFactor = Math.max(0, sunY);
     const rainDim = raining ? 0.7 : 1.0;
 
-    ambientLight.intensity = (0.15 + dayFactor * 0.4) * rainDim;
-    dirLight.intensity = (0.1 + dayFactor * 1.2) * rainDim;
-    hemiLight.intensity = (0.3 + dayFactor * 0.3) * rainDim;
-    // Sky/ground hemisphere colors shift with day/night
-    hemiLight.color.set(isNight ? 0x0a1020 : 0x88aacc);
-    hemiLight.groundColor.set(isNight ? 0x050810 : 0x112244);
+    // Night minimum light levels ensure buildings/ground stay visible
+    // Boosted minimums so buildings are always distinguishable from void
+    ambientLight.intensity = (0.5 + dayFactor * 0.3) * rainDim;
+    dirLight.intensity = (0.4 + dayFactor * 0.8) * rainDim;
+    hemiLight.intensity = (0.6 + dayFactor * 0.2) * rainDim;
+    // Sky/ground hemisphere colors shift with day/night — brighter at night for visibility
+    hemiLight.color.set(isNight ? 0x2a3850 : 0x88aacc);
+    hemiLight.groundColor.set(isNight ? 0x1a2030 : 0x112244);
 
     if (sun.x !== undefined) {
       dirLight.position.set(sun.x * 200, Math.max(10, sunY * 150), (sun.z || 0.2) * 200);

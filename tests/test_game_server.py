@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+fastapi = pytest.importorskip("fastapi", reason="fastapi not installed — skip game server tests")
 from fastapi.testclient import TestClient
 
 from tritium_lib.sim_engine.demos.game_server import (
