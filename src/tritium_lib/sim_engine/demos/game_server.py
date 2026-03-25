@@ -284,6 +284,12 @@ from tritium_lib.sim_engine.cyber import (
 from tritium_lib.sim_engine.hud import (
     HUDEngine,
 )
+# 34. soundtrack.py — audio cue generation for Three.js Web Audio
+from tritium_lib.sim_engine.soundtrack import SoundtrackEngine
+# 35. event_bus.py — centralized sim event pub/sub + timeline
+from tritium_lib.sim_engine.event_bus import SimEventBus, SimEvent, SimEventType
+# 36. replay.py — replay recording for playback/analysis
+from tritium_lib.sim_engine.replay import ReplayRecorder
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +833,9 @@ class GameState:
         self.economy: EconomyEngine | None = None
         self.cyber: CyberWarfareEngine | None = None
         self.hud: HUDEngine | None = None
+        self.soundtrack: SoundtrackEngine | None = None
+        self.event_bus: SimEventBus | None = None
+        self.replay: ReplayRecorder | None = None
         self.unit_ai: UnitAISystem | None = None
         # --- AI strategy, pathfinding, behavior profiles ---
         self.road_network: RoadNetwork | None = None
@@ -1236,6 +1245,25 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     # --- 33. HUD — minimap, compass, unit roster, notifications ---
     gs.hud = HUDEngine(map_width=500.0, map_height=500.0, minimap_size=200)
     gs.hud.add_notification("Mission started — ALPHA team deploy", priority="high", icon="alert")
+
+    # --- 34. Soundtrack — audio cue generation ---
+    gs.soundtrack = SoundtrackEngine()
+
+    # --- 35. Event bus — centralized event aggregation ---
+    gs.event_bus = SimEventBus(max_log=5000)
+    # Seed with a game-start event
+    gs.event_bus.emit(SimEvent(
+        event_type=SimEventType.WAVE_STARTED,
+        tick=0,
+        time=0.0,
+        data={"wave": 1, "preset": preset},
+    ))
+
+    # --- 36. Replay recorder — frame-by-frame capture ---
+    gs.replay = ReplayRecorder(
+        metadata={"preset": preset, "units": len(gs.world.units)},
+        max_frames=6000,  # ~10 min at 10fps
+    )
 
     # --- AI behavior system — behavior trees, steering, formations, combat AI ---
     gs.unit_ai = UnitAISystem()
@@ -1771,6 +1799,121 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
             "player_heading": 0.0,
         }
         frame["hud"] = gs.hud.render_frame(hud_world_state, player_alliance="friendly", dt=dt)
+
+    # 34. Civilian simulator tick — fleeing, fear, casualties
+    if gs.civilians is not None:
+        # Build threat list from hostile unit positions
+        civ_threats: list[tuple[tuple[float, float], float]] = []
+        civ_explosions: list[tuple[tuple[float, float], float]] = []
+        for uid, u in gs.world.units.items():
+            if u.is_alive() and u.alliance == Alliance.HOSTILE:
+                civ_threats.append((u.position, 30.0))
+        for ev in frame.get("events", []):
+            if ev.get("type") == "explosion":
+                pos = ev.get("position")
+                radius = ev.get("radius", 5.0)
+                if pos:
+                    civ_explosions.append((tuple(pos), radius))
+        civ_result = gs.civilians.tick(dt, threats=civ_threats, explosions=civ_explosions)
+        frame["civilians"] = gs.civilians.to_three_js()
+        if civ_result.get("casualties", 0) > 0:
+            frame.setdefault("events", []).append({
+                "type": "civilian_casualty",
+                "casualties": civ_result["casualties"],
+            })
+
+    # 35. Campaign — mission chain state (no tick, event-driven)
+    if gs.campaign is not None:
+        frame["campaign"] = gs.campaign.to_three_js()
+
+    # 36. Fortifications/Engineering tick — mines, construction progress
+    if gs.engineering is not None:
+        eng_unit_pos: dict[str, tuple[tuple[float, float], str]] = {}
+        for uid, u in gs.world.units.items():
+            if u.is_alive():
+                eng_unit_pos[uid] = (u.position, u.alliance.value)
+        eng_events = gs.engineering.tick(dt, eng_unit_pos)
+        frame["fortifications"] = gs.engineering.to_three_js()
+        if eng_events:
+            frame["fortification_events"] = eng_events[:10]
+
+    # 37. Soundtrack tick — music + audio cues for frontend
+    if gs.soundtrack is not None:
+        st_events = frame.get("events", [])
+        hostile_count = sum(
+            1 for u in gs.world.units.values()
+            if u.is_alive() and u.alliance == Alliance.HOSTILE
+        )
+        combat_active = any(
+            ev.get("type") in ("fire", "explosion", "unit_killed")
+            for ev in st_events
+        )
+        env_snap = gs.world.environment.snapshot()
+        st_world = {
+            "hostiles_count": hostile_count,
+            "combat_active": combat_active,
+            "wave_cleared": hostile_count == 0,
+            "game_over": False,
+            "game_won": False,
+            "weather": env_snap.get("weather", "clear"),
+            "wind_speed": env_snap.get("wind_speed", 0.0),
+            "rain_intensity": 0.5 if env_snap.get("weather") == "rain" else 0.0,
+            "time_of_day": env_snap.get("hour", 12.0),
+        }
+        soundtrack_frame = gs.soundtrack.tick(st_events, st_world)
+        if soundtrack_frame:
+            frame["soundtrack"] = soundtrack_frame
+
+    # 38. Event bus — aggregate sim events for timeline/HUD
+    if gs.event_bus is not None:
+        for ev in frame.get("events", []):
+            etype = ev.get("type", "")
+            ev_type_map = {
+                "fire": SimEventType.SHOT_FIRED,
+                "unit_killed": SimEventType.UNIT_KILLED,
+                "unit_hit": SimEventType.UNIT_DAMAGED,
+                "explosion": SimEventType.EXPLOSION,
+            }
+            if etype in ev_type_map:
+                gs.event_bus.emit(SimEvent(
+                    event_type=ev_type_map[etype],
+                    tick=gs.tick_count,
+                    time=gs.world.sim_time,
+                    data=ev,
+                ))
+        # Export recent event timeline (last 20 events)
+        frame["event_timeline"] = gs.event_bus.to_three_js(last_n=20)
+        # Export event stats every 50 ticks
+        if gs.tick_count % 50 == 0:
+            frame["event_stats"] = gs.event_bus.stats()
+
+    # 39. Replay recorder — capture frame for playback
+    if gs.replay is not None:
+        units_snap = [
+            {
+                "id": uid,
+                "x": round(u.position[0], 2),
+                "y": round(u.position[1], 2),
+                "alive": u.is_alive(),
+                "alliance": u.alliance.value,
+            }
+            for uid, u in gs.world.units.items()
+        ]
+        gs.replay.record_frame(
+            tick=gs.tick_count,
+            time=gs.world.sim_time,
+            units=units_snap,
+            events=frame.get("events", []),
+            render_data={
+                "unit_count": len(units_snap),
+                "section_count": len(frame),
+            },
+        )
+        frame["replay"] = {
+            "recording": True,
+            "frames_captured": len(gs.replay.frames),
+            "max_frames": gs.replay.max_frames,
+        }
 
     # AI behavior state — decision, formation, cover status per unit
     if gs.unit_ai is not None:
