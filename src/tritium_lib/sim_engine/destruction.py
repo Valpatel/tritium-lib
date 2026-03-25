@@ -193,6 +193,12 @@ class DestructionEngine:
         self.debris_list: list[Debris] = []
         self._rng = rng or random.Random()
         self._structure_map: dict[str, Structure] = {}
+        # Cache for the structures portion of to_three_js().
+        # Structures geometry is static; only damage/health/fire fields
+        # change, and only via damage_structure() or fire spread.
+        self._structures_cache: list[dict] | None = None
+        self._structures_version: int = 0
+        self._structures_cache_version: int = -1
 
     # -- mutators -----------------------------------------------------------
 
@@ -200,6 +206,7 @@ class DestructionEngine:
         """Register a structure with the engine."""
         self.structures.append(structure)
         self._structure_map[structure.structure_id] = structure
+        self._structures_version += 1
 
     def damage_structure(
         self,
@@ -228,6 +235,7 @@ class DestructionEngine:
         s.health = max(0.0, s.health - damage)
         health_pct = s.health / s.max_health if s.max_health > 0 else 0.0
         s.damage_level = _health_to_damage_level(health_pct)
+        self._structures_version += 1
 
         # Add a hole at the impact point
         hole_size = min(3.0, damage / 20.0)
@@ -309,30 +317,38 @@ class DestructionEngine:
     # -- Three.js export ----------------------------------------------------
 
     def to_three_js(self) -> dict:
-        """Serialise the full destruction state to a Three.js-ready dict."""
-        structures_out: list[dict] = []
-        for s in self.structures:
-            destroyed = s.damage_level.value in ("destroyed", "collapsed")
-            structures_out.append({
-                "id": s.structure_id,
-                "x": s.position[0],
-                "y": s.position[1],
-                # Full names used by the Three.js frontend (ensureBuildings)
-                "width": s.size[0],
-                "depth": s.size[1],
-                "height": s.size[2],
-                # Short aliases kept for backward compatibility
-                "w": s.size[0],
-                "d": s.size[1],
-                "h": s.size[2],
-                "rotation": s.rotation,
-                "material": s.material,
-                "damage": s.damage_level.value,
-                "destroyed": destroyed,
-                "health_pct": s.health / s.max_health if s.max_health > 0 else 0.0,
-                "on_fire": s.is_on_fire,
-                "holes": list(s.holes),
-            })
+        """Serialise the full destruction state to a Three.js-ready dict.
+
+        The structures list is cached and only re-serialized when a
+        structure is added, damaged, ignited, or extinguished.
+        """
+        # Rebuild structures cache only when the version has changed.
+        if self._structures_cache_version != self._structures_version:
+            structures_out: list[dict] = []
+            for s in self.structures:
+                destroyed = s.damage_level.value in ("destroyed", "collapsed")
+                structures_out.append({
+                    "id": s.structure_id,
+                    "x": s.position[0],
+                    "y": s.position[1],
+                    # Full names used by the Three.js frontend (ensureBuildings)
+                    "width": s.size[0],
+                    "depth": s.size[1],
+                    "height": s.size[2],
+                    # Short aliases kept for backward compatibility
+                    "w": s.size[0],
+                    "d": s.size[1],
+                    "h": s.size[2],
+                    "rotation": s.rotation,
+                    "material": s.material,
+                    "damage": s.damage_level.value,
+                    "destroyed": destroyed,
+                    "health_pct": s.health / s.max_health if s.max_health > 0 else 0.0,
+                    "on_fire": s.is_on_fire,
+                    "holes": list(s.holes),
+                })
+            self._structures_cache = structures_out
+            self._structures_cache_version = self._structures_version
 
         fires_out: list[dict] = []
         for f in self.fires:
@@ -383,7 +399,7 @@ class DestructionEngine:
                 })
 
         return {
-            "structures": structures_out,
+            "structures": self._structures_cache,
             "fires": fires_out,
             "debris": debris_out,
             "smoke": smoke_out,
@@ -495,6 +511,7 @@ class DestructionEngine:
         """Set a structure on fire."""
         s.is_on_fire = True
         s.fire_intensity = 0.5
+        self._structures_version += 1
         f = Fire(
             fire_id=f"sfire_{s.structure_id}",
             position=s.position,
@@ -554,6 +571,7 @@ class DestructionEngine:
                 if fire_dmg > 0 and s.health > 0:
                     s.health = max(0.0, s.health - fire_dmg)
                     s.damage_level = _health_to_damage_level(s.health / s.max_health if s.max_health > 0 else 0.0)
+                    self._structures_version += 1
                     events["structures_damaged"].append(s.structure_id)
 
                 # Ignite nearby wood structures
@@ -576,6 +594,7 @@ class DestructionEngine:
                     if f.fire_id == f"sfire_{s.structure_id}":
                         s.is_on_fire = False
                         s.fire_intensity = 0.0
+                        self._structures_version += 1
 
     def _tick_debris(self, dt: float, events: dict) -> None:
         """Update debris physics: ballistic trajectory, settle after timeout."""

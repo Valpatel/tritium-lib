@@ -15,9 +15,39 @@ Architecture mirrors the firmware flasher pattern:
     SDRDevice (ABC)
     ├── HackRFDevice — hackrf_* CLI tools
     ├── RTLSDRDevice — rtl_* CLI tools (future)
-    └── LimeSDRDevice — LimeSuite tools (future)
+    ├── LimeSDRDevice — LimeSuite tools (future)
+    └── SimulatedSDR — pure software simulation (demos/testing)
+
+Spectrum analysis layer:
+    SpectrumAnalyzer — signal detection, classification, waterfall display
+    SimulatedSignal — configurable RF signal source for simulation
 """
 
 from .base import SDRDevice, SDRInfo, SweepResult, SweepPoint
+from .simulator import SimulatedSDR, SimulatedSignal, default_signal_environment
+from .analyzer import (
+    SpectrumAnalyzer,
+    DetectedSignal,
+    FrequencyBand,
+    ScanPreset,
+    WaterfallRow,
+    KNOWN_BANDS,
+    SCAN_PRESETS,
+)
 
-__all__ = ["SDRDevice", "SDRInfo", "SweepResult", "SweepPoint"]
+__all__ = [
+    "SDRDevice",
+    "SDRInfo",
+    "SweepResult",
+    "SweepPoint",
+    "SimulatedSDR",
+    "SimulatedSignal",
+    "default_signal_environment",
+    "SpectrumAnalyzer",
+    "DetectedSignal",
+    "FrequencyBand",
+    "ScanPreset",
+    "WaterfallRow",
+    "KNOWN_BANDS",
+    "SCAN_PRESETS",
+]
