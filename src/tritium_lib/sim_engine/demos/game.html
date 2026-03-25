@@ -293,6 +293,23 @@ canvas { display: block; }
 .ai-decision.flee, .ai-decision.retreat { color: #fcee0a; }
 .ai-decision.seek_cover, .ai-decision.hide { color: #00f0ff; }
 
+/* ── Morale panel — per-alliance morale bars ── */
+#morale-panel {
+  position: absolute; top: 160px; right: 16px;
+  background: #0a0a0fdd; border: 1px solid #05ffa133;
+  border-radius: 4px; padding: 8px 12px; min-width: 160px;
+  pointer-events: none; display: none;
+}
+#morale-panel.visible { display: block; }
+#morale-panel .title { font-size: 10px; color: #05ffa1aa;
+  text-transform: uppercase; letter-spacing: 2px; margin-bottom: 5px; }
+.morale-row { display: flex; align-items: center; gap: 6px;
+  margin-bottom: 3px; font-size: 11px; }
+.morale-label { width: 64px; color: #aaa; text-transform: capitalize; }
+.morale-bar { flex: 1; height: 6px; background: #1a1a2a; border-radius: 3px; overflow: hidden; }
+.morale-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+.morale-value { width: 32px; text-align: right; font-size: 10px; }
+
 /* ── FOW canvas overlay — between 3D scene and HUD ── */
 #fow-canvas {
   position: absolute; top: 0; left: 0;
@@ -393,6 +410,12 @@ canvas { display: block; }
   <div id="ai-panel">
     <div class="title">AI Behaviors</div>
     <div id="ai-units-list"></div>
+  </div>
+
+  <!-- Morale panel — alliance morale averages -->
+  <div id="morale-panel">
+    <div class="title">Morale</div>
+    <div id="morale-bars"></div>
   </div>
 </div>
 
@@ -2117,6 +2140,18 @@ function processFrame(frame) {
 
   // AI behaviors — unit decision panel
   if (frame.ai_behaviors) updateAIBehaviors(frame.ai_behaviors);
+
+  // Morale — per-unit color tints + alliance morale bars
+  if (frame.morale) updateMorale(frame.morale);
+
+  // Formations — draw formation lines between squad members
+  if (frame.formations) updateFormations(frame.formations);
+
+  // Detection — sensor range circles around units
+  if (frame.detection) updateDetection(frame.detection);
+
+  // Server-computed HUD — kill feed, roster, wave info
+  if (frame.hud) updateServerHUD(frame.hud);
 
   // HUD
   updateHUD(frame.ui || {}, frame);
@@ -3966,6 +4001,239 @@ function updateFogOfWar(intel) {
         fowCtx.strokeRect(px - cellPx / 2, py - cellPx / 2, cellPx, cellPx);
       }
     }
+  }
+}
+
+// =========================================================================
+// Morale renderer — per-unit color tint + alliance morale bar panel
+// =========================================================================
+
+// Cache morale data so updateUnits can reference it for material tinting
+let _lastMoraleData = null;
+
+function updateMorale(moraleData) {
+  if (!moraleData) return;
+  _lastMoraleData = moraleData;
+
+  // --- Per-unit morale tint on 3D models ---
+  const moraleUnits = moraleData.units || [];
+  for (const mu of moraleUnits) {
+    const cached = unitModelCache.get(mu.id);
+    if (!cached || !cached._colorable) continue;
+
+    // Parse aura_color hex string (#RRGGBB) to a Three.js color
+    const auraHex = parseInt((mu.aura_color || '#ffffff').replace('#', ''), 16);
+    const intensity = mu.aura_intensity || 0.5;
+
+    // Blend the morale tint with the existing unit color
+    // Low morale = more red/orange tint, high = green glow
+    for (const mat of cached._colorable) {
+      const base = mat.color.clone();
+      const tint = new THREE.Color(auraHex);
+      // Subtle blend: lerp 15% toward the morale color
+      base.lerp(tint, 0.15 + (1.0 - intensity) * 0.15);
+      mat.color.copy(base);
+    }
+  }
+
+  // --- Alliance morale averages panel ---
+  const panel = document.getElementById('morale-panel');
+  const barsEl = document.getElementById('morale-bars');
+  const averages = moraleData.alliance_averages || {};
+  const allianceKeys = Object.keys(averages);
+
+  if (allianceKeys.length === 0) {
+    panel.classList.remove('visible');
+    return;
+  }
+  panel.classList.add('visible');
+
+  let html = '';
+  const allianceColorMap = {
+    friendly: '#05ffa1', hostile: '#ff2a6d', neutral: '#00f0ff', unknown: '#fcee0a',
+  };
+  for (const ally of allianceKeys) {
+    const pct = Math.round(averages[ally]);
+    const color = allianceColorMap[ally] || '#888';
+    html += '<div class="morale-row">' +
+      '<span class="morale-label">' + ally + '</span>' +
+      '<div class="morale-bar"><div class="morale-bar-fill" style="width:' +
+      pct + '%;background:' + color + '"></div></div>' +
+      '<span class="morale-value" style="color:' + color + '">' + pct + '</span></div>';
+  }
+  barsEl.innerHTML = html;
+}
+
+// =========================================================================
+// Formations renderer — draw formation lines between squad members
+// =========================================================================
+
+const _formationLines = []; // {line: THREE.Line, mat: LineBasicMaterial}
+
+function updateFormations(formationsData) {
+  if (!Array.isArray(formationsData)) return;
+
+  // Recycle or create line objects
+  let lineIdx = 0;
+
+  for (const f of formationsData) {
+    const lines = f.lines || [];
+    const allianceColor = ALLIANCE_COLORS[f.alliance] || ALLIANCE_COLORS.unknown;
+
+    for (const seg of lines) {
+      if (seg.length < 2) continue;
+      const p0 = seg[0], p1 = seg[1];
+
+      let entry;
+      if (lineIdx < _formationLines.length) {
+        entry = _formationLines[lineIdx];
+      } else {
+        const geo = new THREE.BufferGeometry();
+        const positions = new Float32Array(6); // 2 vertices * 3 components
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mat = new THREE.LineBasicMaterial({
+          color: 0x00f0ff, transparent: true, opacity: 0.5,
+          blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const line = new THREE.Line(geo, mat);
+        scene.add(line);
+        entry = { line, mat, geo };
+        _formationLines.push(entry);
+      }
+
+      const posAttr = entry.geo.attributes.position;
+      posAttr.array[0] = p0[0];
+      posAttr.array[1] = 0.5;      // slight hover above ground
+      posAttr.array[2] = -(p0[1]);  // sim Y -> Three.js -Z
+      posAttr.array[3] = p1[0];
+      posAttr.array[4] = 0.5;
+      posAttr.array[5] = -(p1[1]);
+      posAttr.needsUpdate = true;
+
+      entry.mat.color.setHex(allianceColor);
+      entry.line.visible = true;
+      lineIdx++;
+    }
+  }
+
+  // Hide unused lines
+  for (let i = lineIdx; i < _formationLines.length; i++) {
+    _formationLines[i].line.visible = false;
+  }
+}
+
+// =========================================================================
+// Detection renderer — sensor range circles around units
+// =========================================================================
+
+const _detectionCircles = []; // {mesh: THREE.Mesh, mat: MeshBasicMaterial}
+
+function updateDetection(detData) {
+  if (!detData) return;
+  const sensors = detData.sensors || [];
+
+  let circIdx = 0;
+  for (const s of sensors) {
+    if (!s.active) continue;
+
+    let entry;
+    if (circIdx < _detectionCircles.length) {
+      entry = _detectionCircles[circIdx];
+    } else {
+      const ringGeo = new THREE.RingGeometry(0.9, 1.0, 32);
+      ringGeo.rotateX(-Math.PI / 2);
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x00f0ff, transparent: true, opacity: 0.25,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(ringGeo, mat);
+      scene.add(mesh);
+      entry = { mesh, mat, _lastRange: 1 };
+      _detectionCircles.push(entry);
+    }
+
+    // Scale the ring to match detection range (ring is unit radius)
+    const range = s.range || 30;
+    entry.mesh.position.set(s.x || 0, 0.3, -(s.y || 0));
+    entry.mesh.scale.set(range, range, range);
+
+    // Color from server cone_color (hex string with alpha like "#00f0ff33")
+    const colorStr = (s.cone_color || '#00f0ff33').slice(0, 7);
+    const colorHex = parseInt(colorStr.replace('#', ''), 16);
+    entry.mat.color.setHex(colorHex);
+    entry.mat.opacity = 0.2;
+    entry.mesh.visible = true;
+    circIdx++;
+  }
+
+  // Also render detection contacts as small markers
+  const detections = detData.detections || [];
+  // (Detection contacts are already rendered as unit targets by the unit system,
+  //  so we just rely on the sensor circles for visual feedback.)
+
+  // Hide unused circles
+  for (let i = circIdx; i < _detectionCircles.length; i++) {
+    _detectionCircles[i].mesh.visible = false;
+  }
+}
+
+// =========================================================================
+// Server HUD renderer — use server-computed kill feed + roster data
+// =========================================================================
+
+function updateServerHUD(hudData) {
+  if (!hudData) return;
+
+  // --- Server kill feed entries ---
+  const serverKills = hudData.kill_feed || [];
+  if (serverKills.length > 0) {
+    const feedList = document.getElementById('kill-feed-list');
+    for (const kill of serverKills) {
+      // Avoid duplicates: check if this kill text already exists
+      const killText = (kill.killer || '?') + ' ' + (kill.weapon || 'killed') + ' ' + (kill.victim || '?');
+      const existing = feedList.querySelector('[data-kill-text="' + CSS.escape(killText) + '"]');
+      if (existing) continue;
+
+      const entry = document.createElement('div');
+      entry.className = 'kill-entry';
+      entry.setAttribute('data-kill-text', killText);
+      const kClass = 'kill-' + (kill.killer_alliance || 'neutral');
+      const vClass = 'kill-' + (kill.victim_alliance || 'neutral');
+      entry.innerHTML = '<span class="' + kClass + '">' + (kill.killer || '?') + '</span>' +
+        ' <span class="kill-verb">' + (kill.weapon || 'killed') + '</span> ' +
+        '<span class="' + vClass + '">' + (kill.victim || '?') + '</span>';
+      feedList.insertBefore(entry, feedList.firstChild);
+      while (feedList.children.length > 8) feedList.removeChild(feedList.lastChild);
+    }
+  }
+
+  // --- Server roster data (richer than client-side) ---
+  const serverRoster = hudData.roster;
+  if (serverRoster && serverRoster.units && serverRoster.units.length > 0) {
+    const rosterList = document.getElementById('roster-list');
+    rosterList.innerHTML = '';
+    const rosterUnits = serverRoster.units.slice(0, 12);
+    for (const u of rosterUnits) {
+      const hp = Math.max(0, Math.min(1, u.health || 0));
+      const hpPct = Math.round(hp * 100);
+      const barClass = hp > 0.6 ? 'health-high' : hp > 0.3 ? 'health-mid' : 'health-low';
+      const selected = u.id === selectedUnitId ? ' selected' : '';
+      const statusBadge = u.status ? ' [' + u.status + ']' : '';
+      rosterList.innerHTML += '<div class="roster-unit' + selected + '">' +
+        '<span class="roster-name" style="color:' + (u.color || '#05ffa1') + '">' +
+        (u.name || u.label || u.id) + statusBadge + '</span>' +
+        '<div class="roster-bar"><div class="roster-bar-fill ' + barClass +
+        '" style="width:' + hpPct + '%"></div></div>' +
+        '<span class="roster-hp">' + hpPct + '%</span></div>';
+    }
+  }
+
+  // --- Score overlay from server ---
+  if (hudData.score) {
+    const scoreEl = document.getElementById('score-display');
+    const scores = hudData.score;
+    const parts = Object.entries(scores).map(([k, v]) => k.toUpperCase() + ': ' + v);
+    if (parts.length > 0) scoreEl.textContent = parts.join(' | ');
   }
 }
 
