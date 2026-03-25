@@ -111,7 +111,7 @@ class TestTemplates:
 
     def test_medic_low_damage(self):
         u = _make_unit("medic")
-        assert u.stats.attack_damage == 5.0
+        assert u.stats.attack_damage == 8.0
 
 
 # ---------------------------------------------------------------------------
