@@ -111,7 +111,13 @@ class TestTemplates:
 
     def test_medic_low_damage(self):
         u = _make_unit("medic")
-        assert u.stats.attack_damage == 8.0
+        infantry = _make_unit("infantry")
+        assert u.stats.attack_damage == 8.0, (
+            f"medic damage should be 8.0, got {u.stats.attack_damage}"
+        )
+        assert u.stats.attack_damage < infantry.stats.attack_damage, (
+            "medic should deal less damage than infantry"
+        )
 
 
 # ---------------------------------------------------------------------------
