@@ -11,6 +11,7 @@ classification from whatever signals are available.
 from tritium_lib.classifier.device_classifier import (
     DeviceClassifier,
     DeviceClassification,
+    _is_mac_randomized as is_mac_randomized,
 )
 
-__all__ = ["DeviceClassifier", "DeviceClassification"]
+__all__ = ["DeviceClassifier", "DeviceClassification", "is_mac_randomized"]
