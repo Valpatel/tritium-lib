@@ -87,6 +87,8 @@ class OSMFeature:
     tags: dict[str, str] = field(default_factory=dict)
     lat: float = 0.0
     lon: float = 0.0
+    # Full geometry (list of [lat, lon] for ways, None for nodes)
+    geometry: Optional[list[list[float]]] = None
     # Enrichment data extracted from tags
     building_type: Optional[str] = None
     road_type: Optional[str] = None
@@ -143,9 +145,10 @@ class OSMEnrichment:
                 pass
 
         # Build Overpass query — fetch buildings, roads, water, landuse
+        # Use `out geom` to get full polygon/way geometry (not just centroids)
         bbox = f"{bounds.min_lat},{bounds.min_lon},{bounds.max_lat},{bounds.max_lon}"
         query = f"""
-        [out:json][timeout:30];
+        [out:json][timeout:60];
         (
           way["building"]({bbox});
           way["highway"]({bbox});
@@ -155,9 +158,10 @@ class OSMEnrichment:
           way["leisure"="park"]({bbox});
           way["amenity"="parking"]({bbox});
           way["railway"]({bbox});
+          way["barrier"]({bbox});
           node["natural"="tree"]({bbox});
         );
-        out center;
+        out geom;
         """
 
         try:
@@ -175,7 +179,7 @@ class OSMEnrichment:
             resp = requests.post(
                 OVERPASS_URL,
                 data={"data": query},
-                timeout=30,
+                timeout=60,
                 headers={"User-Agent": "Tritium/1.0 (geospatial enrichment)"},
             )
             resp.raise_for_status()
@@ -209,14 +213,24 @@ class OSMEnrichment:
             if terrain_type is None:
                 continue
 
-            # Get position (center for ways/relations)
+            # Get position and geometry
+            geometry: list[list[float]] | None = None
             if osm_type == "node":
                 lat = element.get("lat", 0.0)
                 lon = element.get("lon", 0.0)
             else:
-                center = element.get("center", {})
-                lat = center.get("lat", 0.0)
-                lon = center.get("lon", 0.0)
+                # Extract full geometry from `out geom` response
+                geom_pts = element.get("geometry", [])
+                if geom_pts:
+                    geometry = [[pt["lat"], pt["lon"]] for pt in geom_pts]
+                    # Centroid from geometry
+                    lat = sum(p[0] for p in geometry) / len(geometry)
+                    lon = sum(p[1] for p in geometry) / len(geometry)
+                else:
+                    # Fallback to center (from `out center`)
+                    center = element.get("center", {})
+                    lat = center.get("lat", 0.0)
+                    lon = center.get("lon", 0.0)
 
             feature = OSMFeature(
                 osm_id=osm_id,
@@ -226,6 +240,7 @@ class OSMEnrichment:
                 tags=tags,
                 lat=lat,
                 lon=lon,
+                geometry=geometry,
                 building_type=tags.get("building") if "building" in tags else None,
                 road_type=tags.get("highway") if "highway" in tags else None,
                 speed_limit=self._parse_speed(tags.get("maxspeed")),
@@ -275,6 +290,10 @@ class OSMEnrichment:
         railway = tags.get("railway")
         if railway:
             return TerrainType.RAIL
+
+        barrier = tags.get("barrier")
+        if barrier:
+            return TerrainType.BUILDING  # Barriers act as obstacles like buildings
 
         return None
 
@@ -384,3 +403,53 @@ class OSMEnrichment:
             return int(value)
         except ValueError:
             return None
+
+    @staticmethod
+    def features_to_geojson(features: list[OSMFeature]) -> dict:
+        """Convert OSMFeature list to GeoJSON FeatureCollection.
+
+        Features with geometry become Polygon/LineString features.
+        Point features (nodes) become Point features.
+        """
+        geojson_features = []
+        for f in features:
+            props = {
+                "osm_id": f.osm_id,
+                "osm_type": f.osm_type,
+                "terrain_type": f.terrain_type.value if hasattr(f.terrain_type, "value") else str(f.terrain_type),
+                "name": f.name or "",
+            }
+            if f.building_type:
+                props["building_type"] = f.building_type
+            if f.road_type:
+                props["road_type"] = f.road_type
+            if f.speed_limit:
+                props["speed_limit"] = f.speed_limit
+            if f.surface:
+                props["surface"] = f.surface
+            if f.height_m:
+                props["height"] = f.height_m
+            if f.lanes:
+                props["lanes"] = f.lanes
+
+            if f.geometry and len(f.geometry) >= 3:
+                # Polygon (building, landuse, water body)
+                coords = [[pt[1], pt[0]] for pt in f.geometry]  # [lon, lat]
+                if coords[0] != coords[-1]:
+                    coords.append(coords[0])
+                geometry = {"type": "Polygon", "coordinates": [coords]}
+            elif f.geometry and len(f.geometry) >= 2:
+                # LineString (road, waterway)
+                coords = [[pt[1], pt[0]] for pt in f.geometry]
+                geometry = {"type": "LineString", "coordinates": coords}
+            else:
+                # Point (tree, node)
+                geometry = {"type": "Point", "coordinates": [f.lon, f.lat]}
+
+            geojson_features.append({
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": props,
+            })
+
+        return {"type": "FeatureCollection", "features": geojson_features}

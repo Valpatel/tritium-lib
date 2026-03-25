@@ -276,7 +276,8 @@ class ProximityMonitor:
             return
 
         # Check every unique pair
-        target_list = list(targets.values())
+        # get_all() returns a list of TrackedTarget, not a dict
+        target_list = list(targets) if isinstance(targets, list) else list(targets.values())
         new_breaches: set[str] = set()
 
         for i in range(len(target_list)):
@@ -348,6 +349,16 @@ class ProximityMonitor:
                 self._fire_alert(departure)
 
         self._scans_completed += 1
+
+        # Prune stale cooldown entries to prevent unbounded dict growth
+        if self._scans_completed % 100 == 0:
+            max_cooldown = max((r.cooldown_s for r in self._rules if r.enabled), default=60.0)
+            stale_keys = [
+                k for k, t in self._cooldowns.items()
+                if (now - t) > max_cooldown * 2
+            ]
+            for k in stale_keys:
+                del self._cooldowns[k]
 
     def _fire_alert(self, alert: ProximityAlert) -> None:
         """Publish an alert to the event bus and store it."""

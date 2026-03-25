@@ -367,8 +367,12 @@ def analyze_frame_sequence(paths: List[str], change_threshold=1.0) -> dict:
 # 6. VISION MODEL (Ollama/llava)
 # ============================================================
 
-def ask_vision_model(path, prompt=None, model="llava:7b", url="http://localhost:11434") -> dict:
-    """Ask a vision LLM to evaluate a screenshot."""
+def ask_vision_model(path, prompt=None, model="llava:7b", url="http://localhost:8081") -> dict:
+    """Ask a vision LLM to evaluate a screenshot.
+
+    Uses llama-server (OpenAI-compatible) on port 8081 by default.
+    Falls back to ollama on 11434 if llama-server unavailable.
+    """
     if not HAS_REQUESTS:
         return {"ok": False, "error": "requests not installed"}
     if prompt is None:
@@ -382,11 +386,27 @@ def ask_vision_model(path, prompt=None, model="llava:7b", url="http://localhost:
     try:
         with open(path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
-        r = _requests.post(f"{url}/api/generate", json={
-            "model": model, "prompt": prompt, "images": [b64], "stream": False,
-        }, timeout=90)
-        if r.ok:
-            return {"ok": True, "response": r.json().get("response", ""), "model": model}
+
+        # Try llama-server (OpenAI-compatible) first
+        is_llama = any(p in url for p in [":8081", ":8082", ":8083"])
+        if is_llama:
+            r = _requests.post(f"{url}/v1/chat/completions", json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt, "images": [b64]}],
+                "max_tokens": 512,
+            }, timeout=90)
+            if r.ok:
+                choices = r.json().get("choices", [])
+                text = choices[0]["message"]["content"] if choices else ""
+                return {"ok": True, "response": text, "model": model}
+        else:
+            # Legacy ollama
+            r = _requests.post(f"{url}/api/generate", json={
+                "model": model, "prompt": prompt, "images": [b64], "stream": False,
+            }, timeout=90)
+            if r.ok:
+                return {"ok": True, "response": r.json().get("response", ""), "model": model}
+
         return {"ok": False, "error": f"HTTP {r.status_code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}

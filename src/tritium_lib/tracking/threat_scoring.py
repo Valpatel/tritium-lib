@@ -220,6 +220,7 @@ class ThreatScorer:
                         pass
 
             # Decay scores for targets no longer visible
+            stale_ids = []
             for tid in list(self._profiles.keys()):
                 if tid not in active_ids:
                     profile = self._profiles[tid]
@@ -228,7 +229,20 @@ class ThreatScorer:
                     profile.movement_score *= SCORE_DECAY
                     profile.compute_threat_score()
                     if profile.threat_score < 0.01:
-                        del self._profiles[tid]
+                        stale_ids.append(tid)
+            for tid in stale_ids:
+                del self._profiles[tid]
+
+            # Cap profiles dict to prevent unbounded growth
+            _MAX_PROFILES = 10000
+            if len(self._profiles) > _MAX_PROFILES:
+                # Evict lowest-scoring, oldest profiles
+                sorted_ids = sorted(
+                    self._profiles.keys(),
+                    key=lambda k: (self._profiles[k].threat_score, self._profiles[k].last_updated),
+                )
+                for tid in sorted_ids[:len(self._profiles) - _MAX_PROFILES]:
+                    del self._profiles[tid]
 
         return scores
 
@@ -278,7 +292,7 @@ class ThreatScorer:
         if hour < NORMAL_HOURS_START or hour >= NORMAL_HOURS_END:
             profile.off_hours_sightings += 1
 
-        if profile.total_sightings > 5:
+        if profile.total_sightings > 5 and profile.total_sightings > 0:
             off_ratio = profile.off_hours_sightings / profile.total_sightings
             profile.timing_score = min(1.0, off_ratio * 1.5)
 

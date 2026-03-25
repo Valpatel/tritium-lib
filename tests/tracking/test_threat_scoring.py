@@ -216,3 +216,51 @@ def test_evaluate_empty_target_id_skipped():
 def test_get_profile_nonexistent():
     scorer = ThreatScorer()
     assert scorer.get_profile("does-not-exist") is None
+
+
+# ---------------------------------------------------------------------------
+# Edge case: timing score with zero total_sightings
+# ---------------------------------------------------------------------------
+
+def test_timing_score_zero_sightings_no_crash():
+    """BehaviorProfile with total_sightings=0 should not divide by zero."""
+    p = BehaviorProfile(target_id="t-edge")
+    p.total_sightings = 0
+    p.off_hours_sightings = 0
+    d = p.to_dict()
+    # to_dict uses max(1, total_sightings) — should not crash
+    assert "off_hours_ratio" in d
+    assert d["off_hours_ratio"] == 0.0
+
+
+def test_timing_score_few_sightings_no_crash():
+    """With total_sightings <= 5, timing_score should stay 0."""
+    scorer = ThreatScorer()
+    target = {"target_id": "t-few", "position": (0, 0),
+              "heading": 0, "speed": 0, "source": "ble"}
+    # Evaluate only once — total_sightings will be 1
+    scores = scorer.evaluate([target])
+    assert "t-few" in scores
+    profile = scorer.get_profile("t-few")
+    assert profile is not None
+    assert profile["timing_score"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Edge case: profiles dict bounded
+# ---------------------------------------------------------------------------
+
+def test_profiles_dict_bounded():
+    """ThreatScorer._profiles should not grow unbounded."""
+    scorer = ThreatScorer()
+    # Inject many profiles that will decay below threshold
+    for i in range(100):
+        target = {"target_id": f"t-{i}", "position": (0, 0),
+                  "heading": 0, "speed": 0, "source": "ble"}
+        scorer.evaluate([target])
+
+    # Now evaluate with empty list — all 100 should decay and be pruned
+    scorer.evaluate([])
+    # Internal profiles should have been cleaned up (all scores are 0)
+    remaining = len(scorer._profiles)
+    assert remaining == 0

@@ -680,9 +680,65 @@ class CitySim:
         self.events: list[dict[str, Any]] = []
         self._is_setup: bool = False
 
+        # Static frame cache — buildings, trees, roads don't change between
+        # ticks so we serialize them once and reuse.  A version counter lets
+        # callers invalidate on rare mutations (e.g. destruction damage).
+        self._static_cache: dict[str, Any] | None = None
+        self._static_version: int = 0
+
     def _gen_id(self, prefix: str = "e") -> str:
         self._next_id += 1
         return f"{prefix}_{self._next_id}"
+
+    def invalidate_static_cache(self) -> None:
+        """Mark the static frame cache as stale.
+
+        Call this after any mutation to buildings, trees, or roads so
+        the next ``to_frame()`` re-serializes them.
+        """
+        self._static_version += 1
+        self._static_cache = None
+
+    def _get_static_data(self) -> dict[str, Any]:
+        """Return cached buildings/trees/roads data, rebuilding if stale."""
+        if self._static_cache is not None:
+            return self._static_cache
+
+        buildings_data = []
+        for b in self.buildings:
+            buildings_data.append({
+                "id": b.structure_id,
+                "type": "building",
+                "x": round(b.position[0], 2),
+                "y": round(b.position[1], 2),
+                "width": b.size[0],
+                "depth": b.size[1],
+                "height": b.size[2],
+                "material": b.material,
+                "health": b.health / b.max_health if b.max_health > 0 else 1.0,
+            })
+
+        trees_data = []
+        for t in self.trees:
+            trees_data.append({
+                "id": t.entity_id,
+                "type": "tree",
+                "x": round(t.position[0], 2),
+                "y": round(t.position[1], 2),
+                "height": t.size[2],
+                "tree_type": t.properties.get("tree_type", "oak"),
+            })
+
+        roads_data = []
+        for road in self.roads:
+            roads_data.append([{"x": round(p[0], 2), "y": round(p[1], 2)} for p in road])
+
+        self._static_cache = {
+            "buildings": buildings_data,
+            "trees": trees_data,
+            "roads": roads_data,
+        }
+        return self._static_cache
 
     # ------------------------------------------------------------------
     # Setup
@@ -998,6 +1054,8 @@ class CitySim:
         dest_events = self.destruction.tick(dt)
         if dest_events.get("fires_spread") or dest_events.get("structures_damaged"):
             self.events.append({"type": "destruction_tick", **dest_events})
+            # Building health may have changed — invalidate static cache
+            self.invalidate_static_cache()
 
         # 7. Detection engine
         # (sensors would detect units; for city sim we skip active detection)
@@ -1090,37 +1148,11 @@ class CitySim:
         if self.crowd is not None:
             crowd_data = self.crowd.to_three_js()
 
-        # Buildings
-        buildings_data = []
-        for b in self.buildings:
-            buildings_data.append({
-                "id": b.structure_id,
-                "type": "building",
-                "x": round(b.position[0], 2),
-                "y": round(b.position[1], 2),
-                "width": b.size[0],
-                "depth": b.size[1],
-                "height": b.size[2],
-                "material": b.material,
-                "health": b.health / b.max_health if b.max_health > 0 else 1.0,
-            })
-
-        # Trees
-        trees_data = []
-        for t in self.trees:
-            trees_data.append({
-                "id": t.entity_id,
-                "type": "tree",
-                "x": round(t.position[0], 2),
-                "y": round(t.position[1], 2),
-                "height": t.size[2],
-                "tree_type": t.properties.get("tree_type", "oak"),
-            })
-
-        # Roads from map
-        roads_data = []
-        for road in self.roads:
-            roads_data.append([{"x": round(p[0], 2), "y": round(p[1], 2)} for p in road])
+        # Static data (buildings, trees, roads) — cached between ticks
+        static = self._get_static_data()
+        buildings_data = static["buildings"]
+        trees_data = static["trees"]
+        roads_data = static["roads"]
 
         # Destruction layer
         destruction_data = self.destruction.to_three_js()

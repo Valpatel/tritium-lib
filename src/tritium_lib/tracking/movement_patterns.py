@@ -316,7 +316,9 @@ class MovementPatternAnalyzer:
             return patterns
 
         variance = sum((d - mean_dist) ** 2 for d in dists) / len(dists)
-        std_dist = math.sqrt(variance) if variance > 0 else 1.0
+        std_dist = math.sqrt(variance) if variance > 0 else 0.0
+        if std_dist < 1e-9:
+            return patterns  # all points equidistant from mean — no deviations
 
         for idx, (x, y, t) in enumerate(trail):
             d = math.hypot(x - mean_x, y - mean_y)

@@ -36,7 +36,7 @@ class TestWiFiNetworkType:
 class TestWiFiProbeRequest:
     def test_minimal(self):
         probe = WiFiProbeRequest(mac="aa:bb:cc:dd:ee:ff")
-        assert probe.mac == "aa:bb:cc:dd:ee:ff"
+        assert probe.mac == "AA:BB:CC:DD:EE:FF"  # normalized to uppercase
         assert probe.ssid_probed == ""
         assert probe.rssi == -100
         assert probe.channel == 0
@@ -85,7 +85,7 @@ class TestWiFiProbeRequest:
 class TestWiFiNetwork:
     def test_minimal(self):
         net = WiFiNetwork(bssid="00:11:22:33:44:55")
-        assert net.bssid == "00:11:22:33:44:55"
+        assert net.bssid == "00:11:22:33:44:55"  # already uppercase hex digits
         assert net.ssid == ""
         assert net.auth_type == "open"
         assert net.network_type == WiFiNetworkType.UNKNOWN
@@ -110,6 +110,7 @@ class TestWiFiNetwork:
             bssid="aa:bb:cc:dd:ee:ff",
             network_type="hotspot",
         )
+        assert net.bssid == "AA:BB:CC:DD:EE:FF"  # normalized
         assert net.network_type == WiFiNetworkType.HOTSPOT
 
     def test_serialization_roundtrip(self):
@@ -129,7 +130,7 @@ class TestWiFiNetwork:
 class TestWiFiFingerprint:
     def test_minimal(self):
         fp = WiFiFingerprint(mac="aa:bb:cc:dd:ee:ff")
-        assert fp.mac == "aa:bb:cc:dd:ee:ff"
+        assert fp.mac == "AA:BB:CC:DD:EE:FF"  # normalized to uppercase
         assert fp.probed_ssids == []
         assert fp.network_associations == []
         assert fp.device_type_hint == "unknown"

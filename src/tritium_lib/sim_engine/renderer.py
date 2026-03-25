@@ -332,6 +332,7 @@ class WeatherRenderer:
         overcast = float(weather_state.get("overcast", 0.0))
 
         # Sky color based on time of day
+        sky_base: str | None = None
         if hour >= 21.0 or hour <= 5.0:
             # Night
             sky = _SKY_NIGHT
@@ -355,8 +356,11 @@ class WeatherRenderer:
 
         if sky is not None:
             sky_color = f"#{sky[0]:02x}{sky[1]:02x}{sky[2]:02x}"
+        elif sky_base is not None:
+            sky_color = sky_base
         else:
-            sky_color = sky_base  # type: ignore[possibly-undefined]
+            # Fallback — should never happen but prevents NameError
+            sky_color = f"#{_SKY_DAY[0]:02x}{_SKY_DAY[1]:02x}{_SKY_DAY[2]:02x}"
 
         # Apply overcast darkening
         if overcast > 0:

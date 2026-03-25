@@ -306,6 +306,10 @@ class TargetCorrelator:
 
         with self._lock:
             self._correlations.extend(new_correlations)
+            # Cap correlation history to prevent unbounded memory growth
+            _MAX_CORRELATIONS = 5000
+            if len(self._correlations) > _MAX_CORRELATIONS:
+                self._correlations = self._correlations[-_MAX_CORRELATIONS:]
 
         return new_correlations
 
@@ -488,29 +492,34 @@ class TargetCorrelator:
             return list(self._correlations)
 
     def _merge(self, primary: TrackedTarget, secondary: TrackedTarget) -> None:
-        """Merge secondary target attributes into primary."""
-        primary.position_confidence = min(
-            1.0,
-            primary.position_confidence + secondary.position_confidence * 0.5,
-        )
+        """Merge secondary target attributes into primary.
 
-        primary.last_seen = max(primary.last_seen, secondary.last_seen)
+        Acquires the tracker lock to ensure thread-safe modification of
+        live TrackedTarget objects shared across threads.
+        """
+        with self.tracker._lock:
+            primary.position_confidence = min(
+                1.0,
+                primary.position_confidence + secondary.position_confidence * 0.5,
+            )
 
-        if secondary.source not in primary.name:
-            primary.name = f"{primary.name} [{secondary.source}]"
+            primary.last_seen = max(primary.last_seen, secondary.last_seen)
 
-        if secondary.target_id not in primary.correlated_ids:
-            primary.correlated_ids.append(secondary.target_id)
-        for cid in secondary.correlated_ids:
-            if cid not in primary.correlated_ids:
-                primary.correlated_ids.append(cid)
+            if secondary.source not in primary.name:
+                primary.name = f"{primary.name} [{secondary.source}]"
 
-        primary.confirming_sources.add(secondary.source)
-        primary.confirming_sources |= secondary.confirming_sources
+            if secondary.target_id not in primary.correlated_ids:
+                primary.correlated_ids.append(secondary.target_id)
+            for cid in secondary.correlated_ids:
+                if cid not in primary.correlated_ids:
+                    primary.correlated_ids.append(cid)
 
-        if secondary.position_confidence > primary.position_confidence:
-            primary.position = secondary.position
-            primary.position_source = secondary.position_source
+            primary.confirming_sources.add(secondary.source)
+            primary.confirming_sources |= secondary.confirming_sources
+
+            if secondary.position_confidence > primary.position_confidence:
+                primary.position = secondary.position
+                primary.position_source = secondary.position_source
 
     def _write_graph(
         self,

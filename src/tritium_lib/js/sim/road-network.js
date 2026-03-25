@@ -477,6 +477,259 @@ export class RoadNetwork {
     }
 
     /**
+     * Build road network from OSM city data.
+     *
+     * Takes an array of roads from /api/geo/city-data, finds intersections
+     * by merging nearby endpoints, creates edges with proper lane configuration,
+     * and builds lane connections for all intersections.
+     *
+     * @param {Array} osmRoads - Array of { points: [[x,z],...], class, width, lanes, oneway }
+     * @param {number} [mergeRadius=5] - Distance in meters to merge nearby endpoints into intersections
+     * @returns {RoadNetwork} this
+     */
+    buildFromOSM(osmRoads, mergeRadius = 5) {
+        this.nodes = {};
+        this.edges = [];
+        this.adjList = {};
+        this.edgeById = {};
+        this.laneConnections = {};
+
+        if (!osmRoads?.length) return this;
+
+        // Filter out footways/paths for vehicle network (keep for ped network later)
+        const vehicleTypes = new Set([
+            'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+            'residential', 'service', 'unclassified', 'living_street',
+            'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link',
+        ]);
+        const roads = osmRoads.filter(r => vehicleTypes.has(r.class));
+        if (!roads.length) return this;
+
+        // Step 1: Collect all endpoints and intermediate waypoints
+        const allPoints = [];  // { x, z, roadIdx, ptIdx }
+        for (let ri = 0; ri < roads.length; ri++) {
+            const pts = roads[ri].points;
+            if (!pts || pts.length < 2) continue;
+            // Add first and last points as potential intersection nodes
+            allPoints.push({ x: pts[0][0], z: pts[0][1], roadIdx: ri, ptIdx: 0, isEnd: true });
+            allPoints.push({ x: pts[pts.length - 1][0], z: pts[pts.length - 1][1], roadIdx: ri, ptIdx: pts.length - 1, isEnd: true });
+        }
+
+        // Step 2: Merge nearby endpoints into intersection nodes
+        const nodeAssignment = new Map();  // "roadIdx:ptIdx" -> nodeId
+        let nextNodeId = 0;
+
+        for (let i = 0; i < allPoints.length; i++) {
+            const key = `${allPoints[i].roadIdx}:${allPoints[i].ptIdx}`;
+            if (nodeAssignment.has(key)) continue;
+
+            // Find all points within mergeRadius
+            const cluster = [i];
+            for (let j = i + 1; j < allPoints.length; j++) {
+                const jKey = `${allPoints[j].roadIdx}:${allPoints[j].ptIdx}`;
+                if (nodeAssignment.has(jKey)) continue;
+                const dx = allPoints[i].x - allPoints[j].x;
+                const dz = allPoints[i].z - allPoints[j].z;
+                if (Math.sqrt(dx * dx + dz * dz) <= mergeRadius) {
+                    cluster.push(j);
+                }
+            }
+
+            // Create node at centroid of cluster
+            let cx = 0, cz = 0;
+            for (const ci of cluster) {
+                cx += allPoints[ci].x;
+                cz += allPoints[ci].z;
+            }
+            cx /= cluster.length;
+            cz /= cluster.length;
+
+            const nodeId = `osm_${nextNodeId++}`;
+            this.nodes[nodeId] = {
+                id: nodeId,
+                x: cx,
+                z: cz,
+                approaches: [],
+                type: 'osm',
+            };
+            this.adjList[nodeId] = [];
+
+            for (const ci of cluster) {
+                const cKey = `${allPoints[ci].roadIdx}:${allPoints[ci].ptIdx}`;
+                nodeAssignment.set(cKey, nodeId);
+            }
+        }
+
+        // Step 3: Create edges for each road segment
+        for (let ri = 0; ri < roads.length; ri++) {
+            const road = roads[ri];
+            const pts = road.points;
+            if (!pts || pts.length < 2) continue;
+
+            const fromKey = `${ri}:0`;
+            const toKey = `${ri}:${pts.length - 1}`;
+            const fromNodeId = nodeAssignment.get(fromKey);
+            const toNodeId = nodeAssignment.get(toKey);
+            if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) continue;
+
+            const lanesPerDir = road.oneway ? Math.max(1, (road.lanes || 2)) : Math.max(1, Math.floor((road.lanes || 2) / 2));
+            const laneW = Math.max(2.0, (road.width || 6) / (lanesPerDir * 2));
+            const edgeId = `osm_e_${ri}`;
+
+            // Compute edge length from waypoints
+            let length = 0;
+            for (let i = 1; i < pts.length; i++) {
+                const dx = pts[i][0] - pts[i - 1][0];
+                const dz = pts[i][1] - pts[i - 1][1];
+                length += Math.sqrt(dx * dx + dz * dz);
+            }
+
+            const edge = {
+                id: edgeId,
+                from: fromNodeId,
+                to: toNodeId,
+                horizontal: false,  // not grid-aligned
+                ax: pts[0][0], az: pts[0][1],
+                bx: pts[pts.length - 1][0], bz: pts[pts.length - 1][1],
+                length,
+                numLanesPerDir: lanesPerDir,
+                laneWidth: laneW,
+                lanes: this._buildLanes(lanesPerDir, laneW),
+                roadClass: road.class || 'residential',
+                oneway: !!road.oneway,
+                // Store full waypoints for curved road rendering (optional)
+                waypoints: pts,
+            };
+
+            const idx = this.edges.length;
+            this.edges.push(edge);
+            this.edgeById[edgeId] = edge;
+            this.adjList[fromNodeId].push(idx);
+            this.adjList[toNodeId].push(idx);
+        }
+
+        // Step 4: Determine node types based on connectivity
+        for (const nodeId in this.nodes) {
+            const degree = (this.adjList[nodeId] || []).length;
+            this.nodes[nodeId].type = degree >= 3 ? `${degree}-way` : degree === 2 ? '2-way' : '1-way';
+        }
+
+        // Step 5: Build lane connections using angle-based turn detection
+        this._buildAllLaneConnectionsOSM();
+
+        return this;
+    }
+
+    /**
+     * Build lane connections for OSM road networks where roads are NOT axis-aligned.
+     * Uses actual edge angles to determine turn types instead of NSEW grid directions.
+     */
+    _buildAllLaneConnectionsOSM() {
+        for (const nodeId in this.nodes) {
+            const edgeIndices = this.adjList[nodeId] || [];
+
+            for (const edgeIdx of edgeIndices) {
+                const edge = this.edges[edgeIdx];
+                const n = edge.numLanesPerDir;
+
+                // Forward lanes (0..n-1) arrive at 'to' node
+                if (edge.to === nodeId) {
+                    for (let lane = 0; lane < n; lane++) {
+                        this._buildOSMLaneConnections(edge, lane, nodeId, 'forward', edgeIndices);
+                    }
+                }
+
+                // Backward lanes (n..2n-1) arrive at 'from' node (if not oneway)
+                if (edge.from === nodeId && !edge.oneway) {
+                    for (let lane = n; lane < 2 * n; lane++) {
+                        this._buildOSMLaneConnections(edge, lane, nodeId, 'backward', edgeIndices);
+                    }
+                }
+            }
+        }
+    }
+
+    _buildOSMLaneConnections(arrivalEdge, arrivalLane, nodeId, direction, edgeIndices) {
+        const key = `${arrivalEdge.id}:${arrivalLane}:${nodeId}`;
+        const connections = [];
+        const node = this.nodes[nodeId];
+
+        // Arrival angle: direction we came from
+        const arrAngle = this._edgeAngleAtNode(arrivalEdge, nodeId, direction === 'forward' ? 'arrival' : 'arrival');
+
+        for (const edgeIdx of edgeIndices) {
+            const outEdge = this.edges[edgeIdx];
+            if (outEdge === arrivalEdge) continue;
+
+            // Determine departure direction and lanes
+            const departures = [];
+            if (outEdge.from === nodeId) {
+                // Forward departs from 'from'
+                const depAngle = this._edgeAngleAtNode(outEdge, nodeId, 'departure');
+                for (let lane = 0; lane < outEdge.numLanesPerDir; lane++) {
+                    departures.push({ lane, angle: depAngle });
+                }
+            }
+            if (outEdge.to === nodeId && !outEdge.oneway) {
+                // Backward departs from 'to'
+                const depAngle = this._edgeAngleAtNode(outEdge, nodeId, 'departure_reverse');
+                for (let lane = outEdge.numLanesPerDir; lane < 2 * outEdge.numLanesPerDir; lane++) {
+                    departures.push({ lane, angle: depAngle });
+                }
+            }
+
+            for (const dep of departures) {
+                // Compute turn type from angle difference
+                let angleDiff = dep.angle - arrAngle;
+                // Normalize to [-PI, PI]
+                while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+                let turnType;
+                if (Math.abs(angleDiff) < Math.PI / 6) turnType = 'straight';       // within 30°
+                else if (angleDiff > 0 && angleDiff < Math.PI * 5 / 6) turnType = 'right';
+                else if (angleDiff < 0 && angleDiff > -Math.PI * 5 / 6) turnType = 'left';
+                else turnType = 'uturn';
+
+                const bezierControl = { x: node.x, z: node.z };  // Simple: intersection center
+
+                connections.push({
+                    toEdge: outEdge,
+                    toLane: dep.lane,
+                    turnType,
+                    bezierControl,
+                });
+            }
+        }
+
+        this.laneConnections[key] = connections;
+    }
+
+    /**
+     * Compute the angle of an edge at a given node.
+     * 'arrival' = direction vehicle is heading when reaching the node
+     * 'departure' = direction vehicle heads when leaving the node forward
+     * 'departure_reverse' = direction vehicle heads when leaving the node backward
+     */
+    _edgeAngleAtNode(edge, nodeId, mode) {
+        let dx, dz;
+        if (mode === 'arrival') {
+            // Arriving: direction toward the node
+            dx = (edge.to === nodeId) ? edge.bx - edge.ax : edge.ax - edge.bx;
+            dz = (edge.to === nodeId) ? edge.bz - edge.az : edge.az - edge.bz;
+        } else if (mode === 'departure') {
+            // Departing forward: from node toward the other end
+            dx = edge.bx - edge.ax;
+            dz = edge.bz - edge.az;
+        } else {
+            // Departing reverse: from node backward
+            dx = edge.ax - edge.bx;
+            dz = edge.az - edge.bz;
+        }
+        return Math.atan2(dx, dz);
+    }
+
+    /**
      * Get all edges connected to a node.
      */
     getEdgesForNode(nodeId) {

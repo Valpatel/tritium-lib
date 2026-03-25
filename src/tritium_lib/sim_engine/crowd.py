@@ -135,6 +135,8 @@ class _CrowdGrid:
     __slots__ = ("_cell_size", "_inv_cell_size", "_cells")
 
     def __init__(self, cell_size: float = 5.0) -> None:
+        if cell_size <= 0:
+            cell_size = 5.0
         self._cell_size = cell_size
         self._inv_cell_size = 1.0 / cell_size
         self._cells: dict[tuple[int, int], list[CrowdMember]] = {}
@@ -313,6 +315,8 @@ class CrowdSimulator:
 
     def _apply_event(self, event: CrowdEvent) -> None:
         """Apply an event's effect to members within its radius."""
+        if event.radius <= 0:
+            return
         effects = _EVENT_EFFECTS.get(event.event_type, (0.0, 0.0))
         agg_delta, fear_delta = effects
 

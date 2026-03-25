@@ -24,6 +24,8 @@ class SpatialGrid:
     """Grid-based spatial partitioning for O(1) neighbor queries."""
 
     def __init__(self, cell_size: float = 50.0) -> None:
+        if cell_size <= 0:
+            cell_size = 50.0
         self._cell_size = cell_size
         self._inv_cell_size = 1.0 / cell_size
         self._cells: dict[tuple[int, int], list[SimulationTarget]] = {}

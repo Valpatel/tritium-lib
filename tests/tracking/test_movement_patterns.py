@@ -209,3 +209,47 @@ class TestCachedPatterns:
         a.analyze("t1")
         cached = a.get_cached_patterns("t1")
         assert isinstance(cached, list)
+
+
+class TestDeviationEdgeCases:
+    """Edge case tests for deviation detection — division by zero fix."""
+
+    def test_all_points_same_position_no_crash(self):
+        """All points at identical position: std_dist=0 should not divide by zero."""
+        h = TargetHistory()
+        for i in range(20):
+            h.record("t1", (10.0, 20.0), timestamp=100.0 + i * 5)
+        a = MovementPatternAnalyzer(history=h)
+        # Should not raise ZeroDivisionError
+        result = a.analyze("t1")
+        # No deviations possible when all points identical
+        deviations = [p for p in result if p["pattern_type"] == "deviation"]
+        assert deviations == []
+
+    def test_equidistant_points_on_circle_no_crash(self):
+        """Points equidistant from mean (on a circle) have zero std_dist."""
+        h = TargetHistory()
+        n = 12
+        for i in range(n):
+            angle = 2 * math.pi * i / n
+            x = 50.0 + 10.0 * math.cos(angle)
+            y = 50.0 + 10.0 * math.sin(angle)
+            h.record("t1", (x, y), timestamp=100.0 + i * 30)
+        a = MovementPatternAnalyzer(history=h)
+        # Should not crash — all distances from mean are equal, std_dist ~ 0
+        result = a.analyze("t1")
+        deviations = [p for p in result if p["pattern_type"] == "deviation"]
+        assert isinstance(deviations, list)  # no crash
+
+    def test_single_outlier_detected(self):
+        """One outlier among many clustered points should be detected."""
+        h = TargetHistory()
+        # 19 points at the same spot
+        for i in range(19):
+            h.record("t1", (0.0, 0.0), timestamp=100.0 + i)
+        # 1 outlier far away
+        h.record("t1", (100.0, 100.0), timestamp=200.0)
+        a = MovementPatternAnalyzer(history=h)
+        result = a.analyze("t1")
+        deviations = [p for p in result if p["pattern_type"] == "deviation"]
+        assert len(deviations) >= 1

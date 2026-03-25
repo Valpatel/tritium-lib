@@ -483,6 +483,10 @@ camera.position.set(0, 120, 120);
 camera.lookAt(0, 0, 0);
 
 const controls = new OrbitControls(camera, renderer.domElement);
+// Expose to window for debugging / external control
+window._camera = camera;
+window._controls = controls;
+window._unitPositions = null; // will be set after first frame
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.maxPolarAngle = Math.PI * 0.45;
@@ -2264,6 +2268,7 @@ function updateUnits(units) {
   let hlIdx = 0; // headlight / tail light index
 
   unitPositions.clear();
+  window._unitPositions = unitPositions;
 
   const now = performance.now();
   const activeUnitIds = new Set();

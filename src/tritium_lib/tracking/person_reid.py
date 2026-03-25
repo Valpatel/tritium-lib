@@ -690,6 +690,10 @@ class ReIDEngine:
 
         with self._lock:
             self._merge_history.append(record)
+            # Cap merge history to prevent unbounded memory growth
+            _MAX_MERGE_HISTORY = 2000
+            if len(self._merge_history) > _MAX_MERGE_HISTORY:
+                self._merge_history = self._merge_history[-_MAX_MERGE_HISTORY:]
             # Clean up profiles
             self._departed_profiles.pop(target_b, None)
             self._profiles.pop(target_b, None)

@@ -70,11 +70,13 @@ class CrowdDensityTracker:
     ) -> None:
         self.bounds = bounds
         self._event_bus = event_bus
+        if cell_size <= 0:
+            cell_size = 10.0
         self.cell_size = cell_size
 
         x_min, y_min, x_max, y_max = bounds
-        self.cols = math.ceil((x_max - x_min) / cell_size)
-        self.rows = math.ceil((y_max - y_min) / cell_size)
+        self.cols = max(1, math.ceil((x_max - x_min) / cell_size))
+        self.rows = max(1, math.ceil((y_max - y_min) / cell_size))
 
         # 2D grid of counts (row-major: grid[row][col])
         self._counts: list[list[int]] = [

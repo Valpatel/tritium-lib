@@ -144,6 +144,12 @@ class NetworkAnalyzer:
             # Store raw probe
             self._probes.append(ProbeRecord(mac=mac, ssid=ssid, timestamp=ts, rssi=rssi))
 
+            # Auto-prune when probes list grows too large
+            _MAX_PROBES = 100000
+            if len(self._probes) > _MAX_PROBES:
+                cutoff = ts - self._retention
+                self._probes = [p for p in self._probes if p.timestamp >= cutoff]
+
     def get_network_graph(
         self,
         min_shared_ssids: int = 1,
