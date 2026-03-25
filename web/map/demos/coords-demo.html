@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MapCoords Demo — tritium-lib</title>
+    <style>
+        body { background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 20px; }
+        h1 { color: #00f0ff; font-size: 18px; letter-spacing: 2px; }
+        .section { background: #111; border: 1px solid #1a1a2e; border-radius: 4px; padding: 12px; margin: 12px 0; }
+        .label { color: #888; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+        .value { color: #05ffa1; font-size: 14px; margin: 4px 0; }
+        input { background: #1a1a2e; border: 1px solid #333; color: #ccc; padding: 4px 8px; font-family: monospace; width: 120px; }
+        button { background: transparent; border: 1px solid #00f0ff; color: #00f0ff; padding: 4px 12px; cursor: pointer; font-family: monospace; }
+        button:hover { background: #00f0ff22; }
+        .result { color: #fcee0a; margin: 8px 0; }
+    </style>
+</head>
+<body>
+    <h1>MAPCOORDS DEMO</h1>
+    <p style="color:#666">Coordinate transforms between game meters, lat/lng, and Mercator.</p>
+
+    <div class="section">
+        <div class="label">Reference Point</div>
+        <div>
+            Lat: <input id="refLat" type="number" value="37.7749" step="0.0001">
+            Lng: <input id="refLng" type="number" value="-122.4194" step="0.0001">
+            <button onclick="setRef()">SET REFERENCE</button>
+        </div>
+        <div class="result" id="refResult"></div>
+    </div>
+
+    <div class="section">
+        <div class="label">Game → LngLat</div>
+        <div>
+            X (east, m): <input id="gx" type="number" value="100">
+            Y (north, m): <input id="gy" type="number" value="200">
+            <button onclick="gameToLL()">CONVERT</button>
+        </div>
+        <div class="result" id="g2llResult"></div>
+    </div>
+
+    <div class="section">
+        <div class="label">LngLat → Game</div>
+        <div>
+            Lng: <input id="llLng" type="number" value="-122.418" step="0.0001">
+            Lat: <input id="llLat" type="number" value="37.776" step="0.0001">
+            <button onclick="llToGame()">CONVERT</button>
+        </div>
+        <div class="result" id="ll2gResult"></div>
+    </div>
+
+    <div class="section">
+        <div class="label">Haversine Distance</div>
+        <div>
+            A: <input id="hLng1" type="number" value="-122.4194" step="0.001"> , <input id="hLat1" type="number" value="37.7749" step="0.001">
+            B: <input id="hLng2" type="number" value="-122.2711" step="0.001"> , <input id="hLat2" type="number" value="37.8044" step="0.001">
+            <button onclick="calcDist()">DISTANCE</button>
+        </div>
+        <div class="result" id="distResult"></div>
+    </div>
+
+    <div class="section">
+        <div class="label">FOV Cone Polygon (GeoJSON)</div>
+        <div>
+            Heading: <input id="fovHead" type="number" value="45">°
+            FOV: <input id="fovAngle" type="number" value="90">°
+            Range: <input id="fovRange" type="number" value="50">m
+            <button onclick="buildCone()">BUILD</button>
+        </div>
+        <div class="result" id="coneResult" style="max-height:120px;overflow:auto;font-size:10px"></div>
+    </div>
+
+    <script type="module">
+        import { MapCoords, buildFovConePolygon, haversineDistance } from '../coords.js';
+
+        const coords = new MapCoords();
+        window._coords = coords;
+
+        window.setRef = () => {
+            const lat = parseFloat(document.getElementById('refLat').value);
+            const lng = parseFloat(document.getElementById('refLng').value);
+            coords.setReference(lat, lng);
+            document.getElementById('refResult').textContent = `Reference set: ${lat}, ${lng}`;
+        };
+        window.setRef(); // init
+
+        window.gameToLL = () => {
+            const gx = parseFloat(document.getElementById('gx').value);
+            const gy = parseFloat(document.getElementById('gy').value);
+            const [lng, lat] = coords.gameToLngLat(gx, gy);
+            document.getElementById('g2llResult').textContent = `[${lng.toFixed(6)}, ${lat.toFixed(6)}]`;
+        };
+
+        window.llToGame = () => {
+            const lng = parseFloat(document.getElementById('llLng').value);
+            const lat = parseFloat(document.getElementById('llLat').value);
+            const { x, y } = coords.lngLatToGame(lng, lat);
+            document.getElementById('ll2gResult').textContent = `{ x: ${x.toFixed(2)}, y: ${y.toFixed(2)} }`;
+        };
+
+        window.calcDist = () => {
+            const d = haversineDistance(
+                parseFloat(document.getElementById('hLng1').value),
+                parseFloat(document.getElementById('hLat1').value),
+                parseFloat(document.getElementById('hLng2').value),
+                parseFloat(document.getElementById('hLat2').value),
+            );
+            document.getElementById('distResult').textContent = `${d.toFixed(1)} meters (${(d/1000).toFixed(2)} km)`;
+        };
+
+        window.buildCone = () => {
+            const [lng, lat] = [parseFloat(document.getElementById('refLng').value), parseFloat(document.getElementById('refLat').value)];
+            const heading = parseFloat(document.getElementById('fovHead').value);
+            const fov = parseFloat(document.getElementById('fovAngle').value);
+            const range = parseFloat(document.getElementById('fovRange').value);
+            const poly = buildFovConePolygon(lng, lat, heading, fov, range);
+            document.getElementById('coneResult').textContent = JSON.stringify(poly.map(c => [+c[0].toFixed(6), +c[1].toFixed(6)]), null, 1);
+        };
+    </script>
+</body>
+</html>

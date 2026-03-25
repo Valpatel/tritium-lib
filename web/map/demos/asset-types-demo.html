@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Asset Types Demo — tritium-lib</title>
+    <style>
+        body { background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 20px; }
+        h1 { color: #00f0ff; font-size: 18px; letter-spacing: 2px; }
+        .card { background: #111; border: 1px solid #1a1a2e; border-radius: 4px; padding: 12px; margin: 8px 0; display: inline-block; width: 220px; vertical-align: top; margin-right: 8px; }
+        .card-icon { font-size: 24px; font-weight: bold; margin-bottom: 6px; }
+        .card-label { font-size: 14px; font-weight: bold; margin-bottom: 4px; }
+        .card-prop { color: #888; font-size: 10px; margin: 2px 0; }
+        .card-prop span { color: #aaa; }
+        button { background: transparent; border: 1px solid #05ffa1; color: #05ffa1; padding: 4px 12px; cursor: pointer; font-family: monospace; margin: 4px 2px; }
+        button:hover { background: #05ffa122; }
+        #custom-form { background: #111; border: 1px solid #1a1a2e; padding: 12px; margin: 12px 0; border-radius: 4px; }
+        input, select { background: #1a1a2e; border: 1px solid #333; color: #ccc; padding: 4px 8px; font-family: monospace; margin: 2px; }
+        #output { background: #0d0d15; border: 1px solid #1a1a2e; padding: 8px; margin-top: 8px; font-size: 10px; max-height: 200px; overflow: auto; white-space: pre; }
+    </style>
+</head>
+<body>
+    <h1>ASSET TYPE REGISTRY DEMO</h1>
+    <p style="color:#666">Extensible asset types for sensors, cameras, and custom devices.</p>
+
+    <div id="cards"></div>
+
+    <h2 style="color:#fcee0a;font-size:14px;margin-top:20px">REGISTER CUSTOM TYPE</h2>
+    <div id="custom-form">
+        <div>
+            TypeId: <input id="cTypeId" value="lidar">
+            Label: <input id="cLabel" value="LIDAR Scanner">
+            Icon: <input id="cIcon" value="L" style="width:30px">
+            Color: <input id="cColor" value="#aa44ff" type="color">
+        </div>
+        <div>
+            Range: <input id="cRange" type="number" value="50">m
+            Shape: <select id="cShape"><option>circle</option><option>cone</option></select>
+            FOV: <input id="cFov" type="number" value="60">°
+        </div>
+        <button onclick="registerCustom()">REGISTER</button>
+    </div>
+
+    <div id="output"></div>
+
+    <script type="module">
+        import { BaseAssetType } from '../asset-types/base.js';
+        import { assetTypeRegistry } from '../asset-types/registry.js';
+
+        function renderCards() {
+            const container = document.getElementById('cards');
+            container.innerHTML = '';
+            for (const T of assetTypeRegistry.all()) {
+                const defaults = T.getDefaults();
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.style.borderColor = T.color + '44';
+                card.innerHTML = `
+                    <div class="card-icon" style="color:${T.color}">${T.icon}</div>
+                    <div class="card-label" style="color:${T.color}">${T.label}</div>
+                    <div class="card-prop">TypeId: <span>${T.typeId}</span></div>
+                    <div class="card-prop">Range: <span>${T.defaultRange}m</span></div>
+                    <div class="card-prop">Shape: <span>${T.coverageShape}</span></div>
+                    <div class="card-prop">FOV: <span>${T.defaultFov}°</span></div>
+                    <div class="card-prop">Height: <span>${T.defaultHeight}m</span></div>
+                    <div class="card-prop">Mount: <span>${T.defaultMounting}</span></div>
+                    <div class="card-prop">Class: <span>${T.assetClass}</span></div>
+                    <button onclick="showDefaults('${T.typeId}')">DEFAULTS</button>
+                    <button onclick="showPopup('${T.typeId}')">POPUP</button>
+                `;
+                container.appendChild(card);
+            }
+        }
+
+        window.showDefaults = (typeId) => {
+            const T = assetTypeRegistry.get(typeId);
+            document.getElementById('output').textContent = JSON.stringify(T.getDefaults(), null, 2);
+        };
+
+        window.showPopup = (typeId) => {
+            const T = assetTypeRegistry.get(typeId);
+            document.getElementById('output').innerHTML = T.getPopupHtml({ name: `Demo ${T.label}`, coverage_radius_meters: T.defaultRange });
+        };
+
+        window.registerCustom = () => {
+            const typeId = document.getElementById('cTypeId').value;
+            const label = document.getElementById('cLabel').value;
+            const icon = document.getElementById('cIcon').value;
+            const color = document.getElementById('cColor').value;
+            const range = parseInt(document.getElementById('cRange').value);
+            const shape = document.getElementById('cShape').value;
+            const fov = parseInt(document.getElementById('cFov').value);
+
+            class CustomType extends BaseAssetType {
+                static typeId = typeId;
+                static label = label;
+                static icon = icon;
+                static color = color;
+                static defaultRange = range;
+                static coverageShape = shape;
+                static defaultFov = fov;
+            }
+            // Need to set static properties this way for dynamic values
+            Object.defineProperty(CustomType, 'typeId', { value: typeId });
+            Object.defineProperty(CustomType, 'label', { value: label });
+            Object.defineProperty(CustomType, 'icon', { value: icon });
+            Object.defineProperty(CustomType, 'color', { value: color });
+            Object.defineProperty(CustomType, 'defaultRange', { value: range });
+            Object.defineProperty(CustomType, 'coverageShape', { value: shape });
+            Object.defineProperty(CustomType, 'defaultFov', { value: fov });
+
+            assetTypeRegistry.register(CustomType);
+            renderCards();
+            document.getElementById('output').textContent = `Registered: ${typeId} (${label})`;
+        };
+
+        renderCards();
+    </script>
+</body>
+</html>

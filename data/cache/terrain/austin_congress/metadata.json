@@ -1,0 +1,16 @@
+{
+  "ao_id": "austin_congress",
+  "created_at": "2026-03-20T19:04:02.377375Z",
+  "segment_count": 1000,
+  "cache_path": "data/cache/terrain/austin_congress",
+  "model_used": "color_heuristic",
+  "processing_time_s": 13.230888860009145,
+  "source_imagery": "satellite",
+  "source_date": null,
+  "bounds": {
+    "min_lat": 30.26620337765002,
+    "min_lon": -97.74508020120892,
+    "max_lat": 30.269796622349983,
+    "max_lon": -97.74091979879107
+  }
+}

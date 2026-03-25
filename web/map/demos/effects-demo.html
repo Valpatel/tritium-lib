@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Combat Effects Demo — tritium-lib</title>
+    <style>
+        body { background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 20px; margin: 0; }
+        h1 { color: #00f0ff; font-size: 18px; letter-spacing: 2px; }
+        .controls { background: #111; border: 1px solid #1a1a2e; padding: 12px; margin: 8px 0; border-radius: 4px; }
+        button { background: transparent; border: 1px solid #ff2a6d; color: #ff2a6d; padding: 6px 14px; cursor: pointer; font-family: monospace; margin: 3px; border-radius: 3px; }
+        button:hover { background: #ff2a6d22; }
+        button.green { border-color: #05ffa1; color: #05ffa1; }
+        button.green:hover { background: #05ffa122; }
+        button.cyan { border-color: #00f0ff; color: #00f0ff; }
+        button.cyan:hover { background: #00f0ff22; }
+        #stats { color: #888; font-size: 10px; margin-top: 8px; }
+        #arena { position: relative; width: 600px; height: 400px; background: #0d0d18; border: 1px solid #1a1a2e; margin-top: 8px; overflow: hidden; }
+    </style>
+</head>
+<body>
+    <h1>COMBAT EFFECTS DEMO</h1>
+    <p style="color:#666">Visual effects in isolation — no map needed. Click buttons to spawn effects.</p>
+
+    <div class="controls">
+        <button onclick="spawnFloat()" class="green">FLOATING TEXT</button>
+        <button onclick="spawnBanner()">BANNER</button>
+        <button onclick="spawnShake()" class="cyan">SCREEN SHAKE</button>
+        <button onclick="spawnFlash()">FLASH</button>
+        <button onclick="spawnKillFeed()" class="green">KILL FEED</button>
+    </div>
+    <div id="stats">Active effects: 0</div>
+    <div id="arena"></div>
+
+    <script type="module">
+        import { CombatEffects } from '../effects/base.js';
+        import { FloatingText } from '../effects/floating-text.js';
+        import { BattleHUD } from '../battle-hud.js';
+
+        const arena = document.getElementById('arena');
+        const statsEl = document.getElementById('stats');
+
+        const fx = new CombatEffects(null);
+        const hud = new BattleHUD(arena);
+
+        let killCount = 0;
+        const names = ['Turret-01', 'Drone-Alpha', 'Rover-Bravo', 'Scout-01', 'Graphling-7'];
+        const targets = ['Hostile-1', 'Intruder-Fox', 'Unknown-3', 'Bandit-Echo', 'Threat-9'];
+
+        window.spawnFloat = () => {
+            const x = 100 + Math.random() * 400;
+            const y = 100 + Math.random() * 200;
+            const dmg = Math.floor(10 + Math.random() * 90);
+            const colors = ['#ff2a6d', '#fcee0a', '#05ffa1', '#00f0ff'];
+            const color = colors[Math.floor(Math.random() * colors.length)];
+            const effect = new FloatingText({ screenX: x, screenY: y, text: `-${dmg}`, color, duration: 1500 }, arena);
+            fx.addEffect(effect);
+        };
+
+        window.spawnBanner = () => {
+            const texts = ['WAVE 3', 'DEFEND THE AREA!', 'INCOMING!', 'SECTOR CLEAR'];
+            hud.showBanner(texts[Math.floor(Math.random() * texts.length)], '#00f0ff', 2000);
+        };
+
+        window.spawnShake = () => { hud.triggerShake(8, 400); };
+        window.spawnFlash = () => { hud.triggerFlash('rgba(255, 42, 109, 0.3)', 200); };
+
+        window.spawnKillFeed = () => {
+            killCount++;
+            const killer = names[Math.floor(Math.random() * names.length)];
+            const target = targets[Math.floor(Math.random() * targets.length)];
+            hud.addKillFeedEntry(`${killer} eliminated ${target}`, killCount % 3 === 0 ? '#fcee0a' : '#ff2a6d');
+        };
+
+        // Animation loop
+        function tick() {
+            fx.animate(performance.now());
+            statsEl.textContent = `Active effects: ${fx.activeCount}`;
+            requestAnimationFrame(tick);
+        }
+        tick();
+    </script>
+</body>
+</html>

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Layer Manager Demo — tritium-lib</title>
+    <style>
+        body { background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 20px; }
+        h1 { color: #00f0ff; font-size: 18px; letter-spacing: 2px; }
+        .controls { background: #111; border: 1px solid #1a1a2e; padding: 12px; margin: 8px 0; border-radius: 4px; }
+        button { background: transparent; border: 1px solid #00f0ff; color: #00f0ff; padding: 4px 12px; cursor: pointer; font-family: monospace; margin: 2px; }
+        button:hover { background: #00f0ff22; }
+        button.red { border-color: #ff2a6d; color: #ff2a6d; }
+        #log { background: #0d0d15; border: 1px solid #1a1a2e; padding: 8px; margin-top: 8px; font-size: 10px; max-height: 300px; overflow: auto; }
+        .log-entry { margin: 2px 0; }
+        .log-entry.action { color: #05ffa1; }
+        .log-entry.state { color: #888; }
+    </style>
+</head>
+<body>
+    <h1>GEOJSON LAYER MANAGER DEMO</h1>
+    <p style="color:#666">Tests layer CRUD, caching, and visibility toggling against a mock map.</p>
+
+    <div class="controls">
+        <button onclick="addLayer()">ADD LAYER</button>
+        <button onclick="updateLayer()">UPDATE DATA</button>
+        <button onclick="updateSame()">UPDATE (NO CHANGE)</button>
+        <button onclick="toggleVis()">TOGGLE VISIBILITY</button>
+        <button onclick="clearLayer()">CLEAR</button>
+        <button onclick="removeLayer()" class="red">REMOVE</button>
+        <button onclick="showState()">SHOW STATE</button>
+    </div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { GeoJSONLayerManager } from '../layer-manager.js';
+
+        const logEl = document.getElementById('log');
+        function log(text, cls = 'action') {
+            const d = document.createElement('div');
+            d.className = `log-entry ${cls}`;
+            d.textContent = `[${new Date().toISOString().substr(11,8)}] ${text}`;
+            logEl.prepend(d);
+        }
+
+        // Mock map that logs operations
+        const mockMap = {
+            _sources: new Map(),
+            _layers: new Map(),
+            addSource(id, cfg) { this._sources.set(id, cfg); log(`map.addSource('${id}')`, 'state'); },
+            getSource(id) { const s = this._sources.get(id); return s ? { setData(d) { s.data = d; log(`source '${id}' data updated (${d.features?.length || 0} features)`, 'state'); } } : null; },
+            removeSource(id) { this._sources.delete(id); log(`map.removeSource('${id}')`, 'state'); },
+            addLayer(cfg) { this._layers.set(cfg.id, { ...cfg, vis: 'visible' }); log(`map.addLayer('${cfg.id}', type=${cfg.type})`, 'state'); },
+            getLayer(id) { return this._layers.get(id); },
+            removeLayer(id) { this._layers.delete(id); log(`map.removeLayer('${id}')`, 'state'); },
+            setLayoutProperty(id, p, v) { const l = this._layers.get(id); if (l) l.vis = v; log(`layer '${id}' visibility=${v}`, 'state'); },
+        };
+
+        const lm = new GeoJSONLayerManager(mockMap);
+        let counter = 0;
+
+        window.addLayer = () => {
+            counter++;
+            const geo = { type: 'FeatureCollection', features: [
+                { type: 'Feature', geometry: { type: 'Point', coordinates: [counter, counter] }, properties: { id: `pt-${counter}` } },
+            ]};
+            const result = lm.update('demo-layer', geo, [
+                { id: 'demo-circle', type: 'circle', paint: { 'circle-color': '#00f0ff', 'circle-radius': 6 } },
+                { id: 'demo-label', type: 'symbol', layout: { 'text-field': 'Demo' } },
+            ]);
+            log(`update('demo-layer') → ${result ? 'CREATED/UPDATED' : 'SKIPPED (cached)'}`);
+        };
+
+        window.updateLayer = () => {
+            counter++;
+            const geo = { type: 'FeatureCollection', features: Array.from({length: counter}, (_, i) => (
+                { type: 'Feature', geometry: { type: 'Point', coordinates: [i, i] }, properties: { id: `pt-${i}` } }
+            ))};
+            const result = lm.update('demo-layer', geo, []);
+            log(`update('demo-layer', ${counter} features) → ${result ? 'UPDATED' : 'SKIPPED'}`);
+        };
+
+        window.updateSame = () => {
+            // Same data as last time — should skip
+            const result = lm.update('demo-layer', { type: 'FeatureCollection', features: Array.from({length: counter}, (_, i) => (
+                { type: 'Feature', geometry: { type: 'Point', coordinates: [i, i] }, properties: { id: `pt-${i}` } }
+            ))}, []);
+            log(`update (same data) → ${result ? 'UPDATED (unexpected!)' : 'SKIPPED ✓ (cache hit)'}`);
+        };
+
+        window.toggleVis = () => {
+            const newVis = lm.toggle('demo-layer');
+            log(`toggle('demo-layer') → visible=${newVis}`);
+        };
+
+        window.clearLayer = () => {
+            lm.clear('demo-layer');
+            log(`clear('demo-layer') — data emptied`);
+        };
+
+        window.removeLayer = () => {
+            lm.remove('demo-layer');
+            log(`remove('demo-layer') — source + layers deleted`);
+        };
+
+        window.showState = () => {
+            log(`Sources: ${lm.sourceIds.join(', ') || '(none)'}`, 'state');
+            log(`Map sources: ${[...mockMap._sources.keys()].join(', ') || '(none)'}`, 'state');
+            log(`Map layers: ${[...mockMap._layers.keys()].join(', ') || '(none)'}`, 'state');
+        };
+
+        log('Layer Manager initialized. Click buttons to test.', 'state');
+    </script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "ao_id": "austin_osm",
+  "created_at": "2026-03-20T19:37:39.168777Z",
+  "segment_count": 2196,
+  "cache_path": "data/cache/terrain/austin_osm",
+  "model_used": "color_heuristic",
+  "processing_time_s": 3.3024703160044737,
+  "source_imagery": "osm",
+  "source_date": null,
+  "bounds": {
+    "min_lat": 30.260508444125044,
+    "min_lon": -97.75320034412033,
+    "max_lat": 30.269491555874957,
+    "max_lon": -97.74279965587968
+  }
+}

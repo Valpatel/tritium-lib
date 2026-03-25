@@ -1,0 +1,16 @@
+{
+  "ao_id": "fused",
+  "created_at": "2026-03-20T19:42:11.304901Z",
+  "segment_count": 5498,
+  "cache_path": "data/cache/terrain/fused",
+  "model_used": "color_heuristic",
+  "processing_time_s": 0.0,
+  "source_imagery": "osm+satellite",
+  "source_date": null,
+  "bounds": {
+    "min_lat": 30.26,
+    "min_lon": -97.755,
+    "max_lat": 30.275,
+    "max_lon": -97.74
+  }
+}

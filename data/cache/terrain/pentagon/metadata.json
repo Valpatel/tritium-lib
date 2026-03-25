@@ -1,0 +1,16 @@
+{
+  "ao_id": "pentagon",
+  "created_at": "2026-03-20T15:17:18.810154Z",
+  "segment_count": 576,
+  "cache_path": "data/cache/terrain/pentagon",
+  "model_used": "color_heuristic",
+  "processing_time_s": 2.5555510209524073,
+  "source_imagery": "satellite",
+  "source_date": null,
+  "bounds": {
+    "min_lat": 38.86740675530004,
+    "min_lon": -77.06061523915272,
+    "max_lat": 38.874593244699966,
+    "max_lon": -77.05138476084727
+  }
+}

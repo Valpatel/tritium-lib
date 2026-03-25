@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sim Physics Demo — tritium-lib</title>
+    <link rel="stylesheet" href="../../css/cybercore.css">
+    <style>
+        body { margin: 0; background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; }
+        #header {
+            background: #111; border-bottom: 1px solid #1a1a2e;
+            padding: 8px 16px; display: flex; gap: 16px; align-items: center;
+        }
+        #header h1 { color: #00f0ff; font-size: 14px; margin: 0; letter-spacing: 2px; }
+        #header button {
+            background: #1a1a2e; color: #00f0ff; border: 1px solid #00f0ff44;
+            padding: 4px 12px; font-family: inherit; font-size: 11px; cursor: pointer;
+            border-radius: 3px;
+        }
+        #header button:hover { background: #00f0ff22; }
+        #stats { color: #666; font-size: 10px; margin-left: auto; }
+        canvas { display: block; }
+        #legend {
+            position: fixed; bottom: 10px; left: 10px;
+            background: #111; border: 1px solid #1a1a2e; border-radius: 4px;
+            padding: 8px 12px; font-size: 10px; color: #666;
+        }
+        #legend span { margin-right: 12px; }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>IDM + VEHICLE + ROAD NETWORK</h1>
+        <button id="btn-reset">Reset</button>
+        <button id="btn-add">Add Vehicle</button>
+        <button id="btn-brake">Lead Brake</button>
+        <div id="stats">vehicles: <span id="count">0</span> | fps: <span id="fps">0</span></div>
+    </div>
+    <canvas id="canvas"></canvas>
+    <div id="legend">
+        <span style="color:#00f0ff">-- Road</span>
+        <span style="color:#05ffa1">-- Vehicle</span>
+        <span style="color:#ff2a6d">-- Braking</span>
+        <span style="color:#fcee0a">-- Lead car</span>
+    </div>
+
+    <script type="module">
+        import { IDM } from '../idm.js';
+        import { RoadNetwork } from '../road-network.js';
+        import { Vehicle } from '../vehicle.js';
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight - 42;
+        }
+        resize();
+        window.addEventListener('resize', resize);
+
+        // Build a simple road network
+        const roads = new RoadNetwork();
+        // Create a loop road
+        const W = () => canvas.width;
+        const H = () => canvas.height;
+
+        const nodes = [
+            { id: 'a', x: 100, y: 150 },
+            { id: 'b', x: 700, y: 150 },
+            { id: 'c', x: 700, y: 450 },
+            { id: 'd', x: 100, y: 450 },
+        ];
+        const edges = [
+            { from: 'a', to: 'b', weight: 600 },
+            { from: 'b', to: 'c', weight: 300 },
+            { from: 'c', to: 'd', weight: 600 },
+            { from: 'd', to: 'a', weight: 300 },
+        ];
+        for (const n of nodes) roads.addNode(n.id, n.x, n.y);
+        for (const e of edges) roads.addEdge(e.from, e.to, e.weight);
+
+        // IDM parameters
+        const idm = new IDM({
+            desiredSpeed: 80,
+            timeHeadway: 1.5,
+            maxAccel: 3.0,
+            comfyDecel: 4.0,
+            minGap: 4,
+        });
+
+        // Vehicles — each follows a loop route
+        const routeIds = ['a', 'b', 'c', 'd'];
+        let vehicles = [];
+        let leadBraking = false;
+
+        function spawnVehicle(routeOffset) {
+            const startIdx = routeOffset % routeIds.length;
+            const startNode = nodes[startIdx];
+            const nextIdx = (startIdx + 1) % routeIds.length;
+
+            vehicles.push({
+                x: startNode.x + (Math.random() - 0.5) * 10,
+                y: startNode.y + (Math.random() - 0.5) * 10,
+                speed: 30 + Math.random() * 40,
+                accel: 0,
+                routeIdx: nextIdx,
+                length: 4,
+                isLead: vehicles.length === 0,
+                braking: false,
+            });
+        }
+
+        // Start with 6 vehicles
+        for (let i = 0; i < 6; i++) spawnVehicle(i);
+
+        // Simulation loop
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let fpsDisplay = 0;
+        let fpsTimer = 0;
+
+        function update(now) {
+            const dt = Math.min((now - lastTime) / 1000, 0.05);
+            lastTime = now;
+
+            frameCount++;
+            fpsTimer += dt;
+            if (fpsTimer >= 1) {
+                fpsDisplay = frameCount;
+                frameCount = 0;
+                fpsTimer = 0;
+            }
+
+            // Update vehicles
+            for (let i = 0; i < vehicles.length; i++) {
+                const v = vehicles[i];
+                const target = nodes[v.routeIdx];
+
+                // Direction to next waypoint
+                const dx = target.x - v.x;
+                const dy = target.y - v.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < 20) {
+                    // Advance to next waypoint
+                    v.routeIdx = (v.routeIdx + 1) % routeIds.length;
+                }
+
+                // Find gap to vehicle ahead (by route position)
+                let gap = 200; // default large gap
+                let leaderSpeed = v.speed;
+                for (let j = 0; j < vehicles.length; j++) {
+                    if (i === j) continue;
+                    const other = vehicles[j];
+                    const odx = other.x - v.x;
+                    const ody = other.y - v.y;
+                    const odist = Math.sqrt(odx * odx + ody * ody);
+                    if (odist < gap && odist > 0) {
+                        gap = odist;
+                        leaderSpeed = other.speed;
+                    }
+                }
+
+                // IDM acceleration
+                const desiredSpeed = (v.isLead && leadBraking) ? 0 : idm.desiredSpeed;
+                const a = idm.calcAcceleration(v.speed, desiredSpeed, gap, v.speed - leaderSpeed);
+                v.accel = a;
+                v.speed = Math.max(0, v.speed + a * dt);
+                v.braking = a < -1;
+
+                // Move toward target
+                if (dist > 0.1) {
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    v.x += nx * v.speed * dt;
+                    v.y += ny * v.speed * dt;
+                }
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw roads
+            ctx.strokeStyle = '#00f0ff33';
+            ctx.lineWidth = 20;
+            ctx.lineCap = 'round';
+            for (const e of edges) {
+                const from = nodes.find(n => n.id === e.from);
+                const to = nodes.find(n => n.id === e.to);
+                ctx.beginPath();
+                ctx.moveTo(from.x, to.y === from.y ? from.y : from.y);
+                ctx.lineTo(to.x, to.y);
+                ctx.stroke();
+            }
+
+            // Draw road center lines (dashed)
+            ctx.strokeStyle = '#00f0ff11';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([8, 12]);
+            for (const e of edges) {
+                const from = nodes.find(n => n.id === e.from);
+                const to = nodes.find(n => n.id === e.to);
+                ctx.beginPath();
+                ctx.moveTo(from.x, from.y);
+                ctx.lineTo(to.x, to.y);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+
+            // Draw nodes
+            for (const n of nodes) {
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, 6, 0, Math.PI * 2);
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fill();
+                ctx.strokeStyle = '#00f0ff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.fillStyle = '#666';
+                ctx.font = '9px monospace';
+                ctx.fillText(n.id, n.x - 3, n.y - 10);
+            }
+
+            // Draw vehicles
+            for (const v of vehicles) {
+                const color = v.isLead ? '#fcee0a' : v.braking ? '#ff2a6d' : '#05ffa1';
+                ctx.beginPath();
+                ctx.arc(v.x, v.y, 6, 0, Math.PI * 2);
+                ctx.fillStyle = color;
+                ctx.fill();
+
+                // Speed label
+                ctx.fillStyle = '#666';
+                ctx.font = '9px monospace';
+                ctx.fillText(`${v.speed.toFixed(0)}`, v.x + 8, v.y + 3);
+            }
+
+            // HUD
+            document.getElementById('count').textContent = vehicles.length;
+            document.getElementById('fps').textContent = fpsDisplay;
+        }
+
+        function loop(now) {
+            update(now);
+            draw();
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+
+        // Controls
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            vehicles = [];
+            leadBraking = false;
+            for (let i = 0; i < 6; i++) spawnVehicle(i);
+        });
+        document.getElementById('btn-add').addEventListener('click', () => {
+            spawnVehicle(Math.floor(Math.random() * 4));
+        });
+        document.getElementById('btn-brake').addEventListener('click', () => {
+            leadBraking = !leadBraking;
+            document.getElementById('btn-brake').textContent = leadBraking ? 'Release Brake' : 'Lead Brake';
+        });
+    </script>
+</body>
+</html>

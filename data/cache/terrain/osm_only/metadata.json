@@ -1,0 +1,16 @@
+{
+  "ao_id": "osm_only",
+  "created_at": "2026-03-20T19:36:18.704195Z",
+  "segment_count": 5139,
+  "cache_path": "data/cache/terrain/osm_only",
+  "model_used": "color_heuristic",
+  "processing_time_s": 0.0,
+  "source_imagery": "osm",
+  "source_date": null,
+  "bounds": {
+    "min_lat": 30.26,
+    "min_lon": -97.755,
+    "max_lat": 30.275,
+    "max_lon": -97.74
+  }
+}

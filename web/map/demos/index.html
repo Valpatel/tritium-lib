@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>tritium-lib/web/map — Component Demos</title>
+    <style>
+        body { background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; padding: 30px; }
+        h1 { color: #00f0ff; font-size: 22px; letter-spacing: 3px; }
+        h2 { color: #05ffa1; font-size: 14px; margin-top: 20px; letter-spacing: 1px; }
+        a { color: #00f0ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .demo-card {
+            background: #111; border: 1px solid #1a1a2e; border-radius: 4px;
+            padding: 12px 16px; margin: 6px 0; display: block; transition: border-color 0.2s;
+        }
+        .demo-card:hover { border-color: #00f0ff44; }
+        .demo-title { color: #00f0ff; font-size: 13px; font-weight: bold; }
+        .demo-desc { color: #666; font-size: 10px; margin-top: 4px; }
+        .stats { color: #888; font-size: 10px; margin-top: 20px; border-top: 1px solid #1a1a2e; padding-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>TRITIUM-LIB MAP COMPONENTS</h1>
+    <p style="color:#666;font-size:11px">Interactive demos for each sub-assembly. Open individually to test in isolation.</p>
+
+    <h2>CORE</h2>
+    <a href="coords-demo.html" class="demo-card">
+        <div class="demo-title">MapCoords</div>
+        <div class="demo-desc">Coordinate transforms: game↔lngLat↔Mercator, FOV cones, haversine distance</div>
+    </a>
+    <a href="layer-manager-demo.html" class="demo-card">
+        <div class="demo-title">GeoJSON Layer Manager</div>
+        <div class="demo-desc">MapLibre source/layer CRUD with hash-based caching and visibility toggling</div>
+    </a>
+
+    <h2>TACTICAL</h2>
+    <a href="effects-demo.html" class="demo-card">
+        <div class="demo-title">Combat Effects + Battle HUD</div>
+        <div class="demo-desc">Floating text, screen shake, flash, banners, kill feed — no map needed</div>
+    </a>
+    <a href="asset-types-demo.html" class="demo-card">
+        <div class="demo-title">Asset Type Registry</div>
+        <div class="demo-desc">Extensible sensor/camera types — view defaults, register custom types at runtime</div>
+    </a>
+    <a href="draw-tools-demo.html" class="demo-card">
+        <div class="demo-title">Draw Tools</div>
+        <div class="demo-desc">Polygon (geofence) and polyline (patrol) drawing with undo/cancel/finish</div>
+    </a>
+
+    <h2>DATA</h2>
+    <a href="data-providers-demo.html" class="demo-card">
+        <div class="demo-title">Map Data Providers</div>
+        <div class="demo-desc">Extensible tile/GeoJSON sources — satellite, OSM, terrain, custom municipal data</div>
+    </a>
+
+    <div class="stats">
+        31 modules · 2,558 lines · 8 test suites · 96 tests · 6 demos<br>
+        <span style="color:#05ffa1">All components import-ready at /lib/map/index.js</span>
+    </div>
+</body>
+</html>

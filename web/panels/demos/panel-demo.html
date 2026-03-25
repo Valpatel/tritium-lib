@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PanelManager Demo — tritium-lib</title>
+    <link rel="stylesheet" href="../../css/cybercore.css">
+    <style>
+        body { margin: 0; background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; overflow: hidden; }
+        #toolbar {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 10000;
+            background: #111; border-bottom: 1px solid #1a1a2e;
+            padding: 8px 16px; display: flex; gap: 10px; align-items: center;
+        }
+        #toolbar button {
+            background: #1a1a2e; color: #00f0ff; border: 1px solid #00f0ff44;
+            padding: 4px 12px; font-family: inherit; font-size: 11px; cursor: pointer;
+            border-radius: 3px; letter-spacing: 1px;
+        }
+        #toolbar button:hover { background: #00f0ff22; }
+        #toolbar h1 { color: #00f0ff; font-size: 14px; margin: 0; letter-spacing: 2px; }
+        #panel-container { position: absolute; inset: 0; top: 42px; }
+        .panel-body { padding: 12px; font-size: 12px; color: #999; }
+        .panel-body h3 { color: #05ffa1; margin: 0 0 8px 0; font-size: 13px; }
+        .panel-body p { margin: 4px 0; }
+        .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1a1a2e; }
+        .stat-label { color: #666; }
+        .stat-value { color: #00f0ff; }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <h1>PANEL MANAGER DEMO</h1>
+        <button id="btn-status">Status Panel</button>
+        <button id="btn-targets">Targets Panel</button>
+        <button id="btn-comms">Comms Panel</button>
+        <button id="btn-reset">Reset All</button>
+    </div>
+    <div id="panel-container"></div>
+
+    <script type="module">
+        import { EventBus } from '../../events.js';
+        import { PanelManager } from '../panel-manager.js';
+
+        const container = document.getElementById('panel-container');
+        const pm = new PanelManager(container);
+
+        // Create demo panels
+        function createStatus() {
+            const panel = pm.create('status', 'SYSTEM STATUS', { x: 20, y: 10, width: 320, height: 260 });
+            panel.body.innerHTML = `
+                <div class="panel-body">
+                    <h3>// TRITIUM COMMAND</h3>
+                    <div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value" id="uptime">0s</span></div>
+                    <div class="stat-row"><span class="stat-label">Sensors</span><span class="stat-value">7 online</span></div>
+                    <div class="stat-row"><span class="stat-label">Targets</span><span class="stat-value">12 tracked</span></div>
+                    <div class="stat-row"><span class="stat-label">Threat Level</span><span class="stat-value" style="color:#05ffa1">LOW</span></div>
+                    <div class="stat-row"><span class="stat-label">MQTT</span><span class="stat-value">connected</span></div>
+                </div>
+            `;
+            // Live uptime counter
+            const start = Date.now();
+            setInterval(() => {
+                const el = document.getElementById('uptime');
+                if (el) el.textContent = Math.floor((Date.now() - start) / 1000) + 's';
+            }, 1000);
+        }
+
+        function createTargets() {
+            const panel = pm.create('targets', 'TARGET LIST', { x: 360, y: 10, width: 340, height: 300 });
+            const targets = [
+                { id: 'ble_aa:bb:cc', type: 'Phone', rssi: -42, alliance: 'unknown' },
+                { id: 'det_person_01', type: 'Person', rssi: null, alliance: 'neutral' },
+                { id: 'mesh_node_7', type: 'LoRa Node', rssi: -68, alliance: 'friendly' },
+                { id: 'wifi_CoffeeshopAP', type: 'WiFi AP', rssi: -55, alliance: 'neutral' },
+                { id: 'det_car_03', type: 'Vehicle', rssi: null, alliance: 'unknown' },
+            ];
+            panel.body.innerHTML = `
+                <div class="panel-body">
+                    <h3>// TRACKED ENTITIES</h3>
+                    ${targets.map(t => `
+                        <div class="stat-row">
+                            <span class="stat-label">${t.id}</span>
+                            <span class="stat-value" style="color:${t.alliance === 'friendly' ? '#05ffa1' : t.alliance === 'hostile' ? '#ff2a6d' : '#00f0ff'}">${t.type}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function createComms() {
+            const panel = pm.create('comms', 'COMMS LOG', { x: 20, y: 290, width: 320, height: 200 });
+            panel.body.innerHTML = `
+                <div class="panel-body">
+                    <h3>// EVENT LOG</h3>
+                    <div id="comms-log" style="font-size:10px; color:#666; max-height:120px; overflow-y:auto;"></div>
+                </div>
+            `;
+            // Log EventBus activity
+            EventBus.on('*', (eventName, data) => {
+                const log = document.getElementById('comms-log');
+                if (!log) return;
+                const line = document.createElement('div');
+                line.style.borderBottom = '1px solid #0a0a12';
+                line.style.padding = '2px 0';
+                line.innerHTML = `<span style="color:#00f0ff">${new Date().toLocaleTimeString()}</span> <span style="color:#fcee0a">${eventName}</span>`;
+                log.prepend(line);
+                // Keep only last 20 entries
+                while (log.children.length > 20) log.removeChild(log.lastChild);
+            });
+        }
+
+        // Button handlers
+        document.getElementById('btn-status').addEventListener('click', () => {
+            if (pm.get('status')) pm.get('status').toggle();
+            else createStatus();
+        });
+        document.getElementById('btn-targets').addEventListener('click', () => {
+            if (pm.get('targets')) pm.get('targets').toggle();
+            else createTargets();
+        });
+        document.getElementById('btn-comms').addEventListener('click', () => {
+            if (pm.get('comms')) pm.get('comms').toggle();
+            else createComms();
+        });
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            pm.destroyAll();
+        });
+
+        // Auto-create panels on load
+        createStatus();
+        createTargets();
+        createComms();
+
+        // Fire some demo events
+        setInterval(() => {
+            const events = ['target:sighting', 'sensor:heartbeat', 'mqtt:message', 'alert:low', 'system:tick'];
+            EventBus.emit(events[Math.floor(Math.random() * events.length)], { ts: Date.now() });
+        }, 2000);
+    </script>
+</body>
+</html>

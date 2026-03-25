@@ -1,0 +1,16 @@
+{
+  "ao_id": "austin_i35",
+  "created_at": "2026-03-20T15:29:00.917200Z",
+  "segment_count": 256,
+  "cache_path": "data/cache/terrain/austin_i35",
+  "model_used": "color_heuristic",
+  "processing_time_s": 0.7455272859660909,
+  "source_imagery": "satellite",
+  "source_date": null,
+  "bounds": {
+    "min_lat": 30.259305066475026,
+    "min_lon": -97.74112011114538,
+    "max_lat": 30.264694933524975,
+    "max_lon": -97.73487988885462
+  }
+}

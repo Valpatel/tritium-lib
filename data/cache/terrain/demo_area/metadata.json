@@ -1,0 +1,16 @@
+{
+  "ao_id": "demo_area",
+  "created_at": "2026-03-21T00:22:35.966276Z",
+  "segment_count": 5812,
+  "cache_path": "data/cache/terrain/demo_area",
+  "model_used": "color_heuristic",
+  "processing_time_s": 5.892339444020763,
+  "source_imagery": "satellite+osm",
+  "source_date": null,
+  "bounds": {
+    "min_lat": 30.26,
+    "min_lon": -97.755,
+    "max_lat": 30.275,
+    "max_lon": -97.74
+  }
+}

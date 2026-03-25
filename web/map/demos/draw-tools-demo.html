@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Draw Tools Demo — tritium-lib</title>
+    <style>
+        body { background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 20px; }
+        h1 { color: #00f0ff; font-size: 18px; letter-spacing: 2px; }
+        .controls { background: #111; border: 1px solid #1a1a2e; padding: 12px; margin: 8px 0; border-radius: 4px; }
+        button { background: transparent; border: 1px solid #00f0ff; color: #00f0ff; padding: 6px 14px; cursor: pointer; font-family: monospace; margin: 3px; border-radius: 3px; }
+        button:hover { background: #00f0ff22; }
+        button.green { border-color: #05ffa1; color: #05ffa1; }
+        button.red { border-color: #ff2a6d; color: #ff2a6d; }
+        #canvas { width: 600px; height: 400px; background: #0d0d18; border: 1px solid #1a1a2e; position: relative; margin-top: 8px; cursor: crosshair; }
+        .vertex { width: 10px; height: 10px; border-radius: 50%; background: #00f0ff; border: 2px solid #fff; position: absolute; transform: translate(-50%,-50%); pointer-events: none; box-shadow: 0 0 4px #00f0ff; }
+        .line { position: absolute; background: #00f0ff; height: 2px; transform-origin: 0 50%; pointer-events: none; opacity: 0.6; }
+        #status { color: #888; margin-top: 8px; }
+        #output { background: #0d0d15; border: 1px solid #1a1a2e; padding: 8px; margin-top: 8px; font-size: 10px; max-height: 150px; overflow: auto; }
+        kbd { background: #222; border: 1px solid #444; padding: 1px 5px; border-radius: 2px; font-size: 10px; }
+    </style>
+</head>
+<body>
+    <h1>DRAW TOOLS DEMO</h1>
+    <p style="color:#666">Polygon and polyline drawing. Click to add vertices. <kbd>Enter</kbd> to finish, <kbd>Esc</kbd> to cancel, <kbd>Backspace</kbd> to undo.</p>
+
+    <div class="controls">
+        <button class="green" onclick="startPolygon()">DRAW POLYGON (Geofence)</button>
+        <button onclick="startPolyline()">DRAW POLYLINE (Patrol)</button>
+        <button class="red" onclick="cancel()">CANCEL</button>
+    </div>
+    <div id="canvas" onclick="addVertex(event)"></div>
+    <div id="status">Click a button to start drawing.</div>
+    <div id="output"></div>
+
+    <script>
+        // Simplified draw tools demo (no MapLibre dependency)
+        const canvas = document.getElementById('canvas');
+        const statusEl = document.getElementById('status');
+        const outputEl = document.getElementById('output');
+
+        let mode = null; // 'polygon' | 'polyline'
+        let vertices = [];
+        let vertexEls = [];
+
+        function clearCanvas() {
+            vertexEls.forEach(el => el.remove());
+            vertexEls = [];
+            vertices = [];
+            canvas.querySelectorAll('.line').forEach(l => l.remove());
+        }
+
+        function drawLines() {
+            canvas.querySelectorAll('.line').forEach(l => l.remove());
+            for (let i = 0; i < vertices.length - 1; i++) {
+                drawLine(vertices[i], vertices[i + 1]);
+            }
+            if (mode === 'polygon' && vertices.length >= 3) {
+                drawLine(vertices[vertices.length - 1], vertices[0]);
+            }
+        }
+
+        function drawLine(a, b) {
+            const dx = b[0] - a[0], dy = b[1] - a[1];
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+            const line = document.createElement('div');
+            line.className = 'line';
+            line.style.left = a[0] + 'px';
+            line.style.top = a[1] + 'px';
+            line.style.width = len + 'px';
+            line.style.transform = `rotate(${angle}deg)`;
+            if (mode === 'polygon') line.style.background = '#05ffa1';
+            canvas.appendChild(line);
+        }
+
+        window.startPolygon = () => {
+            clearCanvas();
+            mode = 'polygon';
+            statusEl.textContent = 'POLYGON MODE — click to add vertices, Enter to finish';
+            statusEl.style.color = '#05ffa1';
+        };
+
+        window.startPolyline = () => {
+            clearCanvas();
+            mode = 'polyline';
+            statusEl.textContent = 'POLYLINE MODE — click to add waypoints, Enter to finish';
+            statusEl.style.color = '#00f0ff';
+        };
+
+        window.cancel = () => {
+            clearCanvas();
+            mode = null;
+            statusEl.textContent = 'Cancelled.';
+            statusEl.style.color = '#888';
+        };
+
+        window.addVertex = (e) => {
+            if (!mode) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            vertices.push([x, y]);
+
+            const dot = document.createElement('div');
+            dot.className = 'vertex';
+            dot.style.left = x + 'px';
+            dot.style.top = y + 'px';
+            if (mode === 'polygon') dot.style.background = '#05ffa1';
+            canvas.appendChild(dot);
+            vertexEls.push(dot);
+
+            drawLines();
+            statusEl.textContent = `${mode.toUpperCase()} — ${vertices.length} vertices. Enter to finish.`;
+        };
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && mode && vertices.length >= 2) {
+                const coords = vertices.map(([x, y]) => [+(x / 600 * 0.02 - 122.43).toFixed(6), +(y / 400 * 0.01 + 37.77).toFixed(6)]);
+                outputEl.textContent = JSON.stringify({
+                    type: mode === 'polygon' ? 'Polygon' : 'LineString',
+                    coordinates: mode === 'polygon' ? [[...coords, coords[0]]] : coords,
+                    vertexCount: vertices.length,
+                }, null, 2);
+                statusEl.textContent = `Finished: ${vertices.length} vertices → GeoJSON below`;
+                statusEl.style.color = '#fcee0a';
+                mode = null;
+            }
+            if (e.key === 'Escape') window.cancel();
+            if (e.key === 'Backspace' && mode && vertices.length > 0) {
+                vertices.pop();
+                const el = vertexEls.pop();
+                if (el) el.remove();
+                drawLines();
+                statusEl.textContent = `Undo — ${vertices.length} vertices remaining`;
+            }
+        });
+    </script>
+</body>
+</html>

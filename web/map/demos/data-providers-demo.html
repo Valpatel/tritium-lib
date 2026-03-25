@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Data Providers Demo — tritium-lib</title>
+    <style>
+        body { background: #0a0a12; color: #ccc; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 20px; }
+        h1 { color: #00f0ff; font-size: 18px; letter-spacing: 2px; }
+        .provider { background: #111; border: 1px solid #1a1a2e; border-radius: 4px; padding: 10px 14px; margin: 6px 0; display: flex; align-items: center; gap: 12px; }
+        .provider-icon { font-size: 20px; font-weight: bold; width: 30px; text-align: center; }
+        .provider-info { flex: 1; }
+        .provider-name { font-size: 13px; font-weight: bold; }
+        .provider-cat { color: #666; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; }
+        .provider-meta { color: #888; font-size: 10px; margin-top: 2px; }
+        .badge { display: inline-block; padding: 1px 6px; border-radius: 2px; font-size: 9px; margin-left: 6px; }
+        .badge-active { background: #05ffa122; color: #05ffa1; border: 1px solid #05ffa144; }
+        .badge-inactive { background: #33333344; color: #666; border: 1px solid #333; }
+        button { background: transparent; border: 1px solid #00f0ff; color: #00f0ff; padding: 3px 10px; cursor: pointer; font-family: monospace; font-size: 10px; border-radius: 2px; }
+        button:hover { background: #00f0ff22; }
+        #custom-section { background: #111; border: 1px solid #1a1a2e; padding: 12px; margin: 12px 0; border-radius: 4px; }
+        input { background: #1a1a2e; border: 1px solid #333; color: #ccc; padding: 4px 8px; font-family: monospace; margin: 2px; }
+        #output { background: #0d0d15; border: 1px solid #1a1a2e; padding: 8px; margin-top: 8px; font-size: 10px; max-height: 200px; overflow: auto; white-space: pre; }
+    </style>
+</head>
+<body>
+    <h1>MAP DATA PROVIDERS DEMO</h1>
+    <p style="color:#666">Extensible map layer data sources. Each provider supplies tiles or GeoJSON to the map.</p>
+
+    <div id="providers"></div>
+
+    <h2 style="color:#fcee0a;font-size:14px;margin-top:16px">REGISTER CUSTOM PROVIDER</h2>
+    <div id="custom-section">
+        <div>
+            ID: <input id="pId" value="city-water">
+            Label: <input id="pLabel" value="City Water Pipes">
+            Category: <input id="pCat" value="municipal">
+            Icon: <input id="pIcon" value="W" style="width:30px">
+            GeoJSON URL: <input id="pUrl" value="/api/gis/water" style="width:200px">
+        </div>
+        <button onclick="registerProvider()" style="margin-top:6px">REGISTER PROVIDER</button>
+    </div>
+    <div id="output"></div>
+
+    <script type="module">
+        import { MapDataProvider, MapDataProviderRegistry } from '../data-provider.js';
+        import { EsriSatelliteProvider, OSMTilesProvider } from '../providers/satellite.js';
+        import { TerrainSegmentationProvider } from '../providers/terrain.js';
+
+        const registry = new MapDataProviderRegistry();
+
+        // Register built-in providers
+        registry.register(new EsriSatelliteProvider());
+        registry.register(new OSMTilesProvider());
+        registry.register(new TerrainSegmentationProvider());
+
+        function renderProviders() {
+            const container = document.getElementById('providers');
+            container.innerHTML = '';
+            for (const p of registry.all()) {
+                const div = document.createElement('div');
+                div.className = 'provider';
+                const badgeCls = p.active ? 'badge-active' : 'badge-inactive';
+                const badgeText = p.active ? 'ACTIVE' : 'INACTIVE';
+                div.innerHTML = `
+                    <div class="provider-icon" style="color:${p.category === 'basemap' ? '#00f0ff' : p.category === 'intel' ? '#05ffa1' : '#fcee0a'}">${p.icon}</div>
+                    <div class="provider-info">
+                        <div class="provider-name">${p.label} <span class="badge ${badgeCls}">${badgeText}</span></div>
+                        <div class="provider-cat">${p.category}</div>
+                    </div>
+                    <button onclick="inspect('${p.providerId}')">INSPECT</button>
+                `;
+                container.appendChild(div);
+            }
+        }
+
+        window.inspect = (id) => {
+            const all = registry.all();
+            const p = all.find(x => x.providerId === id);
+            document.getElementById('output').textContent = JSON.stringify(p, null, 2);
+        };
+
+        window.registerProvider = () => {
+            const id = document.getElementById('pId').value;
+            const label = document.getElementById('pLabel').value;
+            const cat = document.getElementById('pCat').value;
+            const icon = document.getElementById('pIcon').value;
+            const url = document.getElementById('pUrl').value;
+
+            class CustomProvider extends MapDataProvider {
+                static providerId = id;
+                static label = label;
+                static category = cat;
+                static icon = icon;
+                static refreshInterval = 30000;
+
+                async fetchData() {
+                    try { const r = await fetch(url); return r.ok ? await r.json() : null; }
+                    catch { return null; }
+                }
+                getSourceConfig() { return { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }; }
+                getLayerConfigs() {
+                    return [{ id: `${id}-fill`, type: 'fill', paint: { 'fill-color': '#4488ff', 'fill-opacity': 0.2 } }];
+                }
+            }
+            Object.defineProperty(CustomProvider, 'providerId', { value: id });
+            Object.defineProperty(CustomProvider, 'label', { value: label });
+            Object.defineProperty(CustomProvider, 'category', { value: cat });
+            Object.defineProperty(CustomProvider, 'icon', { value: icon });
+
+            registry.register(new CustomProvider());
+            renderProviders();
+            document.getElementById('output').textContent = `Registered: ${id} (${label}) — category: ${cat}`;
+        };
+
+        renderProviders();
+    </script>
+</body>
+</html>
