@@ -896,7 +896,7 @@ const projHistories = new Map();
 // =========================================================================
 // Expanding shockwave ring pool — visual "boom" complement to particle system
 // =========================================================================
-const SHOCKWAVE_POOL_SIZE = 24;
+const SHOCKWAVE_POOL_SIZE = 8;  // Reduced from 24 — too many additive rings overwhelm scene
 const shockwavePool = [];
 for (let i = 0; i < SHOCKWAVE_POOL_SIZE; i++) {
   // Flat torus that expands outward and fades
@@ -2602,13 +2602,13 @@ function spawnExplosion(x, z, y, radius) {
     sw.ring.position.set(x, y + 0.15, z);
     sw.ring.scale.set(0.1, 0.1, 0.1);
     sw.ring.visible = true;
-    sw.ringMat.opacity = 0.9;
+    sw.ringMat.opacity = 0.4;  // Reduced from 0.9 to prevent scene washout
     sw.ringMat.color.setHex(radius > 6 ? 0xff8800 : 0xff4400);
     // Flash sphere
     sw.flash.position.set(x, y + radius * 0.3, z);
     sw.flash.scale.set(radius * 0.2, radius * 0.2, radius * 0.2);
     sw.flash.visible = true;
-    sw.flashMat.opacity = 0.7;
+    sw.flashMat.opacity = 0.3;  // Reduced from 0.7
   }
 }
 
