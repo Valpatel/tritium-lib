@@ -792,6 +792,11 @@ function disposeUnitModel(entry) {
 // =========================================================================
 // InstancedMesh pools — vehicles, crowd (infantry now uses per-unit models)
 // =========================================================================
+// Base scale multiplier so units are clearly visible relative to buildings.
+// Person models are ~0.5 units tall; buildings are 8-16+. A 3x multiplier
+// makes infantry ~1.5 units tall — visible but still proportional.
+const UNIT_BASE_SCALE = 3.0;
+
 const MAX_UNITS = 256;
 const MAX_PROJECTILES = 512;
 const MAX_CROWD = 512;
@@ -1183,30 +1188,72 @@ function makeCircleTexture(size, color) {
   return new THREE.CanvasTexture(c);
 }
 
-function makeLabelSprite(text, color) {
+function makeLabelSprite(text, color, unitType) {
   const c = document.createElement('canvas');
-  c.width = 256; c.height = 48;
+  c.width = 512; c.height = 96;
   const ctx = c.getContext('2d');
-  ctx.clearRect(0, 0, 256, 48);
-  // Name
-  ctx.font = 'bold 20px Courier New';
+  ctx.clearRect(0, 0, 512, 96);
+
+  // Semi-transparent background plate for readability
+  ctx.fillStyle = 'rgba(10, 10, 20, 0.7)';
+  const textWidth = Math.min(text.length * 18 + 40, 480);
+  const bgX = (512 - textWidth) / 2;
+  const _rr = (cx, rx, ry, rw, rh, rr) => {
+    if (cx.roundRect) { cx.roundRect(rx, ry, rw, rh, rr); return; }
+    cx.moveTo(rx + rr, ry);
+    cx.lineTo(rx + rw - rr, ry);
+    cx.arcTo(rx + rw, ry, rx + rw, ry + rr, rr);
+    cx.lineTo(rx + rw, ry + rh - rr);
+    cx.arcTo(rx + rw, ry + rh, rx + rw - rr, ry + rh, rr);
+    cx.lineTo(rx + rr, ry + rh);
+    cx.arcTo(rx, ry + rh, rx, ry + rh - rr, rr);
+    cx.lineTo(rx, ry + rr);
+    cx.arcTo(rx, ry, rx + rr, ry, rr);
+    cx.closePath();
+  };
+  ctx.beginPath();
+  _rr(ctx, bgX, 4, textWidth, 88, 8);
+  ctx.fill();
+
+  // Border glow
+  ctx.strokeStyle = color || '#00f0ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  _rr(ctx, bgX, 4, textWidth, 88, 8);
+  ctx.stroke();
+
+  // Unit type label (small, top)
+  if (unitType) {
+    ctx.font = 'bold 18px Courier New';
+    ctx.fillStyle = '#aaaacc';
+    ctx.textAlign = 'center';
+    ctx.fillText(unitType.toUpperCase(), 256, 30);
+  }
+
+  // Name (large, bottom)
+  ctx.font = 'bold 28px Courier New';
   ctx.fillStyle = color || '#00f0ff';
   ctx.textAlign = 'center';
-  ctx.fillText(text.substring(0, 16), 128, 20);
+  // Text shadow for glow effect
+  ctx.shadowColor = color || '#00f0ff';
+  ctx.shadowBlur = 6;
+  ctx.fillText(text.substring(0, 16), 256, unitType ? 68 : 56);
+  ctx.shadowBlur = 0;
+
   const tex = new THREE.CanvasTexture(c);
   tex.needsUpdate = true;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(6, 1.5, 1);
+  sprite.scale.set(8, 1.8, 1);
   return sprite;
 }
 
 function makeHealthBar() {
-  const geo = new THREE.PlaneGeometry(2.5, 0.25);
+  const geo = new THREE.PlaneGeometry(3.5, 0.35);
   const bgMat = new THREE.MeshBasicMaterial({ color: 0x1a1a2e, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
   const bg = new THREE.Mesh(geo, bgMat);
 
-  const fillGeo = new THREE.PlaneGeometry(2.5, 0.25);
+  const fillGeo = new THREE.PlaneGeometry(3.5, 0.35);
   const fillMat = new THREE.MeshBasicMaterial({ color: GREEN, side: THREE.DoubleSide });
   const fill = new THREE.Mesh(fillGeo, fillMat);
 
@@ -2119,11 +2166,13 @@ function _seededRng(seed) {
 function processFrame(frame) {
   lastFrame = frame;
 
-  // Units (instanced)
-  updateUnits(frame.units || []);
+  // Units (instanced) — guard against diff-format {changed,removed} objects
+  const rawUnits = frame.units;
+  updateUnits(Array.isArray(rawUnits) ? rawUnits : []);
 
-  // Projectiles
-  updateProjectiles(frame.projectiles || []);
+  // Projectiles — guard against diff-format objects
+  const rawProj = frame.projectiles;
+  updateProjectiles(Array.isArray(rawProj) ? rawProj : []);
 
   // Effects (explosions, fire, smoke, muzzle flashes)
   // Effects may be a dict (to_three_js format) or array — handle both
@@ -2136,8 +2185,9 @@ function processFrame(frame) {
     updateEffectsFromParticles(pts, rawEffects.colors || [], rawEffects.sizes || []);
   }
 
-  // Crowd
-  updateCrowd(frame.crowd || []);
+  // Crowd — guard against diff-format objects
+  const rawCrowd = frame.crowd;
+  updateCrowd(Array.isArray(rawCrowd) ? rawCrowd : []);
 
   // Weather
   updateWeather(frame.weather || {});
@@ -2228,20 +2278,21 @@ function updateUnits(units) {
     const scale = u.scale || 1;
     const isSelected = u.id === selectedUnitId;
 
-    // Height offset depends on model type
+    // Height offset depends on model type — scaled by UNIT_BASE_SCALE so
+    // models sit on the ground rather than clipping into it.
     let py;
     if (isVehicle) {
-      py = (u.z || 0) + 0.7;
+      py = (u.z || 0) + 0.7 * UNIT_BASE_SCALE * 0.5;
     } else if (u.type === 'drone') {
-      py = (u.z || 0) + 3.0; // drones hover high
+      py = (u.z || 0) + 3.0 * UNIT_BASE_SCALE; // drones hover high
     } else if (u.type === 'heavy') {
-      py = (u.z || 0) + 0.3; // tank hull sits low
+      py = (u.z || 0) + 0.3 * UNIT_BASE_SCALE; // tank hull sits low
     } else if (u.type === 'turret') {
-      py = (u.z || 0) + 0.15; // turret sits on ground
+      py = (u.z || 0) + 0.15 * UNIT_BASE_SCALE; // turret sits on ground
     } else if (u.type === 'rover') {
-      py = (u.z || 0) + 0.25;
+      py = (u.z || 0) + 0.25 * UNIT_BASE_SCALE;
     } else {
-      py = (u.z || 0) + 0.25; // person models are shorter than the old capsule
+      py = (u.z || 0) + 0.25 * UNIT_BASE_SCALE; // person models
     }
 
     unitPositions.set(u.id, {
@@ -2252,12 +2303,13 @@ function updateUnits(units) {
     });
 
     if (isVehicle && vehicleIdx < 64) {
+      const vScale = scale * UNIT_BASE_SCALE * 0.5; // vehicles already have larger geometry
       _euler.set(0, -heading, 0);
       _quat.setFromEuler(_euler);
 
       // Vehicle body (ground level, center at py)
       _pos.set(px, py, pz);
-      _scale.set(scale, scale, scale);
+      _scale.set(vScale, vScale, vScale);
       _mat4.compose(_pos, _quat, _scale);
       vehicleInstances.setMatrixAt(vehicleIdx, _mat4);
       _color.setHex(allianceColor);
@@ -2265,7 +2317,7 @@ function updateUnits(units) {
       vehicleInstances.setColorAt(vehicleIdx, _color);
 
       // Vehicle cabin (sits on top of body — offset +Y by body half + cabin half)
-      const cabinY = py + (1.4 * scale * 0.5) + (1.0 * scale * 0.5);
+      const cabinY = py + (1.4 * vScale * 0.5) + (1.0 * vScale * 0.5);
       _pos.set(px, cabinY, pz);
       _mat4.compose(_pos, _quat, _scale);
       vehicleCabinInstances.setMatrixAt(vehicleIdx, _mat4);
@@ -2278,31 +2330,32 @@ function updateUnits(units) {
         const cosH = Math.cos(-heading), sinH = Math.sin(-heading);
         const fwdX = -sinH, fwdZ = -cosH;  // forward direction
         const rightX = cosH, rightZ = -sinH; // right of vehicle
-        const frontDist = 1.0 * scale;
+        const frontDist = 1.0 * vScale;
         const hlY = py + 0.2;
 
-        const hl1x = px + fwdX * frontDist + rightX * 0.9 * scale;
-        const hl1z = pz + fwdZ * frontDist + rightZ * 0.9 * scale;
+        const hl1x = px + fwdX * frontDist + rightX * 0.9 * vScale;
+        const hl1z = pz + fwdZ * frontDist + rightZ * 0.9 * vScale;
         _pos.set(hl1x, hlY, hl1z);
-        _scale.set(scale, scale, scale);
+        _scale.set(vScale, vScale, vScale);
         _mat4.compose(_pos, _quat, _scale);
         vehicleHLInstances.setMatrixAt(hlIdx, _mat4);
 
-        const hl2x = px + fwdX * frontDist - rightX * 0.9 * scale;
-        const hl2z = pz + fwdZ * frontDist - rightZ * 0.9 * scale;
+        const hl2x = px + fwdX * frontDist - rightX * 0.9 * vScale;
+        const hl2z = pz + fwdZ * frontDist - rightZ * 0.9 * vScale;
         _pos.set(hl2x, hlY, hl2z);
         _mat4.compose(_pos, _quat, _scale);
         vehicleHLInstances.setMatrixAt(hlIdx + 1, _mat4);
 
         // Tail lights (rear)
-        const tl1x = px - fwdX * frontDist + rightX * 0.9 * scale;
-        const tl1z = pz - fwdZ * frontDist + rightZ * 0.9 * scale;
+        const tl1x = px - fwdX * frontDist + rightX * 0.9 * vScale;
+        const tl1z = pz - fwdZ * frontDist + rightZ * 0.9 * vScale;
         _pos.set(tl1x, hlY, tl1z);
+        _scale.set(vScale, vScale, vScale);
         _mat4.compose(_pos, _quat, _scale);
         vehicleTLInstances.setMatrixAt(hlIdx, _mat4);
 
-        const tl2x = px - fwdX * frontDist - rightX * 0.9 * scale;
-        const tl2z = pz - fwdZ * frontDist - rightZ * 0.9 * scale;
+        const tl2x = px - fwdX * frontDist - rightX * 0.9 * vScale;
+        const tl2z = pz - fwdZ * frontDist - rightZ * 0.9 * vScale;
         _pos.set(tl2x, hlY, tl2z);
         _mat4.compose(_pos, _quat, _scale);
         vehicleTLInstances.setMatrixAt(hlIdx + 1, _mat4);
@@ -2333,10 +2386,11 @@ function updateUnits(units) {
         unitModelCache.set(u.id, cached);
       }
 
-      // Position, rotation, scale
+      // Position, rotation, scale — apply UNIT_BASE_SCALE so units are visible
+      const effectiveScale = scale * UNIT_BASE_SCALE;
       cached.group.position.set(px, py, pz);
       cached.group.rotation.set(0, -heading, 0);
-      cached.group.scale.set(scale, scale, scale);
+      cached.group.scale.set(effectiveScale, effectiveScale, effectiveScale);
       cached.group.visible = true;
 
       // Recolor by alliance (update colorable LambertMaterial children)
@@ -2377,7 +2431,7 @@ function updateUnits(units) {
         _pos.set(px, py + 0.5, pz);
         _euler.set(0, -heading, 0);
         _quat.setFromEuler(_euler);
-        _scale.set(scale * 1.5, scale * 1.5, scale * 1.5);
+        _scale.set(scale * UNIT_BASE_SCALE * 1.5, scale * UNIT_BASE_SCALE * 1.5, scale * UNIT_BASE_SCALE * 1.5);
         _mat4.compose(_pos, _quat, _scale);
         unitGlowInstances.setMatrixAt(glowIdx, _mat4);
         const pulse = Math.sin(now * 0.006) * 0.5 + 0.5;
@@ -2432,23 +2486,37 @@ function updateUnitLabel(u, px, py, pz, allianceColor) {
   let entry = unitLabels.get(id);
   if (!entry) {
     const colorStr = '#' + new THREE.Color(allianceColor).getHexString();
-    const sprite = makeLabelSprite(u.label || id, colorStr);
+    const sprite = makeLabelSprite(u.label || id, colorStr, u.type);
     const healthBar = makeHealthBar();
     scene.add(sprite);
     scene.add(healthBar.group);
-    entry = { sprite, healthBar };
+    entry = { sprite, healthBar, lastType: u.type };
     unitLabels.set(id, entry);
   }
 
-  const labelY = py + 2.5;
+  // Rebuild label if unit type changed (e.g., promoted/reclassed)
+  if (entry.lastType !== u.type) {
+    scene.remove(entry.sprite);
+    if (entry.sprite.material) {
+      if (entry.sprite.material.map) entry.sprite.material.map.dispose();
+      entry.sprite.material.dispose();
+    }
+    const colorStr = '#' + new THREE.Color(allianceColor).getHexString();
+    entry.sprite = makeLabelSprite(u.label || id, colorStr, u.type);
+    scene.add(entry.sprite);
+    entry.lastType = u.type;
+  }
+
+  // Position labels above the scaled-up unit models
+  const labelY = py + 2.5 * UNIT_BASE_SCALE;
   entry.sprite.position.set(px, labelY, pz);
-  entry.healthBar.group.position.set(px, labelY - 0.6, pz);
+  entry.healthBar.group.position.set(px, labelY - 0.8, pz);
   entry.healthBar.group.lookAt(camera.position);
 
   // Update health bar
   const hp = Math.max(0, Math.min(1, u.health || 0));
   entry.healthBar.fill.scale.x = Math.max(0.01, hp);
-  entry.healthBar.fill.position.x = -(1.25 * (1 - hp));
+  entry.healthBar.fill.position.x = -(1.75 * (1 - hp));
 
   const hpColor = hp > 0.6 ? GREEN : hp > 0.3 ? YELLOW : MAGENTA;
   entry.healthBar.fillMat.color.setHex(hpColor);
@@ -3261,7 +3329,7 @@ function updateHUD(ui, frame) {
   }
 
   // Roster — friendly units
-  if (frame && frame.units) {
+  if (frame && Array.isArray(frame.units)) {
     const rosterList = document.getElementById('roster-list');
     rosterList.innerHTML = '';
     const friendlies = frame.units.filter(u => u.alliance === 'friendly').slice(0, 12);
