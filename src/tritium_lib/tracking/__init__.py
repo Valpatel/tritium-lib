@@ -51,6 +51,9 @@ from .escalation import (
     classify_all_targets,
 )
 from .patrol import PatrolRoute, PatrolAssignment, PatrolManager
+from .network_analysis import NetworkAnalyzer, DeviceProfile, ProbeRecord, COMMON_SSIDS
+from .proximity_monitor import ProximityMonitor
+from .sensor_health_monitor import SensorHealthMonitor
 try:
     from .obstacles import BuildingObstacles, _latlng_to_local, _segments_intersect
 except ImportError:
@@ -140,6 +143,15 @@ __all__ = [
     "PatrolRoute",
     "PatrolAssignment",
     "PatrolManager",
+    # Network analysis
+    "NetworkAnalyzer",
+    "DeviceProfile",
+    "ProbeRecord",
+    "COMMON_SSIDS",
+    # Proximity monitor
+    "ProximityMonitor",
+    # Sensor health monitor
+    "SensorHealthMonitor",
     # Building obstacles
     "BuildingObstacles",
     "_latlng_to_local",
