@@ -884,6 +884,12 @@ class GameState:
         self._rng: _random.Random = _random.Random(42)
         # Accumulated CQB results for the current frame
         self.cqb_events: list[dict] = []
+        # Cached static data — map_features and building metadata that
+        # don't change between ticks (avoids ~9KB re-serialization).
+        self._cached_map_features: list[dict] | None = None
+        self._cached_building_ids: list[str] | None = None
+        self._cached_destruction: dict | None = None
+        self._destruction_version: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1797,8 +1803,10 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         cqb_results = _trigger_cqb(gs, gs.tick_count, gs._rng)
         if cqb_results:
             gs.cqb_events.extend(cqb_results)
-        # Export first building for the frame (avoid sending all floor data each tick)
-        bld_ids = list(gs.buildings.buildings.keys())
+        # Cache building IDs (layout doesn't change mid-game)
+        if gs._cached_building_ids is None:
+            gs._cached_building_ids = list(gs.buildings.buildings.keys())
+        bld_ids = gs._cached_building_ids
         if bld_ids:
             bld_data = gs.buildings.to_three_js(bld_ids[0])
             # Keep frame small: strip room occupants lists, keep summary
@@ -2383,20 +2391,22 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
         except Exception:
             pass
 
-    # Add generated map features on first frame
+    # Add generated map features on first frame (cache for welcome reuse)
     if gs.tick_count == 1 and gs.generated_map is not None:
-        frame["map_features"] = [
-            {
-                "id": f.feature_id,
-                "type": f.feature_type,
-                "x": f.position[0],
-                "y": f.position[1],
-                "w": f.size[0],
-                "h": f.size[1],
-                "rotation": f.rotation,
-            }
-            for f in gs.generated_map.features
-        ]
+        if gs._cached_map_features is None:
+            gs._cached_map_features = [
+                {
+                    "id": f.feature_id,
+                    "type": f.feature_type,
+                    "x": f.position[0],
+                    "y": f.position[1],
+                    "w": f.size[0],
+                    "h": f.size[1],
+                    "rotation": f.rotation,
+                }
+                for f in gs.generated_map.features
+            ]
+        frame["map_features"] = gs._cached_map_features
 
     return frame
 
@@ -2733,8 +2743,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
     # Late joiners would otherwise never receive map_features / destruction.
     try:
         welcome: dict[str, Any] = {"type": "welcome", "tick": _game.tick_count}
-        if _game.generated_map is not None:
-            welcome["map_features"] = [
+        if _game._cached_map_features is not None:
+            welcome["map_features"] = _game._cached_map_features
+        elif _game.generated_map is not None:
+            _game._cached_map_features = [
                 {
                     "id": f.feature_id,
                     "type": f.feature_type,
@@ -2746,6 +2758,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 }
                 for f in _game.generated_map.features
             ]
+            welcome["map_features"] = _game._cached_map_features
         if _game.world is not None and _game.world.destruction is not None:
             welcome["destruction"] = _game.world.destruction.to_three_js()
         await ws.send_text(json.dumps(welcome, default=str))
