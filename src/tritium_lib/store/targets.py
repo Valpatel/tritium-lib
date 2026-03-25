@@ -383,6 +383,250 @@ class TargetStore(BaseStore):
         }
 
     # ------------------------------------------------------------------
+    # Time-series queries
+    # ------------------------------------------------------------------
+
+    def get_trajectory(
+        self,
+        target_id: str,
+        start_time: float | None = None,
+        end_time: float | None = None,
+    ) -> list[dict]:
+        """Return ordered position history for a target within a time window.
+
+        Parameters
+        ----------
+        target_id:
+            The target to query.
+        start_time:
+            Unix timestamp lower bound (inclusive).  ``None`` means no lower bound.
+        end_time:
+            Unix timestamp upper bound (inclusive).  ``None`` means no upper bound.
+
+        Returns a list of dicts with ``x``, ``y``, ``timestamp``, ``source``,
+        ordered oldest-first (chronological) for trajectory rendering.
+        """
+        clauses = ["target_id = ?"]
+        params: list[object] = [target_id]
+        if start_time is not None:
+            clauses.append("timestamp >= ?")
+            params.append(start_time)
+        if end_time is not None:
+            clauses.append("timestamp <= ?")
+            params.append(end_time)
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            f"""SELECT x, y, timestamp, source
+                FROM target_history
+                WHERE {where}
+                ORDER BY timestamp ASC""",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_activity_timeline(self, target_id: str) -> dict | None:
+        """Return an activity summary for a target.
+
+        Returns a dict with:
+        - ``target_id``: the queried target
+        - ``first_seen``: earliest sighting timestamp
+        - ``last_seen``: most recent sighting timestamp
+        - ``total_time``: seconds between first and last sighting
+        - ``sighting_count``: number of position history records
+        - ``zones_visited``: list of unique (x, y) positions (grid-snapped
+          to integer coordinates to group nearby sightings into zones)
+        - ``sources_used``: list of distinct source strings that observed
+          this target
+
+        Returns ``None`` if the target does not exist.
+        """
+        target = self.get_target(target_id)
+        if target is None:
+            return None
+
+        first_seen = target["first_seen"]
+        last_seen = target["last_seen"]
+
+        # Count history records
+        count_row = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM target_history WHERE target_id = ?",
+            (target_id,),
+        ).fetchone()
+        sighting_count = count_row["c"]
+
+        # Distinct zones — snap to integer grid so nearby positions cluster
+        zone_rows = self._conn.execute(
+            """SELECT DISTINCT CAST(x AS INTEGER) AS zx,
+                                CAST(y AS INTEGER) AS zy
+               FROM target_history
+               WHERE target_id = ?""",
+            (target_id,),
+        ).fetchall()
+        zones_visited = [{"x": r["zx"], "y": r["zy"]} for r in zone_rows]
+
+        # Distinct sources from history
+        source_rows = self._conn.execute(
+            """SELECT DISTINCT source FROM target_history
+               WHERE target_id = ? AND source != ''""",
+            (target_id,),
+        ).fetchall()
+        sources_used = [r["source"] for r in source_rows]
+
+        return {
+            "target_id": target_id,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "total_time": last_seen - first_seen,
+            "sighting_count": sighting_count,
+            "zones_visited": zones_visited,
+            "sources_used": sources_used,
+        }
+
+    def get_co_located(
+        self,
+        target_id: str,
+        radius: float,
+        time_window: float,
+    ) -> list[dict]:
+        """Find other targets that were near this target within a time window.
+
+        For each position in this target's history, finds other targets that
+        had a sighting within ``radius`` (Euclidean distance in coordinate
+        units) and within ``time_window`` seconds of the same timestamp.
+
+        Parameters
+        ----------
+        target_id:
+            The reference target.
+        radius:
+            Maximum Euclidean distance for co-location (coordinate units).
+        time_window:
+            Maximum time difference in seconds for co-location.
+
+        Returns a list of dicts, one per co-located target, with:
+        - ``target_id``: the co-located target's ID
+        - ``encounter_count``: number of co-location events
+        - ``first_encounter``: earliest co-location timestamp
+        - ``last_encounter``: latest co-location timestamp
+        - ``min_distance``: closest distance observed
+
+        Sorted by encounter_count descending.
+        """
+        # Get reference target's history
+        ref_rows = self._conn.execute(
+            """SELECT x, y, timestamp
+               FROM target_history
+               WHERE target_id = ?
+               ORDER BY timestamp ASC""",
+            (target_id,),
+        ).fetchall()
+
+        if not ref_rows:
+            return []
+
+        # For each reference position, find nearby others within time window.
+        # Use a single query with a self-join approach for efficiency.
+        # SQLite doesn't have spatial indexing, so we filter with a bounding
+        # box first and then apply exact Euclidean distance.
+        co_targets: dict[str, dict] = {}
+
+        for ref in ref_rows:
+            rx, ry, rt = ref["x"], ref["y"], ref["timestamp"]
+            # Bounding-box pre-filter + Euclidean distance
+            rows = self._conn.execute(
+                """SELECT h.target_id, h.x, h.y, h.timestamp
+                   FROM target_history h
+                   WHERE h.target_id != ?
+                     AND h.timestamp BETWEEN ? AND ?
+                     AND h.x BETWEEN ? AND ?
+                     AND h.y BETWEEN ? AND ?""",
+                (
+                    target_id,
+                    rt - time_window, rt + time_window,
+                    rx - radius, rx + radius,
+                    ry - radius, ry + radius,
+                ),
+            ).fetchall()
+
+            for row in rows:
+                dx = row["x"] - rx
+                dy = row["y"] - ry
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist > radius:
+                    continue
+                tid = row["target_id"]
+                ts = row["timestamp"]
+                if tid not in co_targets:
+                    co_targets[tid] = {
+                        "target_id": tid,
+                        "encounter_count": 0,
+                        "first_encounter": ts,
+                        "last_encounter": ts,
+                        "min_distance": dist,
+                    }
+                entry = co_targets[tid]
+                entry["encounter_count"] += 1
+                if ts < entry["first_encounter"]:
+                    entry["first_encounter"] = ts
+                if ts > entry["last_encounter"]:
+                    entry["last_encounter"] = ts
+                if dist < entry["min_distance"]:
+                    entry["min_distance"] = dist
+
+        result = sorted(
+            co_targets.values(),
+            key=lambda e: e["encounter_count"],
+            reverse=True,
+        )
+        return result
+
+    def get_hourly_counts(
+        self,
+        start_time: float | None = None,
+        end_time: float | None = None,
+    ) -> list[dict]:
+        """Return distinct target counts per hour for trend analysis.
+
+        Counts the number of *distinct* targets that had at least one
+        sighting in each one-hour bucket, based on the ``target_history``
+        table.
+
+        Parameters
+        ----------
+        start_time:
+            Unix timestamp lower bound (inclusive).  ``None`` means no
+            lower bound.
+        end_time:
+            Unix timestamp upper bound (inclusive).  ``None`` means no
+            upper bound.
+
+        Returns a list of dicts ordered chronologically, each with:
+        - ``hour_start``: unix timestamp of the hour bucket start
+        - ``count``: number of distinct targets seen in that hour
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if start_time is not None:
+            clauses.append("timestamp >= ?")
+            params.append(start_time)
+        if end_time is not None:
+            clauses.append("timestamp <= ?")
+            params.append(end_time)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        rows = self._conn.execute(
+            f"""SELECT CAST(timestamp / 3600 AS INTEGER) * 3600 AS hour_start,
+                       COUNT(DISTINCT target_id) AS count
+                FROM target_history
+                {where}
+                GROUP BY hour_start
+                ORDER BY hour_start ASC""",
+            params,
+        ).fetchall()
+        return [{"hour_start": r["hour_start"], "count": r["count"]} for r in rows]
+
+    # ------------------------------------------------------------------
     # Maintenance
     # ------------------------------------------------------------------
 
