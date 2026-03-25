@@ -306,6 +306,17 @@ from tritium_lib.sim_engine.core.inventory import (
 )
 # 41. telemetry.py — session performance telemetry
 from tritium_lib.sim_engine.telemetry import TelemetrySession
+# 42. animation.py — keyframe animation, easing, interpolation buffer
+from tritium_lib.sim_engine.animation import (
+    AnimationLibrary, EntityAnimation, InterpolationBuffer,
+)
+# 43. core/npc_thinker.py — NPC thought generation via local LLM
+from tritium_lib.sim_engine.core.npc_thinker import NPCThinker, NPCThought
+# 44. multiplayer.py — multiplayer session, fog-of-war views, commands
+from tritium_lib.sim_engine.multiplayer import (
+    MultiplayerEngine, Player, PlayerRole, GameCommand, CommandType,
+    TurnBasedMode, MULTIPLAYER_PRESETS, create_from_preset,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +880,15 @@ class GameState:
         self.current_plan_friendly: StrategicPlan | None = None
         self.current_plan_hostile: StrategicPlan | None = None
         self.behavior_engine: BehaviorEngine | None = None
+        # --- Animation system (keyframe + interpolation buffer) ---
+        self.animations: dict[str, EntityAnimation] = {}  # entity_id -> active animation
+        self.anim_start_times: dict[str, float] = {}      # entity_id -> anim start time
+        self.interp_buffers: dict[str, InterpolationBuffer] = {}  # entity_id -> buffer
+        # --- NPC thinker (LLM-driven NPC thoughts) ---
+        self.npc_thinker: NPCThinker | None = None
+        self.npc_thoughts: list[dict] = []  # recent thoughts for frame export
+        # --- Multiplayer engine ---
+        self.multiplayer: MultiplayerEngine | None = None
         # --- Subpackage systems: effects, audio, game stats, debug ---
         self.effects: EffectsManager | None = None
         self.combat_stats: StatsTracker | None = None
@@ -1453,6 +1473,67 @@ def build_full_game(preset: str = "urban_combat") -> GameState:
     gs.telemetry = TelemetrySession(
         metadata={"preset": preset, "units": len(gs.world.units)},
     )
+
+    # --- 42. Animation system — pre-built animations + interpolation buffers ---
+    # Assign looping animations to alive units based on their type/state:
+    #   infantry/scouts → walk_cycle, vehicles → vehicle_bounce,
+    #   drones/helicopters → helicopter_hover
+    # Death animations are triggered in game_tick when units die.
+    _ANIM_TYPE_MAP: dict[str, str] = {
+        "infantry": "walk_cycle",
+        "heavy": "walk_cycle",
+        "sniper": "walk_cycle",
+        "medic": "walk_cycle",
+        "scout": "run_cycle",
+        "engineer": "walk_cycle",
+    }
+    for uid, unit in gs.world.units.items():
+        anim_name = _ANIM_TYPE_MAP.get(unit.unit_type.value, "walk_cycle")
+        anim = AnimationLibrary.get(anim_name)
+        if anim is not None:
+            gs.animations[uid] = anim
+            gs.anim_start_times[uid] = 0.0
+        # InterpolationBuffer for smooth network-style position updates
+        gs.interp_buffers[uid] = InterpolationBuffer(delay=0.1, max_samples=20)
+    for vid, veh in gs.world.vehicles.items():
+        veh_class = getattr(veh, "vehicle_class", None)
+        if veh_class and veh_class.value in ("helicopter", "quadcopter"):
+            anim = AnimationLibrary.get("helicopter_hover")
+        else:
+            anim = AnimationLibrary.get("vehicle_bounce")
+        if anim is not None:
+            gs.animations[vid] = anim
+            gs.anim_start_times[vid] = 0.0
+
+    # --- 43. NPC thinker — LLM-driven NPC inner thoughts (graceful degradation) ---
+    # Creates the thinker but does NOT require a running LLM server.
+    # If no server is found, thoughts are silently skipped.
+    gs.npc_thinker = NPCThinker(cooldown_s=60.0, max_concurrent=2)
+
+    # --- 44. Multiplayer engine — session management with fog-of-war ---
+    # Set up a co-op vs AI preset: human player controls blue, AI controls red.
+    gs.multiplayer = MultiplayerEngine()
+    p1 = gs.multiplayer.add_player("player_1", "Commander", "friendly", PlayerRole.COMMANDER)
+    p1.ready = True
+    # AI player for hostile faction
+    p_ai = gs.multiplayer.add_player("ai_red", "AI Hostiles", "hostile", PlayerRole.AI_CONTROLLED)
+    p_ai.ready = True
+    # Assign units to respective players
+    friendly_uids = [uid for uid, u in gs.world.units.items() if u.alliance.value == "friendly"]
+    hostile_uids = [uid for uid, u in gs.world.units.items() if u.alliance.value == "hostile"]
+    gs.multiplayer.assign_units("player_1", friendly_uids)
+    gs.multiplayer.assign_units("ai_red", hostile_uids)
+    # Assign squads
+    for sid, squad in gs.world.squads.items():
+        if not squad.members:
+            continue
+        first_unit = gs.world.units.get(squad.members[0])
+        if first_unit is None:
+            continue
+        if first_unit.alliance.value == "friendly":
+            gs.multiplayer.assign_squads("player_1", [sid])
+        else:
+            gs.multiplayer.assign_squads("ai_red", [sid])
 
     gs.start_time = time.time()
     return gs
@@ -2364,6 +2445,81 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
             "waves_tracked": len(gs.difficulty.wave_history),
         }
 
+    # --- 45. Animation system — evaluate active animations per entity ---
+    if gs.animations:
+        anim_data: dict[str, dict] = {}
+        sim_t = gs.world.sim_time
+        for eid, anim in gs.animations.items():
+            # Check if entity is still alive/active
+            unit = gs.world.units.get(eid)
+            veh = gs.world.vehicles.get(eid)
+            is_alive = (unit is not None and unit.is_alive()) or (veh is not None and not veh.is_destroyed)
+            if not is_alive:
+                # Trigger death animation for units that just died
+                if unit is not None and anim.name != "death_fall":
+                    death_anim = AnimationLibrary.get("death_fall")
+                    if death_anim is not None:
+                        gs.animations[eid] = death_anim
+                        gs.anim_start_times[eid] = sim_t
+                        anim = death_anim
+                    else:
+                        continue
+                elif unit is None:
+                    continue
+            start_t = gs.anim_start_times.get(eid, 0.0)
+            local_t = sim_t - start_t
+            props = anim.evaluate(local_t)
+            anim_data[eid] = {
+                "name": anim.name,
+                "loop": anim.loop,
+                "time": round(local_t, 3),
+                "properties": {k: round(v, 4) if isinstance(v, float) else v for k, v in props.items()},
+            }
+        if anim_data:
+            frame["animations"] = anim_data
+
+    # --- 45b. Interpolation buffers — push positions and export smoothed values ---
+    if gs.interp_buffers:
+        interp_data: dict[str, dict] = {}
+        now = time.monotonic()
+        for eid, buf in gs.interp_buffers.items():
+            unit = gs.world.units.get(eid)
+            if unit is None or not unit.is_alive():
+                continue
+            buf.push(unit.position, now)
+            smoothed = buf.evaluate(now)
+            if smoothed is not None:
+                interp_data[eid] = {
+                    "smoothed_x": round(smoothed[0], 2) if isinstance(smoothed, tuple) else round(smoothed, 2),
+                    "smoothed_y": round(smoothed[1], 2) if isinstance(smoothed, tuple) else 0.0,
+                    "samples": buf.sample_count,
+                }
+        if interp_data:
+            frame["interpolation"] = interp_data
+
+    # --- 46. NPC thinker — export recent thoughts (async generation happens in game_loop) ---
+    if gs.npc_thinker is not None:
+        recent = gs.npc_thinker.get_recent_thoughts(5)
+        if recent:
+            frame["npc_thoughts"] = recent
+
+    # --- 47. Multiplayer — lobby state + per-player fog-of-war view ---
+    if gs.multiplayer is not None:
+        mp_data: dict[str, Any] = {
+            "lobby": gs.multiplayer.get_lobby_state(),
+            "turn": gs.multiplayer.turn_number,
+        }
+        # Export fog-of-war filtered view for the human player
+        if "player_1" in gs.multiplayer.players:
+            player_view = gs.multiplayer.get_player_view("player_1", gs.world)
+            mp_data["player_view"] = {
+                "visible_units": len(player_view.get("units", [])),
+                "visible_vehicles": len(player_view.get("vehicles", [])),
+                "controlled_units": player_view.get("controlled_units", []),
+                "score": player_view.get("score", 0),
+            }
+        frame["multiplayer"] = mp_data
+
     # Add metadata
     frame["tick"] = gs.tick_count
     frame["sim_time"] = round(gs.world.sim_time, 2)
@@ -2797,9 +2953,35 @@ async def _game_loop() -> None:
     """
     global _prev_game_frame
     dt = 0.1  # 10 fps
+    _npc_think_counter = 0
     while _game.running:
         if not _game.paused and _game.world is not None:
             frame = game_tick(_game, dt)
+
+            # NPC thinker — generate thoughts for a random civilian every ~100 ticks
+            _npc_think_counter += 1
+            if (_game.npc_thinker is not None
+                    and _game.civilians is not None
+                    and _npc_think_counter % 100 == 0):
+                try:
+                    civs = list(_game.civilians.civilians.values())
+                    if civs:
+                        civ = civs[_npc_think_counter % len(civs)]
+                        npc_dict = {
+                            "target_id": getattr(civ, "civilian_id", "civ_0"),
+                            "name": getattr(civ, "name", "Civilian"),
+                            "status": getattr(civ, "state", CivilianState.NORMAL).value
+                                if hasattr(getattr(civ, "state", None), "value") else "idle",
+                            "asset_type": "person",
+                        }
+                        env_snap = _game.world.environment.snapshot()
+                        situation = {
+                            "time_of_day": "night" if env_snap.get("hour", 12) > 20 else "daytime",
+                            "location": "the city center",
+                        }
+                        asyncio.create_task(_game.npc_thinker.think(npc_dict, situation))
+                except Exception:
+                    pass  # LLM unavailable — graceful degradation
 
             # Decide: keyframe or delta
             is_keyframe = (
@@ -2882,12 +3064,12 @@ def _count_active_modules(gs: GameState) -> int:
         "asymmetric", "civilians", "intel", "diplomacy", "campaign",
         "morale", "ew", "supply_routes",
         "effects", "combat_stats", "difficulty", "debug_overlay",
-        "physics_2d", "telemetry",
+        "physics_2d", "telemetry", "npc_thinker", "multiplayer",
     ):
         if getattr(gs, attr, None) is not None:
             count += 1
     # Dict-based modules: count if they have entries
-    for attr in ("vehicle_physics", "unit_fsms", "inventories"):
+    for attr in ("vehicle_physics", "unit_fsms", "inventories", "animations", "interp_buffers"):
         if getattr(gs, attr, None):
             count += 1
     return count
