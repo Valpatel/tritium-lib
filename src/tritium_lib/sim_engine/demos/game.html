@@ -2126,7 +2126,15 @@ function processFrame(frame) {
   updateProjectiles(frame.projectiles || []);
 
   // Effects (explosions, fire, smoke, muzzle flashes)
-  updateEffects(frame.effects || []);
+  // Effects may be a dict (to_three_js format) or array — handle both
+  const rawEffects = frame.effects;
+  if (Array.isArray(rawEffects)) {
+    updateEffects(rawEffects);
+  } else if (rawEffects && rawEffects.positions) {
+    // Convert {positions, colors, sizes} → array of point effects
+    const pts = rawEffects.positions || [];
+    updateEffectsFromParticles(pts, rawEffects.colors || [], rawEffects.sizes || []);
+  }
 
   // Crowd
   updateCrowd(frame.crowd || []);
@@ -2516,6 +2524,16 @@ function updateProjectiles(projectiles) {
 // =========================================================================
 // Effects rendering
 // =========================================================================
+function updateEffectsFromParticles(positions, colors, sizes) {
+  // Render raw particle positions as small colored sprites
+  for (let i = 0; i < positions.length && i < 200; i++) {
+    const p = positions[i];
+    if (!p || p.length < 2) continue;
+    const x = p[0] || 0, y = p[1] || 0;
+    spawnMuzzleFlash(x, -y, 1.5);
+  }
+}
+
 function updateEffects(effects) {
   activeFireSources = [];
 
