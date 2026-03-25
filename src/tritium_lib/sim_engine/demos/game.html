@@ -317,7 +317,7 @@ canvas { display: block; }
   pointer-events: none; z-index: 5;
   opacity: 0; transition: opacity 0.8s;
 }
-#fow-canvas.active { opacity: 1; }
+#fow-canvas.active { opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -1869,13 +1869,13 @@ function generateDemoFrame() {
   const demoIntel = { fog_grid: null };
   if (demoTick > 10) {
     const visibleCells = [], exploredCells = [];
-    const cx = 40, cy = 40; // in cell coords (friendly squad is near sim 200,200 = cell 40,40)
-    for (let dc = -18; dc <= 18; dc++) {
-      for (let dr = -18; dr <= 18; dr++) {
+    const cx = 50, cy = 50; // in cell coords (center of 100x100 grid)
+    for (let dc = -40; dc <= 40; dc++) {
+      for (let dr = -40; dr <= 40; dr++) {
         const d2 = dc*dc + dr*dr;
-        if (d2 <= 144) { // 12 cells radius = visible
+        if (d2 <= 625) { // 25 cells radius = visible
           visibleCells.push([cx+dc, cy+dr]);
-        } else if (d2 <= 324) { // 18 cells radius = explored
+        } else if (d2 <= 1225) { // 35 cells radius = explored
           exploredCells.push([cx+dc, cy+dr]);
         }
       }
