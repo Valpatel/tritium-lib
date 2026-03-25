@@ -1,0 +1,95 @@
+# Weather Station — Example Tritium Addon Manifest
+#
+# This file is the addon's identity card. The addon loader reads it to
+# discover metadata, permissions, UI panels, map layers, and config schema.
+# Copy this file as a starting point when building your own addon.
+
+[addon]
+id = "weather-station"
+name = "Weather Station"
+version = "1.0.0"
+description = "Simulated weather station sensor — reads temperature, humidity, wind, pressure"
+author = "Tritium SDK Team"
+license = "Apache-2.0"
+addon_api = ">=1.0, <2.0"
+
+[addon.category]
+window = "sensors"
+tab_order = 20
+icon = "cloud"
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+[dependencies]
+requires = []          # No hard deps — runs standalone
+optional = []          # Could list "hackrf" if we wanted SDR weather
+python_packages = []   # No extra pip packages needed
+
+# ---------------------------------------------------------------------------
+# Hardware (none — this is a simulated sensor)
+# ---------------------------------------------------------------------------
+[hardware]
+devices = []
+auto_detect = false
+
+# ---------------------------------------------------------------------------
+# Permissions
+# ---------------------------------------------------------------------------
+[permissions]
+serial = false
+network = false
+mqtt = true            # Publishes weather readings over MQTT
+storage = true         # Stores historical readings
+
+# ---------------------------------------------------------------------------
+# Backend
+# ---------------------------------------------------------------------------
+[backend]
+module = "weather_station"
+router_prefix = "/api/addons/weather-station"
+mqtt_topics = [
+    "tritium/{site}/weather/{station_id}/reading",
+    "tritium/{site}/weather/{station_id}/alert",
+]
+
+# ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
+[frontend]
+
+[[frontend.panels]]
+id = "weather-current"
+title = "Weather Station"
+file = "weather-panel.js"
+
+[[frontend.panels]]
+id = "weather-history"
+title = "Weather History"
+file = "weather-history.js"
+
+[[frontend.layers]]
+id = "weather-conditions"
+label = "Weather Conditions"
+category = "Environment"
+color = "#00bfff"
+
+[[frontend.shortcuts]]
+key = "Shift+W"
+action = "toggle_weather_layer"
+description = "Toggle weather layer"
+
+[[frontend.context_menu]]
+label = "View Weather Here"
+action = "view_weather_at_point"
+when = "always"
+
+# ---------------------------------------------------------------------------
+# Config schema — runtime-configurable fields with types and defaults
+# ---------------------------------------------------------------------------
+[config]
+poll_interval = { type = "float", default = 10.0, description = "Seconds between weather readings" }
+max_history = { type = "int", default = 100, description = "Maximum stored readings" }
+station_id = { type = "str", default = "wx-sim-001", description = "Weather station identifier" }
+lat = { type = "float", default = 39.7392, description = "Station latitude" }
+lng = { type = "float", default = -104.9903, description = "Station longitude" }
