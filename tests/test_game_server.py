@@ -616,3 +616,152 @@ class TestCitySimEndpoints:
             assert "x" in civ
             assert "y" in civ
             assert "state" in civ
+
+
+# ---------------------------------------------------------------------------
+# Weather override API tests
+# ---------------------------------------------------------------------------
+
+
+class TestWeatherOverrideEndpoint:
+    """Test POST /api/weather for forcing weather conditions."""
+
+    def test_weather_set_rain_on_game(self, client: TestClient) -> None:
+        """Set weather to rain on a running tactical game."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/weather", json={"weather": "rain"})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "rain"
+        assert "game" in data["applied_to"]
+
+    def test_weather_set_storm_with_intensity(self, client: TestClient) -> None:
+        """Set weather to storm with explicit intensity."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/weather", json={"weather": "storm", "intensity": 0.9})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "storm"
+        assert data["intensity"] == 0.9
+
+    def test_weather_set_fog(self, client: TestClient) -> None:
+        """Set weather to fog."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/weather", json={"weather": "fog"})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "fog"
+
+    def test_weather_set_snow(self, client: TestClient) -> None:
+        """Set weather to snow."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/weather", json={"weather": "snow"})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "snow"
+
+    def test_weather_set_clear(self, client: TestClient) -> None:
+        """Set weather back to clear."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        # Set to storm first
+        client.post("/api/weather", json={"weather": "storm"})
+        # Then clear it
+        resp = client.post("/api/weather", json={"weather": "clear"})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "clear"
+
+    def test_weather_set_cloudy(self, client: TestClient) -> None:
+        """Set weather to cloudy."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/weather", json={"weather": "cloudy"})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "cloudy"
+
+    def test_weather_invalid_type(self, client: TestClient) -> None:
+        """Invalid weather name returns error with valid options."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/weather", json={"weather": "tornado"})
+        data = resp.json()
+        assert data["error"] == "invalid_weather"
+        assert "rain" in data["valid"]
+        assert "storm" in data["valid"]
+
+    def test_weather_no_sim_running(self, client: TestClient) -> None:
+        """Weather override when no sim is running returns error."""
+        import tritium_lib.sim_engine.demos.game_server as gs_mod
+        gs_mod._game = GameState()
+        gs_mod._city_sim = None
+        resp = client.post("/api/weather", json={"weather": "rain"})
+        data = resp.json()
+        assert data["error"] == "no_sim_running"
+
+    def test_weather_reflects_in_game_tick(self, client: TestClient) -> None:
+        """After setting weather, the next game tick frame should reflect it."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        client.post("/api/weather", json={"weather": "storm", "intensity": 0.8})
+        # Verify the environment state was directly updated
+        from tritium_lib.sim_engine.demos.game_server import _game
+        env_snap = _game.world.environment.snapshot()
+        assert env_snap["weather"] == "storm"
+
+    def test_weather_intensity_clamped(self, client: TestClient) -> None:
+        """Intensity values outside 0-1 are clamped."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/weather", json={"weather": "rain", "intensity": 5.0})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["intensity"] == 1.0
+
+    def test_weather_on_citysim(self, client: TestClient) -> None:
+        """Weather override works on CitySim too."""
+        client.post("/api/city/start", json={"seed": 42})
+        resp = client.post("/api/weather", json={"weather": "heavy_rain"})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "heavy_rain"
+        assert "city" in data["applied_to"]
+
+    def test_weather_on_both_sims(self, client: TestClient) -> None:
+        """Weather override applies to both sims when both are running."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        client.post("/api/city/start", json={"seed": 42})
+        resp = client.post("/api/weather", json={"weather": "sandstorm"})
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert "game" in data["applied_to"]
+        assert "city" in data["applied_to"]
+
+
+class TestWeatherViaCommand:
+    """Test weather override via the /api/command endpoint."""
+
+    def test_command_weather_rain(self, client: TestClient) -> None:
+        """Send weather command through /api/command."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/command", json={
+            "type": "weather", "weather": "rain",
+        })
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "rain"
+
+    def test_command_weather_with_intensity(self, client: TestClient) -> None:
+        """Weather command with intensity via /api/command."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/command", json={
+            "type": "weather", "weather": "fog", "intensity": 0.7,
+        })
+        data = resp.json()
+        assert data["status"] == "weather_set"
+        assert data["weather"] == "fog"
+
+    def test_command_weather_invalid(self, client: TestClient) -> None:
+        """Invalid weather via /api/command returns error."""
+        client.post("/api/start", json={"preset": "urban_combat"})
+        resp = client.post("/api/command", json={
+            "type": "weather", "weather": "blizzard",
+        })
+        data = resp.json()
+        assert data["error"] == "invalid_weather"

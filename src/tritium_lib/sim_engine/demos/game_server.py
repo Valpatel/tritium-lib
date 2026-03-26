@@ -2759,6 +2759,12 @@ async def api_command(body: dict) -> dict:
     elif cmd_type == "fire":
         proj = _game.world.fire_weapon(unit_id, (float(target[0]), float(target[1])))
         return {"status": "fired" if proj else "failed", "unit_id": unit_id}
+    elif cmd_type == "weather":
+        weather_name = body.get("weather", "")
+        intensity = body.get("intensity", None)
+        if intensity is not None:
+            intensity = float(intensity)
+        return _apply_weather_override(weather_name, intensity)
 
     return {"status": "unknown_command", "type": cmd_type}
 
@@ -2906,6 +2912,84 @@ async def api_city_event(body: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Weather override API — force weather for testing / Village Idiot audits
+# ---------------------------------------------------------------------------
+
+# Accepted shorthand names mapped to Weather enum values
+_WEATHER_ALIASES: dict[str, Weather] = {
+    "clear": Weather.CLEAR,
+    "cloudy": Weather.CLOUDY,
+    "fog": Weather.FOG,
+    "rain": Weather.RAIN,
+    "heavy_rain": Weather.HEAVY_RAIN,
+    "snow": Weather.SNOW,
+    "storm": Weather.STORM,
+    "sandstorm": Weather.SANDSTORM,
+}
+
+
+def _apply_weather_override(weather_name: str, intensity: float | None = None) -> dict:
+    """Apply a weather override to whichever sim is running.
+
+    Returns a status dict.  Works for both the tactical game (_game) and
+    CitySim (_city_sim).
+    """
+    weather_name = weather_name.strip().lower()
+    weather = _WEATHER_ALIASES.get(weather_name)
+    if weather is None:
+        return {
+            "error": "invalid_weather",
+            "valid": list(_WEATHER_ALIASES.keys()),
+        }
+
+    applied_to: list[str] = []
+
+    # Tactical game
+    if _game.world is not None:
+        _game.world.environment.weather.state.current = weather
+        if intensity is not None:
+            _game.world.environment.weather.state.intensity = max(0.0, min(1.0, intensity))
+        applied_to.append("game")
+
+    # CitySim
+    if _city_sim is not None:
+        _city_sim.environment.weather.state.current = weather
+        if intensity is not None:
+            _city_sim.environment.weather.state.intensity = max(0.0, min(1.0, intensity))
+        applied_to.append("city")
+
+    if not applied_to:
+        return {"error": "no_sim_running"}
+
+    result: dict[str, Any] = {
+        "status": "weather_set",
+        "weather": weather.value,
+        "applied_to": applied_to,
+    }
+    if intensity is not None:
+        result["intensity"] = round(max(0.0, min(1.0, intensity)), 3)
+    return result
+
+
+@app.post("/api/weather")
+async def api_weather(body: dict) -> dict:
+    """Force a weather condition override.
+
+    Body::
+
+        {"weather": "rain"}
+        {"weather": "storm", "intensity": 0.8}
+
+    Valid weather values: clear, cloudy, fog, rain, heavy_rain, snow, storm, sandstorm
+    """
+    weather_name = body.get("weather", "")
+    intensity = body.get("intensity", None)
+    if intensity is not None:
+        intensity = float(intensity)
+    return _apply_weather_override(weather_name, intensity)
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     """WebSocket for streaming frame data at 10 fps."""
@@ -2947,6 +3031,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
                     await ws.send_text(json.dumps({"type": "pong"}))
+                elif msg.get("type") == "weather":
+                    weather_name = msg.get("weather", "")
+                    intensity = msg.get("intensity", None)
+                    if intensity is not None:
+                        intensity = float(intensity)
+                    result = _apply_weather_override(weather_name, intensity)
+                    result["type"] = "weather_ack"
+                    await ws.send_text(json.dumps(result, default=str))
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
