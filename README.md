@@ -2,7 +2,7 @@
 
 Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel/tritium) unified operating picture system. Provides models, tracking, inference, simulation, events, MQTT topics, auth, and reusable frontend components used by tritium-sc (Command Center), tritium-edge (ESP32 firmware/fleet server), and tritium-addons.
 
-**449 Python modules | 92 packages | 54 JS modules | 425 test files (15,570+ tests) | 278 Pydantic models | 170 sim engine files | 13 standalone demos**
+**541 Python modules | 63 packages | 54 JS modules | 401 test files (15,500+ tests) | 102 Pydantic model files | 170 sim engine files | 16 standalone demos**
 
 Copyright 2026 Matthew Valancy / Valpatel Software LLC / AGPL-3.0
 
@@ -23,8 +23,8 @@ pip install -e ".[full]"            # All optional deps
 
 ```
 tritium-lib/
-├── src/tritium_lib/           # Python packages (449 modules, 92 packages)
-│   ├── models/                # 278 Pydantic v2 models -- THE canonical data contracts
+├── src/tritium_lib/           # Python packages (541 modules, 63 packages)
+│   ├── models/                # 102 Pydantic v2 model files -- THE canonical data contracts
 │   ├── tracking/              # Target tracker, correlator, geofence, Kalman, dossiers
 │   ├── inference/             # LLM client, fleet inference, model router
 │   ├── intelligence/          # Acoustic classifier, anomaly, RL metrics, fusion, position
@@ -39,7 +39,7 @@ tritium-lib/
 │   ├── graph/                 # KuzuDB graph database wrapper
 │   ├── ontology/              # Entity/relationship type system + registry
 │   ├── classifier/            # Multi-signal BLE/WiFi device classifier
-│   ├── data/                  # 11 JSON lookup databases (BLE, WiFi, OUI fingerprints)
+│   ├── data/                  # 10 JSON lookup databases (BLE, WiFi, OUI fingerprints)
 │   ├── sdk/                   # Addon SDK -- AddonBase, DeviceRegistry, BaseRunner, GeoJSON
 │   ├── interfaces/            # Plugin interfaces (camera, radar, SDR, sensor)
 │   ├── nodes/                 # Node base classes
@@ -109,12 +109,12 @@ tritium-lib/
 │   ├── command-palette.js     # Fuzzy search command palette (Ctrl+K)
 │   ├── layout-manager.js      # Panel layout save/restore/import/export
 │   └── utils.js               # _esc, _timeAgo, _badge, _fetchJson
-└── tests/                     # 425 test files (15,570+ tests)
+└── tests/                     # 401 test files (15,500+ tests)
 ```
 
 ## Standalone Demos
 
-Thirteen self-contained demos, each with its own HTTP server and cyberpunk UI.
+Sixteen self-contained demos, each with its own HTTP server and cyberpunk UI.
 
 | # | Demo | Command | Port | Description |
 |---|------|---------|------|-------------|
@@ -131,8 +131,11 @@ Thirteen self-contained demos, each with its own HTTP server and cyberpunk UI.
 | 11 | Auth | `python -m tritium_lib.auth.demos.auth_demo` | 9097 | JWT login, refresh tokens, API keys, RBAC, cyberpunk login page |
 | 12 | Sitaware | `python -m tritium_lib.sitaware.demos.sitaware_demo` | 9095 | Full operating picture -- tracking, fusion, intelligence, alerting, reporting |
 | 13 | Integrated | `python -m tritium_lib.sim_engine.demos.integrated_demo` | 8099 | City sim to sensor fusion end-to-end pipeline with correlation and geofencing |
+| 14 | RF Sim | `python -m tritium_lib.sim_engine.demos.demo_rf` | -- | RF signal propagation and detection simulation |
+| 15 | Steering AI | `python -m tritium_lib.sim_engine.demos.demo_steering` | -- | AI steering behaviors and path following |
+| 16 | Game Server | `python -m tritium_lib.sim_engine.demos.game_server` | 9090 | Full 3D game server with WebSocket -- combat, city, economy, weather |
 
-Additional sim demos: `./sim-demo.sh` (tactical), `demo_rf` (RF), `demo_steering` (AI), `perf_test`, `serve_city3d`, `game_server`. Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_strike`.
+Additional sim demos: `./sim-demo.sh` (tactical), `perf_test`, `serve_city3d`, `city_sim_backend`. Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_strike`.
 
 ## Module Reference
 
@@ -140,7 +143,7 @@ Additional sim demos: `./sim-demo.sh` (tactical), `demo_rf` (RF), `demo_steering
 
 | Module | Import | Description |
 |--------|--------|-------------|
-| `models` | `from tritium_lib.models import Device, BleSighting` | 278 Pydantic v2 models for devices, BLE, mesh, cameras, alerts, CoT, sensors, floorplans, dossiers, and more |
+| `models` | `from tritium_lib.models import Device, BleSighting` | 102 Pydantic v2 model files for devices, BLE, mesh, cameras, alerts, CoT, sensors, floorplans, dossiers, and more |
 | `events` | `from tritium_lib.events import EventBus, AsyncEventBus` | Thread-safe and async pub/sub with wildcard topic matching |
 | `mqtt` | `from tritium_lib.mqtt import TritiumTopics` | MQTT topic hierarchy builder (`tritium/{site}/{domain}/{device}/{type}`) |
 | `auth` | `from tritium_lib.auth import create_token, decode_token` | JWT creation/decoding and API key management |
@@ -154,7 +157,7 @@ Additional sim demos: `./sim-demo.sh` (tactical), `demo_rf` (RF), `demo_steering
 |--------|--------|-------------|
 | `tracking` | `from tritium_lib.tracking import TargetTracker, TargetCorrelator` | Target tracking, correlation strategies, geofencing, Kalman prediction, convoy detection, threat scoring, trilateration, dossiers |
 | `inference` | `from tritium_lib.inference import LLMFleet` | Local LLM fleet inference (llama-server), model routing (`inference.model_router.ModelRouter`) |
-| `intelligence` | `from tritium_lib.intelligence import AcousticClassifier, AnomalyDetector` | Acoustic classification, anomaly detection, RL metrics, fusion metrics, position estimation, pattern learning |
+| `intelligence` | `from tritium_lib.intelligence import AnomalyDetector, BaseLearner` | Anomaly detection, acoustic classification, RL metrics, fusion metrics, position estimation, pattern learning |
 | `classifier` | `from tritium_lib.classifier import DeviceClassifier` | Multi-signal BLE/WiFi device type classifier with fingerprint databases |
 | `geo` | `from tritium_lib.geo import local_to_latlng, haversine_distance` | Coordinate transforms (local meters to lat/lng), camera projection, haversine distance |
 | `graph` | `from tritium_lib.graph import TritiumGraph` | KuzuDB embedded graph for entity/relationship storage |
@@ -174,17 +177,17 @@ Additional sim demos: `./sim-demo.sh` (tactical), `demo_rf` (RF), `demo_steering
 
 | Module | Import | Description |
 |--------|--------|-------------|
-| `data` | `from tritium_lib.data import load_ble_fingerprints` | 11 JSON lookup databases for BLE, WiFi, OUI fingerprinting |
-| `web` | `from tritium_lib.web import CyberpunkTheme` | Cyberpunk HTML theme engine and dashboard components |
+| `data` | `from tritium_lib.data import load_ble_fingerprints` | 10 JSON lookup databases for BLE, WiFi, OUI fingerprinting |
+| `web` | `from tritium_lib.web import TritiumTheme, DashboardPage` | Cyberpunk HTML theme engine and dashboard components |
 | `testing` | `from tritium_lib.testing import VisualCheck` | Visual regression checks and ESP32 device automation |
-| `synthetic` | `from tritium_lib.synthetic import DataGenerators` | Synthetic test data generators |
-| `tactical` | `from tritium_lib.tactical import TacticalDossier` | Tactical dossier generation |
-| `actions` | `from tritium_lib.actions import FormationControl` | Formation control and Lua script parser |
-| `utils` | `from tritium_lib.utils import FeatureExtractor` | Feature extraction and memory helpers |
-| `nodes` | `from tritium_lib.nodes import BaseNode` | Node base classes |
+| `synthetic` | `from tritium_lib.synthetic import BLEScanGenerator` | Synthetic test data generators (BLE, mesh, camera, trilateration) |
+| `tactical` | `from tritium_lib.tactical import DossierStore, Playbook` | Tactical dossier generation and playbook runner |
+| `actions` | `from tritium_lib.actions import parse_motor_output` | Lua action parsing and squad formation calculations |
+| `utils` | `from tritium_lib.utils import extract_facts` | Fact extraction and memory helpers |
+| `nodes` | `from tritium_lib.nodes import SensorNode, Position` | Sensor node base classes |
 | `comms` | `from tritium_lib.comms import Speaker` | Communication abstractions (TTS) |
 
-### Simulation Engine (170 Python files + 15 JS modules)
+### Simulation Engine (170 Python files + 15 JS web modules)
 
 | Subpackage | Description |
 |------------|-------------|
@@ -284,7 +287,7 @@ SC serves these at `/lib/` via a StaticFiles mount or symlink.
 ## Tests
 
 ```bash
-pytest tests/                          # Run all 425 test files (15,570+ tests)
+pytest tests/                          # Run all 401 test files (15,500+ tests)
 pytest tests/ -x --tb=short           # Stop on first failure
 pytest tests/test_models.py           # Single file
 pytest tests/ -k "tracking"           # Pattern match
@@ -292,7 +295,7 @@ pytest tests/ -k "tracking"           # Pattern match
 
 ## Used By
 
-- **[tritium-sc](https://github.com/Valpatel/tritium-sc)** -- Command Center (FastAPI + vanilla JS, 25 plugins, AI commander Amy)
+- **[tritium-sc](https://github.com/Valpatel/tritium-sc)** -- Command Center (FastAPI + vanilla JS, 26 plugins, AI commander Amy)
 - **[tritium-edge](https://github.com/Valpatel/tritium-edge)** -- ESP32-S3 firmware (Tritium-OS) + fleet server
 - **[tritium-addons](https://github.com/Valpatel/tritium-addons)** -- HackRF SDR, Meshtastic LoRa, and future addons
 

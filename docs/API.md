@@ -491,6 +491,7 @@ from tritium_lib.web import TritiumTheme, DashboardPage, full_page
 | `DashboardPage` | `dashboard` | Full dashboard HTML generator |
 | `StatusBadge` | `components` | Styled status indicator |
 | `MetricCard` | `components` | Metric display card |
+| `AlertBanner` | `components` | Alert banner component |
 | `full_page` | `templates` | Complete HTML page template |
 
 ## testing
@@ -523,11 +524,11 @@ from tritium_lib.config import TritiumBaseSettings
 
 ## JS Modules
 
-Located at `tritium_lib/js/`. Served by SC at `/static/lib/js/`.
+Located at `web/` (served by SC at `/lib/`). Additional JS sim modules at `src/tritium_lib/js/`.
 
-### js/sim/
+### web/sim/
 
-City simulation engine (16 modules):
+City simulation engine (15 modules):
 
 | File | Description |
 |------|-------------|
@@ -535,18 +536,17 @@ City simulation engine (16 modules):
 | `traffic-controller.js` | Traffic light state machine, signal phases |
 | `idm.js` | Intelligent Driver Model (car following) |
 | `mobil.js` | MOBIL lane change model |
-| `entity.js` | Base simulation entity class |
-| `movement.js` | Entity movement and steering |
-| `state.js` | Entity state machine |
+| `vehicle.js` | Vehicle entity class |
+| `pedestrian.js` | Pedestrian entity and ORCA model |
 | `identity.js` | NPC identity generation |
-| `inventory.js` | NPC item inventory |
 | `daily-routine.js` | NPC daily schedule templates |
 | `schedule-executor.js` | Execute NPC daily routines |
 | `protest-engine.js` | Epstein civil unrest model |
 | `protest-scenario.js` | Protest scenario configurations |
-| `sensor-bridge.js` | Bridge sim entities to Tritium tracking |
 | `weather.js` | Weather simulation and effects |
-| `units/` | Unit type definitions |
+| `spatial-grid.js` | Spatial hash grid for neighbor queries |
+| `procedural-city.js` | Procedural city generation |
+| `index.js` | Sim module re-exports |
 
 ### js/render/
 
