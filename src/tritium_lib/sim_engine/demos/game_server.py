@@ -1698,10 +1698,30 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     # 14. Weather FX tick
     if gs.weather_fx is not None:
         env_snap = gs.world.environment.snapshot()
-        wx_state = {"type": env_snap.get("weather", "clear"), "intensity": 0.5}
+        wx_state = {
+            "weather": env_snap.get("weather", "clear"),
+            "intensity": env_snap.get("intensity", 0.5),
+            "wind_speed": env_snap.get("wind_speed", 0.0),
+            "wind_direction": env_snap.get("wind_direction", 0.0),
+        }
         time_state = {"hour": env_snap.get("hour", 12.0)}
         wx_fx = gs.weather_fx.tick(dt, wx_state, time_state)
         if wx_fx:
+            # Strip large position/velocity arrays — client generates rain
+            # locally from params.  Only send drop_count and metadata.
+            for key in ("rain", "snow"):
+                if wx_fx.get(key) and isinstance(wx_fx[key], dict):
+                    wx_fx[key] = {
+                        k: v for k, v in wx_fx[key].items()
+                        if k not in ("positions", "velocities", "sizes",
+                                     "rotations", "splashes")
+                    }
+            # Strip fog grid data (large)
+            if wx_fx.get("fog") and isinstance(wx_fx["fog"], dict):
+                wx_fx["fog"] = {
+                    k: v for k, v in wx_fx["fog"].items()
+                    if k not in ("grid",)
+                }
             frame["weather_fx"] = wx_fx
 
     # 15. Spawner tick
@@ -3430,9 +3450,9 @@ const matVehHostile = new THREE.MeshStandardMaterial({ color: 0xa01848, roughnes
 const matVehDestroyed = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
 const matVehCabin = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.7, metalness: 0.3 });
 const matProjectile = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-const matBuilding = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.05, emissive: 0x2a2a44, emissiveIntensity: 1.0 });
-const matBuildingRoof = new THREE.MeshStandardMaterial({ color: 0x3a3a50, roughness: 0.8, emissive: 0x1a1a30, emissiveIntensity: 0.5 });
-const matBuildingDestroyed = new THREE.MeshStandardMaterial({ color: 0x5a2020, roughness: 0.9, emissive: 0x2a0808, emissiveIntensity: 0.3 });
+const matBuilding = new THREE.MeshStandardMaterial({ color: 0x6a6a80, roughness: 0.6, metalness: 0.05, emissive: 0x3a3a55, emissiveIntensity: 1.5 });
+const matBuildingRoof = new THREE.MeshStandardMaterial({ color: 0x5a5a70, roughness: 0.7, emissive: 0x2a2a44, emissiveIntensity: 0.8 });
+const matBuildingDestroyed = new THREE.MeshStandardMaterial({ color: 0x6a3030, roughness: 0.9, emissive: 0x3a1010, emissiveIntensity: 0.5 });
 const matRing = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.5 });
 
 // Crowd: instanced cylinders so civilians are visible at any zoom level
@@ -3457,7 +3477,7 @@ crowdInstFleeing.castShadow  = true;
 scene.add(crowdInstCalm, crowdInstAgitated, crowdInstRioting, crowdInstFleeing);
 
 // Building colors (cyberpunk palette)
-const BLDG_COLORS = [0x4a4a60, 0x3a4d60, 0x504060, 0x3a5050, 0x504a3a, 0x604a4a];
+const BLDG_COLORS = [0x6a6a88, 0x5a6d88, 0x706080, 0x5a7070, 0x706a5a, 0x806a6a];
 
 // =========================================================================
 // Projectile trail system
@@ -3639,6 +3659,88 @@ function ensureBuildings(structures) {
     }
   }
   buildingsCreated = true;
+}
+
+// =========================================================================
+// Rain / weather particle system (client-side generation for efficiency)
+// =========================================================================
+const RAIN_MAX = 3000;
+let rainPoints = null;
+let rainActive = false;
+let rainIntensity = 0;
+let rainWindX = 0, rainWindZ = 0;
+let rainFallSpeed = 9.0;
+
+function initRainSystem() {
+  const positions = new Float32Array(RAIN_MAX * 3);
+  // Pre-seed random positions in the sky volume
+  for (let i = 0; i < RAIN_MAX; i++) {
+    positions[i * 3]     = (Math.random() - 0.5) * 200;  // x
+    positions[i * 3 + 1] = Math.random() * 50;            // y (height)
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 200;  // z
+  }
+  const rainGeo = new THREE.BufferGeometry();
+  rainGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const rainMat = new THREE.PointsMaterial({
+    color: 0xaaccff, size: 0.5, transparent: true, opacity: 0.4,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  rainPoints = new THREE.Points(rainGeo, rainMat);
+  rainPoints.frustumCulled = false;
+  rainPoints.visible = false;
+  scene.add(rainPoints);
+}
+initRainSystem();
+
+function updateRain(weatherFx) {
+  if (!rainPoints) return;
+  const rainData = weatherFx ? weatherFx.rain : null;
+  if (!rainData) {
+    rainPoints.visible = false;
+    rainActive = false;
+    rainIntensity = 0;
+    return;
+  }
+  // Server sends rain params: drop_count, and we can read wind from weatherFx
+  rainActive = true;
+  rainPoints.visible = true;
+  const dropCount = Math.min(rainData.drop_count || 1000, RAIN_MAX);
+  rainPoints.geometry.setDrawRange(0, dropCount);
+  rainIntensity = dropCount / RAIN_MAX;
+  rainPoints.material.opacity = Math.min(0.6, 0.2 + rainIntensity * 0.4);
+  // Wind from weather_fx (vectors is array of [vx, vz] pairs)
+  const wind = weatherFx.wind;
+  if (wind && wind.vectors && wind.vectors.length > 0) {
+    const w = wind.vectors[0];
+    rainWindX = (w[0] || 0) * 0.3;
+    rainWindZ = (w[1] || 0) * 0.3;
+  } else {
+    rainWindX = 0;
+    rainWindZ = 0;
+  }
+  rainFallSpeed = 9.0 + rainIntensity * 3.0;
+  // Center rain around camera position
+  rainPoints.position.set(camera.position.x, 0, camera.position.z);
+}
+
+function tickRain(dt) {
+  if (!rainActive || !rainPoints) return;
+  const posAttr = rainPoints.geometry.getAttribute('position');
+  const positions = posAttr.array;
+  const count = rainPoints.geometry.drawRange.count;
+  for (let i = 0; i < count; i++) {
+    const idx = i * 3;
+    positions[idx]     += rainWindX * dt;         // x drift
+    positions[idx + 1] -= rainFallSpeed * dt;     // y fall
+    positions[idx + 2] += rainWindZ * dt;         // z drift
+    // Reset drops that fall below ground
+    if (positions[idx + 1] < 0) {
+      positions[idx]     = (Math.random() - 0.5) * 200;
+      positions[idx + 1] = 40 + Math.random() * 15;
+      positions[idx + 2] = (Math.random() - 0.5) * 200;
+    }
+  }
+  posAttr.needsUpdate = true;
 }
 
 // =========================================================================
@@ -4074,6 +4176,22 @@ function processFrame(f) {
   // Crowd
   updateCrowd(f.crowd);
 
+  // Weather FX — rain/snow particle system + fog + sky
+  if (f.weather_fx) {
+    updateRain(f.weather_fx);
+    // Fog from weather effects
+    const wxFog = f.weather_fx.fog;
+    if (wxFog && wxFog.density > 0) {
+      scene.fog.density = 0.0015 + wxFog.density * 0.004;
+    } else {
+      scene.fog.density = 0.0015;
+    }
+  }
+  // Also handle weather dict from renderer (sky_color, ambient, rain, fog)
+  if (f.weather && f.weather.fog_density > 0) {
+    scene.fog.density = 0.0015 + f.weather.fog_density * 0.003;
+  }
+
   // Kill feed from events
   for (const ev of (f.events || [])) {
     if (ev.type === 'unit_killed') {
@@ -4294,6 +4412,9 @@ function animate() {
 
   // Tick explosion animations
   tickExplosions(dt);
+
+  // Animate rain particles between server frames
+  tickRain(dt);
 
   // Make unit cones gently bob
   const bobTime = now * 0.002;
