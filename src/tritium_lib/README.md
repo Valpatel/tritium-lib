@@ -8,7 +8,7 @@
 
 | Package | What | Key Exports |
 |---------|------|-------------|
-| `models/` | 116+ Pydantic data models | `Device`, `BLESighting`, `MeshNode`, `Alert`, `Command`, `FleetNode`, ... |
+| `models/` | 101 Pydantic model files | `Device`, `BLESighting`, `MeshNode`, `Alert`, `Command`, `FleetNode`, ... |
 | `mqtt/` | MQTT topic hierarchy | `TritiumTopics`, `ParsedTopic`, `parse_topic()` |
 | `events/` | Pub/sub event bus | `EventBus`, `AsyncEventBus`, `Event` |
 | `auth/` | JWT and API keys | `create_token()`, `decode_token()`, `generate_api_key()` |

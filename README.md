@@ -1,10 +1,65 @@
 # tritium-lib
 
-Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel/tritium) unified operating picture system. Provides models, tracking, inference, simulation, events, MQTT topics, auth, and reusable frontend components used by tritium-sc (Command Center), tritium-edge (ESP32 firmware/fleet server), and tritium-addons.
+Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel/tritium) system. Everything that more than one submodule needs lives here: models, tracking, fusion, simulation, events, MQTT topics, auth, addon SDK, and frontend components.
 
-**541 Python modules | 63 packages | 54 JS modules | 401 test files (15,500+ tests) | 102 Pydantic model files | 170 sim engine files | 16 standalone demos**
+**541 Python files | 64 packages | 54 JS modules | 401 test files (~15,200 tests) | 101 Pydantic model files | 153 sim engine modules | 21 standalone demos**
 
 Copyright 2026 Matthew Valancy / Valpatel Software LLC / AGPL-3.0
+
+## How it fits together
+
+```mermaid
+graph TB
+    subgraph Core["Core Infrastructure"]
+        models[models — 101 Pydantic files]
+        events[events — pub/sub bus]
+        mqtt[mqtt — topic hierarchy]
+        auth[auth — JWT + API keys]
+        store[store — persistence]
+        config[config — settings]
+    end
+
+    subgraph Intelligence["Intelligence & Tracking"]
+        tracking[tracking — 27 modules]
+        fusion[fusion — multi-sensor]
+        intelligence[intelligence — 39 modules]
+        classifier[classifier — BLE/WiFi]
+        sitaware[sitaware — capstone]
+    end
+
+    subgraph SimEngine["Simulation — 153 modules"]
+        sim_core[core — entities, movement]
+        sim_ai[ai — behavior trees, pathfinding]
+        sim_combat[combat — weapons, squads]
+        sim_world[world — cover, vision, sensors]
+    end
+
+    subgraph SDK["Addon SDK"]
+        addon_base[AddonBase + AddonContext]
+        device_reg[DeviceRegistry]
+        base_runner[BaseRunner]
+        geo_layer[GeoJSON layers]
+    end
+
+    subgraph WebJS["JS Frontend — 54 modules"]
+        map_js[map/ — 31 modules]
+        sim_js[sim/ — 15 modules]
+        panels_js[panels/ — manager + tabs]
+        ui_js[events, store, websocket, utils]
+    end
+
+    Core --> Intelligence
+    Core --> SimEngine
+    Core --> SDK
+    Intelligence --> sitaware
+    WebJS -.->|served by SC| browser[Browser]
+
+    style Core fill:#0e1a2b,stroke:#00f0ff,color:#00f0ff
+    style Intelligence fill:#0e1a2b,stroke:#ff2a6d,color:#ff2a6d
+    style SimEngine fill:#0e1a2b,stroke:#05ffa1,color:#05ffa1
+    style SDK fill:#0e1a2b,stroke:#fcee0a,color:#fcee0a
+    style WebJS fill:#0e1a2b,stroke:#00f0ff,color:#00f0ff
+```
 
 ---
 
@@ -23,8 +78,8 @@ pip install -e ".[full]"            # All optional deps
 
 ```
 tritium-lib/
-├── src/tritium_lib/           # Python packages (541 modules, 63 packages)
-│   ├── models/                # 102 Pydantic v2 model files -- THE canonical data contracts
+├── src/tritium_lib/           # Python packages (541 files, 62 packages)
+│   ├── models/                # 101 Pydantic v2 model files -- THE canonical data contracts
 │   ├── tracking/              # Target tracker, correlator, geofence, Kalman, dossiers
 │   ├── inference/             # LLM client, fleet inference, model router
 │   ├── intelligence/          # Acoustic classifier, anomaly, RL metrics, fusion, position
@@ -109,12 +164,12 @@ tritium-lib/
 │   ├── command-palette.js     # Fuzzy search command palette (Ctrl+K)
 │   ├── layout-manager.js      # Panel layout save/restore/import/export
 │   └── utils.js               # _esc, _timeAgo, _badge, _fetchJson
-└── tests/                     # 401 test files (15,500+ tests)
+└── tests/                     # 401 test files (~15,200 tests)
 ```
 
 ## Standalone Demos
 
-Sixteen self-contained demos, each with its own HTTP server and cyberpunk UI.
+Twenty-one self-contained demos, each with its own HTTP server and cyberpunk UI.
 
 | # | Demo | Command | Port | Description |
 |---|------|---------|------|-------------|
@@ -143,7 +198,7 @@ Additional sim demos: `./sim-demo.sh` (tactical), `perf_test`, `serve_city3d`, `
 
 | Module | Import | Description |
 |--------|--------|-------------|
-| `models` | `from tritium_lib.models import Device, BleSighting` | 102 Pydantic v2 model files for devices, BLE, mesh, cameras, alerts, CoT, sensors, floorplans, dossiers, and more |
+| `models` | `from tritium_lib.models import Device, BleSighting` | 101 Pydantic v2 model files for devices, BLE, mesh, cameras, alerts, CoT, sensors, floorplans, dossiers, and more |
 | `events` | `from tritium_lib.events import EventBus, AsyncEventBus` | Thread-safe and async pub/sub with wildcard topic matching |
 | `mqtt` | `from tritium_lib.mqtt import TritiumTopics` | MQTT topic hierarchy builder (`tritium/{site}/{domain}/{device}/{type}`) |
 | `auth` | `from tritium_lib.auth import create_token, decode_token` | JWT creation/decoding and API key management |
@@ -287,7 +342,7 @@ SC serves these at `/lib/` via a StaticFiles mount or symlink.
 ## Tests
 
 ```bash
-pytest tests/                          # Run all 401 test files (15,500+ tests)
+pytest tests/                          # Run all 401 test files (~15,200 tests)
 pytest tests/ -x --tb=short           # Stop on first failure
 pytest tests/test_models.py           # Single file
 pytest tests/ -k "tracking"           # Pattern match
