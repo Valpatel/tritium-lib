@@ -2,7 +2,7 @@
 
 Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel/tritium) unified operating picture system. Provides models, tracking, inference, simulation, events, MQTT topics, auth, and reusable frontend components used by tritium-sc (Command Center), tritium-edge (ESP32 firmware/fleet server), and tritium-addons.
 
-**539 Python modules | 54 JS modules | 380 test files (15,020+ tests) | 278 Pydantic models | 170 sim engine files | 13 standalone demos**
+**449 Python modules | 92 packages | 54 JS modules | 425 test files (15,570+ tests) | 278 Pydantic models | 170 sim engine files | 13 standalone demos**
 
 Copyright 2026 Matthew Valancy / Valpatel Software LLC / AGPL-3.0
 
@@ -23,7 +23,7 @@ pip install -e ".[full]"            # All optional deps
 
 ```
 tritium-lib/
-├── src/tritium_lib/           # Python packages (539 modules, 63 packages)
+├── src/tritium_lib/           # Python packages (449 modules, 92 packages)
 │   ├── models/                # 278 Pydantic v2 models -- THE canonical data contracts
 │   ├── tracking/              # Target tracker, correlator, geofence, Kalman, dossiers
 │   ├── inference/             # LLM client, fleet inference, model router
@@ -52,6 +52,39 @@ tritium-lib/
 │   ├── utils/                 # Feature extraction, memory helpers
 │   ├── web/                   # Cyberpunk HTML theme engine + dashboard components
 │   ├── testing/               # Visual regression checks, ESP32 device automation
+│   ├── fusion/                # Multi-sensor fusion engine + sensor pipeline
+│   ├── alerting/              # Alert rules engine and dispatch
+│   ├── reporting/             # Situation report generation
+│   ├── monitoring/            # System health monitoring and metrics
+│   ├── recording/             # Record and replay sensor data streams
+│   ├── pipeline/              # Configurable data pipeline orchestrator
+│   ├── rules/                 # IF-THEN automation rules engine
+│   ├── evidence/              # Evidence collection and chain-of-custody
+│   ├── incident/              # Incident management lifecycle
+│   ├── mission/               # Surveillance/security mission planning
+│   ├── signals/               # RF signal analysis (RSSI, CSI, spectrum)
+│   ├── protocols/             # Radio protocol parsers (ADS-B, AIS, NMEA, BLE, WiFi)
+│   ├── classification/        # Multi-sensor target classification pipeline
+│   ├── scenarios/             # Predefined scenario generator for training/demos
+│   ├── indoor/                # Indoor positioning via WiFi/BLE fingerprinting
+│   ├── privacy/               # Data retention, anonymization, compliance
+│   ├── areas/                 # Named geographic area management
+│   ├── comint/                # Communications intelligence (metadata analysis)
+│   ├── threat_intel/          # Threat intelligence feeds (STIX parsing)
+│   ├── c2/                    # Command and Control protocol for edge devices
+│   ├── geoint/                # Geospatial intelligence (cover, LOS, routes)
+│   ├── sitaware/              # Situational awareness engine (capstone module)
+│   ├── analytics/             # Real-time statistics and trend analysis
+│   ├── quality/               # Data quality monitoring for sensor feeds
+│   ├── fleet/                 # Fleet device management and heartbeat
+│   ├── visualization/         # Chart, timeline, heatmap, network graph data
+│   ├── deployment/            # Deployment, backup, and health utilities
+│   ├── network/               # Network topology discovery and analysis
+│   ├── federation/            # Multi-site federation and target sync
+│   ├── scheduler/             # Task scheduling and queue
+│   ├── map_data/              # Tactical map data and GeoJSON export
+│   ├── audit/                 # Persistent audit trail for compliance
+│   ├── data_exchange/         # Import/export targets, dossiers, events
 │   └── sim_engine/            # Tactical simulation engine (170 files)
 │       ├── ai/                # Combat AI, behavior trees, pathfinding, steering
 │       ├── behavior/          # NPC behaviors, unit states, missions
@@ -76,12 +109,12 @@ tritium-lib/
 │   ├── command-palette.js     # Fuzzy search command palette (Ctrl+K)
 │   ├── layout-manager.js      # Panel layout save/restore/import/export
 │   └── utils.js               # _esc, _timeAgo, _badge, _fetchJson
-└── tests/                     # 380 test files (15,020+ tests)
+└── tests/                     # 425 test files (15,570+ tests)
 ```
 
 ## Standalone Demos
 
-Thirteen self-contained demos prove each major subsystem works independently of tritium-sc. Each starts its own HTTP server with a cyberpunk UI.
+Thirteen self-contained demos, each with its own HTTP server and cyberpunk UI.
 
 | # | Demo | Command | Port | Description |
 |---|------|---------|------|-------------|
@@ -99,23 +132,7 @@ Thirteen self-contained demos prove each major subsystem works independently of 
 | 12 | Sitaware | `python -m tritium_lib.sitaware.demos.sitaware_demo` | 9095 | Full operating picture -- tracking, fusion, intelligence, alerting, reporting |
 | 13 | Integrated | `python -m tritium_lib.sim_engine.demos.integrated_demo` | 8099 | City sim to sensor fusion end-to-end pipeline with correlation and geofencing |
 
-Additional sim engine utilities:
-
-```bash
-./sim-demo.sh                          # Tactical sim (default: urban_combat)
-./sim-demo.sh --list                   # List presets
-./sim-demo.sh --perf                   # Performance benchmark
-./sim-demo.sh --coverage               # Module coverage report
-python -m tritium_lib.sim_engine.demos.demo_rf         # RF signature simulation
-python -m tritium_lib.sim_engine.demos.demo_steering   # AI steering behaviors
-python -m tritium_lib.sim_engine.demos.perf_test       # Performance benchmarks
-python -m tritium_lib.sim_engine.demos.serve_city3d    # City3D standalone server
-python -m tritium_lib.sim_engine.demos.game_server     # Game mode server
-```
-
-Sim controls: `SPACE`=riot `N`=night `R`=rain `F`=fog `D`=debug `I`=intel `M`=minimap `K`=record `L`=playback `A`=airstrike `S`=sound `2`=split-view `P`=skip-phase `C`=chase-cam `Click`=inspect `ESC`=deselect
-
-Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_strike`
+Additional sim demos: `./sim-demo.sh` (tactical), `demo_rf` (RF), `demo_steering` (AI), `perf_test`, `serve_city3d`, `game_server`. Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_strike`.
 
 ## Module Reference
 
@@ -176,15 +193,11 @@ Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_
 | `sim_engine.combat` | Combat resolution, squad management, weapon systems |
 | `sim_engine.core` | Entity model, movement, inventory, spatial hash, state machine, NPC thinker |
 | `sim_engine.effects` | Particle systems, weapon visual effects |
-| `sim_engine.game` | Game modes, difficulty scaling, morale, crowd density, stats, ambient |
+| `sim_engine.game` | Game modes, difficulty, morale, crowd density, stats |
 | `sim_engine.physics` | Vehicle physics, collision detection |
-| `sim_engine.world` | Cover system, grid pathfinder, sensor simulation, vision/LOS |
-| `sim_engine.unit_types` | Unit base + people, robots, sensors subtypes |
-| `sim_engine.audio` | Spatial audio positioning |
-| `sim_engine.debug` | Debug stream output |
+| `sim_engine.world` | Cover, pathfinding, sensors, vision/LOS |
+| `sim_engine.unit_types` | Unit base + people, robots, sensors |
 | `sim_engine.demos` | Demo apps (see Standalone Demos above) |
-
-Top-level sim_engine modules include: air combat, artillery, buildings, campaign, civilian, crowd, cyber warfare, damage, destruction, detection, economy, electronic warfare, environment, and more.
 
 ## Quick Start Examples
 
@@ -271,7 +284,7 @@ SC serves these at `/lib/` via a StaticFiles mount or symlink.
 ## Tests
 
 ```bash
-pytest tests/                          # Run all 380 test files (15,020+ tests)
+pytest tests/                          # Run all 425 test files (15,570+ tests)
 pytest tests/ -x --tb=short           # Stop on first failure
 pytest tests/test_models.py           # Single file
 pytest tests/ -k "tracking"           # Pattern match
@@ -284,5 +297,4 @@ pytest tests/ -k "tracking"           # Pattern match
 - **[tritium-addons](https://github.com/Valpatel/tritium-addons)** -- HackRF SDR, Meshtastic LoRa, and future addons
 
 ## License
-
 AGPL-3.0 -- Copyright 2026 Matthew Valancy / Valpatel Software LLC
