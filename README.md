@@ -1,8 +1,8 @@
 # tritium-lib
 
-Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel/tritium) system. Everything that more than one submodule needs lives here: models, tracking, fusion, simulation, events, MQTT topics, auth, addon SDK, and frontend components.
+Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel/tritium) system. Everything that more than one submodule needs lives here: data models, target tracking, sensor fusion, simulation engine, addon SDK, and frontend components.
 
-**541 Python files | 64 packages | 54 JS modules | 401 test files (~15,200 tests) | 101 Pydantic model files | 153 sim engine modules | 21 standalone demos**
+This is the foundation. The Command Center, edge firmware, and addons all import from `tritium_lib`.
 
 Copyright 2026 Matthew Valancy / Valpatel Software LLC / AGPL-3.0
 
@@ -11,48 +11,45 @@ Copyright 2026 Matthew Valancy / Valpatel Software LLC / AGPL-3.0
 ```mermaid
 graph TB
     subgraph Core["Core Infrastructure"]
-        models[models — 101 Pydantic files]
-        events[events — pub/sub bus]
-        mqtt[mqtt — topic hierarchy]
-        auth[auth — JWT + API keys]
-        store[store — persistence]
-        config[config — settings]
+        models["models — Pydantic data contracts"]
+        events["events — pub/sub bus"]
+        mqtt["mqtt — topic hierarchy"]
+        store["store — persistence"]
     end
 
     subgraph Intelligence["Intelligence & Tracking"]
-        tracking[tracking — 27 modules]
-        fusion[fusion — multi-sensor]
-        intelligence[intelligence — 39 modules]
-        classifier[classifier — BLE/WiFi]
-        sitaware[sitaware — capstone]
+        tracking["tracking — target lifecycle"]
+        fusion["fusion — multi-sensor correlation"]
+        intelligence["intelligence — ML, anomaly, RL"]
+        classifier["classifier — BLE/WiFi device types"]
+        sitaware["sitaware — unified operating picture"]
     end
 
-    subgraph SimEngine["Simulation — 153 modules"]
-        sim_core[core — entities, movement]
-        sim_ai[ai — behavior trees, pathfinding]
-        sim_combat[combat — weapons, squads]
-        sim_world[world — cover, vision, sensors]
+    subgraph SimEngine["Simulation"]
+        sim_core["core — entities, movement, spatial"]
+        sim_ai["ai — behavior trees, pathfinding"]
+        sim_combat["combat — weapons, squads"]
+        sim_world["world — cover, vision, sensors"]
     end
 
     subgraph SDK["Addon SDK"]
-        addon_base[AddonBase + AddonContext]
-        device_reg[DeviceRegistry]
-        base_runner[BaseRunner]
-        geo_layer[GeoJSON layers]
+        addon_base["AddonBase + AddonContext"]
+        device_reg["DeviceRegistry"]
+        base_runner["BaseRunner"]
+        geo_layer["GeoJSON layers"]
     end
 
-    subgraph WebJS["JS Frontend — 54 modules"]
-        map_js[map/ — 31 modules]
-        sim_js[sim/ — 15 modules]
-        panels_js[panels/ — manager + tabs]
-        ui_js[events, store, websocket, utils]
+    subgraph WebJS["JS Frontend"]
+        map_js["map/ — tactical map"]
+        sim_js["sim/ — city simulation"]
+        panels_js["panels/ — draggable panel system"]
     end
 
     Core --> Intelligence
     Core --> SimEngine
     Core --> SDK
     Intelligence --> sitaware
-    WebJS -.->|served by SC| browser[Browser]
+    WebJS -.->|"served by SC"| browser[Browser]
 
     style Core fill:#0e1a2b,stroke:#00f0ff,color:#00f0ff
     style Intelligence fill:#0e1a2b,stroke:#ff2a6d,color:#ff2a6d
@@ -67,197 +64,91 @@ graph TB
 
 ```bash
 pip install -e .                    # Core (models, events, MQTT, auth, tracking)
-pip install -e ".[mqtt]"            # + paho-mqtt
-pip install -e ".[graph]"           # + KuzuDB graph database
-pip install -e ".[testing]"         # + OpenCV, numpy, requests
-pip install -e ".[geospatial]"      # + rasterio, shapely, geopandas
 pip install -e ".[full]"            # All optional deps
 ```
+
+## What's inside
+
+### Core infrastructure
+
+The data contracts that define every entity in the system. Devices, sightings, targets, alerts, dossiers, camera detections, mesh nodes — all Pydantic v2 models that enforce type safety across the stack.
+
+Plus: event bus (pub/sub), MQTT topic builder, JWT auth, persistent stores, and configuration.
+
+### Target tracking & intelligence
+
+The core value of Tritium. The `tracking` package manages the lifecycle of every detected entity — from first sighting through correlation, fusion, and long-term dossier building. The `fusion` engine correlates detections across different sensor types (BLE + camera + WiFi → one target). The `intelligence` package adds anomaly detection, acoustic classification, and reinforcement learning metrics.
+
+The `sitaware` package is the capstone — it pulls everything together into a unified operating picture with threat assessment, zone monitoring, and commander briefings.
+
+### Simulation engine
+
+A full tactical simulation for testing and training without hardware. IDM car-following, MOBIL lane changes, Bezier intersection turns, Epstein protest/riot emergence, pedestrian ORCA, NPC daily routines, weather, combat, and squad AI. This exercises the same tracking and fusion pipelines that real sensors use.
+
+### Addon SDK
+
+Base classes for building new sensor integrations: `AddonBase`, `AddonContext`, `DeviceRegistry`, `BaseRunner`, GeoJSON layer helpers. An addon built against this SDK can run inside the Command Center, as a standalone app, or headless on a Raspberry Pi.
+
+### JavaScript frontend
+
+Vanilla ES modules (no build step) shared across the system: tactical map with MapLibre GL, city simulation (IDM, MOBIL, pedestrians, protest), draggable panel system, event bus, reactive store, WebSocket client, and cyberpunk CSS themes.
 
 ## Architecture
 
 ```
 tritium-lib/
-├── src/tritium_lib/           # Python packages (541 files, 62 packages)
-│   ├── models/                # 101 Pydantic v2 model files -- THE canonical data contracts
-│   ├── tracking/              # Target tracker, correlator, geofence, Kalman, dossiers
-│   ├── inference/             # LLM client, fleet inference, model router
-│   ├── intelligence/          # Acoustic classifier, anomaly, RL metrics, fusion, position
-│   ├── events/                # Thread-safe + async pub/sub event bus
-│   ├── comms/                 # Communication abstractions (speaker/TTS)
-│   ├── mqtt/                  # MQTT topic hierarchy builder
-│   ├── auth/                  # JWT + API key management
-│   ├── store/                 # Persistent data stores (BLE sightings, targets)
-│   ├── config/                # Pydantic base settings
-│   ├── cot/                   # Cursor on Target XML codec (TAK/ATAK)
-│   ├── geo/                   # Coordinate transforms, haversine, camera projection
-│   ├── graph/                 # KuzuDB graph database wrapper
-│   ├── ontology/              # Entity/relationship type system + registry
-│   ├── classifier/            # Multi-signal BLE/WiFi device classifier
-│   ├── data/                  # 10 JSON lookup databases (BLE, WiFi, OUI fingerprints)
-│   ├── sdk/                   # Addon SDK -- AddonBase, DeviceRegistry, BaseRunner, GeoJSON
-│   ├── interfaces/            # Plugin interfaces (camera, radar, SDR, sensor)
-│   ├── nodes/                 # Node base classes
-│   ├── firmware/              # Firmware flasher base (ESP32, Meshtastic)
-│   ├── sdr/                   # SDR device abstractions
-│   ├── notifications/         # Notification model + manager
-│   ├── tactical/              # Tactical dossier generation
-│   ├── synthetic/             # Synthetic test data generators
-│   ├── actions/               # Formation control, Lua parser
-│   ├── utils/                 # Feature extraction, memory helpers
-│   ├── web/                   # Cyberpunk HTML theme engine + dashboard components
-│   ├── testing/               # Visual regression checks, ESP32 device automation
-│   ├── fusion/                # Multi-sensor fusion engine + sensor pipeline
-│   ├── alerting/              # Alert rules engine and dispatch
-│   ├── reporting/             # Situation report generation
-│   ├── monitoring/            # System health monitoring and metrics
-│   ├── recording/             # Record and replay sensor data streams
-│   ├── pipeline/              # Configurable data pipeline orchestrator
-│   ├── rules/                 # IF-THEN automation rules engine
-│   ├── evidence/              # Evidence collection and chain-of-custody
-│   ├── incident/              # Incident management lifecycle
-│   ├── mission/               # Surveillance/security mission planning
-│   ├── signals/               # RF signal analysis (RSSI, CSI, spectrum)
-│   ├── protocols/             # Radio protocol parsers (ADS-B, AIS, NMEA, BLE, WiFi)
-│   ├── classification/        # Multi-sensor target classification pipeline
-│   ├── scenarios/             # Predefined scenario generator for training/demos
-│   ├── indoor/                # Indoor positioning via WiFi/BLE fingerprinting
-│   ├── privacy/               # Data retention, anonymization, compliance
-│   ├── areas/                 # Named geographic area management
-│   ├── comint/                # Communications intelligence (metadata analysis)
-│   ├── threat_intel/          # Threat intelligence feeds (STIX parsing)
-│   ├── c2/                    # Command and Control protocol for edge devices
-│   ├── geoint/                # Geospatial intelligence (cover, LOS, routes)
-│   ├── sitaware/              # Situational awareness engine (capstone module)
-│   ├── analytics/             # Real-time statistics and trend analysis
-│   ├── quality/               # Data quality monitoring for sensor feeds
-│   ├── fleet/                 # Fleet device management and heartbeat
-│   ├── visualization/         # Chart, timeline, heatmap, network graph data
-│   ├── deployment/            # Deployment, backup, and health utilities
-│   ├── network/               # Network topology discovery and analysis
-│   ├── federation/            # Multi-site federation and target sync
-│   ├── scheduler/             # Task scheduling and queue
-│   ├── map_data/              # Tactical map data and GeoJSON export
-│   ├── audit/                 # Persistent audit trail for compliance
-│   ├── data_exchange/         # Import/export targets, dossiers, events
-│   └── sim_engine/            # Tactical simulation engine (170 files)
-│       ├── ai/                # Combat AI, behavior trees, pathfinding, steering
-│       ├── behavior/          # NPC behaviors, unit states, missions
-│       ├── combat/            # Combat resolution, squads, weapons
-│       ├── core/              # Entity, movement, inventory, spatial, state machine
-│       ├── effects/           # Particles, weapon effects
-│       ├── game/              # Game modes, difficulty, morale, stats
-│       ├── physics/           # Vehicle physics, collision
-│       ├── world/             # Cover, pathfinding, sensors, vision
-│       ├── unit_types/        # Unit base + people, robots, sensors
-│       ├── audio/             # Spatial audio
-│       ├── debug/             # Debug streams
-│       └── demos/             # Demo apps + HTML frontends
-├── web/                       # Shared JS/CSS frontend library (54 modules)
-│   ├── css/                   # Cyberpunk themes (cybercore v1 + v2)
-│   ├── map/                   # Tactical map components (MapLibre GL, 31 modules)
-│   ├── sim/                   # City simulation (IDM, MOBIL, pedestrians, protest, 15 modules)
-│   ├── panels/                # Draggable/resizable panel system
-│   ├── events.js              # Frontend EventBus (pub/sub)
-│   ├── store.js               # ReactiveStore (dot-path state, RAF-batched)
-│   ├── websocket.js           # TritiumWebSocket (reconnect, ping, banner)
-│   ├── command-palette.js     # Fuzzy search command palette (Ctrl+K)
-│   ├── layout-manager.js      # Panel layout save/restore/import/export
-│   └── utils.js               # _esc, _timeAgo, _badge, _fetchJson
-└── tests/                     # 401 test files (~15,200 tests)
+├── src/tritium_lib/           Python packages
+│   ├── models/                Pydantic v2 data contracts — THE source of truth
+│   ├── tracking/              Target tracker, correlator, geofence, Kalman, dossiers
+│   ├── fusion/                Multi-sensor target fusion
+│   ├── intelligence/          Anomaly, acoustic, RL metrics, pattern learning
+│   ├── sitaware/              Capstone — unified operating picture
+│   ├── sim_engine/            Tactical simulation (AI, combat, physics, world)
+│   ├── sdk/                   Addon SDK (AddonBase, DeviceRegistry, BaseRunner)
+│   ├── classifier/            BLE/WiFi device type classification
+│   ├── graph/                 KuzuDB entity-relationship storage
+│   ├── ontology/              Semantic type system for entities and relationships
+│   ├── cot/                   Cursor on Target codec (TAK/ATAK interop)
+│   ├── mqtt/                  MQTT topic hierarchy builder
+│   ├── events/                Thread-safe + async pub/sub
+│   ├── auth/                  JWT + API key management
+│   ├── store/                 Persistent data stores
+│   ├── geo/                   Coordinate transforms, haversine, camera projection
+│   ├── signals/               RF signal processing
+│   ├── protocols/             Radio protocol parsers (ADS-B, AIS, BLE, WiFi)
+│   ├── inference/             Local LLM fleet client (llama-server)
+│   ├── ...                    Plus: alerting, evidence, fleet, indoor, mission,
+│   │                          monitoring, notifications, pipeline, privacy,
+│   │                          recording, reporting, rules, scenarios, tactical,
+│   │                          synthetic, and more
+│   └── data/                  JSON lookup databases (BLE, WiFi, OUI fingerprints)
+├── web/                       Shared JS/CSS frontend library
+│   ├── map/                   Tactical map (MapLibre GL, effects, asset types, 3D units)
+│   ├── sim/                   City simulation (IDM, MOBIL, pedestrians, protest, weather)
+│   ├── panels/                Draggable/resizable panel system
+│   ├── css/                   Cyberpunk themes
+│   └── *.js                   EventBus, ReactiveStore, WebSocket, utils
+└── tests/                     Test suite
 ```
 
-## Standalone Demos
+## Standalone demos
 
-Twenty-one self-contained demos, each with its own HTTP server and cyberpunk UI.
+Self-contained demos, each with its own HTTP server and cyberpunk UI:
 
-| # | Demo | Command | Port | Description |
-|---|------|---------|------|-------------|
-| 1 | Tracking | `python -m tritium_lib.tracking.demos.tracking_demo` | 9091 | Target tracking pipeline -- BLE/WiFi/camera fusion, correlation, geofencing |
-| 2 | Intelligence | `python -m tritium_lib.intelligence.demos.pipeline_demo` | 8090 | Sensor fusion, anomaly detection, acoustic classification, threat assessment |
-| 3 | MQTT | `python -m tritium_lib.mqtt.demos.mqtt_demo` | 9092 | Sensor-to-fusion pipeline with mock or live MQTT broker |
-| 4 | CoT/TAK | `python -m tritium_lib.cot.demos.cot_demo` | 9094 | MIL-STD-2045 Cursor on Target XML codec -- TAK/ATAK interoperability |
-| 5 | Firmware | `python -m tritium_lib.firmware.demos.firmware_demo` | 8098 | Device discovery, OTA flash progress, fleet firmware management |
-| 6 | Graph | `python -m tritium_lib.graph.demos.graph_demo` | 8099 | Entity-relationship storage, querying, SVG visualization |
-| 7 | Notifications | `python -m tritium_lib.notifications.demos.notification_demo` | 9092 | Geofence alerts, threat scoring, sensor health, notification routing |
-| 8 | SDR | `python -m tritium_lib.sdr.demos.sdr_demo` | 9092 | SDR spectrum analyzer simulation and signal analysis |
-| 9 | City Sim | `python -m tritium_lib.sim_engine.demos.demo_city` | -- | City simulation with traffic (IDM/MOBIL) and pedestrians |
-| 10 | Tactical Sim | `python -m tritium_lib.sim_engine.demos.demo_full` | 9090 | Full 3D combat sim -- squads, weapons, AI, morale, effects |
-| 11 | Auth | `python -m tritium_lib.auth.demos.auth_demo` | 9097 | JWT login, refresh tokens, API keys, RBAC, cyberpunk login page |
-| 12 | Sitaware | `python -m tritium_lib.sitaware.demos.sitaware_demo` | 9095 | Full operating picture -- tracking, fusion, intelligence, alerting, reporting |
-| 13 | Integrated | `python -m tritium_lib.sim_engine.demos.integrated_demo` | 8099 | City sim to sensor fusion end-to-end pipeline with correlation and geofencing |
-| 14 | RF Sim | `python -m tritium_lib.sim_engine.demos.demo_rf` | -- | RF signal propagation and detection simulation |
-| 15 | Steering AI | `python -m tritium_lib.sim_engine.demos.demo_steering` | -- | AI steering behaviors and path following |
-| 16 | Game Server | `python -m tritium_lib.sim_engine.demos.game_server` | 9090 | Full 3D game server with WebSocket -- combat, city, economy, weather |
+| Demo | Command | What it shows |
+|------|---------|---------------|
+| Tracking | `python -m tritium_lib.tracking.demos.tracking_demo` | Target tracking — BLE/WiFi/camera fusion, correlation, geofencing |
+| Intelligence | `python -m tritium_lib.intelligence.demos.pipeline_demo` | Anomaly detection, acoustic classification, threat assessment |
+| Sitaware | `python -m tritium_lib.sitaware.demos.sitaware_demo` | Full operating picture — all subsystems feeding one view |
+| Game Server | `python -m tritium_lib.sim_engine.demos.game_server` | 3D game with combat, city, economy, weather via WebSocket |
+| City Sim | `python -m tritium_lib.sim_engine.demos.demo_city` | Traffic, pedestrians, daily routines |
+| Graph | `python -m tritium_lib.graph.demos.graph_demo` | Entity-relationship storage and visualization |
+| CoT/TAK | `python -m tritium_lib.cot.demos.cot_demo` | MIL-STD Cursor on Target — ATAK interop |
+| Auth | `python -m tritium_lib.auth.demos.auth_demo` | JWT login, API keys, RBAC |
 
-Additional sim demos: `./sim-demo.sh` (tactical), `perf_test`, `serve_city3d`, `city_sim_backend`. Presets: `urban_combat`, `open_field`, `riot_response`, `convoy_ambush`, `drone_strike`.
+Plus demos for MQTT, firmware OTA, SDR, notifications, RF propagation, steering AI, and more.
 
-## Module Reference
-
-### Core
-
-| Module | Import | Description |
-|--------|--------|-------------|
-| `models` | `from tritium_lib.models import Device, BleSighting` | 101 Pydantic v2 model files for devices, BLE, mesh, cameras, alerts, CoT, sensors, floorplans, dossiers, and more |
-| `events` | `from tritium_lib.events import EventBus, AsyncEventBus` | Thread-safe and async pub/sub with wildcard topic matching |
-| `mqtt` | `from tritium_lib.mqtt import TritiumTopics` | MQTT topic hierarchy builder (`tritium/{site}/{domain}/{device}/{type}`) |
-| `auth` | `from tritium_lib.auth import create_token, decode_token` | JWT creation/decoding and API key management |
-| `config` | `from tritium_lib.config import TritiumSettings` | Pydantic base settings for service configuration |
-| `store` | `from tritium_lib.store import BleStore, TargetStore` | Persistent data stores for BLE sightings, targets, events, dossiers |
-| `cot` | `from tritium_lib.cot import device_to_cot, parse_cot` | Cursor on Target XML codec for TAK/ATAK |
-
-### Tracking and Intelligence
-
-| Module | Import | Description |
-|--------|--------|-------------|
-| `tracking` | `from tritium_lib.tracking import TargetTracker, TargetCorrelator` | Target tracking, correlation strategies, geofencing, Kalman prediction, convoy detection, threat scoring, trilateration, dossiers |
-| `inference` | `from tritium_lib.inference import LLMFleet` | Local LLM fleet inference (llama-server), model routing (`inference.model_router.ModelRouter`) |
-| `intelligence` | `from tritium_lib.intelligence import AnomalyDetector, BaseLearner` | Anomaly detection, acoustic classification, RL metrics, fusion metrics, position estimation, pattern learning |
-| `classifier` | `from tritium_lib.classifier import DeviceClassifier` | Multi-signal BLE/WiFi device type classifier with fingerprint databases |
-| `geo` | `from tritium_lib.geo import local_to_latlng, haversine_distance` | Coordinate transforms (local meters to lat/lng), camera projection, haversine distance |
-| `graph` | `from tritium_lib.graph import TritiumGraph` | KuzuDB embedded graph for entity/relationship storage |
-| `ontology` | `from tritium_lib.ontology import OntologyRegistry` | Semantic type system for entities and relationships |
-
-### Addon Development
-
-| Module | Import | Description |
-|--------|--------|-------------|
-| `sdk` | `from tritium_lib.sdk import AddonBase, AddonContext, BaseRunner` | Addon SDK: base classes, device registry, transport, GeoJSON layers, config loader, subprocess manager |
-| `interfaces` | `from tritium_lib.interfaces import CameraPlugin, RadarPlugin` | Plugin interface contracts for cameras, radar, SDR, sensors |
-| `firmware` | `from tritium_lib.firmware import FirmwareFlasher` | Firmware flasher base for ESP32 and Meshtastic |
-| `sdr` | `from tritium_lib.sdr import SDRDevice, SweepResult` | SDR device abstractions |
-| `notifications` | `from tritium_lib.notifications import NotificationManager` | Thread-safe notification model and manager |
-
-### Utilities
-
-| Module | Import | Description |
-|--------|--------|-------------|
-| `data` | `from tritium_lib.data import load_ble_fingerprints` | 10 JSON lookup databases for BLE, WiFi, OUI fingerprinting |
-| `web` | `from tritium_lib.web import TritiumTheme, DashboardPage` | Cyberpunk HTML theme engine and dashboard components |
-| `testing` | `from tritium_lib.testing import VisualCheck` | Visual regression checks and ESP32 device automation |
-| `synthetic` | `from tritium_lib.synthetic import BLEScanGenerator` | Synthetic test data generators (BLE, mesh, camera, trilateration) |
-| `tactical` | `from tritium_lib.tactical import DossierStore, Playbook` | Tactical dossier generation and playbook runner |
-| `actions` | `from tritium_lib.actions import parse_motor_output` | Lua action parsing and squad formation calculations |
-| `utils` | `from tritium_lib.utils import extract_facts` | Fact extraction and memory helpers |
-| `nodes` | `from tritium_lib.nodes import SensorNode, Position` | Sensor node base classes |
-| `comms` | `from tritium_lib.comms import Speaker` | Communication abstractions (TTS) |
-
-### Simulation Engine (170 Python files + 15 JS web modules)
-
-| Subpackage | Description |
-|------------|-------------|
-| `sim_engine.ai` | Combat AI, behavior trees, pathfinding, steering, squad tactics, strategy, formations |
-| `sim_engine.behavior` | NPC behaviors, unit states, unit missions, degradation |
-| `sim_engine.combat` | Combat resolution, squad management, weapon systems |
-| `sim_engine.core` | Entity model, movement, inventory, spatial hash, state machine, NPC thinker |
-| `sim_engine.effects` | Particle systems, weapon visual effects |
-| `sim_engine.game` | Game modes, difficulty, morale, crowd density, stats |
-| `sim_engine.physics` | Vehicle physics, collision detection |
-| `sim_engine.world` | Cover, pathfinding, sensors, vision/LOS |
-| `sim_engine.unit_types` | Unit base + people, robots, sensors |
-| `sim_engine.demos` | Demo apps (see Standalone Demos above) |
-
-## Quick Start Examples
+## Quick start examples
 
 ### MQTT topics
 
@@ -267,18 +158,6 @@ from tritium_lib.mqtt import TritiumTopics
 topics = TritiumTopics(site_id="home")
 topics.edge_heartbeat("esp32-001")
 # -> "tritium/home/edge/esp32-001/heartbeat"
-topics.camera_detections("cam-front")
-# -> "tritium/home/cameras/cam-front/detections"
-```
-
-### Event bus
-
-```python
-from tritium_lib.events import EventBus
-
-bus = EventBus()
-bus.subscribe("device.#", lambda e: print(e.topic, e.data))
-bus.publish("device.heartbeat", {"id": "esp32-001"})
 ```
 
 ### Target tracking
@@ -293,7 +172,7 @@ targets = tracker.get_all()
 # -> [TrackedTarget(target_id='ble_aabbccddeeff', ...)]
 ```
 
-### Addon skeleton
+### Write an addon
 
 ```python
 from tritium_lib.sdk import AddonBase, AddonContext
@@ -312,47 +191,44 @@ class MyAddon(AddonBase):
         pass
 ```
 
-### Standalone runner
+### Headless runner
 
 ```python
 from tritium_lib.sdk import BaseRunner
 
 class MyRunner(BaseRunner):
-    """Headless mode for Raspberry Pi deployment."""
+    """Standalone mode for Raspberry Pi deployment."""
     async def run(self):
         while True:
             reading = await self.collect()
             await self.publish(reading)
 ```
 
-## JavaScript / Frontend Library
+## How to extend it
 
-The `web/` directory contains 54 vanilla ES modules (no build step) used by tritium-sc and addons. See [web/README.md](web/README.md) for the full module list, import examples, and extension patterns.
+**New data type?** Add a Pydantic model to `models/`. All consumers see it immediately.
 
-| Package | Modules | Purpose |
-|---------|---------|---------|
-| `web/map/` | 31 | Tactical map: coords, layers, draw tools, battle HUD, asset types, effects, 3D units, providers |
-| `web/sim/` | 15 | City simulation: IDM car-following, MOBIL lane changes, pedestrians, protest, traffic, weather |
-| `web/panels/` | 2 | Draggable/resizable panel system with tabs |
-| `web/css/` | 2 | Cyberpunk theme stylesheets (cybercore v1 + v2) |
-| root | 6 | EventBus, ReactiveStore, TritiumWebSocket, CommandPalette, LayoutManager, utils |
+**New sensor integration?** Build an addon using the SDK. See [tritium-addons](https://github.com/Valpatel/tritium-addons) for examples.
 
-SC serves these at `/lib/` via a StaticFiles mount or symlink.
+**New intelligence?** Add a module to `intelligence/` that subscribes to the event bus and publishes enrichments.
+
+**New map feature?** Add a JS module to `web/map/` — it's vanilla ES modules, no build step.
+
+**New simulation behavior?** Add to `sim_engine/` — the same models and events that real sensors use.
 
 ## Tests
 
 ```bash
-pytest tests/                          # Run all 401 test files (~15,200 tests)
+pytest tests/                          # Run all tests
 pytest tests/ -x --tb=short           # Stop on first failure
-pytest tests/test_models.py           # Single file
 pytest tests/ -k "tracking"           # Pattern match
 ```
 
-## Used By
+## Used by
 
-- **[tritium-sc](https://github.com/Valpatel/tritium-sc)** -- Command Center (FastAPI + vanilla JS, 26 plugins, AI commander Amy)
-- **[tritium-edge](https://github.com/Valpatel/tritium-edge)** -- ESP32-S3 firmware (Tritium-OS) + fleet server
-- **[tritium-addons](https://github.com/Valpatel/tritium-addons)** -- HackRF SDR, Meshtastic LoRa, and future addons
+- **[tritium-sc](https://github.com/Valpatel/tritium-sc)** — Command Center
+- **[tritium-edge](https://github.com/Valpatel/tritium-edge)** — ESP32-S3 firmware + fleet server
+- **[tritium-addons](https://github.com/Valpatel/tritium-addons)** — Sensor addons
 
 ## License
-AGPL-3.0 -- Copyright 2026 Matthew Valancy / Valpatel Software LLC
+AGPL-3.0 — Copyright 2026 Matthew Valancy / Valpatel Software LLC

@@ -1,8 +1,8 @@
 # Tritium-Lib — Shared Platform Library
 
-The foundation library for the entire Tritium ecosystem. What started as a small models + MQTT package is now a 63-package, 200K+ line platform powering tritium-sc (Command Center), tritium-edge (firmware + fleet), and tritium-addons. Python 3.12+ backend with 54 vanilla JS modules for city simulation and UI.
+The foundation library for the entire Tritium ecosystem. Models, target tracking, sensor fusion, simulation engine, addon SDK, and shared JS frontend components. Python 3.12+ backend with vanilla JS modules for city simulation and UI.
 
-**Zero shims:** SC imports directly from `tritium_lib` — no wrappers, no adapters.
+SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 
 **Parent context:** See [../CLAUDE.md](../CLAUDE.md) for full system architecture and conventions.
 
@@ -11,19 +11,6 @@ The foundation library for the entire Tritium ecosystem. What started as a small
 - **No co-authors on commits** — never add "Co-Authored-By" lines
 - Remote: `git@github.com:Valpatel/tritium-lib.git`
 - Copyright: Created by Matthew Valancy / Copyright 2026 Valpatel Software LLC / AGPL-3.0
-
-## By the Numbers
-
-| Metric | Count |
-|--------|-------|
-| Python packages | 63 |
-| Python modules | 449 |
-| Pydantic models | 101 files |
-| JS modules (web/) | 54 |
-| Test files (Python) | 401 |
-| Tests collected | 15,574 |
-| JSON lookup databases | 10 |
-| Standalone demos | 22 |
 
 ## Package Map (by capability area)
 
@@ -35,14 +22,14 @@ The foundation library for the entire Tritium ecosystem. What started as a small
 | `mqtt` | Topic hierarchy `tritium/{site}/{domain}/{device}/{type}` |
 | `auth` | JWT tokens, API key management |
 | `config` | Pydantic base settings for service configuration |
-| `store` | Persistent data stores (BLE, targets, async, time-series) — 9 modules |
-| `sdk` | Addon SDK: AddonBase, AddonContext, DeviceRegistry, protocols, BaseRunner, GeoJSON layers — 15 modules |
+| `store` | Persistent data stores (BLE, targets, async, time-series) |
+| `sdk` | Addon SDK: AddonBase, AddonContext, DeviceRegistry, protocols, BaseRunner, GeoJSON layers |
 | `utils` | Shared helpers |
 
-### Intelligence & Fusion (38+ modules)
+### Intelligence & Fusion
 | Package | Purpose |
 |---------|---------|
-| `intelligence` | Position estimator, RL metrics, fusion metrics, acoustic classifier, anomaly detection, behavior analysis — **39 modules** |
+| `intelligence` | Position estimator, RL metrics, fusion metrics, acoustic classifier, anomaly detection, behavior analysis |
 | `fusion` | Multi-sensor target fusion (BLE + camera + WiFi -> unique UUID) |
 | `inference` | ML inference pipelines, model management |
 | `classifier` | Multi-signal BLE/WiFi device type classification with fingerprint databases |
@@ -51,34 +38,34 @@ The foundation library for the entire Tritium ecosystem. What started as a small
 ### Tracking & Situational Awareness
 | Package | Purpose |
 |---------|---------|
-| `tracking` | Target tracking, correlation, track management — 27 modules |
+| `tracking` | Target tracking, correlation, track management |
 | `sitaware` | **Capstone module.** Situational awareness engine — fuses all subsystems into a unified operating picture |
 | `tactical` | Tactical overlays, force disposition |
 | `geo` | Coordinate transforms, camera projection, haversine |
-| `indoor` | Indoor positioning, WiFi fingerprinting, floorplan mapping — 4 modules |
+| `indoor` | Indoor positioning, WiFi fingerprinting, floorplan mapping |
 | `areas` | Geofence zones, area monitoring |
 
 ### Sensors & Signals
 | Package | Purpose |
 |---------|---------|
-| `signals` | Signal processing, spectrum analysis — 4 modules |
+| `signals` | Signal processing, spectrum analysis |
 | `sdr` | SDRDevice base, SDRInfo, SweepResult |
 | `comint` | Communications intelligence |
-| `protocols` | Protocol decoders and handlers — 7 modules |
+| `protocols` | Protocol decoders and handlers |
 | `nodes` | Sensor node management |
 
-### Simulation Engine (153 modules)
+### Simulation Engine
 | Package | Purpose |
 |---------|---------|
-| `sim_engine` | Full city simulation: IDM car-following, MOBIL lane changes, Bezier intersection turns, NPC daily routines, Epstein protest/riot model, weather, traffic lights, sensor bridge — **153 Python modules** |
+| `sim_engine` | Full city simulation: IDM car-following, MOBIL lane changes, Bezier intersection turns, NPC daily routines, Epstein protest/riot model, weather, traffic lights, sensor bridge |
 | `synthetic` | Synthetic data generation for training and testing |
 | `scenarios` | Pre-built simulation scenarios |
 
-### JS Simulation (web/sim/ — 15 modules)
-Browser-side city simulation: `idm.js`, `mobil.js`, `vehicle.js`, `pedestrian.js`, `road-network.js`, `traffic-controller.js`, `procedural-city.js`, `protest-engine.js`, `protest-scenario.js`, `daily-routine.js`, `schedule-executor.js`, `weather.js`, `spatial-grid.js`, `identity.js`, `index.js`
+### JS Simulation (web/sim/)
+Browser-side city simulation: IDM, MOBIL, vehicles, pedestrians, road networks, traffic control, procedural city, protest engine, daily routines, weather, spatial grid, identity system
 
-### JS UI & Map Framework (web/ — 39 modules)
-Shared UI: `layout-manager.js`, `command-palette.js`, `events.js`, `store.js`, `utils.js`, `websocket.js`, plus `panels/` (panel-manager, tabbed-container), `map/` (31 modules: layer-manager, data-provider, draw-tools, overlays, coords, battle-hud, unit-markers, asset-types, effects, three-units, providers), and `css/`
+### JS UI & Map Framework (web/)
+Shared frontend: layout manager, command palette, event bus, reactive store, WebSocket, plus panel system and tactical map (MapLibre GL, effects, asset types, 3D units, providers)
 
 ### Operations & C2
 | Package | Purpose |
@@ -86,18 +73,18 @@ Shared UI: `layout-manager.js`, `command-palette.js`, `events.js`, `store.js`, `
 | `c2` | Command and control abstractions |
 | `mission` | Mission planning and execution |
 | `fleet` | Fleet management |
-| `deployment` | Deployment orchestration — 6 modules |
+| `deployment` | Deployment orchestration |
 | `scheduler` | Task scheduling |
 | `actions` | Action definitions and execution |
 
 ### Data & Analysis
 | Package | Purpose |
 |---------|---------|
-| `data` | 10 JSON lookup databases (BLE fingerprints, OUI, WiFi SSID patterns, etc.) |
+| `data` | JSON lookup databases (BLE fingerprints, OUI, WiFi SSID patterns, etc.) |
 | `analytics` | Statistical analysis and reporting |
 | `reporting` | Report generation |
-| `recording` | Data recording and playback — 3 modules |
-| `evidence` | Evidence collection and chain-of-custody — 6 modules |
+| `recording` | Data recording and playback |
+| `evidence` | Evidence collection and chain-of-custody |
 | `map_data` | Map tile and geodata management |
 | `geoint` | Geospatial intelligence |
 | `data_exchange` | Import/export formats |
@@ -105,8 +92,8 @@ Shared UI: `layout-manager.js`, `command-palette.js`, `events.js`, `store.js`, `
 ### Security & Compliance
 | Package | Purpose |
 |---------|---------|
-| `privacy` | PII handling, data redaction, retention policies — 5 modules |
-| `audit` | Audit logging, compliance trails — 4 modules |
+| `privacy` | PII handling, data redaction, retention policies |
+| `audit` | Audit logging, compliance trails |
 | `threat_intel` | Threat intelligence feeds |
 
 ### Infrastructure & Integration
@@ -120,41 +107,38 @@ Shared UI: `layout-manager.js`, `command-palette.js`, `events.js`, `store.js`, `
 | `network` | Network topology and discovery |
 | `notifications` | Notification model and NotificationManager |
 | `firmware` | FirmwareFlasher, ESP32Flasher, MeshtasticFlasher |
-| `interfaces` | Abstract interfaces for plugin integration — 4 modules |
+| `interfaces` | Abstract interfaces for plugin integration |
 | `pipeline` | Data processing pipelines |
 | `rules` | Rule engine for automation |
 | `alerting` | Alert routing and escalation |
 | `monitoring` | System health monitoring |
 | `quality` | Data quality checks |
-| `visualization` | Rendering helpers — 5 modules |
+| `visualization` | Rendering helpers |
 | `web` | Cyberpunk HTML theme engine and dashboard components |
-| `testing` | Visual regression, flicker detection, ESP32 automation — 7 modules |
+| `testing` | Visual regression, flicker detection, ESP32 automation |
 
 ## Directory Structure
 
 ```
 tritium-lib/
-├── src/tritium_lib/          # 63 Python packages, 449 modules
-│   ├── models/               # 101 Pydantic model files (THE data contracts)
-│   ├── sim_engine/           # 153 modules — full city simulation (largest package)
-│   ├── intelligence/         # 39 modules — ML, RL, acoustic, anomaly
-│   ├── tracking/             # 27 modules — target tracking & correlation
-│   ├── sdk/                  # 15 modules — addon development kit
-│   ├── store/                # 9 modules — persistence layer
-│   ├── protocols/            # 7 modules — protocol decoders
-│   ├── ... (55 more packages)
-│   └── sitaware/             # Capstone — unified operating picture
-├── web/                      # 54 JS modules
-│   ├── sim/                  # 15 modules — city sim (IDM, MOBIL, pedestrian, protest)
-│   ├── map/                  # 31 modules — map rendering, effects, asset types, 3D units
-│   ├── panels/               # Panel manager, tabbed containers
-│   ├── css/                  # Cyberpunk stylesheets
-│   └── *.js                  # Layout, events, store, utils, websocket
-├── tests/                    # 401 Python test files, 15,574 tests total
-│   ├── sim_engine/           # Sim engine tests
-│   ├── intelligence/         # Intelligence tests
-│   ├── models/               # Model tests
-│   └── test_*.py
+├── src/tritium_lib/           Python packages
+│   ├── models/                Pydantic data contracts — THE source of truth
+│   ├── tracking/              Target tracking & correlation
+│   ├── fusion/                Multi-sensor fusion
+│   ├── intelligence/          ML, RL, acoustic, anomaly detection
+│   ├── sitaware/              Capstone — unified operating picture
+│   ├── sim_engine/            Tactical simulation (AI, combat, physics, world)
+│   ├── sdk/                   Addon development kit
+│   ├── classifier/            BLE/WiFi device classification
+│   ├── graph/                 KuzuDB entity-relationship storage
+│   └── ...                    Plus: alerting, auth, cot, events, fleet, geo,
+│                              mqtt, protocols, signals, store, and more
+├── web/                       Shared JS/CSS frontend
+│   ├── sim/                   City sim (IDM, MOBIL, pedestrian, protest)
+│   ├── map/                   Tactical map (MapLibre GL, effects, 3D units)
+│   ├── panels/                Draggable panel system
+│   └── css/                   Cyberpunk stylesheets
+├── tests/                     Test suite (mirrors package structure)
 └── pyproject.toml
 ```
 
@@ -165,7 +149,7 @@ tritium-lib/
 pip install -e .              # Core only
 pip install -e ".[full]"      # All optional deps
 
-# Run all tests (15,574 tests, ~2s collection)
+# Run all tests
 pytest tests/
 
 # Quick smoke test
