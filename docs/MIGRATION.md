@@ -345,4 +345,4 @@ These SC `engine/` files contain SC-specific logic and have no lib equivalent:
 - `engine/tactical/escalation.py` -- ThreatClassifier + AutoDispatcher
 - `engine/tactical/geo_protocols.py` -- Geo protocol interfaces
 - `engine/tactical/street_graph.py` -- OSM road graph + A*
-- `engine/tactical/obstacles.py` -- Building obstacles
+- ~~`engine/tactical/obstacles.py`~~ -- Extracted to `tritium_lib.tracking.obstacles`
