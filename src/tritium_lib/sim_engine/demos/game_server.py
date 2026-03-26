@@ -3087,7 +3087,7 @@ GAME_HTML = r"""<!DOCTYPE html>
 <title>Tritium Sim Engine — 3D Tactical</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
+body { background: #1a2030; overflow: hidden; font-family: 'Courier New', monospace; }
 canvas { display: block; }
 
 /* ---- HUD overlay ---- */
@@ -3291,7 +3291,7 @@ const CYAN    = 0x00f0ff;
 const MAGENTA = 0xff2a6d;
 const GREEN   = 0x05ffa1;
 const YELLOW  = 0xfcee0a;
-const VOID_BG = 0x0a0a0f;
+const VOID_BG = 0x1a2030;  // Brighter dark blue — scene stays visible
 
 const MAP_SIZE = 500;
 
@@ -3337,7 +3337,7 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 2.0;
 document.body.prepend(renderer.domElement);
 
 // OrbitControls
@@ -3353,9 +3353,9 @@ controls.update();
 // =========================================================================
 // Lights
 // =========================================================================
-scene.add(new THREE.AmbientLight(0x8899bb, 0.65));
+scene.add(new THREE.AmbientLight(0x99aacc, 1.0));
 
-const sunLight = new THREE.DirectionalLight(0xffeedd, 1.0);
+const sunLight = new THREE.DirectionalLight(0xffeedd, 1.5);
 sunLight.position.set(200, 400, 100);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.set(2048, 2048);
@@ -3365,11 +3365,11 @@ sunLight.shadow.camera.top = MAP_SIZE;
 sunLight.shadow.camera.bottom = -MAP_SIZE;
 scene.add(sunLight);
 
-scene.add(new THREE.HemisphereLight(0x00f0ff, 0x112244, 0.4));
+scene.add(new THREE.HemisphereLight(0x00f0ff, 0x334466, 0.8));
 
 // Cyan accent lights at corners
 for (const [cx, cz] of [[50, 50], [450, 50], [50, 450], [450, 450]]) {
-  const pl = new THREE.PointLight(0x00f0ff, 0.3, 150);
+  const pl = new THREE.PointLight(0x00f0ff, 0.6, 200);
   pl.position.set(cx, 30, cz);
   scene.add(pl);
 }
@@ -3379,7 +3379,7 @@ for (const [cx, cz] of [[50, 50], [450, 50], [50, 450], [450, 450]]) {
 // =========================================================================
 const groundGeo = new THREE.PlaneGeometry(MAP_SIZE + 100, MAP_SIZE + 100);
 const groundMat = new THREE.MeshStandardMaterial({
-  color: 0x111118, roughness: 0.9, metalness: 0.1
+  color: 0x3a3a48, roughness: 0.8, metalness: 0.05
 });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2;
@@ -3388,12 +3388,12 @@ ground.receiveShadow = true;
 scene.add(ground);
 
 // Grid lines
-const gridHelper = new THREE.GridHelper(MAP_SIZE, 10, 0x1a1a2e, 0x12121a);
+const gridHelper = new THREE.GridHelper(MAP_SIZE, 10, 0x3a3a55, 0x2a2a3a);
 gridHelper.position.set(0, 0.01, 0);
 scene.add(gridHelper);
 
 // Fine grid
-const fineGrid = new THREE.GridHelper(MAP_SIZE, 50, 0x0e0e14, 0x0e0e14);
+const fineGrid = new THREE.GridHelper(MAP_SIZE, 50, 0x222230, 0x222230);
 fineGrid.position.set(0, 0.005, 0);
 scene.add(fineGrid);
 
@@ -3430,9 +3430,9 @@ const matVehHostile = new THREE.MeshStandardMaterial({ color: 0xa01848, roughnes
 const matVehDestroyed = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
 const matVehCabin = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.7, metalness: 0.3 });
 const matProjectile = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-const matBuilding = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05, emissive: 0x111122, emissiveIntensity: 0.3 });
-const matBuildingRoof = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9, emissive: 0x0a0a15, emissiveIntensity: 0.2 });
-const matBuildingDestroyed = new THREE.MeshStandardMaterial({ color: 0x3a1010, roughness: 0.9 });
+const matBuilding = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.05, emissive: 0x2a2a44, emissiveIntensity: 1.0 });
+const matBuildingRoof = new THREE.MeshStandardMaterial({ color: 0x3a3a50, roughness: 0.8, emissive: 0x1a1a30, emissiveIntensity: 0.5 });
+const matBuildingDestroyed = new THREE.MeshStandardMaterial({ color: 0x5a2020, roughness: 0.9, emissive: 0x2a0808, emissiveIntensity: 0.3 });
 const matRing = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.5 });
 
 // Crowd: instanced cylinders so civilians are visible at any zoom level
@@ -3457,7 +3457,7 @@ crowdInstFleeing.castShadow  = true;
 scene.add(crowdInstCalm, crowdInstAgitated, crowdInstRioting, crowdInstFleeing);
 
 // Building colors (cyberpunk palette)
-const BLDG_COLORS = [0x2a2a3e, 0x1e2d3e, 0x2e1e3e, 0x1a2e2e, 0x2e2a1e, 0x3e2e2e];
+const BLDG_COLORS = [0x4a4a60, 0x3a4d60, 0x504060, 0x3a5050, 0x504a3a, 0x604a4a];
 
 // =========================================================================
 // Projectile trail system
@@ -3502,7 +3502,7 @@ function renderMapFeatures(features) {
   if (!features || features.length === 0) return;
   const mapGroup = new THREE.Group();
   mapGroup.name = 'map-features';
-  const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.95 });
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x4a4a50, roughness: 0.85 });
   const roadLineMat = new THREE.LineBasicMaterial({ color: 0xffffaa, transparent: true, opacity: 0.25 });
   const riverMat = new THREE.MeshStandardMaterial({ color: 0x0a3a66, roughness: 0.1, transparent: true, opacity: 0.72 });
   const treeMat = new THREE.MeshStandardMaterial({ color: 0x1a5c1a, roughness: 0.9 });
