@@ -10,8 +10,10 @@ the proof that:
      frames that pass these same checks
 """
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy", reason="numpy required for visual tests")
+cv2 = pytest.importorskip("cv2", reason="opencv required for visual tests")
 
 from tritium_lib.testing.visual import VisualCheck, Severity
 

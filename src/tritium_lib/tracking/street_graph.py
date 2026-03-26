@@ -23,9 +23,24 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import httpx
-import networkx as nx
-from loguru import logger
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
+try:
+    import networkx as nx
+except ImportError:
+    nx = None  # type: ignore[assignment]
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+
+_HAS_HTTPX = httpx is not None
+_HAS_NETWORKX = nx is not None
 
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 _USER_AGENT = "TRITIUM/0.1.0"
@@ -66,7 +81,10 @@ def _fetch_roads(
     """Fetch road segments from Overpass API (synchronous).
 
     Returns a list of OSM way elements with geometry.
+    Raises RuntimeError if httpx is not installed.
     """
+    if not _HAS_HTTPX:
+        raise RuntimeError("httpx is required for Overpass API access: pip install httpx")
     query = (
         f'[out:json];'
         f'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|'
@@ -100,6 +118,8 @@ class StreetGraph:
     """
 
     def __init__(self) -> None:
+        if not _HAS_NETWORKX:
+            raise RuntimeError("networkx is required for StreetGraph: pip install networkx")
         self.graph: Optional[nx.Graph] = None
         self._node_positions: dict[int, tuple[float, float]] = {}
         # Spatial index: sorted list of (x, y, node_id) for nearest-node queries

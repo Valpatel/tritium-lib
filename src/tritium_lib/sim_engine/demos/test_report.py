@@ -69,7 +69,7 @@ def discover_sim_engine_modules() -> list[ModuleInfo]:
 
     for root, dirs, files in os.walk(sim_engine_dir):
         # Skip __pycache__ and test directories
-        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", "demos")]
         for fname in sorted(files):
             if not fname.endswith(".py") or fname.startswith("_"):
                 continue

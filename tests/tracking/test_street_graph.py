@@ -16,8 +16,10 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import networkx as nx
 import pytest
+
+httpx = pytest.importorskip("httpx", reason="httpx required for street graph tests")
+nx = pytest.importorskip("networkx", reason="networkx required for street graph tests")
 
 from tritium_lib.tracking.street_graph import (
     StreetGraph,

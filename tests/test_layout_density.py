@@ -7,8 +7,10 @@ Creates synthetic frames that simulate:
   d) A clean UI with proper spacing (passes)
 """
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy", reason="numpy required for visual tests")
+cv2 = pytest.importorskip("cv2", reason="opencv required for visual tests")
 
 from tritium_lib.testing.visual import VisualCheck, Severity
 

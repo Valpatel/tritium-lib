@@ -152,7 +152,7 @@ class TestGameConstruction:
         friendly = [u for u in world.units.values() if u.alliance.value == "friendly"]
         hostile = [u for u in world.units.values() if u.alliance.value == "hostile"]
         assert len(friendly) >= 6  # 4 infantry + 1 sniper + 1 medic
-        assert len(hostile) >= 8   # 6 infantry + 2 heavy
+        assert len(hostile) >= 5   # 4 infantry + 1 heavy (rebalanced Wave 185)
 
     def test_vehicles_spawned(self, game_state: GameState) -> None:
         world = game_state.world

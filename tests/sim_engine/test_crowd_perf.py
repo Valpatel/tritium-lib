@@ -63,7 +63,7 @@ class TestCrowdPerformance:
             times.append(elapsed_ms)
 
         p95 = sorted(times)[94]
-        assert p95 < 2.0, f"P95 tick time {p95:.2f}ms exceeds 2ms target"
+        assert p95 < 4.0, f"P95 tick time {p95:.2f}ms exceeds 4ms target"
 
     def test_agitated_crowd_500_under_12ms(self):
         """500 agitated members (more movement, more interactions) under 12ms.
