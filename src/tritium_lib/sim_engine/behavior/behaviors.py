@@ -354,7 +354,6 @@ class UnitBehaviors:
                 if getattr(h, "crowd_role", None) == "instigator" and \
                    getattr(h, "instigator_state", None) == "active":
                     if self._comms is not None:
-                        from .comms import SIGNAL_CONTACT
                         self._comms.emit_contact(
                             drone.target_id, drone.position, drone.alliance,
                             enemy_pos=h.position,
@@ -1269,7 +1268,6 @@ class UnitBehaviors:
             dy = f.position[1] - scout.position[1]
             dist = math.hypot(dx, dy)
             if dist <= scan_range:
-                from .comms import SIGNAL_CONTACT
                 self._comms.emit_contact(
                     scout.target_id, scout.position, scout.alliance,
                     enemy_pos=f.position,
