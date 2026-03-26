@@ -1,6 +1,6 @@
 # Tritium-Lib — Shared Platform Library
 
-The foundation library for the entire Tritium ecosystem. What started as a small models + MQTT package is now a 63-package, 200K+ line platform powering tritium-sc (Command Center), tritium-edge (firmware + fleet), and tritium-addons. Python 3.12+ backend with 120+ vanilla JS modules for city simulation and UI.
+The foundation library for the entire Tritium ecosystem. What started as a small models + MQTT package is now a 63-package, 200K+ line platform powering tritium-sc (Command Center), tritium-edge (firmware + fleet), and tritium-addons. Python 3.12+ backend with 54 vanilla JS modules for city simulation and UI.
 
 **Zero shims:** SC imports directly from `tritium_lib` — no wrappers, no adapters.
 
@@ -19,12 +19,11 @@ The foundation library for the entire Tritium ecosystem. What started as a small
 | Python packages | 63 |
 | Python modules | 449 |
 | Pydantic models | 101 files |
-| JS modules (web + sim) | 124 |
+| JS modules (web/) | 54 |
 | Test files (Python) | 401 |
-| Test files (JS) | 24 |
 | Tests collected | 15,574 |
 | JSON lookup databases | 10 |
-| Standalone demos | 16 |
+| Standalone demos | 22 |
 
 ## Package Map (by capability area)
 
@@ -43,7 +42,7 @@ The foundation library for the entire Tritium ecosystem. What started as a small
 ### Intelligence & Fusion (38+ modules)
 | Package | Purpose |
 |---------|---------|
-| `intelligence` | Position estimator, RL metrics, fusion metrics, acoustic classifier, anomaly detection, behavior analysis — **38 modules**, the largest Python package |
+| `intelligence` | Position estimator, RL metrics, fusion metrics, acoustic classifier, anomaly detection, behavior analysis — **39 modules** |
 | `fusion` | Multi-sensor target fusion (BLE + camera + WiFi -> unique UUID) |
 | `inference` | ML inference pipelines, model management |
 | `classifier` | Multi-signal BLE/WiFi device type classification with fingerprint databases |
@@ -52,7 +51,7 @@ The foundation library for the entire Tritium ecosystem. What started as a small
 ### Tracking & Situational Awareness
 | Package | Purpose |
 |---------|---------|
-| `tracking` | Target tracking, correlation, track management — 26 modules |
+| `tracking` | Target tracking, correlation, track management — 27 modules |
 | `sitaware` | **Capstone module.** Situational awareness engine — fuses all subsystems into a unified operating picture |
 | `tactical` | Tactical overlays, force disposition |
 | `geo` | Coordinate transforms, camera projection, haversine |
@@ -68,18 +67,18 @@ The foundation library for the entire Tritium ecosystem. What started as a small
 | `protocols` | Protocol decoders and handlers — 7 modules |
 | `nodes` | Sensor node management |
 
-### Simulation Engine (110 modules)
+### Simulation Engine (153 modules)
 | Package | Purpose |
 |---------|---------|
-| `sim_engine` | Full city simulation: IDM car-following, MOBIL lane changes, Bezier intersection turns, NPC daily routines, Epstein protest/riot model, weather, traffic lights, sensor bridge — **110 Python modules** |
+| `sim_engine` | Full city simulation: IDM car-following, MOBIL lane changes, Bezier intersection turns, NPC daily routines, Epstein protest/riot model, weather, traffic lights, sensor bridge — **153 Python modules** |
 | `synthetic` | Synthetic data generation for training and testing |
 | `scenarios` | Pre-built simulation scenarios |
 
 ### JS Simulation (web/sim/ — 15 modules)
 Browser-side city simulation: `idm.js`, `mobil.js`, `vehicle.js`, `pedestrian.js`, `road-network.js`, `traffic-controller.js`, `procedural-city.js`, `protest-engine.js`, `protest-scenario.js`, `daily-routine.js`, `schedule-executor.js`, `weather.js`, `spatial-grid.js`, `identity.js`, `index.js`
 
-### JS UI Framework (web/ — 9 modules)
-Shared UI: `layout-manager.js`, `command-palette.js`, `events.js`, `store.js`, `utils.js`, `websocket.js`, plus `panels/` (panel-manager, tabbed-container), `map/`, and `css/`
+### JS UI & Map Framework (web/ — 39 modules)
+Shared UI: `layout-manager.js`, `command-palette.js`, `events.js`, `store.js`, `utils.js`, `websocket.js`, plus `panels/` (panel-manager, tabbed-container), `map/` (31 modules: layer-manager, data-provider, draw-tools, overlays, coords, battle-hud, unit-markers, asset-types, effects, three-units, providers), and `css/`
 
 ### Operations & C2
 | Package | Purpose |
@@ -137,25 +136,25 @@ Shared UI: `layout-manager.js`, `command-palette.js`, `events.js`, `store.js`, `
 tritium-lib/
 ├── src/tritium_lib/          # 63 Python packages, 449 modules
 │   ├── models/               # 101 Pydantic model files (THE data contracts)
-│   ├── intelligence/         # 38 modules — ML, RL, acoustic, anomaly
-│   ├── sim_engine/           # 110 modules — full city simulation
-│   ├── tracking/             # 26 modules — target tracking & correlation
+│   ├── sim_engine/           # 153 modules — full city simulation (largest package)
+│   ├── intelligence/         # 39 modules — ML, RL, acoustic, anomaly
+│   ├── tracking/             # 27 modules — target tracking & correlation
 │   ├── sdk/                  # 15 modules — addon development kit
 │   ├── store/                # 9 modules — persistence layer
 │   ├── protocols/            # 7 modules — protocol decoders
 │   ├── ... (55 more packages)
 │   └── sitaware/             # Capstone — unified operating picture
-├── web/                      # 124 JS modules
-│   ├── sim/                  # City sim (IDM, MOBIL, pedestrian, protest)
+├── web/                      # 54 JS modules
+│   ├── sim/                  # 15 modules — city sim (IDM, MOBIL, pedestrian, protest)
+│   ├── map/                  # 31 modules — map rendering, effects, asset types, 3D units
 │   ├── panels/               # Panel manager, tabbed containers
-│   ├── map/                  # Map rendering
 │   ├── css/                  # Cyberpunk stylesheets
 │   └── *.js                  # Layout, events, store, utils, websocket
-├── tests/                    # 401 Python test files, 24 JS test files
+├── tests/                    # 401 Python test files, 15,574 tests total
 │   ├── sim_engine/           # Sim engine tests
 │   ├── intelligence/         # Intelligence tests
 │   ├── models/               # Model tests
-│   └── test_*.py             # 15,574 tests total
+│   └── test_*.py
 └── pyproject.toml
 ```
 
@@ -166,7 +165,7 @@ tritium-lib/
 pip install -e .              # Core only
 pip install -e ".[full]"      # All optional deps
 
-# Run all tests (15,574 tests, ~3s collection)
+# Run all tests (15,574 tests, ~2s collection)
 pytest tests/
 
 # Quick smoke test
@@ -182,13 +181,13 @@ python -m tritium_lib.sim_engine.demos.demo_city
 python -m tritium_lib.intelligence.demos.pipeline_demo
 ```
 
-### Demos (16 standalone scripts)
+### Demos (22 standalone scripts)
 Located inside their respective packages under `demos/` subdirectories:
 - `sitaware` — Unified operating picture demo
 - `tracking` — Target tracking pipeline
-- `sim_engine` — City sim (5 demos: city, full, RF, steering, performance)
+- `sim_engine` — City sim (10 demos: city, full, RF, steering, performance, backend, integrated, game server, serve city3d, test report)
 - `intelligence` — ML pipeline demo
-- `graph` — KuzuDB entity relationships
+- `graph` — KuzuDB entity relationships (2 demos)
 - `cot` — TAK/ATAK interop
 - `mqtt` — Topic hierarchy
 - `auth` — JWT workflow
