@@ -9,6 +9,7 @@ export { MOBIL_DEFAULTS, findNeighborsInLane, evaluateLaneChange, decideLaneChan
 export { SpatialGrid } from './spatial-grid.js';
 export { RoadNetwork } from './road-network.js';
 export { SimVehicle } from './vehicle.js';
+export { StraightSegment, TurnSegment, CarPath, computeTurnControlFromHeadings } from './car-path.js';
 export { SimPedestrian, PED_ACTIVITY, PED_COLORS } from './pedestrian.js';
 export { TrafficController, TrafficControllerManager } from './traffic-controller.js';
 export { ProtestEngine } from './protest-engine.js';
