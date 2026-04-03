@@ -479,11 +479,17 @@ import math as _math
 
 
 class UnitAISystem:
-    """Per-tick AI layer that runs behavior trees, steering, and formations.
+    """Per-tick AI layer that runs behavior trees, steering, formations, and
+    TacticsEngine-driven tactical decision-making.
 
     Runs *before* world.tick() so decisions influence the world's own unit AI.
     The world AI still fires weapons and resolves damage; this layer enriches
     movement decisions and exposes AI state to the frontend.
+
+    The TacticsEngine assesses threats for each unit, evaluates the tactical
+    situation (health, ammo, morale, cover, LOS), and selects actions like
+    engage, suppress, flank, retreat, throw_grenade, take_cover, or overwatch.
+    Each unit's tactical decision includes a human-readable reasoning string.
 
     Attributes:
         _trees: behavior tree per unit_id
@@ -493,6 +499,7 @@ class UnitAISystem:
         _squad_formation_type: current formation per squad
         _cover_cache: last-found cover position per unit_id
         _engage_timers: how long a unit has been engaging (for flank trigger)
+        _tactics_engines: per-unit TacticsEngine with personality-based tuning
     """
 
     # Formation types assigned to squads by alliance
@@ -511,6 +518,21 @@ class UnitAISystem:
     _FLANK_STALL_TIME = 8.0  # seconds before triggering flank
     _FORMATION_SPACING = 5.0
 
+    # TacticsEngine personality mapping by unit type and alliance
+    _TACTICS_PERSONALITY: dict[tuple[str, str], str] = {
+        ("sniper", "friendly"): "sniper",
+        ("sniper", "hostile"): "sniper",
+        ("medic", "friendly"): "medic",
+        ("medic", "hostile"): "medic",
+        ("heavy", "friendly"): "veteran",
+        ("heavy", "hostile"): "berserker",
+        ("scout", "friendly"): "sniper",  # cautious, disciplined
+        ("scout", "hostile"): "recruit",
+        ("infantry", "friendly"): "veteran",
+        ("infantry", "hostile"): "recruit",
+        ("engineer", "friendly"): "leader",
+    }
+
     def __init__(self) -> None:
         self._trees: dict[str, BTNode] = {}
         self._bt_contexts: dict[str, dict] = {}
@@ -519,6 +541,8 @@ class UnitAISystem:
         self._squad_formation_type: dict[str, FormationType] = {}
         self._cover_cache: dict[str, tuple[float, float] | None] = {}
         self._engage_timers: dict[str, float] = {}
+        # TacticsEngine instances per unit_id with personality-based tuning
+        self._tactics_engines: dict[str, TacticsEngine] = {}
         # AI state exported to the frame: unit_id -> {decision, formation, in_cover, ...}
         self.ai_state: dict[str, dict] = {}
 
@@ -527,7 +551,7 @@ class UnitAISystem:
     # ------------------------------------------------------------------
 
     def register_unit(self, uid: str, unit_type: str, alliance: str) -> None:
-        """Create a behavior tree for this unit."""
+        """Create a behavior tree and TacticsEngine for this unit."""
         if uid in self._trees:
             return
         if alliance == "hostile":
@@ -541,6 +565,14 @@ class UnitAISystem:
         self._bt_contexts[uid] = {}
         self._wander_velocities[uid] = (1.0, 0.0)
         self._engage_timers[uid] = 0.0
+
+        # TacticsEngine with personality based on unit type and alliance
+        from tritium_lib.sim_engine.ai.tactics import AIPersonality, PERSONALITY_PRESETS
+        personality_key = self._TACTICS_PERSONALITY.get(
+            (unit_type, alliance), "recruit"
+        )
+        personality = PERSONALITY_PRESETS.get(personality_key, AIPersonality())
+        self._tactics_engines[uid] = TacticsEngine(personality=personality)
 
     def register_squad(self, squad_id: str, alliance: str,
                        waypoints: list[tuple[float, float]]) -> None:
@@ -675,6 +707,64 @@ class UnitAISystem:
             tree.tick(ctx)
             decision = ctx.get("decision", "idle")
 
+            # TacticsEngine: assess threats and decide tactical action
+            # This enriches the behavior tree's high-level decision with
+            # detailed tactical reasoning (flanking, cover, grenades, etc.)
+            tactical_action_data: dict | None = None
+            tactics = self._tactics_engines.get(uid)
+            if tactics is not None and unit.unit_type.value in (
+                "infantry", "heavy", "sniper", "medic", "scout", "engineer",
+            ):
+                # Build enemy dicts for TacticsEngine.assess_threats()
+                tac_enemies = []
+                for t in threats:
+                    tac_enemies.append({
+                        "id": t["id"],
+                        "pos": t["pos"],
+                        "damage": 5.0,  # estimated DPS
+                        "facing": 0.0,
+                        "suppressing": t.get("health", 1.0) > 0.7,
+                        "health": t.get("health", 1.0),
+                        "last_seen": sim_time,
+                    })
+
+                # Assess threats
+                assessed = tactics.assess_threats(unit.position, tac_enemies, dt)
+
+                # Build cover positions from obstacles
+                cover_positions = [obs[0] for obs in obstacles]
+
+                # Build allies list for evaluate_situation
+                allies_for_tactics = [
+                    {"pos": o.position}
+                    for oid, o in alive_units.items()
+                    if oid != uid and o.alliance == unit.alliance
+                    and steering_distance(unit.position, o.position) <= 40.0
+                ]
+
+                # Evaluate situation
+                morale_val = unit.state.suppression  # 0 = no suppression = high morale
+                effective_morale = max(0.0, 1.0 - morale_val)
+                unit_dict = {
+                    "pos": unit.position,
+                    "health": health_ratio,
+                    "ammo": ammo_ratio,
+                    "morale": effective_morale,
+                    "squad_order": None,
+                }
+                situation = tactics.evaluate_situation(
+                    unit_dict, assessed, allies_for_tactics, cover_positions,
+                )
+
+                # Decide tactical action
+                tac_action = tactics.decide_action(situation)
+                tactical_action_data = {
+                    "action_type": tac_action.action_type,
+                    "priority": round(tac_action.priority, 2),
+                    "reasoning": tac_action.reasoning,
+                    "target_id": tac_action.target_id,
+                }
+
             # Apply steering based on decision
             new_pos, new_heading = self._apply_steering(
                 uid, unit, decision, threats, obstacles, formation_targets, dt,
@@ -717,7 +807,7 @@ class UnitAISystem:
             if unit.squad_id and unit.squad_id in self._squad_formation_type:
                 formation_label = self._squad_formation_type[unit.squad_id].value
 
-            new_ai_state[uid] = {
+            unit_ai_data: dict[str, Any] = {
                 "decision": decision,
                 "formation": formation_label,
                 "in_cover": in_cover,
@@ -726,6 +816,9 @@ class UnitAISystem:
                 "bt_status": ctx.get("state", ""),
                 "in_formation_slot": uid in formation_targets,
             }
+            if tactical_action_data is not None:
+                unit_ai_data["tactical_action"] = tactical_action_data
+            new_ai_state[uid] = unit_ai_data
 
         self.ai_state = new_ai_state
         return new_ai_state
@@ -1560,6 +1653,15 @@ def game_tick(gs: GameState, dt: float = 0.1) -> dict[str, Any]:
     # Ensure destruction/building data is always in frame for Three.js
     if gs.world.destruction is not None and "destruction" not in frame:
         frame["destruction"] = gs.world.destruction.to_three_js()
+
+    # 1b. Environment snapshot — full state for frontend rendering
+    # Includes time-of-day (hour, is_day, light_level), weather (type,
+    # intensity, wind, temperature), and combat modifiers (visibility,
+    # accuracy, movement, detection range). Also includes a human-readable
+    # description string like "Clear day, light wind from NW, 22C".
+    env_full = gs.world.environment.snapshot()
+    env_full["description"] = gs.world.environment.describe()
+    frame["environment"] = env_full
 
     # 2. Detection tick
     if gs.detection is not None:
