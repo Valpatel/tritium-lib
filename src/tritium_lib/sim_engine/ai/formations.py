@@ -710,6 +710,318 @@ class CoverMovement:
 
 
 # ---------------------------------------------------------------------------
+# FormationManager — multi-formation coordinator
+# ---------------------------------------------------------------------------
+
+
+class FormationManager:
+    """Manage multiple named formations and update all member positions each tick.
+
+    Central coordinator that tracks which units belong to which formations,
+    handles assignment/removal, and computes target positions for every
+    unit in a single ``tick()`` call.
+
+    Usage::
+
+        mgr = FormationManager()
+        mgr.create_formation("alpha", FormationType.WEDGE, spacing=3.0)
+        mgr.assign("alpha", "unit_1", is_leader=True)
+        mgr.assign("alpha", "unit_2")
+        mgr.assign("alpha", "unit_3")
+
+        # Each tick:
+        positions = {"unit_1": (10, 0), "unit_2": (8, 2), "unit_3": (8, -2)}
+        targets = mgr.tick(0.1, positions)
+        # targets == {"unit_1": ..., "unit_2": ..., "unit_3": ...}
+    """
+
+    def __init__(self) -> None:
+        # formation_id -> dict with config fields + member list
+        self._formations: dict[str, dict] = {}
+        # unit_id -> formation_id (reverse lookup)
+        self._unit_to_formation: dict[str, str] = {}
+
+    # -- Formation lifecycle ---------------------------------------------------
+
+    def create_formation(
+        self,
+        formation_id: str,
+        formation_type: FormationType,
+        spacing: float = 3.0,
+    ) -> None:
+        """Create a new named formation.
+
+        Args:
+            formation_id: Unique name for this formation.
+            formation_type: Shape of the formation.
+            spacing: Distance between adjacent slots in meters.
+
+        Raises:
+            ValueError: If formation_id already exists.
+        """
+        if formation_id in self._formations:
+            raise ValueError(f"Formation '{formation_id}' already exists")
+        self._formations[formation_id] = {
+            "type": formation_type,
+            "spacing": spacing,
+            "leader": None,
+            "members": [],  # ordered list of unit IDs (leader first when set)
+        }
+
+    def remove_formation(self, formation_id: str) -> bool:
+        """Remove a formation and unassign all its members.
+
+        Returns True if the formation existed and was removed.
+        """
+        info = self._formations.pop(formation_id, None)
+        if info is None:
+            return False
+        for uid in info["members"]:
+            self._unit_to_formation.pop(uid, None)
+        return True
+
+    def set_formation_type(
+        self,
+        formation_id: str,
+        formation_type: FormationType,
+    ) -> None:
+        """Change the shape of an existing formation."""
+        info = self._formations.get(formation_id)
+        if info is None:
+            raise KeyError(f"Formation '{formation_id}' not found")
+        info["type"] = formation_type
+
+    def set_spacing(self, formation_id: str, spacing: float) -> None:
+        """Change the spacing of an existing formation."""
+        info = self._formations.get(formation_id)
+        if info is None:
+            raise KeyError(f"Formation '{formation_id}' not found")
+        info["spacing"] = spacing
+
+    # -- Unit assignment -------------------------------------------------------
+
+    def assign(
+        self,
+        formation_id: str,
+        unit_id: str,
+        is_leader: bool = False,
+    ) -> None:
+        """Add a unit to a formation.
+
+        If the unit is already in another formation it is removed from
+        the old one first.
+
+        Args:
+            formation_id: Target formation.
+            unit_id: Unit to assign.
+            is_leader: If True, this unit becomes the formation leader
+                (slot 0). There can only be one leader; setting a new
+                leader demotes the previous one to a regular member.
+
+        Raises:
+            KeyError: If formation_id does not exist.
+        """
+        info = self._formations.get(formation_id)
+        if info is None:
+            raise KeyError(f"Formation '{formation_id}' not found")
+
+        # Remove from previous formation if assigned elsewhere
+        old_fid = self._unit_to_formation.get(unit_id)
+        if old_fid is not None and old_fid != formation_id:
+            self._remove_from_formation(old_fid, unit_id)
+
+        # Add to new formation
+        if unit_id not in info["members"]:
+            if is_leader:
+                info["members"].insert(0, unit_id)
+                info["leader"] = unit_id
+            else:
+                info["members"].append(unit_id)
+        else:
+            # Already in this formation — just update leader flag
+            if is_leader:
+                info["members"].remove(unit_id)
+                info["members"].insert(0, unit_id)
+                info["leader"] = unit_id
+
+        self._unit_to_formation[unit_id] = formation_id
+
+    def unassign(self, unit_id: str) -> bool:
+        """Remove a unit from whatever formation it belongs to.
+
+        Returns True if the unit was in a formation.
+        """
+        fid = self._unit_to_formation.pop(unit_id, None)
+        if fid is None:
+            return False
+        self._remove_from_formation(fid, unit_id)
+        return True
+
+    def _remove_from_formation(self, formation_id: str, unit_id: str) -> None:
+        info = self._formations.get(formation_id)
+        if info is None:
+            return
+        if unit_id in info["members"]:
+            info["members"].remove(unit_id)
+        if info["leader"] == unit_id:
+            # Promote next member to leader, or clear
+            info["leader"] = info["members"][0] if info["members"] else None
+
+    # -- Queries ---------------------------------------------------------------
+
+    def get_formation(self, unit_id: str) -> str | None:
+        """Return the formation ID a unit belongs to, or None."""
+        return self._unit_to_formation.get(unit_id)
+
+    def get_members(self, formation_id: str) -> list[str]:
+        """Return the member list for a formation (leader first)."""
+        info = self._formations.get(formation_id)
+        if info is None:
+            return []
+        return list(info["members"])
+
+    def get_leader(self, formation_id: str) -> str | None:
+        """Return the leader unit ID for a formation, or None."""
+        info = self._formations.get(formation_id)
+        if info is None:
+            return None
+        return info["leader"]
+
+    def list_formations(self) -> list[str]:
+        """Return all formation IDs."""
+        return list(self._formations.keys())
+
+    @property
+    def formation_count(self) -> int:
+        """Number of active formations."""
+        return len(self._formations)
+
+    @property
+    def unit_count(self) -> int:
+        """Total number of assigned units across all formations."""
+        return len(self._unit_to_formation)
+
+    def formation_info(self, formation_id: str) -> dict | None:
+        """Return a summary dict for a formation, or None if not found.
+
+        Keys: formation_id, type, spacing, leader, members, member_count.
+        """
+        info = self._formations.get(formation_id)
+        if info is None:
+            return None
+        return {
+            "formation_id": formation_id,
+            "type": info["type"].value,
+            "spacing": info["spacing"],
+            "leader": info["leader"],
+            "members": list(info["members"]),
+            "member_count": len(info["members"]),
+        }
+
+    # -- Tick (update all formations) ------------------------------------------
+
+    def tick(
+        self,
+        dt: float,
+        unit_positions: dict[str, Vec2],
+    ) -> dict[str, Vec2]:
+        """Compute formation target positions for all managed units.
+
+        For each formation, the leader's current position and heading
+        (derived from their movement since last tick) are used to place
+        all members at their formation slots.
+
+        Args:
+            dt: Time step in seconds (reserved for future smoothing).
+            unit_positions: Current world positions keyed by unit ID.
+
+        Returns:
+            Target positions for every managed unit. Units whose
+            current position is not in *unit_positions* are skipped.
+        """
+        targets: dict[str, Vec2] = {}
+
+        for fid, info in self._formations.items():
+            members = info["members"]
+            if not members:
+                continue
+
+            # Determine leader position
+            leader_id = info["leader"] or members[0]
+            leader_pos = unit_positions.get(leader_id)
+            if leader_pos is None:
+                continue
+
+            # Compute facing from leader's movement direction
+            # Use centroid of all members as a reference for heading.
+            # If we have at least one follower with a position, face
+            # away from the average follower (i.e., forward).
+            facing = 0.0
+            follower_positions: list[Vec2] = []
+            for uid in members:
+                if uid != leader_id:
+                    pos = unit_positions.get(uid)
+                    if pos is not None:
+                        follower_positions.append(pos)
+
+            if follower_positions:
+                # Face away from the centroid of followers
+                cx = sum(p[0] for p in follower_positions) / len(follower_positions)
+                cy = sum(p[1] for p in follower_positions) / len(follower_positions)
+                dx = leader_pos[0] - cx
+                dy = leader_pos[1] - cy
+                if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                    facing = math.atan2(dy, dx)
+
+            # Build formation config
+            config = FormationConfig(
+                formation_type=info["type"],
+                spacing=info["spacing"],
+                facing=facing,
+                leader_pos=leader_pos,
+                num_members=len(members),
+            )
+
+            slots = get_formation_positions(config)
+
+            # Map slots to member IDs
+            for i, uid in enumerate(members):
+                if uid in unit_positions and i < len(slots):
+                    targets[uid] = slots[i]
+
+        return targets
+
+    # -- Serialization ---------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize the full manager state to a JSON-friendly dict."""
+        formations = {}
+        for fid, info in self._formations.items():
+            formations[fid] = {
+                "type": info["type"].value,
+                "spacing": info["spacing"],
+                "leader": info["leader"],
+                "members": list(info["members"]),
+            }
+        return {
+            "formations": formations,
+            "unit_assignments": dict(self._unit_to_formation),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FormationManager":
+        """Reconstruct a FormationManager from a serialized dict."""
+        mgr = cls()
+        for fid, fdata in data.get("formations", {}).items():
+            ftype = FormationType(fdata["type"])
+            mgr.create_formation(fid, ftype, spacing=fdata.get("spacing", 3.0))
+            leader = fdata.get("leader")
+            for uid in fdata.get("members", []):
+                mgr.assign(fid, uid, is_leader=(uid == leader))
+        return mgr
+
+
+# ---------------------------------------------------------------------------
 # to_three_js helpers — serialise formation state for the Three.js viewer
 # ---------------------------------------------------------------------------
 

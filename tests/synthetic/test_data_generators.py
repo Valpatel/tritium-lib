@@ -4,6 +4,7 @@
 """Tests for tritium_lib.synthetic.data_generators."""
 
 import pytest
+from tritium_lib.geo import approx_distance_m
 from tritium_lib.synthetic.data_generators import (
     BLEScanGenerator,
     MeshtasticNodeGenerator,
@@ -209,5 +210,5 @@ def test_trilat_gen_tick_publishes_per_node():
 
 
 def test_trilat_gen_haversine():
-    dist = TrilaterationDemoGenerator._haversine_m(37.0, -122.0, 37.001, -122.0)
+    dist = approx_distance_m(37.0, -122.0, 37.001, -122.0)
     assert 100 < dist < 120  # ~111m per 0.001 degree latitude

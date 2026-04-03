@@ -37,18 +37,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterator, Optional
 
+from tritium_lib.geo import approx_distance_m as _haversine_m
+
 
 # ── Constants ────────────────────────────────────────────────────────────
 
 _DEG_PER_METER_LAT = 1.0 / 111320.0
 _DEG_PER_METER_LNG_37 = 1.0 / (111320.0 * math.cos(math.radians(37.0)))
-
-
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Approximate distance in meters between two lat/lon points."""
-    dlat = (lat2 - lat1) * 111320.0
-    dlon = (lon2 - lon1) * 111320.0 * math.cos(math.radians((lat1 + lat2) / 2.0))
-    return math.sqrt(dlat * dlat + dlon * dlon)
 
 
 def _random_mac(rng: random.Random) -> str:

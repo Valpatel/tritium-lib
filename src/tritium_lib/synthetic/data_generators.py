@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from tritium_lib.geo import approx_distance_m as _approx_distance_m
+
 logger = logging.getLogger("synthetic.data_generators")
 
 # ── BLE device pool ─────────────────────────────────────────────────────
@@ -587,7 +589,7 @@ class TrilaterationDemoGenerator(_BaseGenerator):
         for node in _TRILAT_NODES:
             devices = []
             for t in self._targets:
-                dist_m = self._haversine_m(
+                dist_m = _approx_distance_m(
                     node["lat"], node["lon"], t.lat, t.lon
                 )
                 # Path-loss RSSI model: RSSI = tx_power - 10 * n * log10(d)
@@ -629,9 +631,3 @@ class TrilaterationDemoGenerator(_BaseGenerator):
             "tick": self._tick_count,
         })
 
-    @staticmethod
-    def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Approximate distance in meters between two lat/lon points."""
-        dlat = (lat2 - lat1) * 111320
-        dlon = (lon2 - lon1) * 111320 * math.cos(math.radians((lat1 + lat2) / 2))
-        return math.sqrt(dlat * dlat + dlon * dlon)

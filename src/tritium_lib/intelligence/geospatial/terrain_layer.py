@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from tritium_lib.geo import point_in_polygon as _point_in_polygon
 from tritium_lib.intelligence.geospatial._deps import (
     HAS_NUMPY,
     HAS_PILLOW,
@@ -600,37 +601,5 @@ class TerrainLayer:
             return []
 
 
-def _point_in_polygon(
-    x: float,
-    y: float,
-    polygon: list[tuple[float, float]],
-) -> bool:
-    """Ray-casting point-in-polygon test.
 
-    Casts a horizontal ray from (x, y) to +infinity and counts how
-    many polygon edges it crosses. Odd = inside, even = outside.
-
-    Args:
-        x: test point X (longitude)
-        y: test point Y (latitude)
-        polygon: list of (x, y) vertices forming a closed ring
-
-    Returns:
-        True if point is inside the polygon.
-    """
-    n = len(polygon)
-    if n < 3:
-        return False
-
-    inside = False
-    j = n - 1
-    for i in range(n):
-        xi, yi = polygon[i]
-        xj, yj = polygon[j]
-
-        # Check if the ray crosses this edge
-        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
-            inside = not inside
-        j = i
-
-    return inside
+# _point_in_polygon imported from tritium_lib.geo (consolidated Wave 195)

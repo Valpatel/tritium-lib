@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Sequence
 
+from tritium_lib.geo import haversine_distance as _haversine_m
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1070,21 +1072,6 @@ def _device_similarity(a: DeviceDimension, b: DeviceDimension) -> float:
     rotation_match = 1.0 if a.mac_rotation_detected == b.mac_rotation_detected else 0.0
 
     return 0.4 * type_sim + 0.3 * src_sim + 0.3 * rotation_match
-
-
-def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Haversine distance in meters between two lat/lng points."""
-    R = 6_371_000.0  # Earth radius in meters
-    dlat = math.radians(lat2 - lat1)
-    dlng = math.radians(lng2 - lng1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlng / 2) ** 2
-    )
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
 
 
 def _centroid(obs_list: list[Observation]) -> Optional[tuple[float, float]]:

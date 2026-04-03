@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from tritium_lib.geo import approx_distance_m as _haversine_m
+
 # ── Constants ──────────────────────────────────────────────────────────
 
 # Realistic BLE device templates grouped by type
@@ -172,13 +174,6 @@ def _move_position(
     dlat = math.cos(heading) * dist_m * _DEG_PER_METER_LAT
     dlng = math.sin(heading) * dist_m * _DEG_PER_METER_LNG_37
     return lat + dlat, lng + dlng, heading
-
-
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Approximate distance in meters between two lat/lon points."""
-    dlat = (lat2 - lat1) * 111320.0
-    dlon = (lon2 - lon1) * 111320.0 * math.cos(math.radians((lat1 + lat2) / 2.0))
-    return math.sqrt(dlat * dlat + dlon * dlon)
 
 
 # ── BLE Sighting Generator ────────────────────────────────────────────

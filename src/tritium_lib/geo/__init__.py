@@ -241,6 +241,27 @@ def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> fl
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def approx_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Fast approximate distance in meters using equirectangular projection.
+
+    Accurate within ~0.5% for distances under 100 km at mid-latitudes.
+    Significantly faster than full Haversine — use for short-range checks
+    (e.g., scenario generation, behavior profiling, sim engines).
+
+    Args:
+        lat1: Latitude of first point (degrees).
+        lon1: Longitude of first point (degrees).
+        lat2: Latitude of second point (degrees).
+        lon2: Longitude of second point (degrees).
+
+    Returns:
+        Approximate distance in meters.
+    """
+    dlat = (lat2 - lat1) * 111320.0
+    dlon = (lon2 - lon1) * 111320.0 * math.cos(math.radians((lat1 + lat2) / 2.0))
+    return math.sqrt(dlat * dlat + dlon * dlon)
+
+
 # ---------------------------------------------------------------------------
 # WGS84 ellipsoid constants and precise projection
 # ---------------------------------------------------------------------------

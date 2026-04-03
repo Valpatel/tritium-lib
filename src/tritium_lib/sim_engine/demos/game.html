@@ -2025,6 +2025,75 @@ function generateDemoFrame() {
     { id: 'forest_4', type: 'forest', x: -55, y:  70, w: 26, h: 26 },
   ] : [];
 
+  // AI behaviors — synthetic decisions per unit (UnitAISystem.to_three_js() format)
+  const demoAIBehaviorDecisions = [
+    'engage', 'patrol', 'seek_cover', 'wander', 'flee', 'regroup', 'idle', 'defend',
+  ];
+  const demoAIUnits = {};
+  for (const u of units) {
+    const decisionIdx = (demoTick + u.id.charCodeAt(u.id.length - 1)) % demoAIBehaviorDecisions.length;
+    const decision = demoTick < 50 ? 'patrol' :
+      (u.alliance === 'hostile' ? 'engage' : demoAIBehaviorDecisions[decisionIdx]);
+    demoAIUnits[u.id] = {
+      decision: decision,
+      formation: 'wedge',
+      in_cover: decision === 'seek_cover',
+      threat_count: u.alliance === 'hostile' ? 3 : (demoTick > 50 ? 2 : 0),
+      engage_timer: decision === 'engage' ? (demoTick % 20) * 0.1 : 0,
+      bt_status: '',
+      in_formation_slot: u.alliance === 'friendly',
+    };
+  }
+  const demoAIBehaviors = {
+    units: demoAIUnits,
+    formation_movers: {},
+  };
+
+  // Morale — per-unit morale data (MoraleEngine.to_three_js() format)
+  const demoMoraleStates = ['high', 'steady', 'shaken', 'broken', 'fanatical'];
+  const demoMoraleAuraColors = {
+    'fanatical': '#05ffa1', 'high': '#05ffa1', 'steady': '#fcee0a',
+    'shaken': '#ff8800', 'broken': '#ff2a6d',
+  };
+  const demoMoraleUnits = [];
+  let friendlyMoraleSum = 0, hostileMoraleSum = 0;
+  let friendlyCount = 0, hostileCount = 0;
+  for (const u of units) {
+    // Morale degrades over time for hostiles, stays high for friendlies
+    let moraleVal;
+    let stateIdx;
+    if (u.alliance === 'friendly') {
+      moraleVal = Math.max(40, 90 - demoTick * 0.05 + Math.sin(demoTick * 0.1) * 10);
+      stateIdx = moraleVal > 70 ? 0 : (moraleVal > 50 ? 1 : 2);
+      friendlyMoraleSum += moraleVal;
+      friendlyCount++;
+    } else {
+      moraleVal = Math.max(15, 80 - demoTick * 0.1 - Math.random() * 10);
+      stateIdx = moraleVal > 60 ? 1 : (moraleVal > 35 ? 2 : 3);
+      hostileMoraleSum += moraleVal;
+      hostileCount++;
+    }
+    const moraleState = demoMoraleStates[stateIdx];
+    demoMoraleUnits.push({
+      id: u.id,
+      morale: Math.round(moraleVal),
+      state: moraleState,
+      alliance: u.alliance,
+      is_commander: false,
+      accuracy_mod: 1.0,
+      speed_mod: 1.0,
+      aura_color: demoMoraleAuraColors[moraleState] || '#ffffff',
+      aura_intensity: moraleVal / 100,
+    });
+  }
+  const demoMorale = {
+    units: demoMoraleUnits,
+    alliance_averages: {
+      friendly: friendlyCount > 0 ? Math.round(friendlyMoraleSum / friendlyCount) : 70,
+      hostile: hostileCount > 0 ? Math.round(hostileMoraleSum / hostileCount) : 50,
+    },
+  };
+
   return {
     tick: demoTick, time: t,
     units, projectiles, effects, crowd,
@@ -2038,6 +2107,8 @@ function generateDemoFrame() {
     intel: demoIntel,
     buildings: demoBuildings,
     map_features: demoMapFeatures.length > 0 ? demoMapFeatures : undefined,
+    ai_behaviors: demoAIBehaviors,
+    morale: demoMorale,
     ui: {
       wave: Math.floor(demoTick / 200) + 1,
       score: Math.floor(demoTick * 15),
@@ -3400,7 +3471,8 @@ function updateEconomy(economy) {
 }
 
 // =========================================================================
-// AI behaviors panel — unit decision state from frame.ai_behaviors (ai/*)
+// AI behaviors panel + 3D indicators — from frame.ai_behaviors (ai/*)
+// Updates both the HUD panel and floating 3D behavior sprites above units.
 // =========================================================================
 function updateAIBehaviors(aiBehaviors) {
   const panel = document.getElementById('ai-panel');
@@ -3415,6 +3487,7 @@ function updateAIBehaviors(aiBehaviors) {
   }
   panel.classList.add('visible');
 
+  // --- HUD panel text list ---
   listEl.innerHTML = '';
   for (const uid of keys) {
     const info = units[uid];
@@ -3426,6 +3499,39 @@ function updateAIBehaviors(aiBehaviors) {
       '<span class="ai-unit-id">' + shortId + '</span>' +
       '<span class="' + decClass + '">' + decision + inCover + '</span>' +
       '</div>';
+  }
+
+  // --- 3D floating behavior indicator sprites above each unit ---
+  const allUnitKeys = Object.keys(units);
+  for (const uid of allUnitKeys) {
+    const info = units[uid];
+    const decision = info.decision || 'idle';
+
+    // Look up unit position from cached unitPositions
+    const upos = unitPositions.get(uid);
+    if (!upos) continue;
+
+    let bEntry = behaviorIndicators.get(uid);
+
+    // Create or rebuild sprite if decision changed
+    if (!bEntry || bEntry.decision !== decision) {
+      // Remove old sprite
+      if (bEntry) {
+        scene.remove(bEntry.sprite);
+        if (bEntry.sprite.material) {
+          if (bEntry.sprite.material.map) bEntry.sprite.material.map.dispose();
+          bEntry.sprite.material.dispose();
+        }
+      }
+      const sprite = makeBehaviorSprite(decision);
+      scene.add(sprite);
+      bEntry = { sprite, decision };
+      behaviorIndicators.set(uid, bEntry);
+    }
+
+    // Position the behavior indicator below the morale bar
+    const bhvY = upos.y + 2.5 * UNIT_BASE_SCALE - 2.2;
+    bEntry.sprite.position.set(upos.x, bhvY, upos.z);
   }
 }
 
@@ -4285,24 +4391,37 @@ function updateMorale(moraleData) {
   if (!moraleData) return;
   _lastMoraleData = moraleData;
 
-  // --- Per-unit morale tint on 3D models ---
+  // --- Per-unit morale tint on 3D models + 3D morale bars ---
   const moraleUnits = moraleData.units || [];
   for (const mu of moraleUnits) {
     const cached = unitModelCache.get(mu.id);
-    if (!cached || !cached._colorable) continue;
+    if (cached && cached._colorable) {
+      // Parse aura_color hex string (#RRGGBB) to a Three.js color
+      const auraHex = parseInt((mu.aura_color || '#ffffff').replace('#', ''), 16);
+      const intensity = mu.aura_intensity || 0.5;
 
-    // Parse aura_color hex string (#RRGGBB) to a Three.js color
-    const auraHex = parseInt((mu.aura_color || '#ffffff').replace('#', ''), 16);
-    const intensity = mu.aura_intensity || 0.5;
+      // Blend the morale tint with the existing unit color
+      // Low morale = more red/orange tint, high = green glow
+      for (const mat of cached._colorable) {
+        const base = mat.color.clone();
+        const tint = new THREE.Color(auraHex);
+        // Subtle blend: lerp 15% toward the morale color
+        base.lerp(tint, 0.15 + (1.0 - intensity) * 0.15);
+        mat.color.copy(base);
+      }
+    }
 
-    // Blend the morale tint with the existing unit color
-    // Low morale = more red/orange tint, high = green glow
-    for (const mat of cached._colorable) {
-      const base = mat.color.clone();
-      const tint = new THREE.Color(auraHex);
-      // Subtle blend: lerp 15% toward the morale color
-      base.lerp(tint, 0.15 + (1.0 - intensity) * 0.15);
-      mat.color.copy(base);
+    // --- Update per-unit 3D moraleBar ---
+    const labelEntry = unitLabels.get(mu.id);
+    if (labelEntry && labelEntry.moraleBar) {
+      const moraleVal = Math.max(0, Math.min(1, (mu.morale || 70) / 100));
+      labelEntry.moraleBar.fill.scale.x = Math.max(0.01, moraleVal);
+      labelEntry.moraleBar.fill.position.x = -(1.75 * (1 - moraleVal));
+
+      // Color from morale state
+      const moraleState = mu.state || 'steady';
+      const moraleColor = MORALE_STATE_COLORS[moraleState] || MORALE_STATE_COLORS['steady'];
+      labelEntry.moraleBar.fillMat.color.setHex(moraleColor);
     }
   }
 

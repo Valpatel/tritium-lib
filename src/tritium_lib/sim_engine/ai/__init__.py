@@ -125,6 +125,7 @@ from .behavior_profiles import (
 from .formations import (
     CoverMovement,
     FormationConfig,
+    FormationManager,
     FormationMover,
     FormationType,
     PathPlanner,
@@ -234,6 +235,7 @@ __all__ = [
     # Formations
     "CoverMovement",
     "FormationConfig",
+    "FormationManager",
     "FormationMover",
     "FormationType",
     "PathPlanner",
