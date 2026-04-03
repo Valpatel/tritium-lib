@@ -251,7 +251,9 @@ class GameMode:
         """Record a civilian harm event (civil unrest mode).
 
         Increments civilian_harm_count, subtracts 500 from de_escalation_score,
-        and triggers defeat at civilian_harm_limit (default 5).
+        and triggers defeat at civilian_harm_limit (default 5) in civil_unrest
+        mode only. In other modes, the counters are updated but defeat is not
+        triggered for civilian harm.
         """
         self.civilian_harm_count += 1
         self.de_escalation_score -= 500
@@ -260,7 +262,9 @@ class GameMode:
             "harm_limit": self.civilian_harm_limit,
             "de_escalation_score": self.de_escalation_score,
         })
-        if self.civilian_harm_count >= self.civilian_harm_limit and self.state == "active":
+        if (self.civilian_harm_count >= self.civilian_harm_limit
+                and self.state == "active"
+                and self.game_mode_type == "civil_unrest"):
             self.state = "defeat"
             self._event_bus.publish("game_over", self._build_game_over_data(
                 "defeat", reason="excessive_force",
@@ -269,12 +273,16 @@ class GameMode:
             self._publish_state_change()
 
     def on_infrastructure_damaged(self, amount: float) -> None:
-        """Apply damage to infrastructure health (drone swarm mode).
+        """Apply damage to infrastructure health (drone swarm mode only).
 
-        Reduces infrastructure_health by amount and triggers defeat at 0.
+        Reduces infrastructure_health by amount. In drone_swarm mode,
+        triggers defeat when infrastructure reaches 0. In other modes,
+        the counter is still reduced but does not trigger game over.
         """
         self.infrastructure_health = max(0.0, self.infrastructure_health - amount)
-        if self.infrastructure_health <= 0.0 and self.state == "active":
+        if (self.infrastructure_health <= 0.0
+                and self.state == "active"
+                and self.game_mode_type == "drone_swarm"):
             self.state = "defeat"
             self._event_bus.publish("game_over", self._build_game_over_data(
                 "defeat", reason="infrastructure_destroyed",
