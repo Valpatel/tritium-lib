@@ -491,6 +491,63 @@ except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.collision not available: {_e}")
 
 # ---------------------------------------------------------------------------
+# IDM: Intelligent Driver Model (car-following)
+# ---------------------------------------------------------------------------
+try:
+    from .idm import (
+        IDMParams,
+        IDM_DEFAULTS,
+        ROAD_SPEEDS,
+        VEHICLE_IDM_PROFILES,
+        IDMStepResult,
+        idm_acceleration,
+        idm_free_flow,
+        idm_step,
+        get_idm_for_road,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.idm not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# MOBIL: Lane change model
+# ---------------------------------------------------------------------------
+try:
+    from .mobil import (
+        MOBILParams,
+        MOBIL_DEFAULTS,
+        LaneNeighbors,
+        LaneChangeResult,
+        LaneChangeDecision,
+        find_neighbors_in_lane,
+        evaluate_lane_change,
+        decide_lane_change,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.mobil not available: {_e}")
+
+# ---------------------------------------------------------------------------
+# Traffic: IDM + MOBIL city traffic simulation
+# ---------------------------------------------------------------------------
+try:
+    from .traffic import (
+        RoadEdge,
+        RouteStep,
+        VehicleSubtype,
+        VehicleProfile,
+        VehiclePurpose,
+        TrafficVehicle,
+        TrafficManager,
+        VEHICLE_PROFILES as TRAFFIC_VEHICLE_PROFILES,
+        create_traffic_vehicle,
+        tick_vehicle,
+        advance_to_next_edge,
+        set_red_light,
+        park_vehicle,
+    )
+except ImportError as _e:  # pragma: no cover
+    import warnings as _w; _w.warn(f"sim_engine.traffic not available: {_e}")
+
+# ---------------------------------------------------------------------------
 # Physics: Collision, rigid bodies, vehicle dynamics
 # ---------------------------------------------------------------------------
 try:
@@ -895,4 +952,18 @@ __all__ = [
     "SpawnPattern", "EnemyComposition", "SpawnPoint", "UnitTemplate",
     "WaveDesigner", "SpawnerEngine",
     "DIFFICULTY_CURVES", "WAVE_PRESETS", "run_preset",
+    # --- IDM ---
+    "IDMParams", "IDM_DEFAULTS", "ROAD_SPEEDS", "VEHICLE_IDM_PROFILES",
+    "IDMStepResult", "idm_acceleration", "idm_free_flow", "idm_step",
+    "get_idm_for_road",
+    # --- MOBIL ---
+    "MOBILParams", "MOBIL_DEFAULTS", "LaneNeighbors",
+    "LaneChangeResult", "LaneChangeDecision",
+    "find_neighbors_in_lane", "evaluate_lane_change", "decide_lane_change",
+    # --- Traffic ---
+    "RoadEdge", "RouteStep", "VehicleSubtype", "VehicleProfile",
+    "VehiclePurpose", "TrafficVehicle", "TrafficManager",
+    "TRAFFIC_VEHICLE_PROFILES",
+    "create_traffic_vehicle", "tick_vehicle", "advance_to_next_edge",
+    "set_red_light", "park_vehicle",
 ]
