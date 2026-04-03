@@ -68,7 +68,7 @@ from tritium_lib.sim_engine.vehicles import (
     VEHICLE_TEMPLATES,
     create_vehicle,
 )
-from tritium_lib.sim_engine.terrain import HeightMap, LineOfSight
+from tritium_lib.sim_engine.terrain import HeightMap, LineOfSight, MovementCost
 from tritium_lib.sim_engine.environment import (
     Environment,
     TimeOfDay,
@@ -138,6 +138,7 @@ class World:
         grid_h = max(1, int(map_h))
 
         self.heightmap = HeightMap(grid_w, grid_h, cell_size=1.0)
+        self.movement_cost = MovementCost(self.heightmap)
         self.los = LineOfSight(self.heightmap) if self.config.enable_los else None
 
         self.environment = Environment(
@@ -342,11 +343,26 @@ class World:
         if weapon is None:
             return None
 
-        # Apply environmental accuracy modifier
+        # Apply environmental accuracy modifier (weather + wind)
         acc_mod = self.environment.accuracy_modifier()
+
+        # Elevation advantage: shooting from higher ground improves accuracy.
+        # Each metre of height advantage tightens spread by 1%, capped at 20%.
+        shooter_elev = self.heightmap.get_elevation_world(unit.position)
+        target_elev = self.heightmap.get_elevation_world(target_pos)
+        elev_diff = shooter_elev - target_elev  # positive = shooter is higher
+        elev_bonus = 1.0
+        if elev_diff > 0:
+            # Higher ground: up to 20% accuracy bonus
+            elev_bonus = min(1.2, 1.0 + 0.01 * elev_diff)
+        elif elev_diff < -5.0:
+            # Significant low-ground disadvantage: up to 10% penalty
+            elev_bonus = max(0.9, 1.0 + 0.005 * elev_diff)
+
+        combined_acc = acc_mod * elev_bonus
         proj = self.projectile_sim.fire(
             weapon, unit.position, target_pos,
-            accuracy_modifier=1.0 / max(0.1, acc_mod),
+            accuracy_modifier=1.0 / max(0.1, combined_acc),
             rng=random.Random(self._rng.randint(0, 2**31)),
             source_id=unit_id,
         )
@@ -624,7 +640,9 @@ class World:
                                 d = distance(unit.position, order.target_pos)
                                 if d > 5.0:
                                     direction = normalize(direction)
-                                    move_speed = unit.effective_speed() * self.environment.movement_speed_modifier()
+                                    weather_mod = self.environment.movement_speed_modifier()
+                                    terrain_mod = self.movement_cost.max_speed_modifier(unit.position)
+                                    move_speed = unit.effective_speed() * weather_mod * terrain_mod
                                     dx = direction[0] * move_speed * dt
                                     dy = direction[1] * move_speed * dt
                                     unit.position = (unit.position[0] + dx, unit.position[1] + dy)
@@ -688,13 +706,22 @@ class World:
     # -- Movement helpers -----------------------------------------------------
 
     def _move_unit_toward(self, unit: Any, target: Vec2, dt: float, status: str = "moving") -> None:
-        """Move *unit* one step toward *target* at its effective speed."""
+        """Move *unit* one step toward *target* at its effective speed.
+
+        Speed is modulated by:
+          - Unit morale (via effective_speed)
+          - Weather conditions (via environment.movement_speed_modifier)
+          - Terrain slope (via movement_cost.max_speed_modifier)
+        """
         direction = _sub(target, unit.position)
         d = distance(unit.position, target)
         if d < 0.01:
             return
         direction = normalize(direction)
-        move_speed = unit.effective_speed() * self.environment.movement_speed_modifier()
+        # Stack weather and terrain modifiers onto base speed
+        weather_mod = self.environment.movement_speed_modifier()
+        terrain_mod = self.movement_cost.max_speed_modifier(unit.position)
+        move_speed = unit.effective_speed() * weather_mod * terrain_mod
         step = min(move_speed * dt, d)
         unit.position = (
             unit.position[0] + direction[0] * step,
@@ -1274,6 +1301,7 @@ class WorldBuilder:
                 seed=seed,
                 amplitude=self._terrain_noise["amplitude"],
             )
+            world.movement_cost = MovementCost(world.heightmap)
             if self._config.enable_los:
                 world.los = LineOfSight(world.heightmap)
 
