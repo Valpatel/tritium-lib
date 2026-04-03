@@ -461,6 +461,32 @@ const MOOD_COLORS = {
   fleeing:  0x888888,
 };
 
+// AI behavior decision -> { icon (unicode), color (hex string), label }
+const BEHAVIOR_ICONS = {
+  'engage':     { icon: '\u2694', color: '#ff2a6d', label: 'ENGAGE' },
+  'attack':     { icon: '\u2694', color: '#ff2a6d', label: 'ATTACK' },
+  'flee':       { icon: '\u2190', color: '#fcee0a', label: 'FLEE' },
+  'retreat':    { icon: '\u2190', color: '#fcee0a', label: 'RETREAT' },
+  'hide':       { icon: '\u25BC', color: '#fcee0a', label: 'HIDE' },
+  'seek_cover': { icon: '\u25A0', color: '#00f0ff', label: 'COVER' },
+  'patrol':     { icon: '\u2192', color: '#05ffa1', label: 'PATROL' },
+  'wander':     { icon: '\u2022', color: '#888888', label: 'WANDER' },
+  'idle':       { icon: '\u2014', color: '#555555', label: 'IDLE' },
+  'regroup':    { icon: '\u25C6', color: '#00f0ff', label: 'REGROUP' },
+  'flank':      { icon: '\u21B7', color: '#ff6600', label: 'FLANK' },
+  'defend':     { icon: '\u25CB', color: '#05ffa1', label: 'DEFEND' },
+};
+
+// Morale state -> color for morale bar rendering
+const MORALE_STATE_COLORS = {
+  'fanatical': 0x05ffa1,
+  'high':      0x05ffa1,
+  'steady':    0xfcee0a,
+  'shaken':    0xff8800,
+  'broken':    0xff2a6d,
+  'routed':    0xff0000,
+};
+
 const MAP_SIZE = 200;
 const HALF_MAP = MAP_SIZE / 2;
 
@@ -1272,6 +1298,86 @@ function makeHealthBar() {
   group.add(fill);
   return { group, fill, fillMat, fillGeo };
 }
+
+/**
+ * Make a morale bar — thinner bar below health bar showing morale level.
+ * Similar to health bar but uses morale-specific colors.
+ */
+function makeMoraleBar() {
+  const geo = new THREE.PlaneGeometry(3.5, 0.25);
+  const bgMat = new THREE.MeshBasicMaterial({ color: 0x1a1a2e, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
+  const bg = new THREE.Mesh(geo, bgMat);
+
+  const fillGeo = new THREE.PlaneGeometry(3.5, 0.25);
+  const fillMat = new THREE.MeshBasicMaterial({ color: GREEN, side: THREE.DoubleSide });
+  const fill = new THREE.Mesh(fillGeo, fillMat);
+
+  const group = new THREE.Group();
+  group.add(bg);
+  group.add(fill);
+  return { group, fill, fillMat, fillGeo };
+}
+
+/**
+ * Make a behavior indicator sprite — small canvas-rendered badge showing
+ * the current AI behavior state (icon + text) above the unit.
+ * @param {string} decision — behavior decision key (e.g. 'engage', 'patrol')
+ * @returns {THREE.Sprite}
+ */
+function makeBehaviorSprite(decision) {
+  const info = BEHAVIOR_ICONS[decision] || BEHAVIOR_ICONS['idle'];
+  const canvas = document.createElement('canvas');
+  canvas.width = 192;
+  canvas.height = 48;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 192, 48);
+
+  // Background pill
+  ctx.fillStyle = 'rgba(10, 10, 20, 0.75)';
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(4, 4, 184, 40, 8);
+  } else {
+    ctx.rect(4, 4, 184, 40);
+  }
+  ctx.fill();
+
+  // Border
+  ctx.strokeStyle = info.color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(4, 4, 184, 40, 8);
+  } else {
+    ctx.rect(4, 4, 184, 40);
+  }
+  ctx.stroke();
+
+  // Icon
+  ctx.font = '22px serif';
+  ctx.fillStyle = info.color;
+  ctx.textAlign = 'left';
+  ctx.fillText(info.icon, 14, 34);
+
+  // Label text
+  ctx.font = 'bold 16px Courier New';
+  ctx.fillStyle = info.color;
+  ctx.textAlign = 'left';
+  ctx.shadowColor = info.color;
+  ctx.shadowBlur = 4;
+  ctx.fillText(info.label, 44, 32);
+  ctx.shadowBlur = 0;
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(5, 1.2, 1);
+  return sprite;
+}
+
+/** Cache of per-unit behavior indicator sprites: unitId -> { sprite, decision } */
+const behaviorIndicators = new Map();
 
 // =========================================================================
 // Muzzle flash pool (point lights)
@@ -2487,7 +2593,20 @@ function updateUnits(units) {
     if (!unitPositions.has(id)) {
       scene.remove(data.sprite);
       scene.remove(data.healthBar.group);
+      if (data.moraleBar) scene.remove(data.moraleBar.group);
       unitLabels.delete(id);
+    }
+  }
+
+  // Remove behavior indicators for units no longer present
+  for (const [id, bdata] of behaviorIndicators) {
+    if (!unitPositions.has(id)) {
+      scene.remove(bdata.sprite);
+      if (bdata.sprite.material) {
+        if (bdata.sprite.material.map) bdata.sprite.material.map.dispose();
+        bdata.sprite.material.dispose();
+      }
+      behaviorIndicators.delete(id);
     }
   }
 }
@@ -2499,9 +2618,11 @@ function updateUnitLabel(u, px, py, pz, allianceColor) {
     const colorStr = '#' + new THREE.Color(allianceColor).getHexString();
     const sprite = makeLabelSprite(u.label || id, colorStr, u.type);
     const healthBar = makeHealthBar();
+    const moraleBar = makeMoraleBar();
     scene.add(sprite);
     scene.add(healthBar.group);
-    entry = { sprite, healthBar, lastType: u.type };
+    scene.add(moraleBar.group);
+    entry = { sprite, healthBar, moraleBar, lastType: u.type };
     unitLabels.set(id, entry);
   }
 
@@ -2523,6 +2644,11 @@ function updateUnitLabel(u, px, py, pz, allianceColor) {
   entry.sprite.position.set(px, labelY, pz);
   entry.healthBar.group.position.set(px, labelY - 0.8, pz);
   entry.healthBar.group.lookAt(camera.position);
+
+  // Morale bar below health bar
+  const indicatorY = labelY - 1.5;
+  entry.moraleBar.group.position.set(px, indicatorY, pz);
+  entry.moraleBar.group.lookAt(camera.position);
 
   // Update health bar
   const hp = Math.max(0, Math.min(1, u.health || 0));
