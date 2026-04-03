@@ -648,6 +648,11 @@ def make_store_check(
             record_counts: dict[str, int] = {}
             for table in tables:
                 try:
+                    # Reject table names with bracket chars to prevent
+                    # identifier injection via crafted sqlite_master entries
+                    if "]" in table or "[" in table:
+                        record_counts[table] = -1
+                        continue
                     count_cursor = conn.execute(f"SELECT COUNT(*) FROM [{table}]")
                     record_counts[table] = count_cursor.fetchone()[0]
                 except Exception:
