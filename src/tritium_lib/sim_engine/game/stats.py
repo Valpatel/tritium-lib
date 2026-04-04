@@ -412,44 +412,65 @@ class StatsTracker:
     def get_mvp(self) -> UnitStats | None:
         """Get the MVP (highest kills; accuracy tiebreaker).
 
-        Returns None if no units are registered.
+        Only considers friendly units -- hostile units should never appear
+        as MVP on the VICTORY screen even if they have more kills.
+
+        Returns None if no friendly units are registered.
         """
-        if not self._unit_stats:
+        friendly = [s for s in self._unit_stats.values() if s.alliance == "friendly"]
+        if not friendly:
             return None
         return max(
-            self._unit_stats.values(),
+            friendly,
             key=lambda s: (s.kills, s.accuracy),
         )
 
     def get_summary(self) -> dict:
-        """Get game summary suitable for API / frontend consumption."""
-        all_stats = list(self._unit_stats.values())
-        total_kills = sum(s.kills for s in all_stats)
-        total_deaths = sum(s.deaths for s in all_stats)
-        total_shots_fired = sum(s.shots_fired for s in all_stats)
-        total_shots_hit = sum(s.shots_hit for s in all_stats)
-        total_damage_dealt = sum(s.damage_dealt for s in all_stats)
-        total_damage_taken = sum(s.damage_taken for s in all_stats)
-        overall_accuracy = (
-            total_shots_hit / total_shots_fired
-            if total_shots_fired > 0
+        """Get game summary suitable for API / frontend consumption.
+
+        Separates friendly vs hostile stats so the player sees their own
+        team's performance.  ``total_kills`` reflects friendly kills only
+        (what the player accomplished).  ``hostiles_eliminated`` is a
+        synonym kept for backward compat.  ``enemy_kills`` shows how many
+        friendlies the enemy took out.
+        """
+        friendly_stats = [s for s in self._unit_stats.values() if s.alliance == "friendly"]
+        hostile_stats = [s for s in self._unit_stats.values() if s.alliance == "hostile"]
+
+        # Friendly team aggregates (what the player cares about)
+        friendly_kills = sum(s.kills for s in friendly_stats)
+        friendly_deaths = sum(s.deaths for s in friendly_stats)
+        friendly_shots_fired = sum(s.shots_fired for s in friendly_stats)
+        friendly_shots_hit = sum(s.shots_hit for s in friendly_stats)
+        friendly_damage_dealt = sum(s.damage_dealt for s in friendly_stats)
+        friendly_damage_taken = sum(s.damage_taken for s in friendly_stats)
+        friendly_accuracy = (
+            friendly_shots_hit / friendly_shots_fired
+            if friendly_shots_fired > 0
             else 0.0
         )
+
+        # Enemy aggregates (for context / after-action report)
+        enemy_kills = sum(s.kills for s in hostile_stats)
 
         mvp = self.get_mvp()
         mvp_dict = mvp.to_dict() if mvp is not None else None
 
         return {
-            "total_kills": total_kills,
-            "total_deaths": total_deaths,
-            "total_shots_fired": total_shots_fired,
-            "total_shots_hit": total_shots_hit,
-            "overall_accuracy": round(overall_accuracy, 4),
-            "total_damage_dealt": round(total_damage_dealt, 2),
-            "total_damage_taken": round(total_damage_taken, 2),
+            "total_kills": friendly_kills,
+            "hostiles_eliminated": friendly_kills,
+            "total_deaths": friendly_deaths,
+            "enemy_kills": enemy_kills,
+            "total_shots_fired": friendly_shots_fired,
+            "total_shots_hit": friendly_shots_hit,
+            "overall_accuracy": round(friendly_accuracy, 4),
+            "total_damage_dealt": round(friendly_damage_dealt, 2),
+            "total_damage_taken": round(friendly_damage_taken, 2),
             "waves_completed": len(self._wave_stats),
             "mvp": mvp_dict,
             "unit_count": len(self._unit_stats),
+            "friendly_count": len(friendly_stats),
+            "hostile_count": len(hostile_stats),
         }
 
     # -- Lifecycle ----------------------------------------------------------

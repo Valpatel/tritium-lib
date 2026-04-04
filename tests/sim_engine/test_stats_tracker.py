@@ -192,3 +192,94 @@ class TestStatsTracker:
         assert wave.total_shots_fired == 1
         assert wave.total_shots_hit == 1
         assert wave.total_damage_dealt == 10.0
+
+    def test_get_mvp_excludes_hostiles(self):
+        """Bug fix: MVP must be a friendly unit, not a hostile with more kills."""
+        tracker = StatsTracker()
+        tracker.register_unit("r1", "Rover 1", "friendly", "rover")
+        tracker.register_unit("h1", "Hostile Boss", "hostile", "person")
+        # Hostile has far more kills than friendly
+        tracker.get_unit_stats("r1").kills = 2
+        tracker.get_unit_stats("h1").kills = 37
+        mvp = tracker.get_mvp()
+        assert mvp is not None
+        assert mvp.target_id == "r1"
+        assert mvp.alliance == "friendly"
+
+    def test_get_mvp_no_friendlies(self):
+        """MVP returns None when only hostile units exist."""
+        tracker = StatsTracker()
+        tracker.register_unit("h1", "Hostile", "hostile", "person")
+        tracker.get_unit_stats("h1").kills = 10
+        assert tracker.get_mvp() is None
+
+    def test_get_mvp_friendly_tiebreaker(self):
+        """MVP uses accuracy as tiebreaker among friendlies."""
+        tracker = StatsTracker()
+        tracker.register_unit("r1", "Rover 1", "friendly", "rover")
+        tracker.register_unit("r2", "Rover 2", "friendly", "rover")
+        tracker.get_unit_stats("r1").kills = 5
+        tracker.get_unit_stats("r1").shots_fired = 10
+        tracker.get_unit_stats("r1").shots_hit = 8  # 0.8 accuracy
+        tracker.get_unit_stats("r2").kills = 5
+        tracker.get_unit_stats("r2").shots_fired = 10
+        tracker.get_unit_stats("r2").shots_hit = 9  # 0.9 accuracy
+        mvp = tracker.get_mvp()
+        assert mvp.target_id == "r2"
+
+    def test_get_summary_friendly_kills_only(self):
+        """Bug fix: summary total_kills should count friendly kills only."""
+        tracker = StatsTracker()
+        tracker.register_unit("r1", "Rover", "friendly", "rover")
+        tracker.register_unit("h1", "Hostile 1", "hostile", "person")
+        tracker.register_unit("h2", "Hostile 2", "hostile", "person")
+        # Friendly gets 2 kills
+        tracker.get_unit_stats("r1").kills = 2
+        tracker.get_unit_stats("r1").shots_fired = 10
+        tracker.get_unit_stats("r1").shots_hit = 5
+        tracker.get_unit_stats("r1").damage_dealt = 200.0
+        tracker.get_unit_stats("r1").damage_taken = 50.0
+        # Hostiles collectively get 37 kills
+        tracker.get_unit_stats("h1").kills = 20
+        tracker.get_unit_stats("h2").kills = 17
+        tracker.get_unit_stats("h1").shots_fired = 100
+        tracker.get_unit_stats("h1").shots_hit = 60
+        tracker.get_unit_stats("h1").damage_dealt = 500.0
+
+        summary = tracker.get_summary()
+        # total_kills should be friendly kills only (2), not 39
+        assert summary["total_kills"] == 2
+        assert summary["hostiles_eliminated"] == 2
+        # enemy_kills shows how many kills the hostiles got
+        assert summary["enemy_kills"] == 37
+        # Shots/accuracy should be friendly-only
+        assert summary["total_shots_fired"] == 10
+        assert summary["total_shots_hit"] == 5
+        assert summary["overall_accuracy"] == 0.5
+        assert summary["total_damage_dealt"] == 200.0
+        assert summary["total_damage_taken"] == 50.0
+        # Counts
+        assert summary["friendly_count"] == 1
+        assert summary["hostile_count"] == 2
+        assert summary["unit_count"] == 3
+
+    def test_get_summary_mvp_is_friendly(self):
+        """Summary MVP should be a friendly even when hostiles dominate."""
+        tracker = StatsTracker()
+        tracker.register_unit("r1", "Rover", "friendly", "rover")
+        tracker.register_unit("h1", "Boss", "hostile", "person")
+        tracker.get_unit_stats("r1").kills = 1
+        tracker.get_unit_stats("h1").kills = 50
+        summary = tracker.get_summary()
+        assert summary["mvp"]["target_id"] == "r1"
+        assert summary["mvp"]["alliance"] == "friendly"
+
+    def test_get_summary_no_friendly_units(self):
+        """Summary handles no friendly units gracefully."""
+        tracker = StatsTracker()
+        tracker.register_unit("h1", "Hostile", "hostile", "person")
+        tracker.get_unit_stats("h1").kills = 10
+        summary = tracker.get_summary()
+        assert summary["total_kills"] == 0
+        assert summary["enemy_kills"] == 10
+        assert summary["mvp"] is None
