@@ -558,6 +558,18 @@ scene.add(hemiLight);
 // =========================================================================
 // Day/Night sky color helper — matches city3d quality gradient
 // =========================================================================
+// Security: HTML escape helper to prevent XSS in innerHTML contexts.
+function _esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+// CSS class name sanitizer: allow only [a-z0-9_-]
+function _safeClass(s) {
+  return String(s || '').replace(/[^a-z0-9_-]/gi, '');
+}
+
 const _skyColorA = new THREE.Color();
 const _skyColorB = new THREE.Color();
 
@@ -3406,10 +3418,11 @@ function updateObjectives(objData) {
     const reqTxt = bar.required ? '' : ' <span style="color:#555">(opt)</span>';
     const entry = document.createElement('div');
     entry.className = 'obj-entry';
+    const safeColor = /^#[0-9a-fA-F]{3,8}$/.test(color) ? color : '#fcee0a';
     entry.innerHTML =
-      '<div class="obj-name" style="color:' + color + '">' + (bar.name || bar.id) + reqTxt + '</div>' +
-      '<div class="obj-bar-bg"><div class="obj-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
-      '<div class="obj-status" style="color:' + color + '66">' + (bar.status || '') + ' &nbsp; ' + pct + '%</div>';
+      '<div class="obj-name" style="color:' + safeColor + '">' + _esc(bar.name || bar.id) + reqTxt + '</div>' +
+      '<div class="obj-bar-bg"><div class="obj-bar-fill" style="width:' + pct + '%;background:' + safeColor + '"></div></div>' +
+      '<div class="obj-status" style="color:' + safeColor + '66">' + _esc(bar.status || '') + ' &nbsp; ' + pct + '%</div>';
     listEl.appendChild(entry);
   }
 
@@ -3451,10 +3464,11 @@ function updateEconomy(economy) {
     const fill = Math.max(0, Math.min(1, bar.fill || 0));
     const pct = Math.round(fill * 100);
     const color = bar.color || '#fcee0a';
+    const safeEconColor = /^#[0-9a-fA-F]{3,8}$/.test(color) ? color : '#fcee0a';
     barsEl.innerHTML += '<div class="econ-row">' +
-      '<span class="econ-label">' + (bar.resource || '?') + '</span>' +
+      '<span class="econ-label">' + _esc(bar.resource || '?') + '</span>' +
       '<div class="econ-bar"><div class="econ-bar-fill" style="width:' + pct +
-      '%;background:' + color + '"></div></div>' +
+      '%;background:' + safeEconColor + '"></div></div>' +
       '<span class="econ-value">' + Math.round(bar.value || 0) + '</span>' +
       '</div>';
   }
@@ -3496,8 +3510,8 @@ function updateAIBehaviors(aiBehaviors) {
     const decClass = 'ai-decision ' + decision.replace(' ', '_');
     const inCover = info.in_cover ? ' [C]' : '';
     listEl.innerHTML += '<div class="ai-unit-row">' +
-      '<span class="ai-unit-id">' + shortId + '</span>' +
-      '<span class="' + decClass + '">' + decision + inCover + '</span>' +
+      '<span class="ai-unit-id">' + _esc(shortId) + '</span>' +
+      '<span class="' + _safeClass(decClass) + '">' + _esc(decision) + _esc(inCover) + '</span>' +
       '</div>';
   }
 
@@ -3560,11 +3574,11 @@ function updateHUD(ui, frame) {
     for (const kill of ui.kill_feed) {
       const entry = document.createElement('div');
       entry.className = 'kill-entry';
-      const kClass = 'kill-' + (kill.killer_alliance || 'neutral');
-      const vClass = 'kill-' + (kill.victim_alliance || 'neutral');
-      entry.innerHTML = '<span class="' + kClass + '">' + (kill.killer || '?') + '</span>' +
-        ' <span class="kill-verb">' + (kill.weapon || 'killed') + '</span> ' +
-        '<span class="' + vClass + '">' + (kill.victim || '?') + '</span>';
+      const kClass = 'kill-' + _safeClass(kill.killer_alliance || 'neutral');
+      const vClass = 'kill-' + _safeClass(kill.victim_alliance || 'neutral');
+      entry.innerHTML = '<span class="' + kClass + '">' + _esc(kill.killer || '?') + '</span>' +
+        ' <span class="kill-verb">' + _esc(kill.weapon || 'killed') + '</span> ' +
+        '<span class="' + vClass + '">' + _esc(kill.victim || '?') + '</span>';
       feedList.insertBefore(entry, feedList.firstChild);
       // Keep max 8 entries
       while (feedList.children.length > 8) feedList.removeChild(feedList.lastChild);
@@ -3581,10 +3595,12 @@ function updateHUD(ui, frame) {
       const hpPct = Math.round(hp * 100);
       const barClass = hp > 0.6 ? 'health-high' : hp > 0.3 ? 'health-mid' : 'health-low';
       const selected = u.id === selectedUnitId ? ' selected' : '';
+      // Validate color is a safe CSS color value (hex only)
+      const safeColor = /^#[0-9a-fA-F]{3,8}$/.test(u.color || '') ? u.color : '#05ffa1';
       rosterList.innerHTML += '<div class="roster-unit' + selected + '">' +
-        '<span class="roster-name" style="color:' + (u.color || '#05ffa1') + '">' +
-        (u.label || u.id) + '</span>' +
-        '<div class="roster-bar"><div class="roster-bar-fill ' + barClass +
+        '<span class="roster-name" style="color:' + safeColor + '">' +
+        _esc(u.label || u.id) + '</span>' +
+        '<div class="roster-bar"><div class="roster-bar-fill ' + _safeClass(barClass) +
         '" style="width:' + hpPct + '%"></div></div>' +
         '<span class="roster-hp">' + hpPct + '%</span></div>';
     }
@@ -3632,8 +3648,8 @@ function showGameOver(ui) {
     ['Time', (stats.time || 0).toFixed(1) + 's'],
   ];
   for (const [label, val] of entries) {
-    grid.innerHTML += '<span class="stat-label">' + label + '</span>' +
-      '<span class="stat-value">' + val + '</span>';
+    grid.innerHTML += '<span class="stat-label">' + _esc(label) + '</span>' +
+      '<span class="stat-value">' + _esc(String(val)) + '</span>';
   }
 
   const score = ui.score || 0;
@@ -4445,7 +4461,7 @@ function updateMorale(moraleData) {
     const pct = Math.round(averages[ally]);
     const color = allianceColorMap[ally] || '#888';
     html += '<div class="morale-row">' +
-      '<span class="morale-label">' + ally + '</span>' +
+      '<span class="morale-label">' + _esc(ally) + '</span>' +
       '<div class="morale-bar"><div class="morale-bar-fill" style="width:' +
       pct + '%;background:' + color + '"></div></div>' +
       '<span class="morale-value" style="color:' + color + '">' + pct + '</span></div>';
@@ -4586,11 +4602,11 @@ function updateServerHUD(hudData) {
       const entry = document.createElement('div');
       entry.className = 'kill-entry';
       entry.setAttribute('data-kill-text', killText);
-      const kClass = 'kill-' + (kill.killer_alliance || 'neutral');
-      const vClass = 'kill-' + (kill.victim_alliance || 'neutral');
-      entry.innerHTML = '<span class="' + kClass + '">' + (kill.killer || '?') + '</span>' +
-        ' <span class="kill-verb">' + (kill.weapon || 'killed') + '</span> ' +
-        '<span class="' + vClass + '">' + (kill.victim || '?') + '</span>';
+      const kClass = 'kill-' + _safeClass(kill.killer_alliance || 'neutral');
+      const vClass = 'kill-' + _safeClass(kill.victim_alliance || 'neutral');
+      entry.innerHTML = '<span class="' + kClass + '">' + _esc(kill.killer || '?') + '</span>' +
+        ' <span class="kill-verb">' + _esc(kill.weapon || 'killed') + '</span> ' +
+        '<span class="' + vClass + '">' + _esc(kill.victim || '?') + '</span>';
       feedList.insertBefore(entry, feedList.firstChild);
       while (feedList.children.length > 8) feedList.removeChild(feedList.lastChild);
     }
@@ -4607,11 +4623,12 @@ function updateServerHUD(hudData) {
       const hpPct = Math.round(hp * 100);
       const barClass = hp > 0.6 ? 'health-high' : hp > 0.3 ? 'health-mid' : 'health-low';
       const selected = u.id === selectedUnitId ? ' selected' : '';
-      const statusBadge = u.status ? ' [' + u.status + ']' : '';
+      const statusBadge = u.status ? ' [' + _esc(u.status) + ']' : '';
+      const safeColor = /^#[0-9a-fA-F]{3,8}$/.test(u.color || '') ? u.color : '#05ffa1';
       rosterList.innerHTML += '<div class="roster-unit' + selected + '">' +
-        '<span class="roster-name" style="color:' + (u.color || '#05ffa1') + '">' +
-        (u.name || u.label || u.id) + statusBadge + '</span>' +
-        '<div class="roster-bar"><div class="roster-bar-fill ' + barClass +
+        '<span class="roster-name" style="color:' + safeColor + '">' +
+        _esc(u.name || u.label || u.id) + statusBadge + '</span>' +
+        '<div class="roster-bar"><div class="roster-bar-fill ' + _safeClass(barClass) +
         '" style="width:' + hpPct + '%"></div></div>' +
         '<span class="roster-hp">' + hpPct + '%</span></div>';
     }
