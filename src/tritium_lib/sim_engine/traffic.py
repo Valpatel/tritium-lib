@@ -747,23 +747,48 @@ class TrafficManager:
         return [v for v in self.vehicles.values() if v.edge_id == edge_id]
 
     def to_dict(self) -> dict:
-        """Export traffic state as a dict for JSON serialization."""
+        """Export traffic state as a dict for JSON serialization.
+
+        Includes per-vehicle IDM/MOBIL state for frontend visualization:
+        - braking: True when deceleration exceeds -0.5 m/s^2
+        - brakeIntensity: 0..1 normalized deceleration force
+        - laneChanging: True when mid-lane-change
+        - turnSignal: 'left', 'right', or 'none'
+        - speedRatio: current speed / desired speed (0..1)
+        """
+        vehicles = []
+        for v in self.vehicles.values():
+            braking = v.acc < -0.5
+            brake_intensity = min(1.0, abs(v.acc) / 4.0) if braking else 0.0
+            lane_changing = v._lane_change_state is not None
+            turn_signal = "none"
+            if lane_changing:
+                lcs = v._lane_change_state
+                turn_signal = "right" if lcs["to_lane"] > lcs["from_lane"] else "left"
+            speed_ratio = min(1.0, v.speed / max(v.idm.v0, 0.1))
+
+            vehicles.append({
+                "id": v.vehicle_id,
+                "x": v.x,
+                "z": v.z,
+                "heading": v.heading,
+                "speed": v.speed,
+                "acc": v.acc,
+                "subtype": v.subtype,
+                "lane": v.lane_idx,
+                "edge": v.edge_id,
+                "parked": v.parked,
+                "inAccident": v.in_accident,
+                "purpose": v.purpose.value if isinstance(v.purpose, Enum) else v.purpose,
+                "braking": braking,
+                "brakeIntensity": round(brake_intensity, 3),
+                "laneChanging": lane_changing,
+                "turnSignal": turn_signal,
+                "speedRatio": round(speed_ratio, 3),
+                "desiredSpeed": round(v.idm.v0, 2),
+            })
+
         return {
             "vehicle_count": self.vehicle_count,
-            "vehicles": [
-                {
-                    "id": v.vehicle_id,
-                    "x": v.x,
-                    "z": v.z,
-                    "heading": v.heading,
-                    "speed": v.speed,
-                    "acc": v.acc,
-                    "subtype": v.subtype,
-                    "lane": v.lane_idx,
-                    "edge": v.edge_id,
-                    "parked": v.parked,
-                    "purpose": v.purpose.value if isinstance(v.purpose, Enum) else v.purpose,
-                }
-                for v in self.vehicles.values()
-            ],
+            "vehicles": vehicles,
         }

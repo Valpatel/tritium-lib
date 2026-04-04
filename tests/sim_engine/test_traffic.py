@@ -449,6 +449,17 @@ class TestTrafficManager:
         assert "x" in v
         assert "speed" in v
         assert "subtype" in v
+        # Enhanced IDM/MOBIL state fields
+        assert "braking" in v
+        assert "brakeIntensity" in v
+        assert "laneChanging" in v
+        assert "turnSignal" in v
+        assert "speedRatio" in v
+        assert "desiredSpeed" in v
+        assert isinstance(v["braking"], bool)
+        assert isinstance(v["brakeIntensity"], (int, float))
+        assert isinstance(v["speedRatio"], (int, float))
+        assert v["turnSignal"] in ("none", "left", "right")
 
     def test_multi_vehicle_idm_interaction(self):
         """Multiple vehicles on same edge should follow each other."""
