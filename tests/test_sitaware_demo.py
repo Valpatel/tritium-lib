@@ -32,8 +32,10 @@ import time
 
 import pytest
 
-from tritium_lib.sitaware import SitAwareEngine, OperatingPicture, UpdateType
-from tritium_lib.sitaware.demos.sitaware_demo import (
+pytest.importorskip("fastapi", reason="fastapi not installed")
+
+from tritium_lib.sitaware import SitAwareEngine, OperatingPicture, UpdateType  # noqa: E402
+from tritium_lib.sitaware.demos.sitaware_demo import (  # noqa: E402
     ScenarioSimulator,
     DEMO_PORT,
     app,
@@ -42,7 +44,7 @@ from tritium_lib.sitaware.demos.sitaware_demo import (
     _CAMERA_DETECTIONS,
     _ACOUSTIC_EVENTS,
 )
-from tritium_lib.tracking.geofence import GeoZone
+from tritium_lib.tracking.geofence import GeoZone  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

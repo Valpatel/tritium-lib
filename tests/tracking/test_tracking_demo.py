@@ -14,7 +14,9 @@ import time
 
 import pytest
 
-from tritium_lib.tracking.demos.tracking_demo import (
+pytest.importorskip("fastapi", reason="fastapi not installed")
+
+from tritium_lib.tracking.demos.tracking_demo import (  # noqa: E402
     TrackingPipeline,
     SimpleEventBus,
     _target_to_dict,

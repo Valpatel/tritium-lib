@@ -43,6 +43,7 @@ markers = [
     "slow: marks tests that hit the network or take >10s (deselect with '-m \"not slow\"')",
     "unit: marks fast unit tests",
     "visual: marks OpenCV+Playwright visual regression tests for the sim engine demo",
+    "timeout: marks tests with a timeout duration (requires pytest-timeout plugin)",
 ]
 filterwarnings = [
     "error",

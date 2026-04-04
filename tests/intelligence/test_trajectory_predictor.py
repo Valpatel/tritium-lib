@@ -85,7 +85,7 @@ class _FakeStreetGraph:
     """Minimal fake StreetGraph for testing RoadConstrained model."""
 
     def __init__(self):
-        import networkx as nx
+        nx = pytest.importorskip("networkx", reason="networkx not installed")
         self.graph = nx.Graph()
         self._node_positions = {}
 

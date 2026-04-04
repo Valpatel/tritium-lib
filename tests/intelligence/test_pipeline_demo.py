@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
-from tritium_lib.intelligence.demos.pipeline_demo import (
+fastapi = pytest.importorskip("fastapi", reason="fastapi not installed")
+from fastapi.testclient import TestClient  # noqa: E402
+
+from tritium_lib.intelligence.demos.pipeline_demo import (  # noqa: E402
     PipelineState,
     _EventBus,
     _SyntheticTarget,
