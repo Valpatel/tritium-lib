@@ -54,11 +54,36 @@ from .target_reappearance import TargetReappearanceMonitor
 # Confidence decay — exponential decay per source type
 # ---------------------------------------------------------------------------
 # half-life in seconds: after this time, confidence drops to 50%
+#
+# Calibration notes:
+#   - rf_motion (10s):  motion events are intrinsically transient — by the
+#                       time the half-life elapses the entity has likely
+#                       moved out of the detection cell.
+#   - yolo (15s):       a frame-by-frame detector; if the camera stops
+#                       seeing the box, the track should fade quickly.
+#   - acoustic (20s):   ESC-50 classifier (Wave 204, 47.4% accuracy) emits
+#                       events for transient sounds (gunshot, glass break,
+#                       barking, vehicle pass-by).  These are short-lived
+#                       events, not sustained presence — sit between
+#                       rf_motion (10s) and ble (30s) so a single sound
+#                       hit fades faster than a sustained BLE beacon but
+#                       slower than a single RF motion blip.
+#   - ble (30s):        beacons typically advertise 1–10 Hz; 30s gives ~3+
+#                       missed advertisements before halving.
+#   - wifi (45s):       probe-request bursts are sparser and bursty.
+#   - adsb (60s):       aircraft update at ~1 Hz but can lose signal in
+#                       deadzones; longer half-life avoids flicker.
+#   - mesh (120s):      LoRa nodes are stationary for long periods.
+#   - simulation (0):   sentinel — simulation telemetry is ground truth
+#                       and never decays.
+#   - manual (300s):    operator-tagged targets get a generous 5min before
+#                       the system starts to question them.
 _HALF_LIVES: dict[str, float] = {
     "ble": 30.0,
     "wifi": 45.0,
     "yolo": 15.0,
     "rf_motion": 10.0,
+    "acoustic": 20.0,     # transient sounds — gunshot/glass-break/voice
     "mesh": 120.0,
     "adsb": 60.0,         # aircraft update frequently but can lose signal
     "simulation": 0.0,    # never decays
@@ -86,6 +111,39 @@ def _decayed_confidence(source: str, initial: float, elapsed: float) -> float:
         return max(0.0, min(1.0, initial))
     decayed = initial * math.exp(-_LN2 / hl * elapsed)
     return min(1.0, decayed) if decayed >= _MIN_CONFIDENCE else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Shared DeviceClassifier — gap-fix B-7
+# ---------------------------------------------------------------------------
+# Loading the multi-signal classifier hits ~10 JSON databases (~1MB) on
+# the first call.  We share a single instance across every TargetTracker
+# so the cost is paid exactly once for the whole process.  A failure to
+# load (e.g. missing data dir) is treated as "classifier disabled" — the
+# tracker keeps working, classifications just stay at their incoming
+# values.
+_SHARED_BLE_CLASSIFIER: object | None = None
+_SHARED_BLE_CLASSIFIER_LOAD_ATTEMPTED: bool = False
+
+
+def _shared_ble_classifier():
+    """Return a process-wide :class:`DeviceClassifier` or ``None``.
+
+    Lazy import so that ``tritium_lib.tracking`` does not pull in the
+    classifier package (and its JSON loaders) at module import time.
+    """
+    global _SHARED_BLE_CLASSIFIER, _SHARED_BLE_CLASSIFIER_LOAD_ATTEMPTED
+    if _SHARED_BLE_CLASSIFIER is not None:
+        return _SHARED_BLE_CLASSIFIER
+    if _SHARED_BLE_CLASSIFIER_LOAD_ATTEMPTED:
+        return None
+    _SHARED_BLE_CLASSIFIER_LOAD_ATTEMPTED = True
+    try:
+        from tritium_lib.classifier import DeviceClassifier
+        _SHARED_BLE_CLASSIFIER = DeviceClassifier()
+    except Exception:
+        _SHARED_BLE_CLASSIFIER = None
+    return _SHARED_BLE_CLASSIFIER
 
 
 @dataclass
@@ -195,12 +253,18 @@ class TargetTracker:
     # Stale timeout — remove YOLO detections older than this
     STALE_TIMEOUT = 30.0
 
-    def __init__(self, event_bus=None) -> None:
+    def __init__(self, event_bus=None, ble_classifier=None) -> None:
         self._targets: dict[str, TrackedTarget] = {}
         self._lock = threading.Lock()
         self._detection_counter: int = 0
         self._event_bus = event_bus
         self._geofence_engine = None  # Set via set_geofence_engine()
+        # Gap-fix B-7: optional injected DeviceClassifier.  If left None
+        # we fall back to a process-wide shared instance loaded lazily by
+        # ``_shared_ble_classifier``.  Tests that want determinism can
+        # pass a ``DeviceClassifier()`` instance directly, or pass
+        # ``False`` to disable BLE classification entirely.
+        self._ble_classifier = ble_classifier
         # Wave 201: membership counter used as a cheap "tracker
         # version" for HTTP ETag/304 caching on /api/targets.  Bumps
         # on every ADD or REMOVE — NOT on per-target position/state
@@ -220,6 +284,19 @@ class TargetTracker:
     def set_geofence_engine(self, engine) -> None:
         """Wire geofence engine for automatic zone checks on position updates."""
         self._geofence_engine = engine
+
+    def _get_ble_classifier(self):
+        """Resolve the BLE classifier for this tracker instance.
+
+        Returns ``None`` when classification has been explicitly disabled
+        (``ble_classifier=False``) or when the shared classifier failed
+        to load.
+        """
+        if self._ble_classifier is False:
+            return None
+        if self._ble_classifier is not None:
+            return self._ble_classifier
+        return _shared_ble_classifier()
 
     def _check_geofence(self, target_id: str, game_x: float, game_y: float) -> None:
         """Check if a target's position triggers geofence enter/exit events."""
@@ -462,7 +539,19 @@ class TargetTracker:
     BLE_STALE_TIMEOUT = 120.0
 
     def update_from_ble(self, sighting: dict) -> None:
-        """Update or create a tracked target from a BLE sighting."""
+        """Update or create a tracked target from a BLE sighting.
+
+        Gap-fix B-7: when the sighting does not already carry a
+        classification (the common case for raw scanner events), run the
+        bundled multi-signal :class:`DeviceClassifier` over the available
+        identity hints — MAC, advertised name, manufacturer/company ID,
+        GAP appearance, service UUIDs, Apple continuity, Fast Pair model.
+        Whatever the classifier produces is written back to
+        ``classification`` / ``classification_confidence`` so downstream
+        consumers see device-type metadata on every BLE target instead of
+        the previous ``classification_confidence == 0.0`` for raw
+        sightings.
+        """
         mac = sighting.get("mac", "")
         if not mac:
             return
@@ -472,6 +561,51 @@ class TargetTracker:
         rssi = sighting.get("rssi", -100)
         asset_type = sighting.get("device_type") or "ble_device"
         confidence = max(0.0, min(1.0, (rssi + 100) / 70))
+
+        # Pre-compute classification from sighting hints unless the caller
+        # already did so.  We only run the classifier when at least one
+        # identity-bearing field is present — bare MAC-only sightings hit
+        # OUI lookup but skip the cost when the MAC is randomized.
+        sighting_class = sighting.get("classification")
+        sighting_class_conf = sighting.get("classification_confidence")
+        derived_class = ""
+        derived_class_conf = 0.0
+        derived_manufacturer = ""
+        if not sighting_class:
+            classifier = self._get_ble_classifier()
+            if classifier is not None:
+                # Coerce hints into the shapes DeviceClassifier expects.
+                cid = sighting.get("company_id")
+                try:
+                    cid_int = int(cid) if cid is not None else None
+                except (TypeError, ValueError):
+                    cid_int = None
+                appearance = sighting.get("appearance")
+                try:
+                    appearance_int = int(appearance) if appearance is not None else None
+                except (TypeError, ValueError):
+                    appearance_int = None
+                svc_uuids = sighting.get("service_uuids") or sighting.get("services")
+                if svc_uuids and not isinstance(svc_uuids, list):
+                    svc_uuids = [svc_uuids]
+                try:
+                    result = classifier.classify_ble(
+                        mac=mac,
+                        name=sighting.get("name") or "",
+                        company_id=cid_int,
+                        appearance=appearance_int,
+                        service_uuids=svc_uuids if isinstance(svc_uuids, list) else None,
+                        fast_pair_model_id=sighting.get("fast_pair_model_id"),
+                        apple_device_class=sighting.get("apple_device_class"),
+                    )
+                    if result.device_type and result.device_type != "unknown":
+                        derived_class = result.device_type
+                        derived_class_conf = float(result.confidence or 0.0)
+                    if result.manufacturer:
+                        derived_manufacturer = result.manufacturer
+                except Exception:
+                    # Classifier must never break tracking — degrade silently.
+                    pass
 
         pos = sighting.get("position")
         if pos:
@@ -486,6 +620,23 @@ class TargetTracker:
                 position = (0.0, 0.0)
                 pos_source = "unknown"
 
+        # Resolve the asset_type to use: prefer the explicit sighting field,
+        # else upgrade the generic "ble_device" using the classifier hint.
+        effective_asset_type = asset_type
+        if asset_type == "ble_device" and derived_class:
+            effective_asset_type = derived_class
+
+        # Resolve final classification fields.
+        if sighting_class:
+            final_class = sighting_class
+            final_class_conf = float(sighting_class_conf or 0.0)
+        elif derived_class:
+            final_class = derived_class
+            final_class_conf = derived_class_conf
+        else:
+            final_class = asset_type
+            final_class_conf = float(sighting_class_conf or 0.0)
+
         with self._lock:
             if tid in self._targets:
                 t = self._targets[tid]
@@ -498,18 +649,27 @@ class TargetTracker:
                 t.position_confidence = confidence
                 t._initial_confidence = confidence
                 self._add_confirming_source(t, "ble")
-                if asset_type != "ble_device":
-                    t.asset_type = asset_type
-                if sighting.get("classification"):
-                    t.classification = sighting["classification"]
-                    t.classification_confidence = float(sighting.get("classification_confidence", 0.0))
+                if effective_asset_type != "ble_device":
+                    t.asset_type = effective_asset_type
+                if sighting_class:
+                    t.classification = sighting_class
+                    t.classification_confidence = float(sighting_class_conf or 0.0)
+                elif derived_class and (
+                    t.classification in ("", "unknown", "ble_device")
+                    or t.classification_confidence < derived_class_conf
+                ):
+                    # Only overwrite an existing classification if the new
+                    # derivation is more confident — preserves any earlier
+                    # high-confidence tag (e.g. an explicit upstream label).
+                    t.classification = derived_class
+                    t.classification_confidence = derived_class_conf
             else:
                 self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
                     target_id=tid,
                     name=name,
                     alliance="unknown",
-                    asset_type=asset_type,
+                    asset_type=effective_asset_type,
                     position=position,
                     last_seen=time.monotonic(),
                     first_seen=time.monotonic(),
@@ -519,14 +679,14 @@ class TargetTracker:
                     position_confidence=confidence,
                     _initial_confidence=confidence,
                     confirming_sources={"ble"},
-                    classification=sighting.get("classification", asset_type),
-                    classification_confidence=float(sighting.get("classification_confidence", 0.0)),
+                    classification=final_class,
+                    classification_confidence=final_class_conf,
                 )
                 self.reappearance_monitor.check_reappearance(
                     target_id=tid,
                     name=name,
                     source="ble",
-                    asset_type=asset_type,
+                    asset_type=effective_asset_type,
                     position=position,
                 )
         if pos_source != "unknown":
