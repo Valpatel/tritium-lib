@@ -9,3 +9,7 @@ build/
 *.egg
 .pytest_cache/
 .mypy_cache/
+
+# Trained ML models (rebuild with the train CLI; binaries don't belong in git)
+data/models/*.pkl
+data/models/*.json

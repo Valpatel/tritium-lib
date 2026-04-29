@@ -713,7 +713,23 @@ class MFCCClassifier:
 
 
 class AcousticClassifier:
-    """Dual-mode acoustic event classifier: rule-based + ML (MFCC KNN)."""
+    """Dual-mode acoustic event classifier: rule-based + ML (MFCC KNN).
+
+    Model versioning (Wave 204):
+      - "synthetic_v1": original synthetic-trained MFCCClassifier (low accuracy
+        on real ESC-50 audio, ~8% mapped subset). Always available.
+      - "esc50_v2":     real-audio-trained classifier persisted to a pickle.
+        Reaches ~47% on held-out ESC-50 fold 5. Auto-loaded if the pickle
+        exists at the default path or `model_path=` is supplied.
+
+    Selection precedence (when enable_ml=True and model_version not pinned):
+      1. Explicit `model_path` argument (overrides everything).
+      2. `TRITIUM_ACOUSTIC_MODEL_VERSION` env var: "synthetic_v1" or "esc50_v2".
+      3. `TRITIUM_ACOUSTIC_MODEL_PATH` env var pointing at a pickle.
+      4. Default: probe `tritium-lib/data/models/acoustic_classifier_v2.pkl`
+         relative to the working directory or repo root.
+      5. Final fallback: train MFCCClassifier on the synthetic TRAINING_DATA.
+    """
 
     GUNSHOT_ENERGY_THRESHOLD = 0.8
     GUNSHOT_DURATION_MAX_MS = 200
@@ -723,18 +739,143 @@ class AcousticClassifier:
     SIREN_CENTROID_MIN_HZ = 600
     SIREN_CENTROID_MAX_HZ = 2000
 
-    def __init__(self, enable_ml: bool = True) -> None:
+    DEFAULT_MODEL_RELATIVE_PATHS: tuple[str, ...] = (
+        "tritium-lib/data/models/acoustic_classifier_v2.pkl",
+        "data/models/acoustic_classifier_v2.pkl",
+    )
+
+    def __init__(
+        self,
+        enable_ml: bool = True,
+        model_path: Optional[str] = None,
+        model_version: Optional[str] = None,
+    ) -> None:
         self._event_history: list[AcousticEvent] = []
         self._max_history = 1000
         self._ml_classifier: Optional[MFCCClassifier] = None
+        self._loaded_model_version: str = "none"
+        self._loaded_model_path: Optional[str] = None
 
-        if enable_ml:
+        if not enable_ml:
+            return
+
+        import os
+
+        # Resolve effective version + path.
+        effective_version = model_version or os.environ.get(
+            "TRITIUM_ACOUSTIC_MODEL_VERSION", ""
+        ).strip()
+        effective_path = model_path or os.environ.get(
+            "TRITIUM_ACOUSTIC_MODEL_PATH", ""
+        ).strip()
+
+        # If user explicitly pinned synthetic_v1, skip pickle probing.
+        if effective_version == "synthetic_v1":
+            self._train_synthetic_fallback()
+            return
+
+        # Try explicit / env path first. If user supplied a path and it fails,
+        # fall back to synthetic instead of probing globals — this respects
+        # operator intent (e.g. "load THIS model or none at all").
+        if effective_path:
+            if self._try_load_pickle(effective_path):
+                return
+            logger.warning(
+                "Acoustic model_path=%s failed to load; falling back to synthetic_v1.",
+                effective_path,
+            )
+            self._train_synthetic_fallback()
+            return
+
+        # Probe default locations unless pinned.
+        if effective_version in ("", "esc50_v2"):
+            # Try cwd-relative first (matches how the train CLI saves it).
+            for rel in self.DEFAULT_MODEL_RELATIVE_PATHS:
+                if self._try_load_pickle(rel):
+                    return
+            # Fall back to repo-root probing relative to this file:
+            # tritium-lib/src/tritium_lib/intelligence/acoustic_classifier.py
+            #   -> tritium-lib/data/models/acoustic_classifier_v2.pkl
             try:
-                self._ml_classifier = MFCCClassifier(k=5)
-                self._ml_classifier.train()
-            except Exception as exc:
-                logger.warning("ML classifier init failed, rule-based only: %s", exc)
-                self._ml_classifier = None
+                here = os.path.dirname(os.path.abspath(__file__))
+                lib_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
+                candidate = os.path.join(lib_root, "data", "models", "acoustic_classifier_v2.pkl")
+                if self._try_load_pickle(candidate):
+                    return
+                # And one level up — useful when running from the parent tritium repo.
+                parent_root = os.path.abspath(os.path.join(lib_root, ".."))
+                candidate2 = os.path.join(
+                    parent_root, "tritium-lib", "data", "models", "acoustic_classifier_v2.pkl"
+                )
+                if self._try_load_pickle(candidate2):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Fallback: train on synthetic profiles.
+        if effective_version == "esc50_v2":
+            logger.warning(
+                "Acoustic model_version='esc50_v2' requested but no pickle found; "
+                "falling back to synthetic_v1."
+            )
+        self._train_synthetic_fallback()
+
+    def _try_load_pickle(self, path: str) -> bool:
+        """Attempt to load a saved MFCCClassifier pickle. Returns True on success."""
+        import os
+        import pickle
+
+        if not path or not os.path.isfile(path):
+            return False
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+            if not isinstance(payload, dict) or "version" not in payload:
+                logger.warning("Acoustic model pickle missing version: %s", path)
+                return False
+            classifier = MFCCClassifier(k=int(payload.get("k", 5)))
+            classifier._training_vectors = payload.get("training_vectors", [])
+            classifier._feature_means = payload.get("feature_means", [])
+            classifier._feature_stds = payload.get("feature_stds", [])
+            classifier._training_sample_count = int(payload.get("training_sample_count", 0))
+            classifier._training_class_count = int(payload.get("training_class_count", 0))
+            classifier._use_sklearn = bool(payload.get("use_sklearn", False))
+            classifier._label_list = list(payload.get("label_list", []))
+            classifier._sklearn_knn = payload.get("sklearn_knn")
+            classifier._sklearn_scaler = payload.get("sklearn_scaler")
+            classifier._trained = True
+            self._ml_classifier = classifier
+            self._loaded_model_version = "esc50_v2"
+            self._loaded_model_path = path
+            logger.info(
+                "Acoustic classifier loaded from %s (esc50_v2, %d samples, %d classes)",
+                path,
+                classifier._training_sample_count,
+                classifier._training_class_count,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — graceful degradation
+            logger.warning("Failed to load acoustic model pickle %s: %s", path, exc)
+            return False
+
+    def _train_synthetic_fallback(self) -> None:
+        try:
+            self._ml_classifier = MFCCClassifier(k=5)
+            self._ml_classifier.train()
+            self._loaded_model_version = "synthetic_v1"
+        except Exception as exc:
+            logger.warning("ML classifier init failed, rule-based only: %s", exc)
+            self._ml_classifier = None
+            self._loaded_model_version = "none"
+
+    @property
+    def loaded_model_version(self) -> str:
+        """Identifier of the loaded model: 'esc50_v2', 'synthetic_v1', or 'none'."""
+        return self._loaded_model_version
+
+    @property
+    def loaded_model_path(self) -> Optional[str]:
+        return self._loaded_model_path
 
     @property
     def ml_available(self) -> bool:
@@ -752,10 +893,17 @@ class AcousticClassifier:
     def _classify_ml(self, features: AudioFeatures) -> AcousticEvent:
         best_class, confidence, predictions = self._ml_classifier.classify(features)
 
+        # Coerce numpy.str_ -> str for downstream consumers.
         try:
-            event_type = AcousticEventType(best_class)
+            event_type = AcousticEventType(str(best_class))
         except ValueError:
             event_type = AcousticEventType.UNKNOWN
+
+        # Tag with the loaded model version so we can audit/rollback per-event.
+        if self._loaded_model_version == "esc50_v2":
+            model_version_tag = f"{MFCCClassifier.MODEL_VERSION}_esc50"
+        else:
+            model_version_tag = MFCCClassifier.MODEL_VERSION
 
         event = AcousticEvent(
             event_type=event_type,
@@ -763,7 +911,7 @@ class AcousticClassifier:
             duration_ms=features.duration_ms,
             peak_frequency_hz=features.spectral_centroid,
             peak_amplitude_db=features.peak_amplitude,
-            model_version=MFCCClassifier.MODEL_VERSION,
+            model_version=model_version_tag,
         )
         self._record(event)
         return event
