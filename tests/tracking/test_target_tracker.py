@@ -347,3 +347,104 @@ class TestVelocityCheck:
         target = tracker.get_target("ble_aabbccddeeff")
         assert target is not None
         assert target.velocity_suspicious is False
+
+
+class TestVersionAndSnapshot:
+    """Wave 201: ETag-supporting version counter + snapshot helper."""
+
+    def test_initial_version_is_zero(self):
+        tracker = TargetTracker()
+        assert tracker.version == 0
+
+    def test_version_bumps_on_create(self):
+        tracker = TargetTracker()
+        v0 = tracker.version
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 0.0, "y": 0.0},
+        })
+        assert tracker.version > v0
+
+    def test_version_unchanged_on_update_existing(self):
+        """Wave 201 design: version tracks SET MEMBERSHIP, not field
+        updates.  Position changes stream via WebSocket and do not
+        invalidate the /api/targets reconciliation cache."""
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 0.0, "y": 0.0},
+        })
+        v_after_create = tracker.version
+        # Same target_id, different position — version should NOT bump
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 1.0, "y": 1.0},
+        })
+        assert tracker.version == v_after_create
+
+    def test_version_bumps_on_distinct_create(self):
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 0.0, "y": 0.0},
+        })
+        v_after_first = tracker.version
+        tracker.update_from_simulation({
+            "target_id": "rover_02",
+            "position": {"x": 1.0, "y": 1.0},
+        })
+        assert tracker.version > v_after_first
+
+    def test_version_bumps_on_remove(self):
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 0.0, "y": 0.0},
+        })
+        v_before = tracker.version
+        assert tracker.remove("rover_01") is True
+        assert tracker.version > v_before
+
+    def test_version_unchanged_on_remove_missing(self):
+        tracker = TargetTracker()
+        v_before = tracker.version
+        assert tracker.remove("nonexistent") is False
+        assert tracker.version == v_before
+
+    def test_snapshot_returns_targets_and_version(self):
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 1.0, "y": 2.0},
+        })
+        targets, version = tracker.snapshot()
+        assert len(targets) == 1
+        assert targets[0].target_id == "rover_01"
+        assert version == tracker.version
+        assert version > 0
+
+    def test_snapshot_is_a_copy(self):
+        """Mutating the returned list must not affect tracker state."""
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 1.0, "y": 2.0},
+        })
+        targets, _ = tracker.snapshot()
+        targets.clear()
+        # Tracker still knows about rover_01.
+        targets2, _ = tracker.snapshot()
+        assert len(targets2) == 1
+
+    def test_two_consecutive_snapshots_same_version_when_quiet(self):
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "rover_01",
+            "position": {"x": 0.0, "y": 0.0},
+        })
+        _, v1 = tracker.snapshot()
+        _, v2 = tracker.snapshot()
+        # _prune_stale() may not bump version (no stale targets) so the
+        # version stays the same across two snapshots when no work was
+        # done — this is what the ETag short-circuit relies on.
+        assert v1 == v2

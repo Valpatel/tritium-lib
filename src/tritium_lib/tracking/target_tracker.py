@@ -201,6 +201,16 @@ class TargetTracker:
         self._detection_counter: int = 0
         self._event_bus = event_bus
         self._geofence_engine = None  # Set via set_geofence_engine()
+        # Wave 201: membership counter used as a cheap "tracker
+        # version" for HTTP ETag/304 caching on /api/targets.  Bumps
+        # on every ADD or REMOVE — NOT on per-target position/state
+        # updates (those are streamed over WebSocket telemetry; the
+        # /api/targets reconcile poll only cares about set membership).
+        # This keeps 304 hit-rate high in steady state where positions
+        # change frequently but the active target set is stable.
+        # Read with no lock — Python int read/write is atomic at the
+        # bytecode level.
+        self._membership_count: int = 0
         self.history = TargetHistory()
         self.reappearance_monitor = TargetReappearanceMonitor(
             event_bus=event_bus,
@@ -261,6 +271,8 @@ class TargetTracker:
                 t.signal_count += 1
                 self._add_confirming_source(t, "simulation")
             else:
+                # New target — bump membership for ETag invalidation
+                self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
                     target_id=tid,
                     name=sim_data.get("name", tid[:8]),
@@ -351,6 +363,7 @@ class TargetTracker:
                 tid = matched.target_id
             else:
                 self._detection_counter += 1
+                self._membership_count += 1
                 tid = f"det_{class_name}_{self._detection_counter}"
                 self._targets[tid] = TrackedTarget(
                     target_id=tid,
@@ -467,6 +480,7 @@ class TargetTracker:
                     t.classification = sighting["classification"]
                     t.classification_confidence = float(sighting.get("classification_confidence", 0.0))
             else:
+                self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
                     target_id=tid,
                     name=name,
@@ -566,6 +580,7 @@ class TargetTracker:
                 t._initial_confidence = confidence
                 self._add_confirming_source(t, "mesh")
             else:
+                self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
                     target_id=tid,
                     name=name,
@@ -658,6 +673,7 @@ class TargetTracker:
                 t._initial_confidence = confidence
                 self._add_confirming_source(t, "adsb")
             else:
+                self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
                     target_id=tid,
                     name=name,
@@ -749,6 +765,7 @@ class TargetTracker:
                 t.kinematics = kinematics
                 self._add_confirming_source(t, "rf_motion")
             else:
+                self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
                     target_id=tid,
                     name=f"RF Motion ({pair_id})",
@@ -777,6 +794,34 @@ class TargetTracker:
         with self._lock:
             return list(self._targets.values())
 
+    @property
+    def version(self) -> int:
+        """Monotonic membership counter — bumps when targets are added or
+        removed, but **not** on per-target position/state updates.
+
+        Used by /api/targets ETag/304 to short-circuit unchanged polls
+        (Wave 201).  The reconciliation poll only cares about set
+        membership: positions/state stream over WebSocket telemetry and
+        do not require the heavyweight 158 KB list refresh.
+        """
+        return self._membership_count
+
+    def snapshot(self) -> tuple[list[TrackedTarget], int]:
+        """Atomically read targets and version under one lock acquisition.
+
+        Returns ``(targets_list, membership_count)``.  The list is a
+        fresh copy — safe to iterate without holding the lock.  The
+        membership count is the value at the moment the snapshot was
+        taken; callers can compare against a previously-stored version
+        to skip work when the active set has not changed.
+
+        Calls :meth:`_prune_stale` first so the returned snapshot
+        reflects the same active set that ``get_all()`` would return.
+        """
+        self._prune_stale()
+        with self._lock:
+            return list(self._targets.values()), self._membership_count
+
     def get_hostiles(self) -> list[TrackedTarget]:
         """Return only hostile targets."""
         return [t for t in self.get_all() if t.alliance == "hostile"]
@@ -793,7 +838,10 @@ class TargetTracker:
     def remove(self, target_id: str) -> bool:
         """Remove a target from tracking."""
         with self._lock:
-            return self._targets.pop(target_id, None) is not None
+            removed = self._targets.pop(target_id, None) is not None
+            if removed:
+                self._membership_count += 1
+            return removed
 
     def summary(self) -> str:
         """Battlespace summary for reasoning context."""
@@ -861,6 +909,8 @@ class TargetTracker:
                 or (t.source == "mesh" and (now - t.last_seen) > self.MESH_STALE_TIMEOUT)
                 or (t.source == "adsb" and (now - t.last_seen) > self.ADSB_STALE_TIMEOUT)
             ]
+            if stale:
+                self._membership_count += 1
             for tid in stale:
                 t = self._targets[tid]
                 self.reappearance_monitor.record_departure(
