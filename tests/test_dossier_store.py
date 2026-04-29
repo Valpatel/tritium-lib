@@ -443,3 +443,122 @@ class TestCloseAndReopen:
         assert dossier["name"] == "Persisted"
         assert dossier["entity_type"] == "vehicle"
         s2.close()
+
+
+# ------------------------------------------------------------------
+# Retention policy (Gap-fix C M-8)
+# ------------------------------------------------------------------
+
+
+class TestRetention:
+    """Periodic prune drops old signals; pinned dossiers are exempt."""
+
+    def test_pinned_default_false(self, store: DossierStore):
+        did = store.create_dossier("New", entity_type="device")
+        dossier = store.get_dossier(did)
+        assert dossier["pinned"] is False
+
+    def test_set_pinned(self, store: DossierStore):
+        did = store.create_dossier("Pin Me", entity_type="person")
+        assert store.set_pinned(did, True) is True
+        dossier = store.get_dossier(did)
+        assert dossier["pinned"] is True
+
+        assert store.set_pinned(did, False) is True
+        dossier = store.get_dossier(did)
+        assert dossier["pinned"] is False
+
+    def test_set_pinned_nonexistent(self, store: DossierStore):
+        assert store.set_pinned("does-not-exist", True) is False
+
+    def test_prune_drops_old_signals(self, store: DossierStore):
+        """Signals older than max_signal_age_s are dropped from
+        unpinned dossiers."""
+        did = store.create_dossier("Old", entity_type="person")
+        now = time.time()
+        # Add 3 signals: one ancient, one borderline, one fresh.
+        store.add_signal(did, "ble", "presence", {"rssi": -60},
+                         timestamp=now - 60 * 86400.0)   # 60 days old
+        store.add_signal(did, "ble", "presence", {"rssi": -70},
+                         timestamp=now - 31 * 86400.0)   # 31 days old
+        store.add_signal(did, "ble", "presence", {"rssi": -80},
+                         timestamp=now - 1.0)            # fresh
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 2
+
+        dossier = store.get_dossier(did)
+        assert len(dossier["signals"]) == 1
+        assert dossier["signals"][0]["data"]["rssi"] == -80
+
+    def test_prune_skips_pinned_dossier(self, store: DossierStore):
+        """Pinned dossiers retain their full history."""
+        did = store.create_dossier("Pinned", entity_type="person")
+        store.set_pinned(did, True)
+
+        now = time.time()
+        for i in range(5):
+            store.add_signal(did, "ble", "presence", {"i": i},
+                             timestamp=now - 100 * 86400.0)  # all very old
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 0
+
+        dossier = store.get_dossier(did)
+        assert len(dossier["signals"]) == 5
+
+    def test_prune_caps_signal_count(self, store: DossierStore):
+        """Per-dossier signal cap drops the oldest first."""
+        did = store.create_dossier("Cap Me", entity_type="person")
+        now = time.time()
+        for i in range(15):
+            store.add_signal(did, "ble", "presence", {"i": i},
+                             timestamp=now - 60.0 + i)  # all recent
+
+        stats = store.prune(
+            now=now,
+            max_signals_per_dossier=10,
+        )
+        assert stats["capped_out"] == 5
+
+        dossier = store.get_dossier(did)
+        assert len(dossier["signals"]) == 10
+        # Oldest 5 (i=0..4) should be gone; i=5..14 should remain.
+        retained = sorted(s["data"]["i"] for s in dossier["signals"])
+        assert retained == list(range(5, 15))
+
+    def test_prune_caps_apply_to_pinned(self, store: DossierStore):
+        """The per-dossier cap applies even to pinned dossiers — only
+        the age-based prune is skipped."""
+        did = store.create_dossier("Pinned & Capped", entity_type="person")
+        store.set_pinned(did, True)
+        now = time.time()
+        for i in range(12):
+            store.add_signal(did, "ble", "presence", {"i": i},
+                             timestamp=now - 60.0 + i)
+
+        stats = store.prune(
+            now=now,
+            max_signals_per_dossier=10,
+        )
+        assert stats["capped_out"] == 2
+
+        dossier = store.get_dossier(did)
+        assert len(dossier["signals"]) == 10
+
+    def test_prune_empty_store_no_error(self, store: DossierStore):
+        stats = store.prune()
+        assert stats == {"aged_out": 0, "capped_out": 0}
+
+    def test_prune_disabled_with_zero_age(self, store: DossierStore):
+        """max_signal_age_s=0 means everything counts as 'too old' for
+        unpinned dossiers — sanity check the math."""
+        did = store.create_dossier("Recent", entity_type="person")
+        now = time.time()
+        store.add_signal(did, "ble", "presence", {}, timestamp=now)
+
+        # Age threshold of 0 seconds drops anything older than 'now'.
+        # The signal at exactly 'now' is NOT < cutoff (cutoff=now), so it
+        # should survive.
+        stats = store.prune(max_signal_age_s=0.0, now=now)
+        assert stats["aged_out"] == 0

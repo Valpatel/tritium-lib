@@ -34,13 +34,40 @@ CREATE TABLE IF NOT EXISTS dossiers (
     last_seen REAL NOT NULL,
     identifiers TEXT NOT NULL DEFAULT '{}',
     tags TEXT NOT NULL DEFAULT '[]',
-    notes TEXT NOT NULL DEFAULT '[]'
+    notes TEXT NOT NULL DEFAULT '[]',
+    pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_dossiers_entity_type ON dossiers(entity_type);
 CREATE INDEX IF NOT EXISTS idx_dossiers_alliance ON dossiers(alliance);
 CREATE INDEX IF NOT EXISTS idx_dossiers_threat_level ON dossiers(threat_level);
 CREATE INDEX IF NOT EXISTS idx_dossiers_last_seen ON dossiers(last_seen);
+CREATE INDEX IF NOT EXISTS idx_dossiers_pinned ON dossiers(pinned);
 """
+
+# ---------------------------------------------------------------------------
+# Migration — add ``pinned`` column to existing databases that pre-date the
+# Gap-fix C M-8 retention work.  SQLite ``ALTER TABLE`` with IF NOT EXISTS
+# is not directly supported; we probe the column list instead.
+# ---------------------------------------------------------------------------
+
+def _migrate_pinned_column(conn) -> None:
+    """Add the pinned column to legacy dossier tables if missing."""
+    try:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(dossiers)").fetchall()
+        }
+        if "pinned" not in cols:
+            conn.execute(
+                "ALTER TABLE dossiers ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dossiers_pinned ON dossiers(pinned)"
+            )
+            conn.commit()
+    except Exception:
+        # Table may not exist yet on a fresh DB — schema creation will
+        # cover it.  Don't fail the constructor.
+        pass
 
 _SCHEMA_SIGNALS = """
 CREATE TABLE IF NOT EXISTS dossier_signals (
@@ -108,6 +135,15 @@ class DossierStore(BaseStore):
     Accumulates signals, enrichments, and metadata into dossiers that
     represent real-world entities.  Supports full-text search, identifier
     lookup, and merging of duplicate dossiers.
+
+    Retention policy (Gap-fix C M-8)
+    --------------------------------
+    Dossiers are unbounded by default; callers should periodically invoke
+    :meth:`prune` (or use ``DossierManager``'s hourly prune job) to:
+      * Drop ``dossier_signals`` older than 30 days for any dossier that
+        is **not** ``pinned``.
+      * Cap signals per dossier at 10000 — drop the oldest first.
+    Pinned dossiers (``pinned = 1``) keep all signals indefinitely.
     """
 
     _SCHEMAS = (
@@ -118,6 +154,11 @@ class DossierStore(BaseStore):
         _SCHEMA_FTS_TRIGGERS,
     )
     _FOREIGN_KEYS = True
+
+    def _create_tables(self) -> None:  # noqa: D401 — override
+        """Run schema creation, then any column-level migrations."""
+        super()._create_tables()
+        _migrate_pinned_column(self._conn)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -138,6 +179,9 @@ class DossierStore(BaseStore):
         d["identifiers"] = DossierStore._parse_json(d.get("identifiers"), {})
         d["tags"] = DossierStore._parse_json(d.get("tags"), [])
         d["notes"] = DossierStore._parse_json(d.get("notes"), [])
+        # Coerce pinned to bool for JSON-friendliness; legacy rows missing
+        # the column return None and we treat that as not pinned.
+        d["pinned"] = bool(d.get("pinned") or 0)
         return d
 
     @staticmethod
@@ -493,3 +537,104 @@ class DossierStore(BaseStore):
             )
             self._conn.commit()
             return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Retention (Gap-fix C M-8)
+    # ------------------------------------------------------------------
+
+    def set_pinned(self, dossier_id: str, pinned: bool) -> bool:
+        """Mark a dossier as pinned (exempt from retention) or unpinned.
+
+        Returns True if the dossier existed.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE dossiers SET pinned = ? WHERE dossier_id = ?",
+                (1 if pinned else 0, dossier_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def prune(
+        self,
+        *,
+        max_signal_age_s: float = 30 * 86400.0,   # 30 days
+        max_signals_per_dossier: int = 10000,
+        now: float | None = None,
+    ) -> dict:
+        """Apply the retention policy to dossier_signals.
+
+        Rules (Gap-fix C M-8):
+          * Drop signals older than ``max_signal_age_s`` for any dossier
+            with ``pinned = 0``.  Pinned dossiers keep all signals.
+          * Cap each dossier's signal count at ``max_signals_per_dossier``;
+            when exceeded, drop the oldest first.
+
+        Enrichments and the dossier rows themselves are never deleted —
+        only signals, which are the high-volume contributor to growth
+        (5.3 GB / ~50 GB-90d projection in W204 Behavioral SAT).
+
+        Parameters
+        ----------
+        max_signal_age_s:
+            Maximum signal age in seconds.  Defaults to 30 days.
+        max_signals_per_dossier:
+            Hard cap on per-dossier signal count.  Defaults to 10000.
+        now:
+            Override the wall-clock anchor (used in tests).  Defaults to
+            ``time.time()``.
+
+        Returns
+        -------
+        dict with ``aged_out`` (count from age-based prune) and
+        ``capped_out`` (count from per-dossier cap) — useful for
+        instrumentation and logging.
+        """
+        anchor = now if now is not None else time.time()
+        cutoff = anchor - max_signal_age_s
+
+        aged_out = 0
+        capped_out = 0
+        with self._lock:
+            # 1) Age-based prune for unpinned dossiers
+            cur = self._conn.execute(
+                """DELETE FROM dossier_signals
+                   WHERE timestamp < ?
+                     AND dossier_id IN (
+                         SELECT dossier_id FROM dossiers WHERE pinned = 0
+                     )""",
+                (cutoff,),
+            )
+            aged_out = cur.rowcount or 0
+
+            # 2) Per-dossier signal-count cap
+            #    Find dossiers exceeding the cap, then trim each.
+            over_cap = self._conn.execute(
+                """SELECT dossier_id, COUNT(*) AS n
+                   FROM dossier_signals
+                   GROUP BY dossier_id
+                   HAVING n > ?""",
+                (max_signals_per_dossier,),
+            ).fetchall()
+
+            for row in over_cap:
+                dossier_id = row["dossier_id"]
+                excess = row["n"] - max_signals_per_dossier
+                if excess <= 0:
+                    continue
+                # Delete the ``excess`` oldest signals for this dossier.
+                cur = self._conn.execute(
+                    """DELETE FROM dossier_signals
+                       WHERE signal_id IN (
+                           SELECT signal_id FROM dossier_signals
+                           WHERE dossier_id = ?
+                           ORDER BY timestamp ASC
+                           LIMIT ?
+                       )""",
+                    (dossier_id, excess),
+                )
+                capped_out += cur.rowcount or 0
+
+            self._conn.commit()
+
+        return {"aged_out": aged_out, "capped_out": capped_out}
