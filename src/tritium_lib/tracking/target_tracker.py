@@ -1027,6 +1027,26 @@ class TargetTracker:
                 self._membership_count += 1
             return removed
 
+    def clear_source(self, source: str) -> int:
+        """Remove every target whose ``source`` field matches.
+
+        Returns the count of targets removed.  Used by the demo router
+        on POST /api/demo/stop so synthetic targets do not linger in
+        the tracker after the demo is shut down (Gap-fix C GA-1).
+        """
+        if not source:
+            return 0
+        with self._lock:
+            stale = [
+                tid for tid, t in self._targets.items()
+                if getattr(t, "source", None) == source
+            ]
+            for tid in stale:
+                self._targets.pop(tid, None)
+            if stale:
+                self._membership_count += 1
+            return len(stale)
+
     def summary(self) -> str:
         """Battlespace summary for reasoning context."""
         all_targets = self.get_all()

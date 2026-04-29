@@ -195,6 +195,31 @@ class TestConfidenceDecay:
         result = _decayed_confidence("simulation", 1.0, 1000.0)
         assert result == 1.0
 
+    def test_acoustic_half_life_pinned_at_20s(self):
+        """Wave 205: acoustic source pinned to a 20s half-life.
+
+        Without an explicit entry, acoustic-source targets fell back to
+        the default 300s decay, which is wrong for transient sounds
+        (gunshot, glass break, voice).  20s sits between rf_motion (10s)
+        and ble (30s) — see the ``_HALF_LIVES`` block comment in
+        ``target_tracker.py`` for rationale.
+
+        This test pins the value so future changes are intentional,
+        not accidental.
+        """
+        from tritium_lib.tracking.target_tracker import _HALF_LIVES
+
+        assert _HALF_LIVES["acoustic"] == 20.0
+        # And confirm the decay function uses it: at 20s, confidence
+        # should halve.
+        result = _decayed_confidence("acoustic", 1.0, 20.0)
+        assert abs(result - 0.5) < 0.01
+        # And acoustic decays faster than ble: at 30s, acoustic should
+        # be well below ble's 50% mark.
+        acoustic_30s = _decayed_confidence("acoustic", 1.0, 30.0)
+        ble_30s = _decayed_confidence("ble", 1.0, 30.0)
+        assert acoustic_30s < ble_30s
+
     def test_decay_below_threshold_returns_zero(self):
         """Confidence below MIN_CONFIDENCE returns 0."""
         # Very long elapsed time should push below threshold
@@ -324,6 +349,43 @@ class TestTargetRemoval:
         target = tracker.get_target("ble_aabbccddeeff")
         assert target is not None
         assert target.signal_count == 5
+
+    def test_clear_source_removes_simulation_targets(self):
+        """clear_source('simulation') drops every target whose source
+        field is 'simulation' (Gap-fix C GA-1)."""
+        tracker = TargetTracker()
+        # Two simulation-sourced targets and one BLE target.
+        tracker.update_from_simulation({
+            "target_id": "rover_01", "name": "R1", "alliance": "friendly",
+            "asset_type": "rover",
+        })
+        tracker.update_from_simulation({
+            "target_id": "drone_01", "name": "D1", "alliance": "hostile",
+            "asset_type": "drone",
+        })
+        tracker.update_from_ble({
+            "mac": "AA:BB:CC:DD:EE:01", "name": "Phone",
+            "rssi": -60, "position": {"x": 0, "y": 0},
+        })
+
+        cleared = tracker.clear_source("simulation")
+        assert cleared == 2
+
+        remaining = tracker.get_all()
+        ids = {t.target_id for t in remaining}
+        assert "rover_01" not in ids
+        assert "drone_01" not in ids
+        assert "ble_aabbccddee01" in ids
+
+    def test_clear_source_unknown_returns_zero(self):
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "rover_01", "name": "R1", "alliance": "friendly",
+            "asset_type": "rover",
+        })
+        assert tracker.clear_source("does-not-exist") == 0
+        assert tracker.clear_source("") == 0
+        assert len(tracker.get_all()) == 1
 
 
 class TestVelocityCheck:
