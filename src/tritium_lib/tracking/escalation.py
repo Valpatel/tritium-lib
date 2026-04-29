@@ -66,6 +66,12 @@ class EscalationConfig:
     linger_threshold: float = 30.0    # seconds in zone before -> hostile
     deescalation_time: float = 30.0   # seconds outside zones before step-down
     tick_interval: float = 0.5        # recommended evaluation frequency (2 Hz)
+    # Passive decay — drops threat level by one band every N seconds when
+    # the level has been stable (no new escalation) regardless of whether
+    # the target is still inside a zone.  Closes Gap-fix C M-5 where
+    # Behavioral SAT measured a target pinned at "hostile" for 9626s.
+    # Set to 0.0 to disable passive decay (zone-exit decay still applies).
+    passive_decay_interval: float = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -260,11 +266,32 @@ def classify_target(
                 record.level_since = now
                 zone_exit_time = now  # reset timer for next step
 
+    # Passive decay — fires regardless of zone presence so a target pinned
+    # at "hostile" inside a restricted zone can still drop after the
+    # configured interval if no fresh escalation event has fired.  Only
+    # applies when the level has not just been raised this tick.
+    # (Closes Gap-fix C M-5.)
+    decay_eligible = (
+        cfg.passive_decay_interval > 0.0
+        and record.threat_level == old_level   # not changed by zone logic this tick
+        and escalation_index(record.threat_level) > 0
+        and (now - record.level_since) >= cfg.passive_decay_interval
+    )
+    if decay_eligible:
+        level_idx = escalation_index(record.threat_level)
+        record.threat_level = THREAT_LEVELS[level_idx - 1]
+        record.level_since = now
+
     # Build result
     level_changed = record.threat_level != old_level
     reason = ""
     if level_changed:
-        reason = f"zone:{record.in_zone}" if record.in_zone else "de-escalation"
+        if decay_eligible and not record.in_zone:
+            reason = "passive-decay"
+        elif decay_eligible and record.in_zone:
+            reason = f"passive-decay-in-zone:{record.in_zone}"
+        else:
+            reason = f"zone:{record.in_zone}" if record.in_zone else "de-escalation"
 
     result = ClassifyResult(
         record=record,

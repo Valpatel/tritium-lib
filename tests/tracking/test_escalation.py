@@ -339,8 +339,107 @@ class TestEscalationConfig:
         assert cfg.linger_threshold == 30.0
         assert cfg.deescalation_time == 30.0
         assert cfg.tick_interval == 0.5
+        # Passive decay: 60 s by default — Gap-fix C M-5
+        assert cfg.passive_decay_interval == 60.0
 
     def test_custom(self):
         cfg = EscalationConfig(linger_threshold=5.0, deescalation_time=10.0)
         assert cfg.linger_threshold == 5.0
         assert cfg.deescalation_time == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Passive decay (Gap-fix C M-5)
+# ---------------------------------------------------------------------------
+
+class TestPassiveDecay:
+    """A target pinned at hostile inside a zone must still decay over time."""
+
+    def test_passive_decay_in_zone_drops_one_band(self):
+        # 1 s passive decay so the test runs fast.
+        cfg = EscalationConfig(
+            linger_threshold=999.0,
+            passive_decay_interval=1.0,
+        )
+        record = ThreatRecord(
+            target_id="t1",
+            threat_level="hostile",
+            in_zone="zone-A",
+        )
+        # level_since was set on creation; advance time past the
+        # passive-decay interval but not past the linger threshold.
+        now = record.level_since + 2.0
+        zone = _make_zone(zone_type="restricted_area", name="zone-A")
+
+        result, _ = classify_target(record, zone, now, cfg, 0.0)
+
+        assert result.level_changed is True
+        assert result.old_level == "hostile"
+        assert result.new_level == "suspicious"
+        assert "passive-decay" in result.reason
+
+    def test_passive_decay_disabled_holds_level(self):
+        cfg = EscalationConfig(passive_decay_interval=0.0)
+        record = ThreatRecord(
+            target_id="t1",
+            threat_level="hostile",
+            in_zone="zone-A",
+        )
+        now = record.level_since + 9999.0
+        zone = _make_zone(zone_type="restricted_area", name="zone-A")
+
+        result, _ = classify_target(record, zone, now, cfg, 0.0)
+
+        # Without passive decay, hostile in restricted zone stays hostile.
+        assert result.level_changed is False
+        assert result.new_level == "hostile"
+
+    def test_passive_decay_does_not_fire_when_just_escalated(self):
+        # A fresh escalation must not be immediately decayed in the same
+        # tick.  level_since gets bumped when classify_target raises the
+        # level, so decay_eligible should be False on that tick.
+        cfg = EscalationConfig(
+            linger_threshold=999.0,
+            passive_decay_interval=0.0001,  # tiny — would otherwise fire
+        )
+        record = ThreatRecord(target_id="t1")
+        zone = _make_zone(zone_type="restricted_area", name="zone-A")
+        now = time.monotonic()
+
+        result, _ = classify_target(record, zone, now + 1.0, cfg, 0.0)
+
+        # Restricted-zone entry from "none" raises level to "suspicious"
+        # this tick.  The tiny passive_decay_interval would normally
+        # trigger immediate decay, but the guard
+        # `record.threat_level == old_level` blocks decay on the same
+        # tick the level was raised — so we must still see "suspicious".
+        assert result.new_level == "suspicious"
+        assert result.level_changed is True
+        assert result.old_level == "none"
+
+    def test_passive_decay_steps_one_band_at_a_time(self):
+        """Repeated ticks step down through unknown -> none."""
+        cfg = EscalationConfig(passive_decay_interval=1.0)
+        record = ThreatRecord(
+            target_id="t1",
+            threat_level="suspicious",
+            in_zone="",  # outside any zone, no zone-exit timer either
+        )
+        # First decay: suspicious -> unknown.
+        result, _ = classify_target(
+            record, None, record.level_since + 2.0, cfg, 0.0,
+        )
+        assert result.new_level == "unknown"
+
+        # Second decay (after another interval): unknown -> none.
+        result, _ = classify_target(
+            record, None, record.level_since + 2.0, cfg, 0.0,
+        )
+        assert result.new_level == "none"
+
+        # Third decay: stays at none (idx 0 floor).
+        result, _ = classify_target(
+            record, None, record.level_since + 2.0, cfg, 0.0,
+        )
+        assert result.new_level == "none"
+        assert result.level_changed is False
