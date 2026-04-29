@@ -113,7 +113,10 @@ export const THREAT_COLORS = {
 };
 
 /**
- * Format a Unix timestamp (seconds) as a time-only string (HH:MM:SS).
+ * Format a Unix timestamp (seconds) as a 24-hour time-only string (HH:MM:SS).
+ * Wave 203: hour12:false ensures consistent 24h format across locales —
+ * default 2-digit on en-US gives "02:13:20 PM" (12h), but tactical UI
+ * panels require 24h with no AM/PM suffix.
  * @param {number} ts — Unix timestamp in seconds
  * @returns {string} e.g. "14:30:05" or "--" if invalid
  */
@@ -123,11 +126,12 @@ export function _formatTime(ts) {
     if (isNaN(d.getTime())) return '--';
     return d.toLocaleTimeString(undefined, {
         hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
     });
 }
 
 /**
- * Format a Unix timestamp (seconds) as a date+time string.
+ * Format a Unix timestamp (seconds) as a 24-hour date+time string.
  * @param {number} ts — Unix timestamp in seconds
  * @returns {string} e.g. "Mar 25, 14:30:05" or "--" if invalid
  */
@@ -138,5 +142,24 @@ export function _formatTimestamp(ts) {
     return d.toLocaleString(undefined, {
         month: 'short', day: 'numeric',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
     });
 }
+
+/**
+ * Terminal target statuses — units in these states are dead/gone and should
+ * not be counted as active.  This must agree with the Python source of truth
+ * in tritium-sc/src/app/routers/targets_unified.py:_TERMINAL_STATUSES so the
+ * header counter and /api/targets agree (Wave 198 mismatch fix).
+ *
+ * Canonical full status enum (10 values) lives in
+ * tritium-lib/src/tritium_lib/sim_engine/core/entity.py:494 — terminal
+ * statuses are the subset of entries that mark a unit as no-longer-active.
+ */
+export const TERMINAL_STATUSES = new Set([
+    'eliminated',
+    'destroyed',
+    'despawned',
+    'neutralized',
+    'escaped',
+]);
