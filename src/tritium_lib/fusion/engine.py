@@ -333,6 +333,19 @@ class FusionEngine:
         else:
             result_tid = tid
 
+        # Wave 202: tag the resulting tracker target with the "wifi"
+        # confirming source.  ``update_from_ble`` only knows to add
+        # ``"ble"`` to ``confirming_sources``, so without this the
+        # tracker forgets the WiFi modality at the BLE-shape boundary.
+        # This is the smallest fix for the source-label gap surfaced by
+        # tests/fusion/test_convergence_wave202.py — see
+        # docs/audits/wave-202-fusion-convergence.md for the full
+        # analysis and remediation roadmap.
+        existing = self._tracker.get_target(ble_tid)
+        if existing is not None:
+            with self._tracker._lock:
+                existing.confirming_sources.add("wifi")
+
         self._record_sensor(result_tid, "wifi", probe)
         self._publish_event("fusion.sensor.ingested", {
             "source": "wifi", "target_id": result_tid, "mac": mac, "ssid": ssid,
