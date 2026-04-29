@@ -478,6 +478,11 @@ class SimulationTarget:
       Hostiles: active -> escaped (reached exit edge) or neutralized/eliminated (intercepted/killed)
       Friendlies: active -> arrived (dispatch) or loops patrol (loop_waypoints=True)
       Neutrals: active -> despawned (reached destination)
+
+    The full status enumeration and the W201-sanctioned terminal subset
+    are defined in :mod:`tritium_lib.models.target_status`.  Filters and
+    counts that depend on "is this target still active?" must import
+    ``TERMINAL_STATUSES`` from that module rather than hardcoding the set.
     """
 
     target_id: str
@@ -491,7 +496,10 @@ class SimulationTarget:
     battery: float = 1.0  # 0.0-1.0 (persons/animals drain at 0.0)
     waypoints: list[tuple[float, float]] = field(default_factory=list)
     _waypoint_index: int = 0
-    status: str = "active"  # "active", "idle", "stationary", "arrived", "escaped", "neutralized", "eliminated", "despawned", "low_battery", "destroyed"
+    # Canonical status enum (10 values) and the terminal subset live in
+    # tritium_lib.models.target_status — keep that module as the single
+    # source of truth.  The legacy default "active" is preserved here.
+    status: str = "active"
     loop_waypoints: bool = False  # True for friendly patrol routes, False for one-shot paths
 
     # Combat fields
