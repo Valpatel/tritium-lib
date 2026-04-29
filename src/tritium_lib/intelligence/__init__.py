@@ -68,10 +68,12 @@ from tritium_lib.intelligence.scorer import (
     StaticScorer,
 )
 from tritium_lib.intelligence.rl_metrics import (
+    FeatureAblation,
     PredictionRecord,
     RLMetrics,
     TrainingSnapshot,
 )
+from tritium_lib.intelligence.prediction_store import PredictionStore
 from tritium_lib.intelligence.position_estimator import (
     estimate_from_multiple_anchors,
     estimate_from_single_anchor,
@@ -217,8 +219,10 @@ __all__ = [
     "ModelRegistry",
     "PATTERN_FEATURES",
     "PatternLearner",
+    "FeatureAblation",
     "PredictionRecord",
     "PredictionResult",
+    "PredictionStore",
     "RLMetrics",
     "ScorerResult",
     "SimpleThresholdDetector",

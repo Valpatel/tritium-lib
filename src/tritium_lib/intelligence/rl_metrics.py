@@ -48,6 +48,66 @@ class PredictionRecord:
     correct: bool | None = None  # None = no feedback yet
 
 
+@dataclass
+class FeatureAblation:
+    """Per-feature health snapshot used to diagnose stuck training.
+
+    Stores the basic descriptive statistics of one feature column across
+    the training dataset.  Designed for B-10 / Wave 198 instrumentation —
+    a feature that is always 0 or always 1 explains a classifier that
+    plateaus at a fixed accuracy.
+
+    Attributes
+    ----------
+    feature_name:
+        The feature column.
+    mean:
+        Average value across training rows.
+    std:
+        Population standard deviation across training rows.
+    minimum:
+        Smallest observed value.
+    maximum:
+        Largest observed value.
+    unique_values:
+        Number of distinct values seen (capped at 64 to bound memory).
+    is_constant:
+        True if std < 1e-9, i.e. the feature contributes no signal.
+    saturation_ratio:
+        Fraction of rows that take the dominant value.  1.0 means the
+        feature is effectively constant.
+    sample_count:
+        Number of training rows sampled.
+    importance:
+        Optional model-side importance copy (for ablation views).
+    """
+
+    feature_name: str = ""
+    mean: float = 0.0
+    std: float = 0.0
+    minimum: float = 0.0
+    maximum: float = 0.0
+    unique_values: int = 0
+    is_constant: bool = False
+    saturation_ratio: float = 0.0
+    sample_count: int = 0
+    importance: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "feature_name": self.feature_name,
+            "mean": round(self.mean, 6),
+            "std": round(self.std, 6),
+            "min": round(self.minimum, 6),
+            "max": round(self.maximum, 6),
+            "unique_values": self.unique_values,
+            "is_constant": self.is_constant,
+            "saturation_ratio": round(self.saturation_ratio, 4),
+            "sample_count": self.sample_count,
+            "importance": round(self.importance, 6),
+        }
+
+
 class RLMetrics:
     """Thread-safe metrics tracker for RL model health monitoring.
 
@@ -70,7 +130,24 @@ class RLMetrics:
         self,
         max_history: int = 1000,
         window_seconds: float = 3600.0,
+        prediction_store: Any = None,
     ) -> None:
+        """Initialise metrics tracker.
+
+        Parameters
+        ----------
+        max_history:
+            Maximum training snapshots and prediction records held in
+            memory.
+        window_seconds:
+            Time window for rolling statistics (default 1 hour).
+        prediction_store:
+            Optional ``PredictionStore``-compatible object.  If
+            supplied, every ``record_prediction`` call also writes
+            through to the store, and the in-memory deque is hydrated
+            from the store at construction time so historical
+            predictions survive a process restart (B-6).
+        """
         self._lock = threading.RLock()
         self._max_history = max_history
         self._window = window_seconds
@@ -78,8 +155,23 @@ class RLMetrics:
         # Training history
         self._training_history: deque[TrainingSnapshot] = deque(maxlen=max_history)
 
-        # Prediction history
+        # Prediction history (in-memory, bounded).  When a
+        # ``prediction_store`` is configured this deque is the recent
+        # cache and the store is the durable record (B-6).
         self._predictions: deque[PredictionRecord] = deque(maxlen=max_history * 10)
+        self._prediction_store = prediction_store
+
+        # Hydrate the in-memory deque from the persistent store so
+        # restart-survival is transparent to existing consumers.  Hard
+        # cap to ``maxlen`` to respect deque semantics.
+        if self._prediction_store is not None:
+            try:
+                cached = list(self._prediction_store)
+                if cached:
+                    cap = self._predictions.maxlen or len(cached)
+                    self._predictions.extend(cached[-cap:])
+            except Exception:  # pragma: no cover — store I/O is best-effort
+                pass
 
         # Aggregate counters
         self._total_trainings = 0
@@ -93,6 +185,10 @@ class RLMetrics:
 
         # Per-model tracking
         self._model_metrics: dict[str, _ModelMetrics] = {}
+
+        # Per-model feature ablation: model_name -> {feature_name -> FeatureAblation}
+        # Refreshed on each call to ``record_feature_stats`` (B-10 instrumentation).
+        self._feature_ablation: dict[str, dict[str, FeatureAblation]] = {}
 
     def record_training(
         self,
@@ -192,6 +288,20 @@ class RLMetrics:
                 elif correct is False:
                     mm.incorrect_predictions += 1
 
+            # B-6: write-through to persistent store (if configured).
+            # Best-effort — store outages must not break inference.
+            if self._prediction_store is not None:
+                try:
+                    self._prediction_store.append(record, model_name=model_name)
+                except TypeError:
+                    # Older store API — fall back to positional call
+                    try:
+                        self._prediction_store.append(record)
+                    except Exception:  # pragma: no cover
+                        pass
+                except Exception:  # pragma: no cover - persistence is opt-in
+                    pass
+
     def record_feedback(
         self,
         correct: bool,
@@ -218,6 +328,143 @@ class RLMetrics:
                     mm.correct_predictions += 1
                 else:
                     mm.incorrect_predictions += 1
+
+    def record_feature_stats(
+        self,
+        feature_names: list[str],
+        rows: list[list[float]],
+        model_name: str = "correlation",
+        importance: dict[str, float] | None = None,
+    ) -> dict[str, FeatureAblation]:
+        """Compute and store per-feature ablation stats from training rows.
+
+        Designed for B-10: when accuracy plateaus, the most common cause is
+        a feature that is always 0 (or always 1) — it contributes no
+        information.  This method scans the training matrix once and
+        records mean / std / min / max / unique-count / saturation ratio
+        per feature, plus the model's importance score if supplied.
+
+        Parameters
+        ----------
+        feature_names:
+            Column names in the same order as ``rows``.
+        rows:
+            Training feature matrix (list of feature vectors).  May be
+            empty; in that case all features are reported as constant
+            with sample_count=0.
+        model_name:
+            Which model these stats describe (default ``"correlation"``).
+        importance:
+            Optional ``{feature_name: importance}`` map, copied into each
+            FeatureAblation for convenient ablation views.
+
+        Returns
+        -------
+        dict[str, FeatureAblation]
+            The newly-recorded ablation snapshot.
+        """
+        importance = importance or {}
+        snapshot: dict[str, FeatureAblation] = {}
+
+        n_rows = len(rows)
+        if n_rows == 0:
+            for fname in feature_names:
+                snapshot[fname] = FeatureAblation(
+                    feature_name=fname,
+                    is_constant=True,
+                    sample_count=0,
+                    importance=float(importance.get(fname, 0.0)),
+                )
+        else:
+            for col_idx, fname in enumerate(feature_names):
+                col_values: list[float] = []
+                for row in rows:
+                    if col_idx < len(row):
+                        try:
+                            col_values.append(float(row[col_idx]))
+                        except (TypeError, ValueError):
+                            continue
+
+                if not col_values:
+                    snapshot[fname] = FeatureAblation(
+                        feature_name=fname,
+                        is_constant=True,
+                        sample_count=0,
+                        importance=float(importance.get(fname, 0.0)),
+                    )
+                    continue
+
+                count = len(col_values)
+                mean = sum(col_values) / count
+                variance = sum((v - mean) ** 2 for v in col_values) / count
+                std = variance ** 0.5
+                minimum = min(col_values)
+                maximum = max(col_values)
+
+                # Cap unique tracking to avoid OOM on continuous features
+                seen: set[float] = set()
+                value_counts: dict[float, int] = {}
+                for v in col_values:
+                    if len(seen) < 64:
+                        seen.add(v)
+                    value_counts[v] = value_counts.get(v, 0) + 1
+                dominant_count = max(value_counts.values()) if value_counts else 0
+                saturation = dominant_count / count if count > 0 else 0.0
+
+                snapshot[fname] = FeatureAblation(
+                    feature_name=fname,
+                    mean=mean,
+                    std=std,
+                    minimum=minimum,
+                    maximum=maximum,
+                    unique_values=len(seen),
+                    is_constant=std < 1e-9,
+                    saturation_ratio=saturation,
+                    sample_count=count,
+                    importance=float(importance.get(fname, 0.0)),
+                )
+
+        with self._lock:
+            self._feature_ablation[model_name] = snapshot
+        return snapshot
+
+    def get_feature_ablation(
+        self,
+        model_name: str = "correlation",
+    ) -> list[dict[str, Any]]:
+        """Return the most recent feature ablation snapshot.
+
+        Returns a list of dicts (sorted by importance, descending) so
+        callers can see at-a-glance which features are doing work and
+        which are constant or saturated.
+        """
+        with self._lock:
+            snap = self._feature_ablation.get(model_name, {})
+            entries = [v.to_dict() for v in snap.values()]
+
+        entries.sort(key=lambda d: d.get("importance", 0.0), reverse=True)
+        return entries
+
+    def get_constant_features(
+        self,
+        model_name: str = "correlation",
+        saturation_threshold: float = 0.95,
+    ) -> list[str]:
+        """Return features that are constant or near-constant.
+
+        Used by B-10 instrumentation to quickly surface stuck-classifier
+        causes.  A feature is considered "constant" if either its
+        standard deviation is below 1e-9 or its dominant-value
+        saturation ratio is at or above ``saturation_threshold``.
+        """
+        with self._lock:
+            snap = self._feature_ablation.get(model_name, {})
+            stuck = [
+                a.feature_name
+                for a in snap.values()
+                if a.is_constant or a.saturation_ratio >= saturation_threshold
+            ]
+        return stuck
 
     def get_accuracy_trend(
         self,
@@ -419,6 +666,11 @@ class RLMetrics:
                     "accuracy_trend": self.get_accuracy_trend(model_name=name),
                     "training_growth": self.get_training_data_growth(model_name=name),
                     "feature_importance": self.get_feature_importance(model_name=name),
+                    # B-10 instrumentation: per-feature ablation diagnostics.
+                    # Surfaces constant / saturated features that explain a
+                    # plateaued accuracy (e.g. RL stuck at 0.855 in W198).
+                    "feature_ablation": self.get_feature_ablation(model_name=name),
+                    "constant_features": self.get_constant_features(model_name=name),
                 }
 
             return {
@@ -433,8 +685,17 @@ class RLMetrics:
                 "export_timestamp": time.time(),
             }
 
-    def reset(self) -> None:
-        """Reset all metrics. Useful for testing."""
+    def reset(self, *, clear_store: bool = False) -> None:
+        """Reset all metrics. Useful for testing.
+
+        Parameters
+        ----------
+        clear_store:
+            If True and a ``prediction_store`` was configured, also
+            wipe the persistent store.  Defaults to False so test runs
+            don't accidentally erase production history when a single
+            ``RLMetrics`` instance is reset between scenarios.
+        """
         with self._lock:
             self._training_history.clear()
             self._predictions.clear()
@@ -445,6 +706,13 @@ class RLMetrics:
             self._feature_importance_sum.clear()
             self._feature_importance_count = 0
             self._model_metrics.clear()
+            self._feature_ablation.clear()
+
+            if clear_store and self._prediction_store is not None:
+                try:
+                    self._prediction_store.clear()
+                except Exception:  # pragma: no cover
+                    pass
 
 
 class _ModelMetrics:
