@@ -25,7 +25,7 @@ from typing import Any, Callable
 
 from tritium_lib.alerting import AlertEngine, AlertRecord
 from tritium_lib.analytics import AnalyticsEngine
-from tritium_lib.events.bus import EventBus
+from tritium_lib.events.bus import EventBus, QueueEventBus
 from tritium_lib.fusion import FusionEngine, FusedTarget, FusionSnapshot
 from tritium_lib.intelligence.anomaly_engine import AnomalyEngine, AnomalyAlert
 from tritium_lib.incident import IncidentManager
@@ -278,7 +278,7 @@ class SitAwareEngine:
 
     def __init__(
         self,
-        event_bus: EventBus | None = None,
+        event_bus: EventBus | QueueEventBus | None = None,
         *,
         fusion: FusionEngine | None = None,
         alerting: AlertEngine | None = None,
@@ -294,8 +294,40 @@ class SitAwareEngine:
     ) -> None:
         self._lock = threading.Lock()
 
+        # Bridge state — only used when caller passes a QueueEventBus.
+        # SitAwareEngine is built on the topic-based EventBus API
+        # (subscribe(topic, callback)).  When integrating with subsystems
+        # that use the queue-based QueueEventBus (e.g. tritium-sc), we
+        # transparently bridge: SitAware uses its own internal EventBus
+        # for wiring, and a background thread forwards events from the
+        # queue bus into the topic bus.
+        self._external_queue_bus: QueueEventBus | None = None
+        self._bridge_queue: Any = None
+        self._bridge_thread: threading.Thread | None = None
+        self._bridge_running = False
+
         # EventBus — the nervous system
-        self._event_bus = event_bus if event_bus is not None else EventBus()
+        if event_bus is None:
+            self._event_bus = EventBus()
+        elif isinstance(event_bus, QueueEventBus):
+            # Caller passed a queue-based bus.  SitAware needs the
+            # topic-based EventBus API, so create one and bridge events
+            # from the queue bus into it.
+            self._external_queue_bus = event_bus
+            self._event_bus = EventBus()
+            logger.info(
+                "SitAwareEngine: bridging from QueueEventBus to internal "
+                "topic-based EventBus (subscribers receive topic events)"
+            )
+        elif isinstance(event_bus, EventBus):
+            self._event_bus = event_bus
+        else:
+            # Unknown bus type — refuse to silently misbehave.
+            raise TypeError(
+                f"SitAwareEngine: unsupported event_bus type "
+                f"{type(event_bus).__name__!r}; expected EventBus, "
+                f"QueueEventBus, or None"
+            )
 
         # Subsystem engines — accept externally-managed instances or create new
         self._fusion = fusion if fusion is not None else FusionEngine(
@@ -1160,8 +1192,104 @@ class SitAwareEngine:
         return " ".join(parts)
 
     # ------------------------------------------------------------------
+    # QueueEventBus bridge (used when SC-style queue bus is supplied)
+    # ------------------------------------------------------------------
+
+    def _start_queue_bridge(self) -> None:
+        """Start the queue->topic bridge thread (if a QueueEventBus was given).
+
+        Subscribes to the external QueueEventBus, drains messages of the
+        form ``{"type": topic, "data": ...}`` from the returned queue,
+        and republishes them onto SitAware's internal topic EventBus so
+        subscribe(topic, callback) wiring fires.
+        """
+        if self._external_queue_bus is None:
+            return
+        if self._bridge_running:
+            return
+
+        self._bridge_queue = self._external_queue_bus.subscribe()
+        self._bridge_running = True
+        self._bridge_thread = threading.Thread(
+            target=self._queue_bridge_loop,
+            daemon=True,
+            name="sitaware-queue-bridge",
+        )
+        self._bridge_thread.start()
+        logger.info(
+            "SitAwareEngine: queue->topic bridge thread started"
+        )
+
+    def _stop_queue_bridge(self) -> None:
+        """Stop the queue->topic bridge thread (if running)."""
+        if not self._bridge_running:
+            return
+        self._bridge_running = False
+        if (
+            self._bridge_thread is not None
+            and self._bridge_thread.is_alive()
+        ):
+            self._bridge_thread.join(timeout=2.0)
+        if (
+            self._external_queue_bus is not None
+            and self._bridge_queue is not None
+        ):
+            try:
+                self._external_queue_bus.unsubscribe(self._bridge_queue)
+            except Exception:
+                pass
+
+    def _queue_bridge_loop(self) -> None:
+        """Drain the external queue bus and republish on internal topic bus."""
+        import queue as _qmod
+        while self._bridge_running:
+            try:
+                msg = self._bridge_queue.get(timeout=0.5)
+            except _qmod.Empty:
+                continue
+            except Exception:
+                continue
+            try:
+                if not isinstance(msg, dict):
+                    continue
+                topic = msg.get("type", "")
+                data = msg.get("data")
+                if topic:
+                    self._event_bus.publish(topic, data)
+            except Exception:
+                logger.debug("queue->topic bridge error", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def is_running(self) -> bool:
+        """Return True if the engine has been started and is operational.
+
+        An engine is "running" when its alerting subsystem is started
+        and (if a queue bus was supplied) the bridge thread is alive.
+        """
+        # AlertEngine uses _started; some other subsystems use _running.
+        # Accept either to be robust across versions.
+        alerting_running = False
+        try:
+            for attr in ("_started", "_running", "is_running"):
+                v = getattr(self._alerting, attr, None)
+                if v is None:
+                    continue
+                alerting_running = bool(v() if callable(v) else v)
+                if alerting_running:
+                    break
+        except Exception:
+            alerting_running = False
+        if self._external_queue_bus is not None:
+            bridge_alive = bool(
+                self._bridge_running
+                and self._bridge_thread is not None
+                and self._bridge_thread.is_alive()
+            )
+            return alerting_running and bridge_alive
+        return alerting_running
 
     def start(self) -> None:
         """Start all subsystem engines that have background loops.
@@ -1170,10 +1298,14 @@ class SitAwareEngine:
         correlator. Call this after all setup is complete.
         """
         self._alerting.start()
+        # If we were given a QueueEventBus, start the bridge so that
+        # subsystem events reach our topic-based wiring.
+        self._start_queue_bridge()
         logger.info("SitAwareEngine started — all subsystems online")
 
     def stop(self) -> None:
         """Stop all subsystem background loops."""
+        self._stop_queue_bridge()
         self._alerting.stop()
         self._fusion.shutdown()
         logger.info("SitAwareEngine stopped")
