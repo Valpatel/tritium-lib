@@ -195,6 +195,14 @@ from .dossier import (
     PositionRecord,
     TargetDossier,
 )
+from .aar import (
+    AfterActionReport,
+    FactionSummary,
+    CivilianCollateral,
+    MVPHighlight,
+    KillGraphEntry,
+    MoraleSample,
+)
 from .reid import (
     ReIDEmbedding,
     ReIDMatch,
@@ -917,6 +925,13 @@ __all__ = [
     "DossierEnrichment",
     "PositionRecord",
     "TargetDossier",
+    # After-Action Report
+    "AfterActionReport",
+    "FactionSummary",
+    "CivilianCollateral",
+    "MVPHighlight",
+    "KillGraphEntry",
+    "MoraleSample",
     # ReID (re-identification)
     "ReIDEmbedding",
     "ReIDMatch",
