@@ -40,6 +40,11 @@ def ollama_chat(
     the correct API format:
     - llama-server: /v1/chat/completions (OpenAI-compatible)
     - ollama: /api/chat (legacy)
+
+    For llama-server, ``cache_prompt: true`` is set explicitly so the
+    server reuses KV-cache across calls that share a common prefix.
+    See ``tritium-sc/src/engine/perception/vision.py`` for the full
+    note on the misleading 0.82x SAT measurement (Gap-fix C M-3).
     """
     url = base_url or _ollama_host
     use_openai = _is_llama_server(url)
@@ -50,6 +55,8 @@ def ollama_chat(
     }
     if use_openai:
         payload["max_tokens"] = 2048
+        # Explicit KV-cache reuse for matching message prefixes.
+        payload["cache_prompt"] = True
     else:
         payload["stream"] = False
     if tools:
@@ -91,6 +98,8 @@ def llama_server_chat(
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
+        # Explicit KV-cache reuse — see ollama_chat() docstring.
+        "cache_prompt": True,
     }
     if tools:
         payload["tools"] = tools
