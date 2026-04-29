@@ -3,13 +3,11 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """tritium_lib.recording — record and replay sensor data streams.
 
-DEPRECATED (Gap-fix D D-4, 2026-04-29): no production consumers.
-Only ``tests/test_recording.py`` and ``tests/test_end_to_end_pipeline.py``
-import this package.  TargetTracker snapshot store + heatmap event drain
-serve the same playback role for live targets.
-
-TODO: delete this package and its dedicated tests once
-``test_end_to_end_pipeline`` can be rewritten to skip the Recorder stage.
+WIRED (Gap-fix G G-2, 2026-04-29): the SC AARBuilder now creates a
+Recorder per battle and writes events to ``data/sim_recordings/<id>.jsonl``.
+The /api/sim/recordings/* router exposes the session list and metadata
+to the frontend.  Per the user pivot 2026-04-29 — wire unwired features
+into the core sim instead of deleting them.
 
 
 
