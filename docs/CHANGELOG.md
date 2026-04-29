@@ -12,6 +12,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-04-28 — Wave 200 Security: NaN/Inf rejection in update_from_rf_motion
+
+| Change | Verification |
+|--------|-------------|
+| `target_tracker.update_from_rf_motion`: rejects NaN/Inf positions (slip past (0,0) check because `NaN == 0.0` is False) | Unit Tested |
+| Defensive float coercion catches TypeError/ValueError/IndexError for malformed dict/tuple inputs | Unit Tested |
+| Test: `tests/tracking/test_security_wave200.py` — 7/7 PASS | Unit Tested |
+| Audit: HIGH W200-H2 fix — see `docs/security/wave-200-audit.md` (parent repo) | Documented |
+
+---
+
 ## 2026-03-21 — Wave 186: Maintenance
 
 | Change | Verification |
