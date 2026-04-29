@@ -18,12 +18,30 @@ export function _esc(text) {
 
 /**
  * Format a Unix timestamp (seconds) as a human-readable relative time.
- * @param {number} ts Unix timestamp in seconds
- * @returns {string} e.g. "just now", "5s ago", "3m ago", "2h ago", "1d ago"
+ * Accepts numeric Unix seconds, numeric Unix milliseconds (auto-detected
+ * by magnitude), or ISO-8601 date strings — anything `Date.parse` can read.
+ * Gap-fix C / VI-2 (Wave 199 follow-up): bare `_timeAgo("2026-...")` used
+ * to compute `Date.now()/1000 - "2026-..."` and emit "NaNd ago" because JS
+ * subtracts a string from a number as NaN. We now coerce + sanity-check.
+ * @param {number|string|null|undefined} ts Unix seconds, ms, or ISO string
+ * @returns {string} e.g. "just now", "5s ago", "3m ago", "2h ago", "1d ago",
+ *                   "never" when input is empty, or "--" when unparseable.
  */
 export function _timeAgo(ts) {
-    if (!ts) return 'never';
-    const secs = Math.floor(Date.now() / 1000 - ts);
+    if (ts == null || ts === '') return 'never';
+    let secs;
+    if (typeof ts === 'number') {
+        if (!isFinite(ts)) return '--';
+        // Auto-detect milliseconds — anything past Sept 2001 in seconds
+        // (>1e9) is sane; values >1e12 are definitely milliseconds.
+        const tsSec = ts > 1e12 ? ts / 1000 : ts;
+        secs = Math.floor(Date.now() / 1000 - tsSec);
+    } else {
+        const parsed = Date.parse(ts);
+        if (isNaN(parsed)) return '--';
+        secs = Math.floor(Date.now() / 1000 - parsed / 1000);
+    }
+    if (!isFinite(secs)) return '--';
     if (secs < 5) return 'just now';
     if (secs < 60) return `${secs}s ago`;
     if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
