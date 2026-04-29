@@ -283,8 +283,22 @@ class TargetTracker:
         self.history.record(tid, position)
         self._check_geofence(tid, position[0], position[1])
 
+    YOLO_MAX_TRACK_SPEED = 30.0
+    """Upper bound on plausible target speed (m/s) used to expand the YOLO
+    match radius across detection gaps.  30 m/s ≈ 67 mph covers cars on
+    surface streets; faster vehicles will spawn new IDs (and that's fine —
+    they're a different track regime)."""
+
     def update_from_detection(self, detection: dict) -> None:
-        """Update or create a tracked target from a YOLO detection."""
+        """Update or create a tracked target from a YOLO detection.
+
+        Match logic chooses the *closest* existing target within a
+        motion-aware radius — not the first that fits.  The radius grows
+        with the time since each candidate was last seen so that fast
+        targets do not split into a new ID every frame, while still-recent
+        ghosts don't get refreshed by a detection that's actually a new
+        entity.
+        """
         if detection.get("confidence", 0) < 0.4:
             return
 
@@ -304,8 +318,13 @@ class TargetTracker:
 
         tid = f"det_{class_name}_{self._detection_counter}"
 
+        now = time.monotonic()
+        v_max = self.YOLO_MAX_TRACK_SPEED
+        base_threshold_sq = 9.0 if (abs(cx) > 2.0 or abs(cy) > 2.0) else 0.04
+
         with self._lock:
             matched = None
+            best_dist_sq = float("inf")
             for existing in self._targets.values():
                 if existing.source != "yolo":
                     continue
@@ -314,15 +333,19 @@ class TargetTracker:
                 dx = existing.position[0] - cx
                 dy = existing.position[1] - cy
                 dist_sq = dx * dx + dy * dy
-                threshold = 9.0 if (abs(cx) > 2.0 or abs(cy) > 2.0) else 0.04
-                if dist_sq < threshold:
+                # Motion budget: a target moving at v_max for the elapsed
+                # interval can have travelled up to (dt * v_max) meters.
+                dt = max(0.0, now - existing.last_seen)
+                motion_budget_sq = (dt * v_max) ** 2
+                threshold = max(base_threshold_sq, motion_budget_sq)
+                if dist_sq < threshold and dist_sq < best_dist_sq:
                     matched = existing
-                    break
+                    best_dist_sq = dist_sq
 
             if matched:
                 self._check_velocity(matched, (cx, cy))
                 matched.position = (cx, cy)
-                matched.last_seen = time.monotonic()
+                matched.last_seen = now
                 matched.signal_count += 1
                 self._add_confirming_source(matched, "yolo")
                 tid = matched.target_id
@@ -335,8 +358,8 @@ class TargetTracker:
                     alliance=alliance,
                     asset_type=asset_type,
                     position=(cx, cy),
-                    last_seen=time.monotonic(),
-                    first_seen=time.monotonic(),
+                    last_seen=now,
+                    first_seen=now,
                     signal_count=1,
                     source="yolo",
                     position_source="yolo",

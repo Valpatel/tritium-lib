@@ -26,7 +26,7 @@ Usage::
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Callable
@@ -173,7 +173,7 @@ class SimEventBus:
     def __init__(self, max_log: int = 10_000) -> None:
         self._listeners: dict[SimEventType, list[EventListener]] = defaultdict(list)
         self._global_listeners: list[EventListener] = []
-        self._event_log: list[SimEvent] = []
+        self._event_log: deque[SimEvent] = deque(maxlen=max_log)
         self._max_log: int = max_log
 
     # -- Subscribe / unsubscribe ------------------------------------------------
@@ -225,12 +225,12 @@ class SimEventBus:
         Results are returned in chronological order (oldest first), limited
         to the most recent *limit* matching entries.
         """
-        result = self._event_log
+        result: list[SimEvent] | deque[SimEvent] = self._event_log
         if event_type is not None:
             result = [e for e in result if e.event_type == event_type]
         if since_tick is not None:
             result = [e for e in result if e.tick >= since_tick]
-        return result[-limit:]
+        return list(result)[-limit:]
 
     def get_timeline(self, start_tick: int, end_tick: int) -> list[SimEvent]:
         """Return all logged events in the tick range [start_tick, end_tick]."""
@@ -257,7 +257,7 @@ class SimEventBus:
         Each dict contains string-safe keys suitable for JSON serialization
         and frontend consumption.
         """
-        recent = self._event_log[-last_n:] if last_n else []
+        recent = list(self._event_log)[-last_n:] if last_n else []
         out: list[dict] = []
         for e in recent:
             entry: dict = {
@@ -279,12 +279,8 @@ class SimEventBus:
     # -- Internal ---------------------------------------------------------------
 
     def _log_event(self, event: SimEvent) -> None:
-        """Append to the ring-buffer log, trimming if over max."""
+        """Append to the ring-buffer log; deque enforces the cap in O(1)."""
         self._event_log.append(event)
-        if len(self._event_log) > self._max_log:
-            # Trim the oldest 10% to avoid trimming every single emit
-            trim = self._max_log // 10
-            self._event_log = self._event_log[trim:]
 
     def _dispatch(self, event: SimEvent) -> None:
         """Invoke all matching listeners for *event*."""
