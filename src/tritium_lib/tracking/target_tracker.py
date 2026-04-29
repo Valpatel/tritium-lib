@@ -250,7 +250,26 @@ class TargetTracker:
             target.velocity_suspicious = False
 
     def _add_confirming_source(self, target: TrackedTarget, source: str) -> None:
-        """Register an additional source that confirms this target's existence."""
+        """Register an additional source that confirms this target's existence.
+
+        Multi-source confirmation is only meaningful when the new source
+        differs from the target's primary ``source``.  A YOLO update on a
+        YOLO-source target is the same modality re-observing itself; it is
+        not cross-modal confirmation and must not inflate
+        ``confirming_sources``.
+
+        ``"simulation"`` is rejected unconditionally — simulation telemetry
+        is synthetic ground truth (a fake sensor used to drive the test
+        harness), not a real sensor modality.  Counting it as a
+        confirming source produces fake "multi-source" metrics that mask
+        the absence of genuine cross-modal fusion.  See Gap-fix A
+        (post-Wave 198) for the live-system measurement that flagged this
+        as a 70% artifact in the fusion headline number.
+        """
+        if source == "simulation":
+            return
+        if source == target.source:
+            return
         target.confirming_sources.add(source)
 
     def update_from_simulation(self, sim_data: dict) -> None:
@@ -290,7 +309,12 @@ class TargetTracker:
                     position_source="simulation",
                     position_confidence=1.0,
                     _initial_confidence=1.0,
-                    confirming_sources={"simulation"},
+                    # Gap-fix A: simulation is synthetic ground truth, not a
+                    # sensor modality.  Start with no confirming sources so
+                    # the multi-source headline metric only counts genuine
+                    # cross-modal observations (BLE + YOLO, mesh + ADS-B,
+                    # etc.).
+                    confirming_sources=set(),
                 )
         self.history.record(tid, position)
         self._check_geofence(tid, position[0], position[1])
