@@ -623,8 +623,10 @@ def _add_civilian_devices(inv: UnitInventory, target_id: str, asset_type: str) -
     """
     import hashlib
 
-    # Deterministic RNG from target_id
-    h = int(hashlib.md5(target_id.encode()).hexdigest(), 16)
+    # Deterministic RNG from target_id.  sha256 over md5 to keep bandit
+    # quiet (W200-L1) — this is RNG seeding, not a security context, but
+    # cheap to do right.
+    h = int(hashlib.sha256(target_id.encode()).hexdigest(), 16)
     def _rng():
         nonlocal h
         h = (h * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
