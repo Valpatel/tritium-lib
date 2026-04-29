@@ -19,7 +19,13 @@ class NodeStatus(str, Enum):
 
 
 class FleetNode(BaseModel):
-    """A single node in the fleet."""
+    """A single node in the fleet.
+
+    Extended in Wave 204 with the W199/W200 enriched-heartbeat fields so
+    the command center can spot a misbehaving device (memory pressure,
+    panic resets, hostile WiFi).  All new fields default to safe values
+    so older heartbeats from un-upgraded firmware still parse cleanly.
+    """
     device_id: str
     mac: str = ""
     ip: str = ""
@@ -33,6 +39,22 @@ class FleetNode(BaseModel):
     status: NodeStatus = NodeStatus.OFFLINE
     capabilities: list[str] = Field(default_factory=list)
     ble_device_count: int = 0
+    # Wave 204: W199 enriched heartbeat fields ----------------------------
+    # Memory pressure: minimum heap ever observed and largest contiguous
+    # free block (fragmentation indicator).  free_psram is the live PSRAM
+    # remainder; psram_free above is the historical name kept for
+    # backwards compatibility.
+    min_free_heap: int = 0
+    largest_free_block: int = 0
+    free_psram: int = 0
+    # Network identity at time of heartbeat.
+    wifi_ssid: str = ""
+    wifi_channel: int = 0
+    # Last reset cause string ("poweron", "panic", "task_wdt", "sw", ...).
+    reset_reason: str = ""
+    # FreeRTOS task count and number of visible APs at last scan.
+    task_count: int = 0
+    wifi_scan_count: int = 0
 
 
 class FleetStatus(BaseModel):
