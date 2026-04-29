@@ -116,6 +116,13 @@ class TrackedTarget:
     _last_velocity_flag: float = 0.0  # monotonic time of last velocity flag
     classification: str = "unknown"  # RL/ML classification (person, vehicle, phone, etc.)
     classification_confidence: float = 0.0  # confidence of the classification model
+    # Structured kinematic / detection metadata.  Sources that report rich
+    # state (radar range/bearing/speed, RF motion direction hints, etc.)
+    # store it here instead of squeezing it into the discrete ``status``
+    # field — ``status`` is reserved for lifecycle states ("active",
+    # "eliminated", "destroyed", "despawned", "neutralized", "escaped",
+    # "idle", "stationary", "arrived", "low_battery").  See Wave 200.
+    kinematics: dict | None = None
 
     @property
     def effective_confidence(self) -> float:
@@ -175,6 +182,7 @@ class TrackedTarget:
             "velocity_suspicious": self.velocity_suspicious,
             "classification": self.classification,
             "classification_confidence": self.classification_confidence,
+            "kinematics": dict(self.kinematics) if self.kinematics else None,
         }
         if history is not None:
             d["trail"] = history.get_trail_dicts(self.target_id, max_points=20)
@@ -659,14 +667,36 @@ class TargetTracker:
         Rejects events with position (0, 0) — that indicates the detecting
         sensor has no known location and placing a target at the map origin
         is misleading.
+
+        Also rejects NaN/Inf values, which can poison the tracker and slip
+        past the (0, 0) check (NaN compares False to everything).  See
+        Wave 200 security audit.
         """
+        import math
+
         tid = motion.get("target_id", "")
         if not tid:
             return
 
         position = motion.get("position", (0.0, 0.0))
         if isinstance(position, dict):
-            position = (float(position.get("x", 0)), float(position.get("y", 0)))
+            try:
+                position = (float(position.get("x", 0)), float(position.get("y", 0)))
+            except (TypeError, ValueError):
+                return
+        else:
+            # Coerce tuple/list elements defensively
+            try:
+                position = (float(position[0]), float(position[1]))
+            except (TypeError, ValueError, IndexError):
+                return
+
+        # Reject NaN / Inf — these slip past the (0, 0) check because NaN
+        # compares False to everything and Inf is a finite-but-absurd value.
+        # An unsanitized RF motion event with NaN coords would propagate
+        # through arithmetic and corrupt every downstream consumer.
+        if not (math.isfinite(position[0]) and math.isfinite(position[1])):
+            return
 
         # Reject targets at (0, 0) — this means no real position data is
         # available from the detecting sensor.  Creating targets here would
@@ -687,7 +717,13 @@ class TargetTracker:
                 t._initial_confidence = confidence
                 t.last_seen = time.monotonic()
                 t.signal_count += 1
-                t.status = f"motion:{direction}"
+                # Wave 200: don't poison the discrete ``status`` field with
+                # the direction hint — store it in ``kinematics``.
+                kinematics = dict(t.kinematics) if t.kinematics else {}
+                kinematics["direction_hint"] = direction
+                if pair_id:
+                    kinematics["pair_id"] = pair_id
+                t.kinematics = kinematics
                 self._add_confirming_source(t, "rf_motion")
             else:
                 self._targets[tid] = TrackedTarget(
@@ -703,7 +739,11 @@ class TargetTracker:
                     position_source="rf_pair_midpoint",
                     position_confidence=confidence,
                     _initial_confidence=confidence,
-                    status=f"motion:{direction}",
+                    status="active",
+                    kinematics={
+                        "direction_hint": direction,
+                        **({"pair_id": pair_id} if pair_id else {}),
+                    },
                     confirming_sources={"rf_motion"},
                 )
         self.history.record(tid, position)

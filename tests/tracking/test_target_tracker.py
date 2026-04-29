@@ -82,6 +82,101 @@ class TestTrackedTarget:
         assert t.classification == "person"
 
 
+class TestStatusVsKinematics:
+    """Wave 200: status is a discrete lifecycle field, not a kinematic blob.
+
+    Sources that report rich state (radar range/bearing/speed, RF motion
+    direction) must store it in ``kinematics`` and leave ``status`` as a
+    lifecycle marker so the terminal-status filter in
+    targets_unified.py keeps working.
+    """
+
+    def test_default_kinematics_is_none(self):
+        target = TrackedTarget(
+            target_id="t1", name="t1", alliance="unknown", asset_type="x"
+        )
+        assert target.kinematics is None
+        assert target.status == "active"
+
+    def test_to_dict_includes_kinematics(self):
+        target = TrackedTarget(
+            target_id="t1",
+            name="t1",
+            alliance="unknown",
+            asset_type="x",
+            kinematics={"range_m": 100.0, "bearing_deg": 45.0, "speed_mps": 5.0},
+        )
+        d = target.to_dict()
+        assert "kinematics" in d
+        assert d["kinematics"]["range_m"] == 100.0
+        assert d["kinematics"]["bearing_deg"] == 45.0
+        assert d["kinematics"]["speed_mps"] == 5.0
+
+    def test_to_dict_kinematics_none_when_unset(self):
+        target = TrackedTarget(
+            target_id="t1", name="t1", alliance="unknown", asset_type="x"
+        )
+        d = target.to_dict()
+        assert d["kinematics"] is None
+
+    def test_rf_motion_does_not_corrupt_status(self):
+        """update_from_rf_motion must NOT write motion:{direction} to status."""
+        tracker = TargetTracker()
+        tracker.update_from_rf_motion({
+            "target_id": "rf_xy",
+            "position": (5.0, 10.0),
+            "confidence": 0.7,
+            "direction_hint": "approaching",
+            "pair_id": "pair_a",
+        })
+        target = tracker.get_target("rf_xy")
+        assert target is not None
+        assert target.status == "active"
+        assert not target.status.startswith("motion:")
+        assert target.kinematics is not None
+        assert target.kinematics["direction_hint"] == "approaching"
+        assert target.kinematics["pair_id"] == "pair_a"
+
+    def test_rf_motion_update_preserves_lifecycle_status(self):
+        """Re-updating an existing rf_motion target must not overwrite status."""
+        tracker = TargetTracker()
+        tracker.update_from_rf_motion({
+            "target_id": "rf_xy",
+            "position": (5.0, 10.0),
+            "confidence": 0.7,
+            "direction_hint": "approaching",
+        })
+        # Operator marks it eliminated; a follow-up motion event must not
+        # silently reset that lifecycle state.
+        tracker.get_target("rf_xy").status = "eliminated"
+        tracker.update_from_rf_motion({
+            "target_id": "rf_xy",
+            "position": (6.0, 11.0),
+            "confidence": 0.8,
+            "direction_hint": "receding",
+        })
+        target = tracker.get_target("rf_xy")
+        assert target.status == "eliminated"
+        assert target.kinematics["direction_hint"] == "receding"
+
+    def test_to_dict_status_is_terminal_safe(self):
+        """The serialized status must be one the terminal-status filter
+        understands — never a 'motion:foo' or 'radar:...' compound string."""
+        tracker = TargetTracker()
+        tracker.update_from_rf_motion({
+            "target_id": "rf_xy",
+            "position": (5.0, 10.0),
+            "confidence": 0.7,
+            "direction_hint": "approaching",
+        })
+        d = tracker.get_target("rf_xy").to_dict()
+        assert d["status"] in {
+            "active", "idle", "stationary", "arrived",
+            "escaped", "neutralized", "eliminated",
+            "despawned", "low_battery", "destroyed",
+        }
+
+
 class TestConfidenceDecay:
     """Tests for confidence decay over time."""
 
