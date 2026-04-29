@@ -3,6 +3,16 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """tritium_lib.recording — record and replay sensor data streams.
 
+DEPRECATED (Gap-fix D D-4, 2026-04-29): no production consumers.
+Only ``tests/test_recording.py`` and ``tests/test_end_to_end_pipeline.py``
+import this package.  TargetTracker snapshot store + heatmap event drain
+serve the same playback role for live targets.
+
+TODO: delete this package and its dedicated tests once
+``test_end_to_end_pipeline`` can be rewritten to skip the Recorder stage.
+
+
+
 Record all sensor events (BLE sightings, WiFi probes, camera detections,
 acoustic events, fusion results, alerts, zone events) to a JSON-lines file
 for later replay at original or modified speed.

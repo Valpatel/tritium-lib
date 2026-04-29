@@ -4,6 +4,17 @@
 """Data exchange utilities for Tritium — export and import targets, dossiers,
 events, and zones in JSON, CSV, and GeoJSON formats.
 
+DEPRECATED (Gap-fix D D-4, 2026-04-29): no production consumers.
+Only the dedicated tests (``test_data_exchange.py``,
+``test_end_to_end_pipeline.py``, ``test_full_integration.py``)
+import ``TritiumExporter``/``TritiumImporter``.  The dossier export
+endpoints under ``/api/dossier/*`` and the heatmap GeoJSON endpoint
+serve the live operator path.
+
+TODO: delete this package and its dedicated tests once the
+integration tests can be rewritten without the Exporter/Importer stage.
+
+
 Designed for:
   - Sharing data between Tritium instances (federation)
   - Archiving operational data for post-action review
