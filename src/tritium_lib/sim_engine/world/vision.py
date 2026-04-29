@@ -24,6 +24,8 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from tritium_lib.models.target_status import is_terminal
+
 try:
     from engine.units import get_type
 except ImportError:
@@ -106,7 +108,7 @@ class VisionSystem:
         friendlies: list[SimulationTarget] = []
         enemies: dict[str, SimulationTarget] = {}
         for t in targets.values():
-            if t.status in ("destroyed", "eliminated", "neutralized", "despawned"):
+            if is_terminal(t.status):
                 continue
             if t.alliance == "friendly":
                 friendlies.append(t)
@@ -149,7 +151,7 @@ class VisionSystem:
                     continue
                 if candidate.alliance != "hostile":
                     continue
-                if candidate.status in ("destroyed", "eliminated", "neutralized", "despawned"):
+                if is_terminal(candidate.status):
                     continue
 
                 dx = candidate.position[0] - unit.position[0]
@@ -226,9 +228,7 @@ class VisionSystem:
                     continue
                 if candidate.alliance not in ("hostile", "unknown"):
                     continue
-                if candidate.status in (
-                    "destroyed", "eliminated", "neutralized", "despawned",
-                ):
+                if is_terminal(candidate.status):
                     continue
                 # Check if target has radio signatures
                 ident = candidate.identity

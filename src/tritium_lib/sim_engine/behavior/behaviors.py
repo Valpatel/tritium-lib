@@ -32,6 +32,8 @@ import random
 import time
 from typing import TYPE_CHECKING
 
+from tritium_lib.models.target_status import is_terminal
+
 if TYPE_CHECKING:
     from tritium_lib.sim_engine.combat.combat import CombatSystem
     from tritium_lib.sim_engine.core.entity import SimulationTarget
@@ -607,7 +609,7 @@ class UnitBehaviors:
         best_pos = None
         hx, hy = hostile.position
         for f in friendlies.values():
-            if f.status == "eliminated":
+            if is_terminal(f.status):
                 continue
             fx, fy = f.position
             d = math.sqrt((hx - fx) ** 2 + (hy - fy) ** 2)
@@ -1005,7 +1007,7 @@ class UnitBehaviors:
         """
         if unit.speed <= 0:
             return  # Turrets can't move
-        if unit.status in ("eliminated", "destroyed", "escaped"):
+        if is_terminal(unit.status):
             return
 
         # Keep unit in active status during pursuit
@@ -1117,7 +1119,7 @@ class UnitBehaviors:
         If eliminated during dive: no detonation (harmless crash).
         """
         # Dead bombers don't detonate
-        if bomber.status in ("eliminated", "destroyed", "neutralized"):
+        if is_terminal(bomber.status):
             return
 
         state = bomber.instigator_state  # repurposed: "approaching" / "diving"

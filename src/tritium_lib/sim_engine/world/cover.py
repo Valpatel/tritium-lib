@@ -16,6 +16,8 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from tritium_lib.models.target_status import is_terminal
+
 if TYPE_CHECKING:
     from tritium_lib.sim_engine.core.entity import SimulationTarget
 
@@ -101,7 +103,7 @@ class CoverSystem:
     def tick(self, dt: float, targets: dict[str, SimulationTarget]) -> None:
         """Update cover state for all targets based on proximity to cover objects."""
         for tid, t in targets.items():
-            if t.status in ("eliminated", "destroyed"):
+            if is_terminal(t.status):
                 continue
             best_cover = 0.0
             best_cover_obj = None

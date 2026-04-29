@@ -45,6 +45,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from tritium_lib.models.target_status import is_terminal
 from tritium_lib.sim_engine.core.entity import SimulationTarget
 
 # Default map bounds -- overridden by engine's actual bounds at runtime.
@@ -246,7 +247,7 @@ class AmbientSpawner:
             # Count current neutrals
             neutral_count = sum(
                 1 for t in self._engine.get_targets()
-                if t.alliance == "neutral" and t.status not in ("despawned", "destroyed")
+                if t.alliance == "neutral" and not is_terminal(t.status)
             )
             if neutral_count >= self.MAX_NEUTRALS:
                 continue

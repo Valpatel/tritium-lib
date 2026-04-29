@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from tritium_lib.models.target_status import is_terminal
+
 if TYPE_CHECKING:
     pass  # EventBus is SC-specific; accepted via duck typing
 
@@ -75,7 +77,7 @@ class SensorSimulator:
         for sensor in self._sensors:
             nearby = []
             for t in targets:
-                if t.status in ("destroyed", "eliminated", "despawned", "escaped"):
+                if is_terminal(t.status):
                     continue
                 dx = t.position[0] - sensor.position[0]
                 dy = t.position[1] - sensor.position[1]

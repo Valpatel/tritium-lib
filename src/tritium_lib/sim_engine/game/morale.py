@@ -19,6 +19,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from tritium_lib.models.target_status import is_terminal
+
 # Default starting morale for all units
 DEFAULT_MORALE = 0.7
 
@@ -88,7 +90,7 @@ class MoraleSystem:
         """
         now = time.time()
         for tid, t in targets.items():
-            if t.status in ("eliminated", "destroyed", "neutralized"):
+            if is_terminal(t.status):
                 continue
             last_hit = self._last_hit_time.get(tid, 0.0)
             if now - last_hit > 3.0:

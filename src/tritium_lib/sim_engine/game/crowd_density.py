@@ -25,6 +25,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from tritium_lib.models.target_status import is_terminal
+
 
 # Density classification thresholds
 _SPARSE_MAX = 2
@@ -120,7 +122,7 @@ class CrowdDensityTracker:
         for target in targets.values():
             if target.asset_type != "person":
                 continue
-            if target.status in ("destroyed", "eliminated", "despawned"):
+            if is_terminal(target.status):
                 continue
             row, col = self._pos_to_cell(target.position)
             self._counts[row][col] += 1

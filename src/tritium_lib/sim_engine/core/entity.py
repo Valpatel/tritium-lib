@@ -47,6 +47,8 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import Callable, TYPE_CHECKING
 
+from tritium_lib.models.target_status import is_terminal
+
 if TYPE_CHECKING:
     from .inventory import UnitInventory
     from .movement import MovementController
@@ -661,7 +663,7 @@ class SimulationTarget:
 
     def apply_damage(self, amount: float) -> bool:
         """Apply *amount* damage. Returns True if this target is eliminated (health <= 0)."""
-        if self.status in ("destroyed", "eliminated", "neutralized"):
+        if is_terminal(self.status):
             return True
         self.health = max(0.0, self.health - amount)
         if self.health <= 0:
@@ -682,7 +684,9 @@ class SimulationTarget:
 
     def tick(self, dt: float) -> None:
         """Advance simulation by *dt* seconds."""
-        if self.status in ("destroyed", "low_battery", "neutralized", "escaped", "eliminated"):
+        # Skip ticking when target is terminal OR in low_battery (non-terminal
+        # but still inactive — battery drain pass already set this state).
+        if is_terminal(self.status) or self.status == "low_battery":
             return
 
         # Battery drain

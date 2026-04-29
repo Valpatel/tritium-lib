@@ -38,6 +38,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
+from tritium_lib.models.target_status import is_terminal
 from tritium_lib.sim_engine.core.entity import SimulationTarget
 
 if TYPE_CHECKING:
@@ -501,7 +502,7 @@ class NPCManager:
             if target is None:
                 to_remove.append(tid)
                 continue
-            if target.status in ("despawned", "destroyed"):
+            if is_terminal(target.status):
                 mission = self._missions.get(tid)
                 if mission is not None:
                     mission.completed = True
