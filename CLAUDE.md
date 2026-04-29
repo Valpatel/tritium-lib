@@ -100,7 +100,7 @@ Shared frontend: layout manager, command palette, event bus, reactive store, Web
 | Package | Purpose |
 |---------|---------|
 | `cot` | Cursor on Target XML codec for TAK/ATAK |
-| `graph` | KuzuDB embedded graph database for entity/relationship storage |
+| `graph` | TritiumGraph / KuzuDB ontology store — **shelfware**: tests + demos only, not wired to the live ontology API. `/api/v1/ontology/*` is an in-memory adapter over TargetTracker/DossierStore/BleStore. KuzuDB integration is aspirational future work. |
 | `ontology` | Semantic type system — entity types, relationship types, schema validation |
 | `comms` | Communication channel abstractions |
 | `federation` | Multi-site federation |
@@ -130,7 +130,7 @@ tritium-lib/
 │   ├── sim_engine/            Tactical simulation (AI, combat, physics, world)
 │   ├── sdk/                   Addon development kit
 │   ├── classifier/            BLE/WiFi device classification
-│   ├── graph/                 KuzuDB entity-relationship storage
+│   ├── graph/                 TritiumGraph / KuzuDB store (shelfware — tests + demos only)
 │   └── ...                    Plus: alerting, auth, cot, events, fleet, geo,
 │                              mqtt, protocols, signals, store, and more
 ├── web/                       Shared JS/CSS frontend
@@ -171,7 +171,7 @@ Located inside their respective packages under `demos/` subdirectories:
 - `tracking` — Target tracking pipeline
 - `sim_engine` — City sim (10 demos: city, full, RF, steering, performance, backend, integrated, game server, serve city3d, test report)
 - `intelligence` — ML pipeline demo
-- `graph` — KuzuDB entity relationships (2 demos)
+- `graph` — TritiumGraph / KuzuDB entity relationships (2 demos; backend is shelfware — not wired to live API)
 - `cot` — TAK/ATAK interop
 - `mqtt` — Topic hierarchy
 - `auth` — JWT workflow
