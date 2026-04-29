@@ -74,3 +74,69 @@ export async function _fetchJson(url, opts) {
     }
     return resp.json();
 }
+
+/**
+ * Canonical threat level color mapping.
+ * Keys cover all naming conventions used across the codebase:
+ * lowercase (low/moderate/high/critical), UPPERCASE, color names (green/yellow/orange/red),
+ * and semantic aliases (none/medium/unknown).
+ *
+ * Cyberpunk palette: green=#05ffa1, yellow=#fcee0a, orange=#ff8c00, magenta=#ff2a6d.
+ */
+export const THREAT_COLORS = {
+    // Lowercase threat levels
+    none:     '#888',
+    low:      '#05ffa1',
+    moderate: '#fcee0a',
+    medium:   '#fcee0a',
+    high:     '#ff8c00',
+    critical: '#ff2a6d',
+    unknown:  '#666',
+    // UPPERCASE threat levels
+    NONE:     '#888',
+    LOW:      '#05ffa1',
+    MODERATE: '#fcee0a',
+    MEDIUM:   '#fcee0a',
+    HIGH:     '#ff8c00',
+    CRITICAL: '#ff2a6d',
+    UNKNOWN:  '#666',
+    // Color-name keys (sitaware style)
+    green:    '#05ffa1',
+    yellow:   '#fcee0a',
+    orange:   '#ff8c00',
+    red:      '#ff2a6d',
+    // Color-name UPPERCASE
+    GREEN:    '#05ffa1',
+    YELLOW:   '#fcee0a',
+    ORANGE:   '#ff8c00',
+    RED:      '#ff2a6d',
+};
+
+/**
+ * Format a Unix timestamp (seconds) as a time-only string (HH:MM:SS).
+ * @param {number} ts — Unix timestamp in seconds
+ * @returns {string} e.g. "14:30:05" or "--" if invalid
+ */
+export function _formatTime(ts) {
+    if (!ts) return '--';
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return '--';
+    return d.toLocaleTimeString(undefined, {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+}
+
+/**
+ * Format a Unix timestamp (seconds) as a date+time string.
+ * @param {number} ts — Unix timestamp in seconds
+ * @returns {string} e.g. "Mar 25, 14:30:05" or "--" if invalid
+ */
+export function _formatTimestamp(ts) {
+    if (!ts) return '--';
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return '--';
+    return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+}

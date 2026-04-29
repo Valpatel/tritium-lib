@@ -654,7 +654,12 @@ class TargetTracker:
     RF_MOTION_STALE_TIMEOUT = 30.0
 
     def update_from_rf_motion(self, motion: dict) -> None:
-        """Update or create a tracked target from an RF motion event."""
+        """Update or create a tracked target from an RF motion event.
+
+        Rejects events with position (0, 0) — that indicates the detecting
+        sensor has no known location and placing a target at the map origin
+        is misleading.
+        """
         tid = motion.get("target_id", "")
         if not tid:
             return
@@ -662,6 +667,12 @@ class TargetTracker:
         position = motion.get("position", (0.0, 0.0))
         if isinstance(position, dict):
             position = (float(position.get("x", 0)), float(position.get("y", 0)))
+
+        # Reject targets at (0, 0) — this means no real position data is
+        # available from the detecting sensor.  Creating targets here would
+        # place them at the map origin / Gulf of Guinea which is wrong.
+        if position == (0.0, 0.0):
+            return
 
         confidence = float(motion.get("confidence", 0.5))
         direction = motion.get("direction_hint", "unknown")
