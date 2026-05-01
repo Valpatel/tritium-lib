@@ -514,8 +514,19 @@ class TargetCorrelator:
                 if cid not in primary.correlated_ids:
                     primary.correlated_ids.append(cid)
 
-            primary.confirming_sources.add(secondary.source)
-            primary.confirming_sources |= secondary.confirming_sources
+            # W206 Phase 2: filter the same way _add_confirming_source does.
+            # 'simulation' is synthetic ground truth and must not appear in
+            # the cross-modal confirmation set, even when merged in from a
+            # secondary that originated as a sim target. Same-as-primary
+            # is also a no-op (the primary already counts itself).
+            def _admit(src: str) -> bool:
+                return bool(src) and src != "simulation" and src != primary.source
+
+            if _admit(secondary.source):
+                primary.confirming_sources.add(secondary.source)
+            for s in secondary.confirming_sources:
+                if _admit(s):
+                    primary.confirming_sources.add(s)
 
             if secondary.position_confidence > primary.position_confidence:
                 primary.position = secondary.position
