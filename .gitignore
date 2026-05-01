@@ -13,3 +13,4 @@ build/
 # Trained ML models (rebuild with the train CLI; binaries don't belong in git)
 data/models/*.pkl
 data/models/*.json
+.memsearch/
