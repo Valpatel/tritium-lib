@@ -72,6 +72,12 @@ class EscalationConfig:
     # Behavioral SAT measured a target pinned at "hostile" for 9626s.
     # Set to 0.0 to disable passive decay (zone-exit decay still applies).
     passive_decay_interval: float = 60.0
+    # Zone-violation hysteresis — suppress zone_entered emission within N
+    # seconds of the previous one for the same target.  Defangs the cascade
+    # observed in W199 ui_audit (+10 CARS produces 106 zone_violation events
+    # in 3s — every car oscillates zone boundaries 2x).  At 0.0 every
+    # transition fires (legacy behavior).  Recommended: 2.0–5.0s.
+    zone_violation_cooldown: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +101,7 @@ class ThreatRecord:
     zone_enter_time: float = 0.0
     last_update: float = field(default_factory=time.monotonic)
     prior_hostile: bool = False   # was this target ever classified as hostile?
+    last_zone_violation_at: float = 0.0  # cooldown anchor; see EscalationConfig.zone_violation_cooldown
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-safe dictionary."""
@@ -106,6 +113,7 @@ class ThreatRecord:
             "zone_enter_time": self.zone_enter_time,
             "last_update": self.last_update,
             "prior_hostile": self.prior_hostile,
+            "last_zone_violation_at": self.last_zone_violation_at,
         }
 
 
@@ -229,7 +237,16 @@ def classify_target(
             record.in_zone = zone_name
             record.zone_enter_time = now
             zone_exit_time = 0.0
-            zone_entered = zone_name
+            # Hysteresis: suppress zone_entered emission within cooldown
+            # window of the previous one.  Defangs cars-on-roads cascade
+            # where targets oscillate zone boundaries 2x in 3s.  In-place
+            # state (record.in_zone, zone_enter_time) is still updated so
+            # downstream linger logic operates on real position; only the
+            # external event signal is throttled.
+            cd = cfg.zone_violation_cooldown
+            if cd <= 0.0 or (now - record.last_zone_violation_at) >= cd:
+                zone_entered = zone_name
+                record.last_zone_violation_at = now
 
         # Escalation based on zone type
         if "restricted" in zone_type:

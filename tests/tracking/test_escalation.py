@@ -215,6 +215,65 @@ class TestClassifyTarget:
         assert result.zone_entered == ""
 
 
+class TestZoneViolationCooldown:
+    """Hysteresis: suppress repeated zone_entered emissions within cooldown.
+
+    Defangs the cars-on-roads cascade observed in W199 ui_audit (+10 CARS
+    fired 106 zone_violation events in 3s).  In-place state still updates
+    so linger logic stays accurate; only the external event is throttled.
+    """
+
+    def test_cooldown_suppresses_rapid_reentry(self):
+        cfg = EscalationConfig(zone_violation_cooldown=2.0)
+        record = ThreatRecord(target_id="car1")
+        zone_a = _make_zone(name="alpha")
+        zone_b = _make_zone(name="beta")
+        now = time.monotonic()
+
+        # First entry: emits.
+        r1, _ = classify_target(record, zone_a, now, cfg)
+        assert r1.zone_entered == "alpha"
+        assert record.last_zone_violation_at == now
+
+        # Cross to zone B 0.3s later: in-place updates, but event suppressed.
+        r2, _ = classify_target(record, zone_b, now + 0.3, cfg)
+        assert r2.zone_entered == ""
+        assert record.in_zone == "beta"  # in-place state still moves
+        assert record.last_zone_violation_at == now  # cooldown anchor unchanged
+
+        # Cross back to zone A 0.6s later: still suppressed.
+        r3, _ = classify_target(record, zone_a, now + 0.6, cfg)
+        assert r3.zone_entered == ""
+        assert record.in_zone == "alpha"
+
+        # After cooldown expires, next transition fires.
+        r4, _ = classify_target(record, zone_b, now + 2.1, cfg)
+        assert r4.zone_entered == "beta"
+        assert record.last_zone_violation_at == now + 2.1
+
+    def test_cooldown_zero_preserves_legacy_behavior(self):
+        """zone_violation_cooldown=0.0 (default) → every transition fires."""
+        cfg = EscalationConfig(zone_violation_cooldown=0.0)
+        record = ThreatRecord(target_id="car1")
+        zone_a = _make_zone(name="alpha")
+        zone_b = _make_zone(name="beta")
+        now = time.monotonic()
+
+        r1, _ = classify_target(record, zone_a, now, cfg)
+        assert r1.zone_entered == "alpha"
+
+        r2, _ = classify_target(record, zone_b, now + 0.01, cfg)
+        assert r2.zone_entered == "beta"
+
+        r3, _ = classify_target(record, zone_a, now + 0.02, cfg)
+        assert r3.zone_entered == "alpha"
+
+    def test_to_dict_includes_cooldown_anchor(self):
+        record = ThreatRecord(target_id="t1", last_zone_violation_at=12345.6)
+        d = record.to_dict()
+        assert d["last_zone_violation_at"] == 12345.6
+
+
 # ---------------------------------------------------------------------------
 # classify_all_targets — batch processing
 # ---------------------------------------------------------------------------
