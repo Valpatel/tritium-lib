@@ -28,9 +28,8 @@ export { RoverModel } from './three-units/rover.js';
 export { PersonModel } from './three-units/person.js';
 export { TankModel } from './three-units/tank.js';
 export { CombatEffects, DEFAULT_WEAPON_VFX } from './effects/base.js';
-export { ProjectileEffect } from './effects/projectile.js';
-export { ExplosionEffect } from './effects/explosion.js';
-export { ParticleBurst } from './effects/particles.js';
+// ProjectileEffect / ExplosionEffect / ParticleBurst removed W201 —
+// see web/map/effects/index.js for the rationale.
 export { FlashEffect } from './effects/flash.js';
 export { FloatingText } from './effects/floating-text.js';
 export { BaseAssetType } from './asset-types/base.js';
