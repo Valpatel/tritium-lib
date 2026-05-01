@@ -42,7 +42,7 @@ class ModuleInfo:
 
 
 @dataclass
-class TestCoverageReport:
+class CoverageReport:
     """Aggregated test coverage data for sim_engine."""
 
     modules: list[ModuleInfo]
@@ -155,7 +155,7 @@ def find_test_files() -> dict[str, list[str]]:
 
 def generate_coverage_report(
     output_path: str = "/tmp/tritium_test_report.html",
-) -> TestCoverageReport:
+) -> CoverageReport:
     """Discover modules, check test coverage, generate HTML report.
 
     Parameters
@@ -165,7 +165,7 @@ def generate_coverage_report(
 
     Returns
     -------
-    TestCoverageReport
+    CoverageReport
         The aggregated coverage data.
     """
     modules = discover_sim_engine_modules()
@@ -183,7 +183,7 @@ def generate_coverage_report(
     importable = sum(1 for m in modules if m.importable)
     coverage = (with_tests / total * 100.0) if total > 0 else 0.0
 
-    report = TestCoverageReport(
+    report = CoverageReport(
         modules=modules,
         total_modules=total,
         modules_with_tests=with_tests,
@@ -200,7 +200,7 @@ def generate_coverage_report(
     return report
 
 
-def _render_html(report: TestCoverageReport) -> str:
+def _render_html(report: CoverageReport) -> str:
     """Render the coverage report as a cyberpunk-themed HTML page."""
     # Module rows
     rows = ""

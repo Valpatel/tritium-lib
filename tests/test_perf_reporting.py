@@ -21,7 +21,7 @@ from tritium_lib.sim_engine.demos.perf_test import (
 )
 from tritium_lib.sim_engine.demos.test_report import (
     ModuleInfo,
-    TestCoverageReport as CoverageReport,
+    CoverageReport,
     discover_sim_engine_modules,
     find_test_files,
     generate_coverage_report,
