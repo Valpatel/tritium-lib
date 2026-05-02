@@ -32,6 +32,12 @@ export class TritiumWebSocket {
         this._pingTimer = null;
         this._disconnectedBanner = null;
         this._destroyed = false;
+        // UX-AUDIT-2026-05-02 fix #7: don't show the hot-pink
+        // banner on the FIRST disconnect.  Most reconnects succeed
+        // within ~1s and the banner is jarring.  Only after this
+        // many consecutive failed reconnects do we show it.
+        this._failedReconnects = 0;
+        this._BANNER_THRESHOLD = 3;
     }
 
     /**
@@ -53,6 +59,7 @@ export class TritiumWebSocket {
 
         this._ws.onopen = () => {
             this._reconnectDelay = this._initialDelay;
+            this._failedReconnects = 0;       // reset the banner gate
             this._hideDisconnectedBanner();
             this._startPingKeepalive();
             if (this._onOpen) this._onOpen();
@@ -60,7 +67,14 @@ export class TritiumWebSocket {
 
         this._ws.onclose = () => {
             this._stopPingKeepalive();
-            this._showDisconnectedBanner();
+            // UX-AUDIT-2026-05-02 fix #7: only show the banner after
+            // the connection has failed _BANNER_THRESHOLD times in a
+            // row.  A normal page navigation or a 1-second blip
+            // should not paint the operator console pink.
+            this._failedReconnects += 1;
+            if (this._failedReconnects >= this._BANNER_THRESHOLD) {
+                this._showDisconnectedBanner();
+            }
             if (this._onClose) this._onClose();
             this._scheduleReconnect();
         };
@@ -137,18 +151,30 @@ export class TritiumWebSocket {
     _showDisconnectedBanner() {
         if (typeof document === 'undefined') return;
         if (this._disconnectedBanner) return;
+        // UX-AUDIT-2026-05-02 fix #7: only fires after BANNER_THRESHOLD
+        // failed reconnects (default 3).  Style is more measured -- no
+        // alarmist hot-pink fill across the whole top edge.  A small
+        // pill in the header reading "RECONNECTING" is enough; the
+        // operator can ignore it without panic.
         const banner = document.createElement('div');
         banner.id = 'ws-disconnected-banner';
         banner.style.cssText = [
-            'position: fixed', 'top: 0', 'left: 0', 'right: 0',
-            'z-index: 99999', 'background: #ff2a6d', 'color: #fff',
-            'text-align: center', 'padding: 6px 12px',
-            'font-family: monospace', 'font-size: 13px',
-            'font-weight: bold', 'letter-spacing: 2px',
-            'text-transform: uppercase',
-            'box-shadow: 0 2px 8px rgba(255,42,109,0.5)',
+            'position: fixed', 'top: 6px', 'left: 50%',
+            'transform: translateX(-50%)',
+            'z-index: 99999',
+            'background: rgba(255, 42, 109, 0.92)',
+            'color: #fff',
+            'text-align: center',
+            'padding: 4px 14px',
+            'font-family: \'JetBrains Mono\', monospace',
+            'font-size: 11px',
+            'font-weight: 600',
+            'letter-spacing: 1.5px',
+            'border-radius: 3px',
+            'box-shadow: 0 4px 14px rgba(255,42,109,0.35)',
+            'pointer-events: none',
         ].join(';');
-        banner.textContent = '// DISCONNECTED -- reconnecting...';
+        banner.textContent = 'RECONNECTING…';
         document.body.appendChild(banner);
         this._disconnectedBanner = banner;
     }
