@@ -376,9 +376,14 @@ class CombatSystem:
                             "target_id": target.target_id,
                             "target_name": target.name,
                             "target_type": target.asset_type,
+                            "target_alliance": target.alliance,
+                            "alliance": target.alliance,
                             "interceptor_id": proj.source_id,
                             "interceptor_name": interceptor_name,
                             "interceptor_type": proj.source_type,
+                            "interceptor_alliance": (
+                                interceptor.alliance if interceptor is not None else None
+                            ),
                             "position": {"x": target.position[0], "y": target.position[1]},
                             "method": proj.projectile_type,
                         })
