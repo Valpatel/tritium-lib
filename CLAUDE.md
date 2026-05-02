@@ -1,5 +1,9 @@
 # Tritium-Lib — Shared Platform Library
 
+> **North Star:** *Build a fun simulator for the purpose of testing and validating the software stack that drives independent machines.*
+
+This library is the seam where the game and the production system are literally the same code. The simulation engine, target tracker, fusion correlator, and addon SDK ship together. When the in-game wave spawner calls them, they behave identically to when a real sensor fleet calls them. That is the point. See top-level [../CLAUDE.md](../CLAUDE.md) and `project_north_star.md`.
+
 The foundation library for the entire Tritium ecosystem. Models, target tracking, sensor fusion, simulation engine, addon SDK, and shared JS frontend components. Python 3.12+ backend with vanilla JS modules for city simulation and UI.
 
 SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
