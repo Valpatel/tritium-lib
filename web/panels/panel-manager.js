@@ -375,6 +375,24 @@ export class PanelManager {
             return;
         }
         this._registry.set(def.id, def);
+
+        // UX-AUDIT-2026-05-02 fix #9: honor a panel's shouldAutoOpen()
+        // method.  Panels (mission-progression, quick-start, etc.) that
+        // declare this method should auto-open the FIRST time the user
+        // visits.  Previously the method was defined but no caller
+        // existed -- it just sat there.  Now the panel manager actually
+        // checks at registration time + after a short delay so the page
+        // has settled (splash dismissed, layout applied).
+        try {
+            if (typeof def.shouldAutoOpen === 'function' && def.shouldAutoOpen()) {
+                // Defer slightly so register() can return + DOM can settle
+                setTimeout(() => {
+                    try {
+                        if (def.shouldAutoOpen()) this.open(def.id);
+                    } catch (_) { /* swallow -- shouldAutoOpen may read storage */ }
+                }, 1500);
+            }
+        } catch (_) { /* swallow */ }
     }
 
     /**
