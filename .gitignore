@@ -14,3 +14,4 @@ build/
 data/models/*.pkl
 data/models/*.json
 .memsearch/
+docs/local/

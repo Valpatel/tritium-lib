@@ -4,6 +4,8 @@ Shared Python + JavaScript library for the [Tritium](https://github.com/Valpatel
 
 This is the foundation. The Command Center, edge firmware, and addons all import from `tritium_lib`.
 
+> **New here?** Start with the parent repo's [`docs/QUICKSTART.md`](https://github.com/Valpatel/tritium/blob/main/docs/QUICKSTART.md) — five steps from clone to a Graphling check-in. The public SDK boundary for closed-source cognition is documented at [`tritium-sc/docs/EMBODIMENTS.md`](https://github.com/Valpatel/tritium-sc/blob/main/docs/EMBODIMENTS.md).
+
 Copyright 2026 Matthew Valancy / Valpatel Software LLC / AGPL-3.0
 
 ## How it fits together
