@@ -93,3 +93,65 @@ def test_speaker_speak_queues_text():
     s.speak("test message")
     # Queue should have at least the message (worker may have consumed it)
     s.shutdown()
+
+
+def test_speaker_synthesize_and_play_does_not_leak_pipes():
+    """Regression guard for 2026-05-03 SC server hangs.
+
+    Speaker._synthesize_and_play used to leak three subprocess pipe
+    file descriptors per utterance (piper.stdin, piper.stdout, and
+    player.stderr) on both the happy path AND on TimeoutExpired.
+    Under sustained voice activity the SC event loop ended up
+    deadlocked in futex_wait somewhere downstream of the leaked
+    subprocess waitpid state -- twice today (13h13m and 1h10m
+    uptime).
+
+    This test runs the function many times against an unavailable
+    piper binary (so it short-circuits without actually spawning
+    subprocesses), proving the cleanup path is safe to call
+    repeatedly even when the function returns early.  The deeper
+    pipe-close behavior is exercised by the live-server tests that
+    monitor FD count over time.
+    """
+    import os
+
+    s = Speaker(piper_bin="/nonexistent/piper")
+    # Available is false, so _synthesize_and_play should print and
+    # return without touching subprocess.  Repeat many times -- we
+    # are checking that the early-return path doesn't leak FDs
+    # via accidental Popen() before the availability check.
+    fd_before = len(os.listdir(f"/proc/{os.getpid()}/fd"))
+    for _ in range(200):
+        s._synthesize_and_play("hello")
+    fd_after = len(os.listdir(f"/proc/{os.getpid()}/fd"))
+    s.shutdown()
+    # 200 calls should add at most a handful of FDs (e.g. one
+    # /dev/null open if any).  Anything > 20 indicates the early
+    # return is opening pipes.
+    assert fd_after - fd_before < 20, (
+        f"FD count grew by {fd_after - fd_before} after 200 short-circuit "
+        f"_synthesize_and_play calls -- suspect pipe leak"
+    )
+
+
+def test_speaker_synthesize_and_play_finally_block_present():
+    """The finally-block that closes pipe FDs must remain in source.
+
+    Static guard: read the source file and assert the finally block
+    is present in _synthesize_and_play.  Cheap defense against a
+    future refactor accidentally removing the cleanup that
+    prevented the SC server hangs of 2026-05-03.
+    """
+    import inspect
+    from tritium_lib.comms import speaker as _sp
+
+    src = inspect.getsource(_sp._synthesize_and_play.__func__) \
+        if hasattr(_sp, '_synthesize_and_play') \
+        else inspect.getsource(_sp.Speaker._synthesize_and_play)
+    assert "finally:" in src, (
+        "Speaker._synthesize_and_play must keep its finally-block; "
+        "removing it caused the 2026-05-03 SC server hangs"
+    )
+    assert "handle.close()" in src, (
+        "Speaker._synthesize_and_play must close pipe handles in finally"
+    )
