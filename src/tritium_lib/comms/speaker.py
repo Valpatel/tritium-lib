@@ -73,6 +73,19 @@ class Speaker:
             print(f'  [TTS unavailable] "{text}"')
             return
 
+        # 2026-05-03: every Popen(stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        # call leaves three BufferedReader/Writer file objects holding
+        # subprocess pipe FDs.  The previous version closed stdin/stdout
+        # on the happy path but never closed player.stderr and never
+        # closed anything on TimeoutExpired -- which under sustained
+        # voice activity (commander narration during a battle) leaked
+        # one FD set per utterance.  After ~60 utterances the SC event
+        # loop ends up in a futex_wait somewhere downstream and stops
+        # accepting requests entirely (observed twice today: 13h13m and
+        # 1h10m hang times).  Always close the pipe handles, even on
+        # exception.
+        piper = None
+        player = None
         try:
             piper = subprocess.Popen(
                 [self.piper_bin, "--model", self.voice_model, "--output-raw"],
@@ -86,9 +99,13 @@ class Speaker:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
+            # Hand piper's stdout pipe to player and drop our reference
+            # so the OS reclaims the FD when piper exits.
             piper.stdout.close()
+            piper.stdout = None
             piper.stdin.write(text.encode("utf-8"))
             piper.stdin.close()
+            piper.stdin = None
             player.wait(timeout=60)
             piper.wait(timeout=5)
             play_err = player.stderr.read().decode(errors="replace").strip()
@@ -97,12 +114,30 @@ class Speaker:
         except subprocess.TimeoutExpired:
             print("  [TTS timeout]")
             for p in (piper, player):
+                if p is None:
+                    continue
                 try:
                     p.kill()
+                    p.wait(timeout=2)
                 except Exception:
                     pass
         except Exception as e:
             print(f"  [TTS error] {e}")
+        finally:
+            # Defensive close of every pipe FD we may have opened.
+            # Using p.stdin / p.stdout / p.stderr because Popen owns
+            # those file objects and closing them releases the kernel
+            # FDs even if .wait() never ran.
+            for p in (piper, player):
+                if p is None:
+                    continue
+                for handle in (p.stdin, p.stdout, p.stderr):
+                    if handle is None:
+                        continue
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
 
     def synthesize_raw(self, text: str) -> bytes | None:
         if not self.available:
