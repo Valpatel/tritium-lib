@@ -95,19 +95,6 @@ except ImportError:
             return "medium"
         return "low"
 
-    DEFAULT_PROXIMITY_RULES = [
-        ProximityRule(
-            rule_id="default_hostile_friendly",
-            name="Hostile approaching friendly asset",
-            alliance_pair="hostile_friendly",
-            # 20m, not 10: stand-in hostiles open fire at ~15m weapon
-            # range, so a 10m breach only ever fired during overruns.
-            # 20m gives the operator an early warning BEFORE engagement
-            # (battle-tuning finding, 2026-06-10 proximity wiring).
-            threshold_m=20.0,
-            cooldown_s=60.0,
-        ),
-    ]
 
 
 class ProximityMonitor:

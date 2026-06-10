@@ -232,7 +232,10 @@ DEFAULT_PROXIMITY_RULES: list[ProximityRule] = [
         rule_id="default_hostile_friendly",
         name="Hostile approaching friendly asset",
         alliance_pair=AlliancePair.HOSTILE_FRIENDLY.value,
-        threshold_m=10.0,
+        # 20m, not 10: stand-in hostiles open fire at ~15m weapon range,
+        # so a 10m breach only ever fired during overruns.  20m warns the
+        # operator BEFORE engagement (battle tuning, 2026-06-10).
+        threshold_m=20.0,
         cooldown_s=60.0,
         enabled=True,
     ),
