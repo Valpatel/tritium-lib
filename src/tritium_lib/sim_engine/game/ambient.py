@@ -22,7 +22,7 @@ SimulationEngine.  The two serve different narrative purposes:
   - AmbientSpawner: creates *background noise* — neutral entities that
     test Amy's discrimination (is that person a threat or a neighbor?).
     It runs on its own thread with independent timing (15-45s intervals)
-    and caps at MAX_NEUTRALS=8 to keep the map readable.
+    and caps at MAX_NEUTRALS=80 to keep the map readable.
 
 A unified SpawnerManager was considered and rejected: the two spawners
 have no shared state, different timing models, different target profiles,
