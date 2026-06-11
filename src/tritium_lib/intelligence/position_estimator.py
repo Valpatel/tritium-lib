@@ -180,3 +180,88 @@ def estimate_from_multiple_anchors(
         confidence=round(min(1.0, max(0.0, confidence)), 3),
         timestamp=max(d.timestamp for _, d, _ in pairs),
     )
+
+
+# ---------------------------------------------------------------------------
+# Unified RF entry (rtl_433 receiver-position design, 2026-06-11)
+# ---------------------------------------------------------------------------
+
+# SNR → uncertainty ring radius for ISM receptions (design §2).
+# Table-driven and deliberately coarse: the map draws "somewhere near
+# this receiver", never a false pinpoint.
+_SNR_RING_TABLE: list[tuple[float, float]] = [
+    (-8.0, 30.0),    # strong: > -8 dB SNR
+    (-15.0, 75.0),   # medium
+]
+_SNR_RING_WEAK_M = 150.0
+
+
+def snr_to_uncertainty_radius(snr_db: float | None) -> float:
+    """Map an rtl_433 SNR reading to an uncertainty RADIUS in meters.
+
+    None (driver did not report SNR) is treated as weak — wide ring.
+    """
+    if snr_db is None:
+        return _SNR_RING_WEAK_M
+    for threshold, radius in _SNR_RING_TABLE:
+        if snr_db > threshold:
+            return radius
+    return _SNR_RING_WEAK_M
+
+
+def estimate_from_rssi_observations(
+    observations: list[tuple[PositionAnchor, DetectionEdge]],
+) -> FusedPositionEstimate | None:
+    """Unified BLE/ISM position estimate from receiver observations.
+
+    The single pipeline both modalities call (rtl_433 design §3), so a
+    yard with three receivers gets real localization for free and the
+    data model never changes — only the ring shrinks:
+
+    - 1 observation  → ``rf_proximity``: the receiver's position with
+      an uncertainty ring (ISM: SNR table; BLE: log-distance model).
+    - 2+ observations → ``rf_multilateration``: weighted centroid
+      (weight = inverse square of the per-receiver distance estimate),
+      reusing :func:`estimate_from_multiple_anchors`.
+
+    Args:
+        observations: (anchor, detection) pairs — one per receiver
+            that heard the device. Detection.detector_id must match
+            anchor.anchor_id.
+
+    Returns:
+        A FusedPositionEstimate, or None for an empty input.
+    """
+    if not observations:
+        return None
+
+    if len(observations) == 1:
+        anchor, det = observations[0]
+        if det.snr is not None and det.rssi is None:
+            ring_m = snr_to_uncertainty_radius(det.snr)
+        elif det.snr is not None and det.detection_type == "ism":
+            ring_m = snr_to_uncertainty_radius(det.snr)
+        elif det.rssi is not None:
+            ring_m = rssi_to_distance(det.rssi)
+        else:
+            ring_m = snr_to_uncertainty_radius(det.snr)
+        confidence = anchor.confidence * det.confidence * 0.5
+        return FusedPositionEstimate(
+            target_id=det.detected_id,
+            lat=anchor.lat,
+            lng=anchor.lng,
+            accuracy_m=round(ring_m, 1),
+            method="rf_proximity",
+            anchor_count=1,
+            confidence=round(min(1.0, confidence), 3),
+            timestamp=det.timestamp,
+        )
+
+    anchors = [a for a, _ in observations]
+    detections = [d for _, d in observations]
+    est = estimate_from_multiple_anchors(anchors, detections)
+    if est is None:
+        return None
+    # Same pipeline, RF-specific method label (design §3)
+    est.method = "rf_multilateration"
+    return est

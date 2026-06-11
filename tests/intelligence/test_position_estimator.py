@@ -208,3 +208,114 @@ class TestEstimateFromMultipleAnchors:
         r4 = estimate_from_multiple_anchors(anchors_4, dets_4)
         assert r2 is not None and r4 is not None
         assert r4.confidence > r2.confidence
+
+
+class TestSnrToUncertaintyRadius:
+    """ISM ring sizing (rtl433-receiver-position design §2):
+    strong (> -8 dB SNR) → 30 m; medium → 75 m; weak → 150 m.
+    Table-driven, never a false pinpoint."""
+
+    def test_strong_snr(self):
+        from tritium_lib.intelligence.position_estimator import (
+            snr_to_uncertainty_radius,
+        )
+        assert snr_to_uncertainty_radius(-5.0) == 30.0
+        assert snr_to_uncertainty_radius(12.0) == 30.0
+
+    def test_medium_snr(self):
+        from tritium_lib.intelligence.position_estimator import (
+            snr_to_uncertainty_radius,
+        )
+        assert snr_to_uncertainty_radius(-10.0) == 75.0
+
+    def test_weak_snr(self):
+        from tritium_lib.intelligence.position_estimator import (
+            snr_to_uncertainty_radius,
+        )
+        assert snr_to_uncertainty_radius(-20.0) == 150.0
+
+    def test_none_snr_is_weak(self):
+        from tritium_lib.intelligence.position_estimator import (
+            snr_to_uncertainty_radius,
+        )
+        assert snr_to_uncertainty_radius(None) == 150.0
+
+
+class TestEstimateFromRssiObservations:
+    """Unified BLE/ISM entry (rtl433 design §3): one observation →
+    proximity ring; 2+ → weighted centroid; the same pipeline both
+    modalities call so tri-receiver yards localize for free."""
+
+    def _obs(self, aid, lat, lng, rssi=None, snr=None,
+             dtype="ism", detected="ism_acurite_123"):
+        anchor = PositionAnchor(anchor_id=aid, lat=lat, lng=lng)
+        det = DetectionEdge(
+            detector_id=aid, detected_id=detected,
+            detection_type=dtype, rssi=rssi, snr=snr,
+        )
+        return anchor, det
+
+    def test_empty_returns_none(self):
+        from tritium_lib.intelligence.position_estimator import (
+            estimate_from_rssi_observations,
+        )
+        assert estimate_from_rssi_observations([]) is None
+
+    def test_single_receiver_proximity(self):
+        from tritium_lib.intelligence.position_estimator import (
+            estimate_from_rssi_observations,
+        )
+        est = estimate_from_rssi_observations([
+            self._obs("rx1", 40.0, -74.0, snr=-5.0),
+        ])
+        assert est is not None
+        assert est.lat == 40.0 and est.lng == -74.0
+        assert est.method == "rf_proximity"
+        assert est.accuracy_m == 30.0  # strong SNR ring, not a pinpoint
+        assert est.anchor_count == 1
+
+    def test_single_receiver_weak_snr_wide_ring(self):
+        from tritium_lib.intelligence.position_estimator import (
+            estimate_from_rssi_observations,
+        )
+        est = estimate_from_rssi_observations([
+            self._obs("rx1", 40.0, -74.0, snr=-20.0),
+        ])
+        assert est.accuracy_m == 150.0
+
+    def test_ble_single_falls_back_to_rssi_distance(self):
+        from tritium_lib.intelligence.position_estimator import (
+            estimate_from_rssi_observations,
+        )
+        # BLE carries rssi, no snr: ring from the path-loss model
+        est = estimate_from_rssi_observations([
+            self._obs("rx1", 40.0, -74.0, rssi=-60.0, dtype="ble",
+                      detected="ble_aa:bb"),
+        ])
+        assert est.method == "rf_proximity"
+        assert 1.0 < est.accuracy_m < 100.0
+
+    def test_multi_receiver_centroid(self):
+        from tritium_lib.intelligence.position_estimator import (
+            estimate_from_rssi_observations,
+        )
+        # Equidistant receivers east and west — centroid lands between
+        est = estimate_from_rssi_observations([
+            self._obs("rx1", 40.0, -74.0010, rssi=-60.0, snr=-5.0),
+            self._obs("rx2", 40.0, -73.9990, rssi=-60.0, snr=-5.0),
+        ])
+        assert est is not None
+        assert est.method == "rf_multilateration"
+        assert est.anchor_count == 2
+        assert abs(est.lng - (-74.0)) < 0.0005  # between the receivers
+
+    def test_stronger_receiver_pulls_centroid(self):
+        from tritium_lib.intelligence.position_estimator import (
+            estimate_from_rssi_observations,
+        )
+        est = estimate_from_rssi_observations([
+            self._obs("near", 40.0, -74.0010, rssi=-50.0),
+            self._obs("far",  40.0, -73.9990, rssi=-80.0),
+        ])
+        # closer (stronger) receiver pulls the estimate west
+        assert est.lng < -74.0
