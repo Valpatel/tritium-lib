@@ -159,7 +159,15 @@ class GameMode:
         self._game_start_time: float = 0.0
         self._wave_complete_time: float = 0.0
         self._wave_hostile_ids: set[str] = set()
+        # Legacy attribute kept for external checks; always None — wave
+        # spawning is tick-driven via _spawn_queue (G-1), never a thread.
         self._spawn_thread: threading.Thread | None = None
+        # Game sim clock (G-1): advanced only in tick(dt). Spawn pacing,
+        # stalemate, wave-advance and wave-duration all elapse in THIS
+        # clock so fast replay paces identically to real-time play.
+        self._sim_time: float = 0.0
+        self._spawn_queue: list = []   # thunks; each spawns one hostile
+        self._next_spawn_at: float = 0.0
         self._last_elimination_time: float = 0.0  # for stalemate detection
         # Dedup guard: target_ids already counted as eliminations.  The
         # stalemate force-eliminator increments counters directly AND
@@ -195,7 +203,7 @@ class GameMode:
                     t.status = "active"
         self.state = "countdown"
         self._countdown_remaining = _COUNTDOWN_DURATION
-        self._game_start_time = time.time()
+        self._game_start_time = self._sim_time
         self.wave = 1
         self.score = 0
         self.total_eliminations = 0
@@ -206,6 +214,7 @@ class GameMode:
 
     def tick(self, dt: float) -> None:
         """Called every engine tick. Manages state transitions."""
+        self._sim_time += dt
         if self.state == "countdown":
             self._tick_countdown(dt)
         elif self.state == "active":
@@ -222,6 +231,7 @@ class GameMode:
         self.wave_eliminations = 0
         self._countdown_remaining = _COUNTDOWN_DURATION
         self._wave_hostile_ids.clear()
+        self._spawn_queue.clear()
         self._counted_eliminations.clear()
         self._combat.reset_streaks()
         self._combat.clear()
@@ -260,7 +270,7 @@ class GameMode:
         self._counted_eliminations.add(target_id)
         self.total_eliminations += 1
         self.score += 100  # points per elimination
-        self._last_elimination_time = time.time()
+        self._last_elimination_time = self._sim_time
         # Wave hostiles also count toward wave completion
         if target_id in self._wave_hostile_ids:
             self.wave_eliminations += 1
@@ -388,6 +398,9 @@ class GameMode:
             self._publish_state_change()
 
     def _tick_active(self, dt: float) -> None:
+        # Spawn pacing (G-1): pop due spawns from the queue in sim time.
+        self._drain_spawn_queue()
+
         # Check defeat: all friendly combatants eliminated
         # low_battery units are still alive (reduced capability, not dead)
         _ALIVE_STATUSES = ("active", "idle", "stationary", "low_battery", "arrived")
@@ -409,7 +422,7 @@ class GameMode:
         # and there are hostiles alive, force-eliminate remaining hostiles.
         # This prevents infinite games when hostiles wander out of weapon range.
         if (self._last_elimination_time > 0
-                and (time.time() - self._last_elimination_time) >= _STALEMATE_TIMEOUT
+                and (self._sim_time - self._last_elimination_time) >= _STALEMATE_TIMEOUT
                 and not self._is_spawning()):
             stale_alive = self._count_wave_hostiles_alive()
             if stale_alive > 0:
@@ -425,7 +438,7 @@ class GameMode:
             self._on_wave_complete()
 
     def _tick_wave_complete(self, dt: float) -> None:
-        elapsed = time.time() - self._wave_complete_time
+        elapsed = self._sim_time - self._wave_complete_time
         if elapsed >= _WAVE_ADVANCE_DELAY:
             self.wave += 1
             # Determine total wave count: scenario waves, or default WAVE_CONFIGS
@@ -525,8 +538,8 @@ class GameMode:
     def _start_wave(self, wave_num: int) -> None:
         """Spawn hostiles for this wave in a background thread (staggered)."""
         self.wave_eliminations = 0
-        self._wave_start_time = time.time()
-        self._last_elimination_time = time.time()  # reset stalemate clock
+        self._wave_start_time = self._sim_time
+        self._last_elimination_time = self._sim_time  # reset stalemate clock
         self._wave_hostile_ids.clear()
 
         # Wave 3+ adds environmental pressure via random hazard spawning.
@@ -557,13 +570,7 @@ class GameMode:
                 self._engine.stats_tracker.on_wave_start(
                     wave_num, wave_def.name, wave_def.total_count,
                 )
-            self._spawn_thread = threading.Thread(
-                target=self._spawn_scenario_wave,
-                args=(wave_def,),
-                name=f"wave-{wave_num}-spawner",
-                daemon=True,
-            )
-            self._spawn_thread.start()
+            self._queue_scenario_wave(wave_def)
             return
 
         # Default WAVE_CONFIGS path
@@ -583,22 +590,19 @@ class GameMode:
                 wave_num, config.name, config.count,
             )
 
-        # Spawn in background thread to stagger over time
-        self._spawn_thread = threading.Thread(
-            target=self._spawn_wave_hostiles,
-            args=(config,),
-            name=f"wave-{wave_num}-spawner",
-            daemon=True,
-        )
-        self._spawn_thread.start()
+        # Queue spawns; _tick_active drains them at _SPAWN_STAGGER
+        # intervals of sim time (G-1 — was a wall-clock sleep thread).
+        self._queue_wave_hostiles(config)
 
-    def _spawn_scenario_wave(self, wave_def: Any) -> None:
-        """Spawn hostiles from a scenario WaveDefinition (mixed types)."""
-        spawn_index = 0
-        for group in wave_def.groups:
-            for i in range(group.count):
-                if self.state not in ("active",):
-                    return
+    def _queue_scenario_wave(self, wave_def: Any) -> None:
+        """Queue hostile spawns from a scenario WaveDefinition (mixed types).
+
+        Tick-driven (G-1): _tick_active drains the queue at _SPAWN_STAGGER
+        intervals of game sim time. The old implementation slept in a
+        wall-clock thread, so fast replay outran the spawner.
+        """
+        def _make(group):
+            def _spawn() -> None:
                 hostile = self._engine.spawn_hostile_typed(
                     asset_type=group.asset_type,
                     speed=group.speed * wave_def.speed_mult,
@@ -611,14 +615,19 @@ class GameMode:
                     if apply_fn is not None:
                         apply_fn(hostile, group)
                 self._wave_hostile_ids.add(hostile.target_id)
-                spawn_index += 1
-                if spawn_index < wave_def.total_count:
-                    time.sleep(_SPAWN_STAGGER)
+            return _spawn
 
-    def _spawn_wave_hostiles(self, config: WaveConfig) -> None:
-        """Spawn hostiles with staggered timing.
+        self._spawn_queue = [
+            _make(group)
+            for group in wave_def.groups
+            for _ in range(group.count)
+        ]
+        self._next_spawn_at = self._sim_time  # first spawn on next tick
 
-        When config.composition is set, spawns mixed unit types in the
+    def _queue_wave_hostiles(self, config: WaveConfig) -> None:
+        """Queue staggered hostile spawns for a WaveConfig (tick-driven, G-1).
+
+        When config.composition is set, queues mixed unit types in the
         specified quantities.  Otherwise falls back to all "person" type.
 
         Difficulty adjustments are applied on top of wave config multipliers:
@@ -626,7 +635,7 @@ class GameMode:
         are applied additively.
         """
         if config.composition:
-            self._spawn_mixed_wave(config)
+            self._queue_mixed_wave(config)
             return
 
         # Apply adaptive difficulty adjustments
@@ -637,25 +646,24 @@ class GameMode:
         if adj["easy"] and adj["speed_reduction"] > 0:
             speed_factor *= (1.0 - adj["speed_reduction"])
 
-        for i in range(spawn_count):
-            if self.state not in ("active",):
-                break
+        def _spawn_one() -> None:
             hostile = self._engine.spawn_hostile(direction=config.spawn_direction)
             # Apply wave + difficulty multipliers
             hostile.speed *= speed_factor
             hostile.health *= health_factor
             hostile.max_health *= health_factor
             self._wave_hostile_ids.add(hostile.target_id)
-            if i < spawn_count - 1:
-                time.sleep(_SPAWN_STAGGER)
 
-    def _spawn_mixed_wave(self, config: WaveConfig) -> None:
-        """Spawn a wave with mixed hostile unit types from config.composition.
+        self._spawn_queue = [_spawn_one for _ in range(spawn_count)]
+        self._next_spawn_at = self._sim_time
 
-        Each (asset_type, count) tuple in the composition list spawns that
+    def _queue_mixed_wave(self, config: WaveConfig) -> None:
+        """Queue a wave with mixed hostile unit types (tick-driven, G-1).
+
+        Each (asset_type, count) tuple in the composition list queues that
         many units of the given type, with wave speed/health multipliers
         applied.  Difficulty adjustments are layered on top.
-        Units are spawned in the listed order with staggered timing.
+        Units spawn in the listed order at _SPAWN_STAGGER sim intervals.
         """
         # Apply adaptive difficulty adjustments
         adj = self.difficulty.get_wave_adjustments(config.count)
@@ -664,12 +672,8 @@ class GameMode:
         if adj["easy"] and adj["speed_reduction"] > 0:
             speed_factor *= (1.0 - adj["speed_reduction"])
 
-        spawn_index = 0
-        total = sum(c for _, c in config.composition)
-        for asset_type, type_count in config.composition:
-            for _ in range(type_count):
-                if self.state not in ("active",):
-                    return
+        def _make(asset_type: str):
+            def _spawn() -> None:
                 hostile = self._engine.spawn_hostile_typed(
                     asset_type=asset_type,
                     speed=None,  # use default speed for type
@@ -681,13 +685,48 @@ class GameMode:
                 hostile.health *= health_factor
                 hostile.max_health *= health_factor
                 self._wave_hostile_ids.add(hostile.target_id)
-                spawn_index += 1
-                if spawn_index < total:
-                    time.sleep(_SPAWN_STAGGER)
+            return _spawn
+
+        self._spawn_queue = [
+            _make(asset_type)
+            for asset_type, type_count in config.composition
+            for _ in range(type_count)
+        ]
+        self._next_spawn_at = self._sim_time
+
+    def _drain_spawn_queue(self) -> None:
+        """Pop due spawns (sim-time paced). Called from _tick_active.
+
+        The schedule is anchored: a large dt can release several spawns
+        in one tick (catch-up), preserving total wave timing at any
+        replay speed.
+        """
+        while self._spawn_queue and self._sim_time >= self._next_spawn_at:
+            spawn = self._spawn_queue.pop(0)
+            try:
+                spawn()
+            except Exception:
+                # A failed spawn must not wedge the wave: skip it.
+                pass
+            self._next_spawn_at += _SPAWN_STAGGER
 
     def _is_spawning(self) -> bool:
-        """Check if the wave spawner thread is still running."""
-        return self._spawn_thread is not None and self._spawn_thread.is_alive()
+        """True while queued wave spawns remain (tick-driven, G-1)."""
+        return bool(self._spawn_queue)
+
+    def _drain_all_spawns(self) -> None:
+        """Execute every queued spawn immediately, ignoring the stagger.
+
+        Test/maintenance helper for callers that need a wave fully on
+        the field synchronously (the old thread-based spawner blocked
+        until done; tick-driven pacing is the production path).
+        """
+        while self._spawn_queue:
+            spawn = self._spawn_queue.pop(0)
+            try:
+                spawn()
+            except Exception:
+                pass
 
     def _count_wave_hostiles_alive(self) -> int:
         """Count wave hostiles that are still active threats."""
@@ -718,12 +757,12 @@ class GameMode:
                     "method": "timeout",
                     "position": {"x": t.position[0], "y": t.position[1]},
                 })
-        self._last_elimination_time = time.time()
+        self._last_elimination_time = self._sim_time
         self._publish_state_change()
 
     def _on_wave_complete(self) -> None:
         """Handle wave completion: scoring, events, state transition."""
-        elapsed = time.time() - self._wave_start_time
+        elapsed = self._sim_time - self._wave_start_time
         # Time bonus: starts at 50, decreases by 5 per 10s elapsed
         time_bonus = max(0, 50 - int(elapsed / 10) * 5)
         wave_bonus = self.wave * 200
@@ -748,7 +787,7 @@ class GameMode:
         })
 
         self.state = "wave_complete"
-        self._wave_complete_time = time.time()
+        self._wave_complete_time = self._sim_time
 
         config = self._current_wave_config()
         wave_complete_data = {
