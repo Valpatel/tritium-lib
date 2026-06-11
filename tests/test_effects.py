@@ -7,7 +7,18 @@ import math
 import time
 
 import numpy as np
+import os
+
 import pytest
+
+
+def _too_loaded() -> bool:
+    """Perf budgets are noise under contention (house pattern,
+    test_crowd_perf)."""
+    try:
+        return os.getloadavg()[0] > 20
+    except OSError:
+        return False
 
 from tritium_lib.sim_engine.effects import (
     EffectsManager,
@@ -407,6 +418,7 @@ class TestEffectsManager:
 # ---------------------------------------------------------------------------
 
 class TestPerformance:
+    @pytest.mark.skipif(_too_loaded(), reason="load >20: wall-clock perf budget unreliable")
     def test_1000_particles_under_5ms(self):
         """1000 particles should tick in <5ms."""
         em = ParticleEmitter(

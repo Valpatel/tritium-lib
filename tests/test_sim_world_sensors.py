@@ -36,7 +36,7 @@ class TestSensorDeviceConstruction:
         assert d.sensor_id == "s1"
         assert d.sensor_type == "motion"
         assert d.active is False
-        assert d.last_triggered == 0.0
+        assert d.last_triggered == -1e9  # never-triggered sentinel (sim time, G-5)
         assert d.triggered_by == ""
 
 

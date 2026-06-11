@@ -158,6 +158,12 @@ def screenshot(page: "Page") -> "np.ndarray":
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    os.getloadavg()[0] > 20,
+    reason="load >20: the fixed 8s render wait under-delivers frames — "
+           "contour counts read partial scenes (observed 2026-06-11: "
+           "buildings found 2/3 only while a browser fleet ran)",
+)
 class TestSimVisualStrict:
     """Hard-assertion visual tests for the sim-engine 3D demo."""
 

@@ -50,7 +50,7 @@ class TestSensorDevice:
         assert sd.position == (10.0, 20.0)
         assert sd.radius == 5.0
         assert sd.active is False
-        assert sd.last_triggered == 0.0
+        assert sd.last_triggered == -1e9  # never-triggered sentinel (sim time, G-5)
         assert sd.triggered_by == ""
 
 
