@@ -182,6 +182,7 @@ class SquadManager:
         # squad order refresh wall-paced, which made any battle with
         # squads non-deterministic at faster-than-real-time replay.
         self._sim_time: float = 0.0
+        self._squad_seq: int = 0  # sequential squad ids (G-5)
         # Track original speeds for hold-order restoration
         self._hold_base_speeds: dict[str, float] = {}
         # Pathfinding router callback
@@ -620,7 +621,11 @@ class SquadManager:
                     neighbors.append(other_tid)
 
             if len(neighbors) >= 2:
-                squad_id = f"squad-{uuid.uuid4().hex[:8]}"
+                # Sequential per-manager IDs (G-5): uuid4 here injected
+                # unseedable entropy into id-ordered tie-breaks. Squad IDs
+                # only need uniqueness within one engine run.
+                self._squad_seq += 1
+                squad_id = f"squad-{self._squad_seq:04d}"
                 squad = Squad(
                     squad_id=squad_id,
                     member_ids=neighbors,
