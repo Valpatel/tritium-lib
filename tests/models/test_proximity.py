@@ -124,7 +124,10 @@ class TestDefaultRules:
     def test_hostile_friendly_rule(self):
         rule = DEFAULT_PROXIMITY_RULES[0]
         assert rule.alliance_pair == "hostile_friendly"
-        assert rule.threshold_m == 10.0
+        # 20m default since 41597ff (2026-06-10 battle-alert tuning);
+        # this assertion was missed in that change — the full suite
+        # didn't run until 2026-06-11.
+        assert rule.threshold_m == 20.0
         assert rule.enabled is True
 
 

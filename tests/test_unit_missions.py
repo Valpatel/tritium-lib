@@ -340,8 +340,8 @@ class TestTickIdleReassignment:
         )
         t.waypoints = []  # idle
         targets = {"rover1": t}
-        # Force idle check to run by setting last check long ago
-        ums._last_idle_check = 0.0
+        # Force idle check to run: never-checked sentinel (sim time, G-5)
+        ums._last_idle_check = -1e9
         ums.tick(0.1, targets)
         # Should have a mission assigned
         assert ums.get_mission("rover1") is not None

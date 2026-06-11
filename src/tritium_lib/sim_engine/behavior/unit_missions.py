@@ -168,7 +168,9 @@ class UnitMissionSystem:
         self._backstories: dict[str, str] = {}         # target_id -> backstory text
         self._pending_backstories: set[str] = set()    # target_ids queued for LLM
         self._map_bounds = map_bounds
-        self._last_idle_check: float = 0.0
+        # -1e9 = never-checked sentinel: the FIRST idle check must run
+        # immediately (sim clock starts at 0 — same class as last_fired)
+        self._last_idle_check: float = -1e9
         self._sim_time: float = 0.0  # advanced in tick(dt) (G-1)
         self._lock = threading.Lock()
         self._backstory_generator = None  # BackstoryGenerator (optional)
