@@ -18,6 +18,11 @@ SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 
 ## Package Map (by capability area)
 
+> Removed packages (12 zero-consumer packages trimmed 2026-04-29,
+> ~18,500 LOC) are recorded in the parent repo's
+> `docs/audits/REMOVED-PACKAGES.md` with the resurrection policy.
+> This table lists only what exists on disk (verified 2026-06-11).
+
 ### Core Infrastructure
 | Package | Purpose |
 |---------|---------|
@@ -37,24 +42,21 @@ SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 | `fusion` | Multi-sensor target fusion (BLE + camera + WiFi -> unique UUID) |
 | `inference` | ML inference pipelines, model management |
 | `classifier` | Multi-signal BLE/WiFi device type classification with fingerprint databases |
-| `classification` | General-purpose classification framework |
 
 ### Tracking & Situational Awareness
 | Package | Purpose |
 |---------|---------|
 | `tracking` | Target tracking, correlation, track management |
 | `sitaware` | **Capstone module.** Situational awareness engine — fuses all subsystems into a unified operating picture |
-| `tactical` | Tactical overlays, force disposition |
+| `incident` | Incident lifecycle: detected → investigating → responding → resolved (consumed by SC sitaware/forensics/geo routers) |
 | `geo` | Coordinate transforms, camera projection, haversine |
 | `indoor` | Indoor positioning, WiFi fingerprinting, floorplan mapping |
-| `areas` | Geofence zones, area monitoring |
 
 ### Sensors & Signals
 | Package | Purpose |
 |---------|---------|
 | `signals` | Signal processing, spectrum analysis |
 | `sdr` | SDRDevice base, SDRInfo, SweepResult |
-| `comint` | Communications intelligence |
 | `protocols` | Protocol decoders and handlers |
 | `nodes` | Sensor node management |
 
@@ -66,18 +68,16 @@ SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 | `scenarios` | Pre-built simulation scenarios |
 
 ### JS Simulation (web/sim/)
-Browser-side city simulation: IDM, MOBIL, vehicles, pedestrians, road networks, traffic control, procedural city, protest engine, daily routines, weather, spatial grid, identity system
+Browser-side city simulation: IDM, MOBIL, vehicles, pedestrians, road networks, traffic control, procedural city, protest engine, daily routines, weather, spatial grid, identity system. A distribution copy ships inside the Python tree at `src/tritium_lib/js/` (sim + render) so pip installs carry the JS modules.
 
 ### JS UI & Map Framework (web/)
 Shared frontend: layout manager, command palette, event bus, reactive store, WebSocket, plus panel system and tactical map (MapLibre GL, effects, asset types, 3D units, providers)
 
-### Operations & C2
+### Operations
 | Package | Purpose |
 |---------|---------|
-| `c2` | Command and control abstractions |
 | `mission` | Mission planning and execution |
 | `fleet` | Fleet management |
-| `deployment` | Deployment orchestration |
 | `scheduler` | Task scheduling |
 | `actions` | Action definitions and execution |
 
@@ -87,10 +87,7 @@ Shared frontend: layout manager, command palette, event bus, reactive store, Web
 | `data` | JSON lookup databases (BLE fingerprints, OUI, WiFi SSID patterns, etc.) |
 | `analytics` | Statistical analysis and reporting |
 | `reporting` | Report generation |
-| `recording` | Data recording and playback |
-| `evidence` | Evidence collection and chain-of-custody |
-| `map_data` | Map tile and geodata management |
-| `geoint` | Geospatial intelligence |
+| `recording` | Data recording and playback (un-deprecated Gap-fix G: AAR pipeline is its consumer) |
 | `data_exchange` | Import/export formats |
 
 ### Security & Compliance
@@ -108,15 +105,12 @@ Shared frontend: layout manager, command palette, event bus, reactive store, Web
 | `ontology` | Semantic type system — entity types, relationship types, schema validation |
 | `comms` | Communication channel abstractions |
 | `federation` | Multi-site federation |
-| `network` | Network topology and discovery |
 | `notifications` | Notification model and NotificationManager |
 | `firmware` | FirmwareFlasher, ESP32Flasher, MeshtasticFlasher |
-| `interfaces` | Abstract interfaces for plugin integration |
 | `pipeline` | Data processing pipelines |
 | `rules` | Rule engine for automation |
 | `alerting` | Alert routing and escalation |
 | `monitoring` | System health monitoring |
-| `quality` | Data quality checks |
 | `visualization` | Rendering helpers |
 | `web` | Cyberpunk HTML theme engine and dashboard components |
 | `testing` | Visual regression, flicker detection, ESP32 automation |
