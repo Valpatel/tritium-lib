@@ -283,7 +283,7 @@ class TestCombat:
             weapon_damage=15.0,
             weapon_cooldown=1.0,
         )
-        source.last_fired = 0  # ensure can fire
+        source.last_fired = -1e9  # never-fired sentinel (sim-time): ensure can fire
 
         target = SimulationTarget(
             target_id="hostile1",

@@ -81,7 +81,9 @@ class Projectile:
     projectile_type: str = "nerf_dart"  # nerf_dart, nerf_rocket, water_balloon
     source_type: str = ""  # asset_type of the firing unit
     source_pos: tuple[float, float] = (0.0, 0.0)  # origin position at time of fire
-    created_at: float = field(default_factory=time.time)
+    # Sim-time of firing (G-1): CombatSystem stamps this from its own
+    # dt-advanced clock; flight expiry compares against the same clock.
+    created_at: float = 0.0
     hit: bool = False
     missed: bool = False
     # Mortar/indirect fire fields
@@ -134,6 +136,10 @@ class CombatSystem:
         self._stats_tracker = stats_tracker
         self._weapon_system = weapon_system
         self._upgrade_system = upgrade_system
+        # Combat sim clock (gap G-1): advanced only in tick(dt).
+        # Projectile created_at / flight expiry use this clock so flight
+        # lifetimes scale with replay speed exactly like movement does.
+        self._sim_time: float = 0.0
 
     @property
     def projectile_count(self) -> int:
@@ -195,6 +201,10 @@ class CombatSystem:
             if not terrain_map.line_of_sight(source.position, target.position):
                 return None
 
+        # Cooldown stamps are in the SOURCE's sim clock (G-1); duck-typed
+        # test stubs without a sim_time fall back to 0.0 harmlessly.
+        source_now = getattr(source, "sim_time", 0.0)
+
         # Weapon system integration: reload check, accuracy, ammo
         if self._weapon_system is not None:
             if self._weapon_system.is_reloading(source.target_id):
@@ -202,11 +212,11 @@ class CombatSystem:
             weapon = self._weapon_system.get_weapon(source.target_id)
             if weapon is not None:
                 if random.random() > weapon.accuracy:
-                    source.last_fired = time.time()
+                    source.last_fired = source_now
                     return None  # missed due to weapon accuracy
                 self._weapon_system.consume_ammo(source.target_id)
 
-        source.last_fired = time.time()
+        source.last_fired = source_now
 
         # Determine effective damage from the best available source:
         #   1. Weapon system weapon (synced from inventory at add_target time)
@@ -244,6 +254,7 @@ class CombatSystem:
             projectile_type=projectile_type,
             source_type=source.asset_type,
             source_pos=source.position,
+            created_at=self._sim_time,
             is_mortar=use_mortar,
             arc_peak=arc_peak,
             total_flight_dist=dist,
@@ -276,6 +287,7 @@ class CombatSystem:
         When *cover_system* is provided, damage is reduced by the target's
         cover bonus (0.0-0.8) on each hit.
         """
+        self._sim_time += dt
         to_remove: list[str] = []
 
         for proj in self._projectiles.values():
@@ -410,8 +422,10 @@ class CombatSystem:
                     to_remove.append(proj.id)
                     continue
 
-            # Check miss: projectile exceeded max flight time (5 seconds)
-            flight_time = time.time() - proj.created_at
+            # Check miss: projectile exceeded max flight time (5 SIM
+            # seconds — wall-clock here would never expire darts at
+            # faster-than-real-time replay, G-1)
+            flight_time = self._sim_time - proj.created_at
             if flight_time > 5.0:
                 proj.missed = True
                 to_remove.append(proj.id)

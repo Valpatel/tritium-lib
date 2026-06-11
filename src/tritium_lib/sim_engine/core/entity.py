@@ -510,7 +510,13 @@ class SimulationTarget:
     weapon_range: float = 15.0    # meters — how far this unit can shoot
     weapon_cooldown: float = 2.0  # seconds between shots
     weapon_damage: float = 10.0   # damage per hit
-    last_fired: float = 0.0       # timestamp of last shot
+    # Sim-time clock (gap G-1): advanced ONLY by tick(dt). Cooldowns
+    # elapse in this clock, never wall-clock, so faster-than-real-time
+    # replay keeps weapon cadence consistent with movement.
+    sim_time: float = 0.0
+    # last_fired is in sim_time units. Sentinel -1e9 = "never fired",
+    # so a fresh unit is not on cooldown at sim_time 0.
+    last_fired: float = -1e9      # sim-time of last shot
     kills: int = 0
     is_combatant: bool = True     # False for civilians/animals
     vision_range: float = 15.0    # meters — how far this unit can see
@@ -679,11 +685,16 @@ class SimulationTarget:
             return False
         if not self.is_combatant:
             return False
-        now = _time.time()
-        return (now - self.last_fired) >= self.weapon_cooldown
+        # Sim-time cooldown (G-1): wall-clock here would freeze every
+        # weapon at faster-than-real-time replay speeds.
+        return (self.sim_time - self.last_fired) >= self.weapon_cooldown
 
     def tick(self, dt: float) -> None:
         """Advance simulation by *dt* seconds."""
+        # The sim clock advances on every tick call, including for
+        # terminal/low-battery units — a unit's clock never runs
+        # backwards relative to the engine's.
+        self.sim_time += dt
         # Skip ticking when target is terminal OR in low_battery (non-terminal
         # but still inactive — battery drain pass already set this state).
         if is_terminal(self.status) or self.status == "low_battery":
