@@ -161,6 +161,12 @@ class GameMode:
         self._wave_hostile_ids: set[str] = set()
         self._spawn_thread: threading.Thread | None = None
         self._last_elimination_time: float = 0.0  # for stalemate detection
+        # Dedup guard: target_ids already counted as eliminations.  The
+        # stalemate force-eliminator increments counters directly AND
+        # publishes target_eliminated, which the engine listener echoes
+        # back into on_target_eliminated -- without this set every
+        # timeout kill counted twice (VI r5 number-soup finding).
+        self._counted_eliminations: set[str] = set()
 
         # Scenario support (optional — None means use default WAVE_CONFIGS)
         self._scenario: object | None = None
@@ -194,6 +200,7 @@ class GameMode:
         self.score = 0
         self.total_eliminations = 0
         self.wave_eliminations = 0
+        self._counted_eliminations.clear()
         self._combat.reset_streaks()
         self._publish_state_change()
 
@@ -215,6 +222,7 @@ class GameMode:
         self.wave_eliminations = 0
         self._countdown_remaining = _COUNTDOWN_DURATION
         self._wave_hostile_ids.clear()
+        self._counted_eliminations.clear()
         self._combat.reset_streaks()
         self._combat.clear()
         # Clear scenario data so next begin_war() uses default WAVE_CONFIGS
@@ -233,12 +241,23 @@ class GameMode:
         """Notify the game mode that a target was eliminated.
 
         Called by the engine/combat integration to update elimination counts
-        and scoring.  Any hostile elimination counts toward score; wave
+        and scoring.  Hostile eliminations count toward score; wave
         hostiles also count toward wave completion.
+
+        Idempotent per target_id: the stalemate force-eliminator counts
+        directly and its published events echo back through this method,
+        so each elimination must count exactly once.  Friendly and
+        neutral deaths are losses, not eliminations -- they never score
+        (unknown ids get the benefit of the doubt: a pruned hostile).
         """
         if self.state != "active":
             return
-        # All hostile eliminations score points
+        if target_id in self._counted_eliminations:
+            return
+        alliance = self._lookup_alliance(target_id)
+        if alliance in ("friendly", "neutral"):
+            return
+        self._counted_eliminations.add(target_id)
         self.total_eliminations += 1
         self.score += 100  # points per elimination
         self._last_elimination_time = time.time()
@@ -246,6 +265,23 @@ class GameMode:
         if target_id in self._wave_hostile_ids:
             self.wave_eliminations += 1
         self._publish_state_change()
+
+    def _lookup_alliance(self, target_id: str) -> str | None:
+        """Best-effort alliance lookup for *target_id* on the engine.
+
+        Returns None when the target is unknown (already pruned).
+        """
+        try:
+            getter = getattr(self._engine, "get_target", None)
+            if callable(getter):
+                t = getter(target_id)
+                return getattr(t, "alliance", None) if t is not None else None
+            for t in self._engine.get_targets():
+                if t.target_id == target_id:
+                    return getattr(t, "alliance", None)
+        except Exception:
+            return None
+        return None
 
     def on_civilian_harmed(self) -> None:
         """Record a civilian harm event (civil unrest mode).
@@ -303,9 +339,15 @@ class GameMode:
             total_waves = -1
         else:
             total_waves = len(WAVE_CONFIGS)
+        # Display clamp: the engine legitimately increments self.wave to
+        # total+1 on the final wave_complete tick (victory detection),
+        # but no consumer should ever see "wave 8 of 7" (VI r5 finding).
+        display_wave = self.wave
+        if not self.infinite and total_waves > 0:
+            display_wave = min(self.wave, total_waves)
         state: dict = {
             "state": self.state,
-            "wave": self.wave,
+            "wave": display_wave,
             "wave_name": wave_config.name if wave_config else "",
             "total_waves": total_waves,
             "countdown": math.ceil(self._countdown_remaining) if self._countdown_remaining > 0 else 0,
@@ -661,6 +703,11 @@ class GameMode:
             if t.target_id in self._wave_hostile_ids and t.status == "active":
                 t.status = "eliminated"
                 t.health = 0
+                # Mark counted BEFORE publishing so the event echo through
+                # on_target_eliminated cannot double count (VI r5 fix).
+                # Timeout kills clear the wave but earn no score -- nobody
+                # made the shot.
+                self._counted_eliminations.add(t.target_id)
                 self.total_eliminations += 1
                 self.wave_eliminations += 1
                 self._event_bus.publish("target_eliminated", {
@@ -735,11 +782,24 @@ class GameMode:
 
     def _build_game_over_data(self, result: str, **extra) -> dict:
         """Build a game_over event dict with mode-specific fields included."""
+        # Same display clamp as get_state(): victory is detected at
+        # wave == total+1 internally, but consumers never see "wave 8"
+        # on a 7-wave scenario.
+        if self._scenario_waves is not None:
+            total_waves = len(self._scenario_waves)
+        elif self.infinite:
+            total_waves = -1
+        else:
+            total_waves = len(WAVE_CONFIGS)
+        display_wave = self.wave
+        if not self.infinite and total_waves > 0:
+            display_wave = min(self.wave, total_waves)
         data = {
             "result": result,
             "final_score": self.score,
             "score": self.score,
-            "wave": self.wave,
+            "wave": display_wave,
+            "total_waves": total_waves,
             "total_eliminations": self.total_eliminations,
             "game_mode_type": self.game_mode_type,
             **extra,

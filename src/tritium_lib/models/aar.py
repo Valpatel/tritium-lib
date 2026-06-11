@@ -53,6 +53,14 @@ class FactionSummary(BaseModel):
     units_started: int = 0
     units_lost: int = 0
     units_survived: int = 0
+    # Of units_lost, how many fell to the stalemate timeout (no shooter
+    # earned the kill).  Lets the AAR reconcile enemy losses against
+    # attributed kills instead of showing 'KILLS 0' beside 'LOST 73'.
+    units_lost_to_timeout: int = 0
+    # Units that left the field alive (status 'escaped').  Escapees are
+    # NOT losses — without this split, escaped hostiles inflated
+    # units_lost and the kills-vs-lost math never reconciled.
+    units_escaped: int = 0
     total_kills: int = 0  # Kills inflicted BY this faction
     total_damage_dealt: float = 0.0
     total_damage_taken: float = 0.0

@@ -484,3 +484,147 @@ class TestDifficultyScaler:
         gm.begin_war()
         gm.reset()
         assert gm.difficulty.get_multiplier() == pytest.approx(1.0)
+
+
+# ===================================================================
+# Wave/score accounting — Village Idiot r5 number-soup fixes
+# ===================================================================
+
+
+class TestWaveDisplayClamp:
+    """get_state() is the display/API serialization boundary.
+
+    The engine legitimately increments self.wave to total+1 on the final
+    wave_complete tick (that is how victory is detected), but the
+    serialized state must never report wave > total_waves to consumers
+    (VI r5: top HUD showed 'WAVE 8' for a 7-wave scenario).
+    """
+
+    def test_get_state_wave_clamped_at_victory(self):
+        gm, _, _ = _build_game_mode()
+        gm.state = "victory"
+        gm.wave = len(WAVE_CONFIGS) + 1  # engine-internal overflow
+        state = gm.get_state()
+        assert state["wave"] == len(WAVE_CONFIGS)
+        assert state["total_waves"] == len(WAVE_CONFIGS)
+
+    def test_get_state_wave_unclamped_during_normal_play(self):
+        gm, _, _ = _build_game_mode()
+        gm.state = "active"
+        gm.wave = 3
+        state = gm.get_state()
+        assert state["wave"] == 3
+
+    def test_get_state_wave_not_clamped_in_infinite_mode(self):
+        gm, _, _ = _build_game_mode(infinite=True)
+        gm.state = "active"
+        gm.wave = len(WAVE_CONFIGS) + 5
+        state = gm.get_state()
+        assert state["wave"] == len(WAVE_CONFIGS) + 5
+        assert state["total_waves"] == -1
+
+    def test_get_state_wave_clamped_with_scenario_waves(self):
+        gm, _, _ = _build_game_mode()
+        gm._scenario_waves = [None] * 7  # 7-wave scenario
+        gm.state = "victory"
+        gm.wave = 8
+        state = gm.get_state()
+        assert state["wave"] == 7
+        assert state["total_waves"] == 7
+
+
+class TestEliminationAccounting:
+    """Each eliminated target counts exactly once, and only hostiles score.
+
+    VI r5: stalemate force-eliminations incremented the counters
+    directly AND re-counted when the published target_eliminated event
+    echoed back through the engine listener — every timeout kill counted
+    twice and earned +100 unearned score.  Friendly/neutral deaths also
+    scored +100 because on_target_eliminated never checked alliance.
+    """
+
+    def test_same_target_never_counted_twice(self):
+        gm, _, _ = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        gm.on_target_eliminated("h_dup")
+        gm.on_target_eliminated("h_dup")
+        assert gm.total_eliminations == 1
+        assert gm.score == 100
+
+    def test_force_eliminate_then_event_echo_counts_once(self):
+        gm, bus, engine = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        hostile = engine.spawn_hostile()
+        gm._wave_hostile_ids.add(hostile.target_id)
+        score_before = gm.score
+
+        gm._force_eliminate_wave_hostiles()
+        assert gm.total_eliminations == 1
+        assert gm.wave_eliminations == 1
+
+        # Echo: the engine's combat listener forwards the published
+        # target_eliminated event back into on_target_eliminated.
+        gm.on_target_eliminated(hostile.target_id)
+        assert gm.total_eliminations == 1, "echo must not double count"
+        assert gm.wave_eliminations == 1, "echo must not double count"
+        assert gm.score == score_before, "timeout kills earn no score"
+
+    def test_friendly_death_does_not_score(self):
+        gm, _, engine = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        friendly = engine.get_targets()[0]
+        assert friendly.alliance == "friendly"
+        gm.on_target_eliminated(friendly.target_id)
+        assert gm.total_eliminations == 0
+        assert gm.score == 0
+
+    def test_neutral_death_does_not_score(self):
+        gm, _, engine = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        neutral = _FakeTarget(target_id="ped_1", alliance="neutral")
+        engine.add_target(neutral)
+        gm.on_target_eliminated("ped_1")
+        assert gm.total_eliminations == 0
+        assert gm.score == 0
+
+    def test_unknown_target_still_scores(self):
+        # Pinned behavior: ids the engine no longer knows (pruned) get
+        # the benefit of the doubt — they were hostiles.
+        gm, _, _ = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        gm.on_target_eliminated("already_pruned")
+        assert gm.total_eliminations == 1
+        assert gm.score == 100
+
+    def test_begin_war_clears_dedup_set(self):
+        gm, _, _ = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        gm.on_target_eliminated("h1")
+        gm.reset()
+        gm.begin_war()
+        gm.state = "active"
+        gm.on_target_eliminated("h1")
+        assert gm.total_eliminations == 1
+        assert gm.score == 100
+
+
+class TestGameOverPayloadClamp:
+    def test_game_over_wave_clamped(self):
+        gm, bus, _ = _build_game_mode()
+        gm.wave = len(WAVE_CONFIGS) + 1
+        data = gm._build_game_over_data("victory", waves_completed=len(WAVE_CONFIGS))
+        assert data["wave"] == len(WAVE_CONFIGS)
+        assert data["total_waves"] == len(WAVE_CONFIGS)
+
+    def test_game_over_wave_raw_in_infinite(self):
+        gm, _, _ = _build_game_mode(infinite=True)
+        gm.wave = 23
+        data = gm._build_game_over_data("defeat")
+        assert data["wave"] == 23
+        assert data["total_waves"] == -1
