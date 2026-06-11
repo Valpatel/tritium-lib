@@ -180,7 +180,7 @@ Located inside their respective packages under `demos/` subdirectories:
 ## Rules
 
 1. **Models are the API contract.** Change a model here, update all consumers. Check with `grep -r "from tritium_lib" ../tritium-edge/ ../tritium-sc/`.
-2. **MQTT topics are defined here, not in consumers.** Use `TritiumTopics` — never hardcode topic strings.
+2. **MQTT topics: the canonical reference is the parent repo's `docs/MQTT-PROTOCOL.md`** (verified topic tables + drift register). Reality check (2026-06-11, drift D1): `TritiumTopics` is consumed only by its own demo/tests — SC, edge, and addons all build topic strings directly, and several `TritiumTopics` builders don't match real traffic (D2-D4). Until a chartered migration makes `TritiumTopics` true, match the protocol doc, not this builder.
 3. **No framework dependencies.** Stay lightweight — Pydantic, PyJWT, paho-mqtt. No FastAPI, no SQLAlchemy.
 4. **Type hints everywhere.** All public functions must have complete type annotations.
 5. **Test after every change.** `pytest tests/` must pass before committing.
