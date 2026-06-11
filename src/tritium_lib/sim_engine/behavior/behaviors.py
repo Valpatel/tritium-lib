@@ -119,8 +119,13 @@ class UnitBehaviors:
 
     def __init__(self, combat_system: CombatSystem) -> None:
         self._combat = combat_system
-        self._last_dodge: dict[str, float] = {}   # target_id -> last dodge time
-        self._last_flank: dict[str, float] = {}   # target_id -> last flank time
+        # Behavior sim clock (G-1): advanced in tick(dt). Dodge/flank
+        # pacing elapses in THIS clock — wall-clock here made hostile
+        # maneuver timing load-dependent, so battles with maneuvering
+        # hostiles were non-deterministic at fast replay.
+        self._sim_time: float = 0.0
+        self._last_dodge: dict[str, float] = {}   # target_id -> last dodge sim-time
+        self._last_flank: dict[str, float] = {}   # target_id -> last flank sim-time
         self._group_rush_ids: set[str] = set()     # currently rushing hostiles
         self._base_speeds: dict[str, float] = {}   # original speeds before rush boost
         self._obstacles = None                      # obstacle geometry for cover-seeking
@@ -205,6 +210,7 @@ class UnitBehaviors:
     def tick(self, dt: float, targets: dict[str, SimulationTarget],
              vision_state=None) -> None:
         """For each active combatant, run its type-specific behavior."""
+        self._sim_time += dt
         friendlies = {
             k: v for k, v in targets.items()
             if v.alliance == "friendly" and v.status in ("active", "idle", "stationary", "arrived")
@@ -574,9 +580,10 @@ class UnitBehaviors:
         # Flanking: lateral offset when facing stationary turret
         self._try_flank(kid, friendlies)
 
-        # Occasional dodge (random perpendicular offset every 2-4 seconds)
+        # Occasional dodge (random perpendicular offset every 2-4 SIM
+        # seconds — wall-clock here broke replay determinism, G-1).
         # Reduced during group rush
-        now = time.time()
+        now = self._sim_time
         last_dodge = self._last_dodge.get(kid.target_id, 0.0)
         dodge_interval = random.uniform(2.0, 4.0)
         if kid.target_id in self._group_rush_ids:
@@ -694,7 +701,7 @@ class UnitBehaviors:
 
         Returns True if flank was applied.
         """
-        now = time.time()
+        now = self._sim_time
         last_flank = self._last_flank.get(hostile.target_id, 0.0)
         if now - last_flank < _FLANK_COOLDOWN:
             return False

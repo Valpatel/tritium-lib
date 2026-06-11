@@ -169,6 +169,7 @@ class UnitMissionSystem:
         self._pending_backstories: set[str] = set()    # target_ids queued for LLM
         self._map_bounds = map_bounds
         self._last_idle_check: float = 0.0
+        self._sim_time: float = 0.0  # advanced in tick(dt) (G-1)
         self._lock = threading.Lock()
         self._backstory_generator = None  # BackstoryGenerator (optional)
         self._router = None  # Callable[[start, end, asset_type, alliance], list]
@@ -210,11 +211,12 @@ class UnitMissionSystem:
 
     def tick(self, dt: float, targets: dict[str, SimulationTarget]) -> None:
         """Called each engine tick. Checks for idle units and reassigns."""
-        import time
-        now = time.monotonic()
-        if now - self._last_idle_check < self.IDLE_CHECK_INTERVAL:
+        # Sim-time idle-check pacing (G-1): monotonic() here made mission
+        # reassignment wall-paced — load-dependent and replay-hostile.
+        self._sim_time += dt
+        if self._sim_time - self._last_idle_check < self.IDLE_CHECK_INTERVAL:
             return
-        self._last_idle_check = now
+        self._last_idle_check = self._sim_time
 
         for tid, t in targets.items():
             if t.status != "active":

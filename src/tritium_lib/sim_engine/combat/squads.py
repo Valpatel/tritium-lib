@@ -99,7 +99,7 @@ class Squad:
     officer_rank: int = 0           # 0 = no officer, 1 = sergeant, 2 = lieutenant
     cohesion: float = 1.0           # 0.0-1.0, drops when leader killed
     last_order: str | None = None   # "advance", "hold", "flank_left", "flank_right", "retreat"
-    order_timestamp: float = 0.0    # monotonic time when last order was issued
+    order_timestamp: float = 0.0    # squad sim-time when last order was issued (G-1)
 
     def get_formation_offsets(self) -> dict[str, tuple[float, float]]:
         """Return per-member (dx, dy) offsets relative to the leader.
@@ -177,6 +177,11 @@ class SquadManager:
 
     def __init__(self) -> None:
         self._squads: dict[str, Squad] = {}
+        # Squad sim clock (G-1): advanced in tick()/tick_orders(). Order
+        # timestamps + expiry elapse in THIS clock — monotonic() here made
+        # squad order refresh wall-paced, which made any battle with
+        # squads non-deterministic at faster-than-real-time replay.
+        self._sim_time: float = 0.0
         # Track original speeds for hold-order restoration
         self._hold_base_speeds: dict[str, float] = {}
         # Pathfinding router callback
@@ -225,7 +230,7 @@ class SquadManager:
         if squad is None:
             return
         squad.last_order = order
-        squad.order_timestamp = _time.monotonic()
+        squad.order_timestamp = self._sim_time
 
     def on_leader_eliminated(self, squad_id: str) -> None:
         """Cascade effects when a squad leader is eliminated.
@@ -239,7 +244,7 @@ class SquadManager:
             return
         squad.cohesion = COHESION_DROP_ON_LEADER_DEATH
         squad.last_order = "retreat"
-        squad.order_timestamp = _time.monotonic()
+        squad.order_timestamp = self._sim_time
 
     def promote_new_leader(
         self,
@@ -293,11 +298,14 @@ class SquadManager:
           3. Apply follower responses (hold=stop, flank=lateral, retreat=flee).
           4. Recover cohesion when a leader is active.
         """
-        now = _time.monotonic()
+        self._sim_time += dt
+        now = self._sim_time
 
         for squad in self._squads.values():
-            # Step 1: Expire stale orders
-            if squad.last_order is not None and squad.order_timestamp > 0:
+            # Step 1: Expire stale orders. last_order alone gates this:
+            # a sim-time stamp of 0.0 (order issued at clock start) is
+            # valid, so no > 0 check (G-1 migration).
+            if squad.last_order is not None:
                 elapsed = now - squad.order_timestamp
                 if elapsed >= ORDER_TIMEOUT_S:
                     # Order expired -- leader AI will issue a new one below
