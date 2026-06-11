@@ -917,6 +917,13 @@ class SimulationTarget:
             "weapon_range": round(self.weapon_range, 1),
             "weapon_cooldown": round(self.weapon_cooldown, 2),
             "last_fired": round(self.last_fired, 3),
+            # Sim-time seconds until the weapon is ready (0 = ready now).
+            # Frontends must use this, not wall-clock math against
+            # last_fired — that arc was dead since shipping (Date.now()
+            # ms vs epoch seconds, now sim seconds).
+            "cooldown_remaining": round(
+                max(0.0, self.weapon_cooldown - (self.sim_time - self.last_fired)), 2
+            ),
             "vision_range": round(self.vision_range, 1),
             "crowd_role": self.crowd_role,
             "drone_variant": self.drone_variant,
