@@ -548,7 +548,8 @@ class TestRetention:
 
     def test_prune_empty_store_no_error(self, store: DossierStore):
         stats = store.prune()
-        assert stats == {"aged_out": 0, "capped_out": 0}
+        assert stats["aged_out"] == 0
+        assert stats["capped_out"] == 0
 
     def test_prune_disabled_with_zero_age(self, store: DossierStore):
         """max_signal_age_s=0 means everything counts as 'too old' for

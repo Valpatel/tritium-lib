@@ -1,13 +1,17 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Tests for DossierStore — CRUD, signals, enrichments, search, merge."""
+"""Tests for DossierStore — CRUD, signals, enrichments, search, merge,
+signal-history retention."""
 
 import time
 
 import pytest
 
+from tritium_lib.store import dossiers as dossiers_mod
 from tritium_lib.store.dossiers import DossierStore
+
+DAY = 86400.0
 
 
 @pytest.fixture
@@ -289,3 +293,259 @@ class TestDossierMerge:
         d1 = store.create_dossier("Real")
         assert store.merge_dossiers(d1, "fake") is False
         assert store.merge_dossiers("fake", d1) is False
+
+
+# ── Signal-history retention (QUESTIONS.md 2026-04-29) ──────────────
+
+def _signal_count(store, dossier_id):
+    d = store.get_dossier(dossier_id)
+    return len(d["signals"])
+
+
+class TestSignalRetentionTTL:
+    """30-day TTL on dossier_signals with VIP/pinned exemption."""
+
+    def test_expired_signals_pruned(self, store):
+        did = store.create_dossier("Stale Device", entity_type="device")
+        now = time.time()
+        store.add_signal(did, "ble", "rssi", {"v": 1}, timestamp=now - 31 * DAY)
+        store.add_signal(did, "ble", "rssi", {"v": 2}, timestamp=now - 90 * DAY)
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 2
+        assert _signal_count(store, did) == 0
+
+    def test_fresh_signals_kept(self, store):
+        did = store.create_dossier("Active Device", entity_type="device")
+        now = time.time()
+        store.add_signal(did, "ble", "rssi", {"v": 1}, timestamp=now - 1.0)
+        store.add_signal(did, "ble", "rssi", {"v": 2}, timestamp=now - 29 * DAY)
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 0
+        assert _signal_count(store, did) == 2
+
+    def test_vip_tagged_dossier_immune_at_any_age(self, store):
+        """Dossiers carrying the 'vip' tag keep signals forever."""
+        did = store.create_dossier(
+            "Person of Interest", entity_type="person", tags=["vip"],
+        )
+        now = time.time()
+        for age_days in (31, 90, 365, 3650):
+            store.add_signal(
+                did, "ble", "presence", {"age": age_days},
+                timestamp=now - age_days * DAY,
+            )
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 0
+        assert _signal_count(store, did) == 4
+
+    def test_vip_tag_added_later_exempts(self, store):
+        """Tagging an existing dossier 'vip' protects its history."""
+        did = store.create_dossier("Upgraded", entity_type="person")
+        now = time.time()
+        store.add_signal(did, "ble", "presence", {}, timestamp=now - 60 * DAY)
+        store._update_json_field(did, "tags", ["surveillance", "vip"])
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 0
+        assert _signal_count(store, did) == 1
+
+    def test_pinned_flag_exempts(self, store):
+        did = store.create_dossier("Pinned", entity_type="person")
+        store.set_pinned(did, True)
+        now = time.time()
+        store.add_signal(did, "ble", "presence", {}, timestamp=now - 400 * DAY)
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 0
+        assert _signal_count(store, did) == 1
+
+    def test_unpinned_neighbor_still_pruned(self, store):
+        """VIP exemption is per-dossier, not global."""
+        vip = store.create_dossier("VIP", tags=["vip"])
+        normie = store.create_dossier("Normie")
+        now = time.time()
+        store.add_signal(vip, "ble", "presence", {}, timestamp=now - 60 * DAY)
+        store.add_signal(normie, "ble", "presence", {}, timestamp=now - 60 * DAY)
+
+        stats = store.prune(now=now)
+        assert stats["aged_out"] == 1
+        assert _signal_count(store, vip) == 1
+        assert _signal_count(store, normie) == 0
+
+
+class TestSignalRetentionBatching:
+    """prune() drains in bounded batches — no multi-second lock holds."""
+
+    def test_single_call_drains_multiple_batches(self):
+        s = DossierStore(":memory:", prune_batch_size=10)
+        try:
+            did = s.create_dossier("Chatty", entity_type="device")
+            now = time.time()
+            for i in range(25):  # > 2 batches of 10
+                s.add_signal(did, "ble", "rssi", {"i": i},
+                             timestamp=now - 60 * DAY)
+            s.add_signal(did, "ble", "rssi", {"fresh": True},
+                         timestamp=now - 1.0)
+
+            stats = s.prune(now=now)
+            assert stats["aged_out"] == 25
+            assert stats["batches"] >= 3
+            assert _signal_count(s, did) == 1
+        finally:
+            s.close()
+
+    def test_batch_size_call_override(self, store):
+        did = store.create_dossier("Chatty", entity_type="device")
+        now = time.time()
+        for i in range(12):
+            store.add_signal(did, "ble", "rssi", {"i": i},
+                             timestamp=now - 60 * DAY)
+
+        stats = store.prune(now=now, batch_size=5)
+        assert stats["aged_out"] == 12
+        assert stats["batches"] >= 3
+        assert _signal_count(store, did) == 0
+
+    def test_prune_safe_to_repeat(self, store):
+        did = store.create_dossier("Once", entity_type="device")
+        now = time.time()
+        store.add_signal(did, "ble", "rssi", {}, timestamp=now - 60 * DAY)
+
+        first = store.prune(now=now)
+        second = store.prune(now=now)
+        assert first["aged_out"] == 1
+        assert second["aged_out"] == 0
+        assert second["capped_out"] == 0
+
+    def test_vacuum_off_by_default(self, store):
+        stats = store.prune()
+        assert stats["vacuumed"] is False
+
+    def test_vacuum_flag_runs_vacuum(self, tmp_path):
+        s = DossierStore(tmp_path / "dossiers.db")
+        try:
+            did = s.create_dossier("Bulky", entity_type="device")
+            now = time.time()
+            for i in range(50):
+                s.add_signal(did, "ble", "rssi", {"i": i, "pad": "x" * 256},
+                             timestamp=now - 60 * DAY)
+            stats = s.prune(now=now, vacuum=True)
+            assert stats["aged_out"] == 50
+            assert stats["vacuumed"] is True
+        finally:
+            s.close()
+
+
+class TestSignalRetentionConfig:
+    """TTL config: constructor param > env override > module default."""
+
+    def test_module_default_30_days(self):
+        assert dossiers_mod.DEFAULT_SIGNAL_TTL_DAYS == 30.0
+        s = DossierStore(":memory:")
+        try:
+            assert s.signal_ttl_days == 30.0
+        finally:
+            s.close()
+
+    def test_constructor_ttl_override(self):
+        s = DossierStore(":memory:", signal_ttl_days=7)
+        try:
+            did = s.create_dossier("Short-lived")
+            now = time.time()
+            s.add_signal(did, "ble", "rssi", {}, timestamp=now - 8 * DAY)
+            s.add_signal(did, "ble", "rssi", {}, timestamp=now - 6 * DAY)
+
+            stats = s.prune(now=now)
+            assert stats["aged_out"] == 1
+            assert _signal_count(s, did) == 1
+        finally:
+            s.close()
+
+    def test_env_override_honored(self, monkeypatch):
+        monkeypatch.setenv("TRITIUM_DOSSIER_SIGNAL_TTL_DAYS", "1")
+        s = DossierStore(":memory:")
+        try:
+            assert s.signal_ttl_days == 1.0
+            did = s.create_dossier("Ephemeral")
+            now = time.time()
+            s.add_signal(did, "ble", "rssi", {}, timestamp=now - 2 * DAY)
+            s.add_signal(did, "ble", "rssi", {}, timestamp=now - 3600.0)
+
+            stats = s.prune(now=now)
+            assert stats["aged_out"] == 1
+            assert _signal_count(s, did) == 1
+        finally:
+            s.close()
+
+    def test_constructor_beats_env(self, monkeypatch):
+        monkeypatch.setenv("TRITIUM_DOSSIER_SIGNAL_TTL_DAYS", "1")
+        s = DossierStore(":memory:", signal_ttl_days=100)
+        try:
+            assert s.signal_ttl_days == 100.0
+            did = s.create_dossier("Long-lived")
+            now = time.time()
+            s.add_signal(did, "ble", "rssi", {}, timestamp=now - 2 * DAY)
+
+            stats = s.prune(now=now)
+            assert stats["aged_out"] == 0
+        finally:
+            s.close()
+
+    def test_garbage_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("TRITIUM_DOSSIER_SIGNAL_TTL_DAYS", "not-a-number")
+        s = DossierStore(":memory:")
+        try:
+            assert s.signal_ttl_days == dossiers_mod.DEFAULT_SIGNAL_TTL_DAYS
+        finally:
+            s.close()
+
+    def test_explicit_age_kwarg_still_wins(self):
+        """SC's DossierManager passes max_signal_age_s explicitly —
+        the legacy kwarg must override the configured TTL."""
+        s = DossierStore(":memory:", signal_ttl_days=1)
+        try:
+            did = s.create_dossier("Legacy caller")
+            now = time.time()
+            s.add_signal(did, "ble", "rssi", {}, timestamp=now - 2 * DAY)
+
+            stats = s.prune(now=now, max_signal_age_s=10 * DAY)
+            assert stats["aged_out"] == 0
+        finally:
+            s.close()
+
+
+class TestMaybePrune:
+    """maybe_prune() — auto-prune hook, internally rate-limited."""
+
+    def test_first_call_prunes(self, store):
+        did = store.create_dossier("Old", entity_type="device")
+        now = time.time()
+        store.add_signal(did, "ble", "rssi", {}, timestamp=now - 60 * DAY)
+
+        stats = store.maybe_prune(now=now)
+        assert stats is not None
+        assert stats["aged_out"] == 1
+
+    def test_rate_limited_within_interval(self, store):
+        now = time.time()
+        assert store.maybe_prune(now=now) is not None
+        assert store.maybe_prune(now=now + 10.0) is None
+        assert store.maybe_prune(now=now + 3599.0) is None
+
+    def test_runs_again_after_interval(self, store):
+        now = time.time()
+        assert store.maybe_prune(now=now) is not None
+        assert store.maybe_prune(now=now + 3601.0) is not None
+
+    def test_interval_configurable(self):
+        s = DossierStore(":memory:", maybe_prune_interval_s=5.0)
+        try:
+            now = time.time()
+            assert s.maybe_prune(now=now) is not None
+            assert s.maybe_prune(now=now + 1.0) is None
+            assert s.maybe_prune(now=now + 6.0) is not None
+        finally:
+            s.close()

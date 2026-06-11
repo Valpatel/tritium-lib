@@ -12,11 +12,30 @@ standalone tool) can instantiate this with a path to a SQLite database file.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 
 from .base import BaseStore
+
+# ---------------------------------------------------------------------------
+# Retention defaults (QUESTIONS.md 2026-04-29 — dossiers.db hit 5.3 GB with a
+# ~50 GB/90-day trajectory on the old dev box; dossier_signals is the
+# high-volume table).  Override per-instance via constructor params, or
+# globally via the TRITIUM_DOSSIER_SIGNAL_TTL_DAYS environment variable.
+# ---------------------------------------------------------------------------
+
+DEFAULT_SIGNAL_TTL_DAYS: float = 30.0
+DEFAULT_PRUNE_BATCH_SIZE: int = 1000
+DEFAULT_MAYBE_PRUNE_INTERVAL_S: float = 3600.0
+ENV_SIGNAL_TTL_DAYS = "TRITIUM_DOSSIER_SIGNAL_TTL_DAYS"
+
+#: Tag that exempts a dossier from the signal TTL, equivalent to pinned=1.
+VIP_TAG = "vip"
+
+_DAY_S = 86400.0
 
 # ---------------------------------------------------------------------------
 # SQL schemas
@@ -136,14 +155,24 @@ class DossierStore(BaseStore):
     represent real-world entities.  Supports full-text search, identifier
     lookup, and merging of duplicate dossiers.
 
-    Retention policy (Gap-fix C M-8)
-    --------------------------------
-    Dossiers are unbounded by default; callers should periodically invoke
-    :meth:`prune` (or use ``DossierManager``'s hourly prune job) to:
-      * Drop ``dossier_signals`` older than 30 days for any dossier that
-        is **not** ``pinned``.
-      * Cap signals per dossier at 10000 — drop the oldest first.
-    Pinned dossiers (``pinned = 1``) keep all signals indefinitely.
+    Retention policy (Gap-fix C M-8, hardened per QUESTIONS.md 2026-04-29)
+    ----------------------------------------------------------------------
+    ``dossier_signals`` is the high-volume table (5.3 GB observed on the
+    old dev box, ~50 GB/90-day trajectory).  Signal rows carry a TTL
+    (default 30 days); callers should periodically invoke :meth:`prune`
+    — or call :meth:`maybe_prune` from write paths, which self-limits to
+    roughly once per hour — to:
+      * Drop ``dossier_signals`` older than the TTL for any dossier that
+        is **not** exempt.  A dossier is exempt when ``pinned = 1`` OR it
+        carries the ``'vip'`` tag — VIP dossiers keep signals forever.
+      * Cap signals per dossier at 10000 — drop the oldest first.  The
+        cap applies to all dossiers, including pinned/VIP ones.
+    Deletes run in bounded batches (default 1000 rows per transaction) so
+    the writer lock is never held for multi-second stretches.
+
+    TTL resolution order: explicit constructor param > the
+    ``TRITIUM_DOSSIER_SIGNAL_TTL_DAYS`` environment variable > the
+    module default ``DEFAULT_SIGNAL_TTL_DAYS`` (30).
     """
 
     _SCHEMAS = (
@@ -154,6 +183,53 @@ class DossierStore(BaseStore):
         _SCHEMA_FTS_TRIGGERS,
     )
     _FOREIGN_KEYS = True
+
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        signal_ttl_days: float | None = None,
+        prune_batch_size: int | None = None,
+        maybe_prune_interval_s: float | None = None,
+    ) -> None:
+        """Open (or create) the dossier database.
+
+        Parameters
+        ----------
+        db_path:
+            Path to the SQLite file, or ``":memory:"`` for ephemeral use.
+        signal_ttl_days:
+            Signal-row TTL in days.  ``None`` (default) reads the
+            ``TRITIUM_DOSSIER_SIGNAL_TTL_DAYS`` env var, falling back to
+            :data:`DEFAULT_SIGNAL_TTL_DAYS`.
+        prune_batch_size:
+            Maximum rows deleted per transaction inside :meth:`prune`.
+            Defaults to :data:`DEFAULT_PRUNE_BATCH_SIZE`.
+        maybe_prune_interval_s:
+            Minimum seconds between effective :meth:`maybe_prune` runs.
+            Defaults to :data:`DEFAULT_MAYBE_PRUNE_INTERVAL_S` (1 hour).
+        """
+        if signal_ttl_days is None:
+            raw = os.environ.get(ENV_SIGNAL_TTL_DAYS)
+            if raw is not None:
+                try:
+                    signal_ttl_days = float(raw)
+                except ValueError:
+                    signal_ttl_days = None  # garbage env → module default
+        self.signal_ttl_days: float = float(
+            signal_ttl_days if signal_ttl_days is not None
+            else DEFAULT_SIGNAL_TTL_DAYS
+        )
+        self.prune_batch_size: int = int(
+            prune_batch_size if prune_batch_size is not None
+            else DEFAULT_PRUNE_BATCH_SIZE
+        )
+        self.maybe_prune_interval_s: float = float(
+            maybe_prune_interval_s if maybe_prune_interval_s is not None
+            else DEFAULT_MAYBE_PRUNE_INTERVAL_S
+        )
+        self._last_maybe_prune: float = 0.0
+        super().__init__(db_path)
 
     def _create_tables(self) -> None:  # noqa: D401 — override
         """Run schema creation, then any column-level migrations."""
@@ -558,17 +634,28 @@ class DossierStore(BaseStore):
     def prune(
         self,
         *,
-        max_signal_age_s: float = 30 * 86400.0,   # 30 days
+        max_signal_age_s: float | None = None,
         max_signals_per_dossier: int = 10000,
+        batch_size: int | None = None,
+        vacuum: bool = False,
         now: float | None = None,
     ) -> dict:
         """Apply the retention policy to dossier_signals.
 
-        Rules (Gap-fix C M-8):
-          * Drop signals older than ``max_signal_age_s`` for any dossier
-            with ``pinned = 0``.  Pinned dossiers keep all signals.
+        Rules (Gap-fix C M-8 + QUESTIONS.md 2026-04-29):
+          * Drop signals older than the TTL for any dossier that is not
+            exempt.  Exempt = ``pinned = 1`` OR tagged ``'vip'`` —
+            VIP/pinned dossiers keep all signals at any age.
           * Cap each dossier's signal count at ``max_signals_per_dossier``;
-            when exceeded, drop the oldest first.
+            when exceeded, drop the oldest first.  The cap applies to all
+            dossiers, including pinned/VIP ones.
+
+        Deletes run in bounded batches: each batch is its own short
+        transaction and the writer lock is released between batches, so
+        concurrent ``add_signal`` calls are never blocked for multi-second
+        stretches even when draining millions of expired rows.  The method
+        is idempotent — safe to call repeatedly; a second call on a
+        drained store deletes nothing.
 
         Enrichments and the dossier rows themselves are never deleted —
         only signals, which are the high-volume contributor to growth
@@ -577,38 +664,72 @@ class DossierStore(BaseStore):
         Parameters
         ----------
         max_signal_age_s:
-            Maximum signal age in seconds.  Defaults to 30 days.
+            Maximum signal age in seconds.  ``None`` (default) uses the
+            configured ``signal_ttl_days``.  An explicit value (e.g. from
+            SC's DossierManager) always wins over the configured TTL.
         max_signals_per_dossier:
             Hard cap on per-dossier signal count.  Defaults to 10000.
+        batch_size:
+            Max rows deleted per transaction.  ``None`` uses the
+            configured ``prune_batch_size``.
+        vacuum:
+            When True, run ``VACUUM`` after pruning to return freed pages
+            to the filesystem.  Expensive (rewrites the whole database
+            file) — off by default; the caller opts in explicitly, e.g.
+            during scheduled maintenance windows.
         now:
             Override the wall-clock anchor (used in tests).  Defaults to
             ``time.time()``.
 
         Returns
         -------
-        dict with ``aged_out`` (count from age-based prune) and
-        ``capped_out`` (count from per-dossier cap) — useful for
-        instrumentation and logging.
+        dict with ``aged_out`` (count from age-based prune),
+        ``capped_out`` (count from per-dossier cap), ``batches``
+        (delete transactions executed), and ``vacuumed`` (bool) — useful
+        for instrumentation and logging.
         """
         anchor = now if now is not None else time.time()
-        cutoff = anchor - max_signal_age_s
+        ttl_s = (
+            max_signal_age_s if max_signal_age_s is not None
+            else self.signal_ttl_days * _DAY_S
+        )
+        cutoff = anchor - ttl_s
+        batch = max(1, int(batch_size if batch_size is not None
+                           else self.prune_batch_size))
 
         aged_out = 0
         capped_out = 0
-        with self._lock:
-            # 1) Age-based prune for unpinned dossiers
-            cur = self._conn.execute(
-                """DELETE FROM dossier_signals
-                   WHERE timestamp < ?
-                     AND dossier_id IN (
-                         SELECT dossier_id FROM dossiers WHERE pinned = 0
-                     )""",
-                (cutoff,),
-            )
-            aged_out = cur.rowcount or 0
+        batches = 0
 
-            # 2) Per-dossier signal-count cap
-            #    Find dossiers exceeding the cap, then trim each.
+        # 1) Age-based prune for non-exempt dossiers, in bounded batches.
+        #    Exempt = pinned flag OR 'vip' present in the tags JSON array.
+        while True:
+            with self._lock:
+                cur = self._conn.execute(
+                    """DELETE FROM dossier_signals
+                       WHERE signal_id IN (
+                           SELECT s.signal_id
+                           FROM dossier_signals s
+                           JOIN dossiers d ON d.dossier_id = s.dossier_id
+                           WHERE s.timestamp < ?
+                             AND d.pinned = 0
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM json_each(d.tags)
+                                 WHERE json_each.value = ?
+                             )
+                           LIMIT ?
+                       )""",
+                    (cutoff, VIP_TAG, batch),
+                )
+                n = cur.rowcount or 0
+                self._conn.commit()
+            aged_out += n
+            batches += 1
+            if n < batch:
+                break
+
+        # 2) Per-dossier signal-count cap (applies to pinned/VIP too).
+        with self._lock:
             over_cap = self._conn.execute(
                 """SELECT dossier_id, COUNT(*) AS n
                    FROM dossier_signals
@@ -617,24 +738,73 @@ class DossierStore(BaseStore):
                 (max_signals_per_dossier,),
             ).fetchall()
 
-            for row in over_cap:
-                dossier_id = row["dossier_id"]
-                excess = row["n"] - max_signals_per_dossier
-                if excess <= 0:
-                    continue
-                # Delete the ``excess`` oldest signals for this dossier.
-                cur = self._conn.execute(
-                    """DELETE FROM dossier_signals
-                       WHERE signal_id IN (
-                           SELECT signal_id FROM dossier_signals
-                           WHERE dossier_id = ?
-                           ORDER BY timestamp ASC
-                           LIMIT ?
-                       )""",
-                    (dossier_id, excess),
-                )
-                capped_out += cur.rowcount or 0
+        for row in over_cap:
+            dossier_id = row["dossier_id"]
+            remaining = row["n"] - max_signals_per_dossier
+            while remaining > 0:
+                chunk = min(remaining, batch)
+                with self._lock:
+                    cur = self._conn.execute(
+                        """DELETE FROM dossier_signals
+                           WHERE signal_id IN (
+                               SELECT signal_id FROM dossier_signals
+                               WHERE dossier_id = ?
+                               ORDER BY timestamp ASC
+                               LIMIT ?
+                           )""",
+                        (dossier_id, chunk),
+                    )
+                    n = cur.rowcount or 0
+                    self._conn.commit()
+                capped_out += n
+                batches += 1
+                remaining -= n
+                if n == 0:
+                    break  # row vanished underneath us — don't spin
 
-            self._conn.commit()
+        vacuumed = False
+        if vacuum:
+            with self._lock:
+                self._conn.commit()  # VACUUM refuses to run mid-transaction
+                self._conn.execute("VACUUM")
+            vacuumed = True
 
-        return {"aged_out": aged_out, "capped_out": capped_out}
+        return {
+            "aged_out": aged_out,
+            "capped_out": capped_out,
+            "batches": batches,
+            "vacuumed": vacuumed,
+        }
+
+    def maybe_prune(self, *, now: float | None = None) -> dict | None:
+        """Run :meth:`prune` if enough time has passed; otherwise no-op.
+
+        Internally rate-limited to one effective run per
+        ``maybe_prune_interval_s`` (default 1 hour), so write paths can
+        call it unconditionally after every ``add_signal`` burst without
+        paying the prune cost on each call.
+
+        Integration point for SC (do not wire here): SC's
+        ``DossierManager`` currently schedules ``store.prune(...)`` from
+        its own hourly ``_maybe_prune`` job.  Any other store writer
+        (router, plugin, ingest worker) that bypasses DossierManager can
+        simply call ``store.maybe_prune()`` after writing — double
+        rate-limiting is harmless because the prune itself is idempotent.
+
+        Parameters
+        ----------
+        now:
+            Override the wall-clock anchor (used in tests).  Defaults to
+            ``time.time()``.
+
+        Returns
+        -------
+        The :meth:`prune` stats dict when a prune ran, or ``None`` when
+        rate-limited.
+        """
+        anchor = now if now is not None else time.time()
+        with self._lock:
+            if anchor - self._last_maybe_prune < self.maybe_prune_interval_s:
+                return None
+            self._last_maybe_prune = anchor
+        return self.prune(now=anchor)
