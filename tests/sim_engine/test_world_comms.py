@@ -39,18 +39,20 @@ class TestSignal:
             sender_alliance="friendly",
             position=(10.0, 20.0),
         )
-        assert not sig.expired
+        assert not sig.is_expired(now=0.0)
 
     def test_expired_after_ttl(self):
+        # Sim-time expiry (G-5): TTLs elapse in the comms sim clock
         sig = Signal(
             signal_type="distress",
             sender_id="unit_1",
             sender_alliance="friendly",
             position=(10.0, 20.0),
-            created_at=time.time() - 20.0,  # 20 seconds ago
+            created_at=0.0,
             ttl=10.0,
         )
-        assert sig.expired
+        assert sig.is_expired(now=20.0)
+        assert not sig.is_expired(now=5.0)
 
 
 class TestMessage:
@@ -62,17 +64,17 @@ class TestMessage:
             content="hello",
             position=(0.0, 0.0),
         )
-        assert not msg.expired
+        assert not msg.is_expired(now=0.0)
 
     def test_expired_after_ttl(self):
         msg = Message(
             sender_id="unit_1",
             content="hello",
             position=(0.0, 0.0),
-            created_at=time.time() - 20.0,
+            created_at=0.0,
             ttl=5.0,
         )
-        assert msg.expired
+        assert msg.is_expired(now=20.0)
 
 
 class TestUnitComms:
@@ -153,8 +155,8 @@ class TestUnitComms:
             "distress", "u1", "friendly", (10.0, 10.0),
             ttl=0.0,
         )
-        # Force the created_at to be in the past
-        comms._signals[0].created_at = time.time() - 1.0
+        # Backdate in SIM time (comms clock starts at 0; G-5)
+        comms._signals[0].created_at = -1.0
         comms.tick(0.1, {})
         assert len(comms.get_all_signals()) == 0
 

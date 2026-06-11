@@ -72,7 +72,10 @@ class SensorSimulator:
         """Check all sensors against target positions.  Called from engine tick."""
         import math
 
-        now = time.monotonic()
+        # Sensor debounce in sim time (G-5): monotonic() made trigger
+        # debouncing load-dependent and replay-hostile.
+        self._sim_time = getattr(self, "_sim_time", 0.0) + dt
+        now = self._sim_time
 
         for sensor in self._sensors:
             nearby = []

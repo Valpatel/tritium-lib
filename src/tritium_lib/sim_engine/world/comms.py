@@ -45,13 +45,14 @@ class Signal:
     sender_alliance: str
     position: tuple[float, float]
     target_position: tuple[float, float] | None = None  # where the threat/contact is
-    created_at: float = field(default_factory=time.time)
+    created_at: float = 0.0  # UnitComms sim-time (G-5: was wall-clock)
     ttl: float = _DEFAULT_TTL
     signal_range: float = _DEFAULT_RANGE
 
-    @property
-    def expired(self) -> bool:
-        return time.time() - self.created_at > self.ttl
+    def is_expired(self, now: float) -> bool:
+        """Expiry in the comms sim clock — wall-clock TTLs made unit
+        coordination load-dependent and replay-hostile (G-5)."""
+        return now - self.created_at > self.ttl
 
 
 @dataclass
@@ -61,13 +62,12 @@ class Message:
     sender_id: str
     content: str
     position: tuple[float, float]
-    created_at: float = field(default_factory=time.time)
+    created_at: float = 0.0  # UnitComms sim-time (G-5: was wall-clock)
     ttl: float = _DEFAULT_TTL
     msg_range: float = _DEFAULT_RANGE
 
-    @property
-    def expired(self) -> bool:
-        return time.time() - self.created_at > self.ttl
+    def is_expired(self, now: float) -> bool:
+        return now - self.created_at > self.ttl
 
 
 class UnitComms:
@@ -77,6 +77,9 @@ class UnitComms:
         self._signals: list[Signal] = []
         self._messages: list[Message] = []
         self._event_bus = event_bus
+        # Comms sim clock (G-5): advanced in tick(dt); signal/message
+        # TTLs elapse in this clock, never wall-clock.
+        self._sim_time: float = 0.0
 
     def send(self, sender_id: str, content: str, position: tuple[float, float]) -> Message:
         """Send a simple message from a unit.
@@ -89,7 +92,8 @@ class UnitComms:
         Returns:
             The created Message.
         """
-        msg = Message(sender_id=sender_id, content=content, position=position)
+        msg = Message(sender_id=sender_id, content=content, position=position,
+                      created_at=self._sim_time)
         self._messages.append(msg)
         return msg
 
@@ -105,7 +109,7 @@ class UnitComms:
         """
         results = []
         for msg in self._messages:
-            if msg.expired:
+            if msg.is_expired(self._sim_time):
                 continue
             if msg.sender_id == receiver_id:
                 continue
@@ -135,6 +139,7 @@ class UnitComms:
             target_position=target_position,
             signal_range=signal_range,
             ttl=ttl,
+            created_at=self._sim_time,
         )
         self._signals.append(sig)
         # Publish to EventBus for frontend consumption
@@ -198,7 +203,7 @@ class UnitComms:
         """
         results = []
         for sig in self._signals:
-            if sig.expired:
+            if sig.is_expired(self._sim_time):
                 continue
             if sig.sender_alliance != unit.alliance:
                 continue
@@ -234,12 +239,13 @@ class UnitComms:
 
     def get_all_signals(self) -> list[Signal]:
         """Return all non-expired signals."""
-        return [s for s in self._signals if not s.expired]
+        return [s for s in self._signals if not s.is_expired(self._sim_time)]
 
     def tick(self, dt: float, targets: dict[str, SimulationTarget]) -> None:
-        """Remove expired signals and messages."""
-        self._signals = [s for s in self._signals if not s.expired]
-        self._messages = [m for m in self._messages if not m.expired]
+        """Advance the comms clock; remove expired signals/messages."""
+        self._sim_time += dt
+        self._signals = [s for s in self._signals if not s.is_expired(self._sim_time)]
+        self._messages = [m for m in self._messages if not m.is_expired(self._sim_time)]
 
     def reset(self) -> None:
         """Clear all signals and messages."""
