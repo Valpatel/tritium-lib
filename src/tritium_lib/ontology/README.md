@@ -6,9 +6,26 @@
 
 ## What This Is
 
-The ontology defines the semantic type system for all entities and relationships in Tritium. It provides typed definitions for entity types (device, person, vehicle, location, network), relationship types (carries, detected_with, traveled_with), interfaces, and properties. The OntologyRegistry provides runtime lookup, validation, and schema enforcement.
+The ontology package defines a typed VIEW of Tritium's semantic layer:
+10 entity types (`device`, `mesh_node`, `edge_unit`, `sighting`,
+`track`, `chat_message`, `command`, `classification`, `investigation`,
+`zone`), 12 relationship types (`detected_by`, `sighting_of`,
+`part_of_track`, `connected_to`, `mesh_peer`, `managed_by`,
+`located_at`, `within_zone`, `classified_as`, `related_to`,
+`subject_of`, `sent_by`), and 3 interfaces (`trackable`,
+`identifiable`, `classifiable`). The OntologyRegistry provides runtime
+lookup and validation.
 
-This is the semantic backbone — every object that flows through MQTT, gets stored in SQLite, or appears on a dashboard is an instance of an ontology entity type.
+**Honesty note (2026-06-11, ontology study):** the CANONICAL semantic
+layer is `tritium_lib/models/` (the Pydantic contracts every consumer
+imports) — this package is a typed view that is not yet derived from
+it, and `OntologyRegistry.validate_entity` has no production callers
+today. The live `/api/v1/ontology` router carries its own third
+vocabulary. Reconciliation (derive-vs-retire) is charter-proposed in
+`docs/QUESTIONS.md`; see
+`docs/research/ontology-principles-palantir.md` §2.1. This README
+previously advertised entity types (`person`, `vehicle`) and
+relationships (`carries`) that never existed in `schema.py`.
 
 ## Key Files
 
@@ -27,7 +44,7 @@ registry = OntologyRegistry()
 registry.load_schema(TRITIUM_ONTOLOGY)
 
 device_type = registry.get_entity_type("device")
-carries_rel = registry.get_relationship_type("carries")
+related_rel = registry.get_relationship_type("related_to")
 ```
 
 ## Related

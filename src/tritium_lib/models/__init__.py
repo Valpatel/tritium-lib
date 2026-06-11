@@ -5,6 +5,15 @@
 
 These models are the contract between tritium-sc and tritium-edge.
 Any device that speaks the Tritium protocol uses these types.
+
+SEMANTIC-LAYER DOCTRINE (ontology study, 2026-06-11): this package IS
+Tritium's semantic layer — the single typed vocabulary of objects and
+properties (104 modules, Pydantic v2). The `tritium_lib.ontology`
+package and the SC `/api/v1/ontology` router schema are VIEWS of this
+layer; where they drift from these models, these models win, and the
+views must be derived or retired (reconciliation is charter-proposed
+in the parent repo's docs/QUESTIONS.md). New entity concepts land
+HERE first. See docs/research/ontology-principles-palantir.md.
 """
 
 from .device import Device, DeviceGroup, DeviceHeartbeat, DeviceCapabilities
