@@ -155,6 +155,10 @@ class DossierStore(BaseStore):
     represent real-world entities.  Supports full-text search, identifier
     lookup, and merging of duplicate dossiers.
 
+    Doctrine (ontology study §2.2/§2.8): the tracker is a read model; the
+    dossier store is the edits layer; they join on deterministic target IDs
+    (``ble_{mac}`` etc.) so re-detected entities reattach to their history.
+
     Retention policy (Gap-fix C M-8, hardened per QUESTIONS.md 2026-04-29)
     ----------------------------------------------------------------------
     ``dossier_signals`` is the high-volume table (5.3 GB observed on the

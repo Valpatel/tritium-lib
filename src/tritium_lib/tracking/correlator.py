@@ -10,6 +10,14 @@ targets are merged and a TargetDossier is created/updated in DossierStore
 for persistent identity.
 
 Optionally writes entity nodes and relationship edges into a graph store.
+
+Doctrine (ontology study §2.3, charter-proposed in
+docs/research/ontology-principles-palantir.md and docs/QUESTIONS.md):
+correlation today is a destructive merge — the losing target is removed
+from the tracker. The proposed end-state is link-plus-survivor: a typed
+CORRELATED_WITH edge with the existing explanation string as evidence,
+the secondary ID kept resolvable, and the merge dissolvable. Correlation
+output should be data, not deletion.
 """
 
 from __future__ import annotations

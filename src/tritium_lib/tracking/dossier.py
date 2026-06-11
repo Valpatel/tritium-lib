@@ -64,6 +64,10 @@ class DossierStore:
 
     Provides O(1) lookup by either dossier UUID or signal ID (MAC address,
     detection ID, etc.).
+
+    Doctrine (ontology study §2.2/§2.8): the tracker is a read model; the
+    dossier store is the edits layer; they join on deterministic target IDs
+    (``ble_{mac}`` etc.) so re-detected entities reattach to their history.
     """
 
     def __init__(self) -> None:
