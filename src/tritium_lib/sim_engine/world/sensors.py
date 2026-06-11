@@ -28,7 +28,10 @@ class SensorDevice:
     position: tuple[float, float]  # (x, z) in local meters
     radius: float
     active: bool = False
-    last_triggered: float = 0.0
+    # -1e9 = never-triggered sentinel (sim clock starts at 0; a 0.0
+    # default would debounce away the FIRST trigger — same class as
+    # SimulationTarget.last_fired, G-1/G-5)
+    last_triggered: float = -1e9
     triggered_by: str = ""
 
 
