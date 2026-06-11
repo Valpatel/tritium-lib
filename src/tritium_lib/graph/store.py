@@ -1,6 +1,10 @@
 """
 TritiumGraph — Embedded graph database for the Tritium ontology layer.
 
+SHELFWARE — DO NOT BUILD AGAINST. Not wired to any live API; see the
+package docstring (``tritium_lib/graph/__init__.py``) for the full
+disposition. New code must not depend on this module.
+
 Uses KuzuDB (embedded, single-file, Cypher queries) to model entities
 and relationships discovered by the Tritium sensor network.
 

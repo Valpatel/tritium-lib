@@ -1,5 +1,11 @@
 """Tritium graph database layer — embedded KuzuDB ontology store.
 
+SHELFWARE — DO NOT BUILD AGAINST
+--------------------------------
+New code must not take a dependency on this package. It is not wired
+to any live API and no work is scheduled to wire it; anything built
+on top inherits an unintegrated backend. (Master Plan P1 step 8.)
+
 Status (Wave B item B-2 — truth-in-advertising)
 -----------------------------------------------
 This package is **shelfware**.  ``TritiumGraph`` (see ``store.py``) is a

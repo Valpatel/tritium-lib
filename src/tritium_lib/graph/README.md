@@ -4,6 +4,11 @@
 
 **Parent:** [../](../) | [../../../CLAUDE.md](../../../CLAUDE.md)
 
+> **SHELFWARE — DO NOT BUILD AGAINST.** Not wired to any live API
+> (`/api/v1/ontology/*` is an in-memory adapter, not this). No work is
+> scheduled to wire it. New code must not depend on this package. See
+> `__init__.py` for the full disposition. (Master Plan P1 step 8.)
+
 ## What This Is
 
 Embedded graph database layer using KuzuDB for modeling entities and relationships discovered by the Tritium sensor network. Stores the ontology as a property graph: nodes are targets (Person, Device, Vehicle, Location, Network, Camera, MeshNode, Zone) and edges are relationships (CARRIES, DETECTED_WITH, TRAVELED_WITH, CONNECTED_TO, etc.).

@@ -3,6 +3,14 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """Data anonymization utilities for privacy compliance.
 
+DISPOSITION (Master Plan P1 step 8, recorded 2026-06-11): this module
+is NOT shelfware — do not delete. It is the lawful-scope enforcement
+mechanism for doctrine 4: from the first live sensor (Phase 3),
+non-participant identifiers are pseudonymized by default; participants
+opt *in* to raw tracking, neighbors never have to opt out. **Wiring
+into the live ingest path is chartered Phase 3 work.** Until then it
+is intentionally dormant, kept tested, and waiting for its consumer.
+
 Provides :class:`Anonymizer` which strips PII (personally identifiable
 information) from target data, hashes identifiers for pseudonymization,
 and redacts sensitive fields.
