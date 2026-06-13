@@ -569,6 +569,18 @@ class SimulationTarget:
     _collision_check: Callable[[float, float], bool] | None = field(
         default=None, repr=False
     )
+    # SWEPT building check: callable(list[(x,y)]) -> True if the polyline
+    # crosses a building (segment-vs-polygon, not just an endpoint sample).
+    # Set alongside _collision_check; when present the per-tick move check
+    # is the EXACT segment test (kills tunneling + corner-edge clips that a
+    # destination-point sample misses). Falls back to sub-sampling the
+    # point check when absent.
+    _segment_collision_check: Callable[
+        [list[tuple[float, float]]], bool] | None = field(
+        default=None, repr=False
+    )
+    # Sub-sample spacing (m) for the point-check fallback swept test.
+    _SWEEP_SAMPLE_M: float = field(default=0.5, repr=False)
 
     # Types that fly over buildings (exempt from collision)
     _FLYING_TYPES: tuple[str, ...] = field(
@@ -667,6 +679,42 @@ class SimulationTarget:
             return
         self._collision_check = check
 
+    def set_segment_collision_check(
+        self,
+        check: Callable[[list[tuple[float, float]]], bool] | None,
+    ) -> None:
+        """Set the SWEPT building checker (e.g. BuildingObstacles.
+        path_crosses_building). Flying units stay exempt — their
+        point-check is already height-gated by set_collision_check."""
+        if self.asset_type in self._FLYING_TYPES:
+            return
+        self._segment_collision_check = check
+
+    def _move_blocked(self, ax: float, ay: float,
+                      bx: float, by: float) -> bool:
+        """True if MOVING from (ax,ay) to (bx,by) would enter a building.
+
+        Swept, not point-sampled: uses the exact segment-vs-polygon check
+        when available, else sub-samples the segment with the point check
+        at <=_SWEEP_SAMPLE_M spacing. Either way a fast step or a chord
+        that starts and ends outside a thin wall but crosses it is
+        rejected (no tunneling), and a segment grazing a building edge is
+        rejected (no corner clip)."""
+        if self._segment_collision_check is not None:
+            return bool(self._segment_collision_check([(ax, ay), (bx, by)]))
+        if self._collision_check is None:
+            return False
+        # Fallback: sample the whole segment, not just the endpoint.
+        if self._collision_check(bx, by):
+            return True
+        dist = math.hypot(bx - ax, by - ay)
+        steps = int(dist / self._SWEEP_SAMPLE_M)
+        for i in range(1, steps + 1):
+            t = i / (steps + 1)
+            if self._collision_check(ax + (bx - ax) * t, ay + (by - ay) * t):
+                return True
+        return False
+
     def apply_damage(self, amount: float) -> bool:
         """Apply *amount* damage. Returns True if this target is eliminated (health <= 0)."""
         if is_terminal(self.status):
@@ -742,9 +790,11 @@ class SimulationTarget:
         # Tick the controller
         mc.tick(dt)
 
-        # Building collision check: if new position is inside a building,
-        # revert to pre-tick position and advance past the blocking waypoint.
-        if self._collision_check is not None and self._collision_check(mc.x, mc.y):
+        # Building collision check (SWEPT): if the move from the pre-tick
+        # position to the new position would enter/cross a building, revert
+        # and advance past the blocking waypoint. Swept so a fast step or a
+        # waypoint-snap chord can't tunnel through a thin wall.
+        if self._move_blocked(pre_x, pre_y, mc.x, mc.y):
             mc.x = pre_x
             mc.y = pre_y
             # Advance waypoint index past the blocking segment
@@ -844,8 +894,9 @@ class SimulationTarget:
         new_x = self.position[0] + (dx / dist) * step
         new_y = self.position[1] + (dy / dist) * step
 
-        # Building collision check: reject moves into buildings
-        if self._collision_check is not None and self._collision_check(new_x, new_y):
+        # Building collision check (SWEPT): reject moves that enter/cross a
+        # building between this position and the step destination.
+        if self._move_blocked(self.position[0], self.position[1], new_x, new_y):
             # Movement would enter a building — skip to next waypoint
             if self._waypoint_index >= len(self.waypoints) - 1:
                 if self.alliance == "neutral":

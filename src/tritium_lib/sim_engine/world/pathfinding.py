@@ -139,13 +139,24 @@ def _grid_fallback(
     if terrain_map is not None:
         try:
             from tritium_lib.sim_engine.world.grid_pathfinder import grid_find_path, profile_for_unit
-            profile_name = profile_for_unit(unit_type, alliance)
-            path = grid_find_path(
-                terrain_map, start, end, profile_name,
-                obstacles=obstacles,
-            )
-            if path is not None and len(path) >= 2:
-                return path
+            # Try the unit's own profile, then a permissive ground profile.
+            # A vehicle on road-less terrain (no street graph) would
+            # otherwise get no grid route and fall through to a straight
+            # line THROUGH buildings — better to route it off-road around
+            # them. The pedestrian profile treats open/yard as cheap, so it
+            # finds a building-avoiding ground route whenever one exists.
+            profiles = [profile_for_unit(unit_type, alliance)]
+            if "pedestrian" not in profiles:
+                profiles.append("pedestrian")
+            for profile_name in profiles:
+                path = grid_find_path(
+                    terrain_map, start, end, profile_name,
+                    obstacles=obstacles,
+                )
+                if path is not None and len(path) >= 2:
+                    # Never hand back a route that crosses a building.
+                    if obstacles is None or not obstacles.path_crosses_building(path):
+                        return path
         except Exception:
             pass
     return [start, end]
