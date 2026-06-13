@@ -55,5 +55,5 @@ The classifier loads JSON lookup tables from the sibling `data/` directory:
 
 - [../data/](../data/) — JSON lookup tables loaded by the classifier
 - [../ontology/](../ontology/) — Ontology types that classification results map to
-- [../../../../tritium-sc/src/engine/tactical/ble_classifier.py](../../../../tritium-sc/src/engine/tactical/ble_classifier.py) — SC-side BLE classifier that uses this library
+- [../../../../tritium-sc/src/engine/tactical/ble_classifier.py](../tracking/ble_classifier.py) — SC-side BLE classifier that uses this library
 - [../../../../tritium-sc/plugins/edge_tracker/](../../../../tritium-sc/plugins/edge_tracker/) — Edge tracker plugin that triggers classification
