@@ -34,6 +34,34 @@ DEFAULT_PORTS = [8081, 8082, 8083]
 LEGACY_PORT = 11434
 PROBE_TIMEOUT = 3  # seconds
 
+# --- Inference gateway (the live-network front-end) -----------------------
+# The production path is an inference gateway: one HTTP service that load-
+# balances a cluster of GPU inference servers and exposes a stable API
+# (GET /health -> {"backends": {"healthy": N}}, POST /v1/generate,
+# POST /v1/chat). When a gateway is configured it is preferred over direct
+# llama-server / ollama (it has the whole cluster behind it). Everything is
+# config-driven — NO hosts, ports, or tokens are baked into source.
+#
+#   LLM_GATEWAY_URL   comma-separated gateway base URLs (http://host:port)
+#   LLM_FLEET_CONF    override path to llm-fleet.conf (a `gateway = URL` line)
+#   LLM_SOURCE        X-Source identifier sent to the gateway (default tritium)
+#   LLM_PRIORITY      optional X-Priority QoS hint
+GATEWAY_ENV = "LLM_GATEWAY_URL"
+CONF_ENV = "LLM_FLEET_CONF"
+SOURCE_ENV = "LLM_SOURCE"
+PRIORITY_ENV = "LLM_PRIORITY"
+DEFAULT_SOURCE = "tritium"
+
+
+def _conf_paths() -> list[Path]:
+    """Config files to read, honoring the LLM_FLEET_CONF override."""
+    paths: list[Path] = []
+    override = os.environ.get(CONF_ENV)
+    if override:
+        paths.append(Path(override))
+    paths.extend([CONF_PATH, LEGACY_CONF_PATH])
+    return paths
+
 
 @dataclass
 class FleetHost:
@@ -42,10 +70,18 @@ class FleetHost:
     name: str
     models: list[str] = field(default_factory=list)
     latency_ms: float = 0.0
-    backend: str = "llama-server"  # 'llama-server' or 'ollama'
+    backend: str = "llama-server"  # 'gateway' | 'llama-server' | 'ollama'
+    backends_connected: int = 0  # gateway: healthy cluster nodes behind it
 
     def has_model(self, model: str) -> bool:
-        """Check if this host has a model (prefix match)."""
+        """Check if this host can serve a model (prefix match).
+
+        A gateway fronts the whole cluster and routes internally, so it
+        can serve any model regardless of what it lists — the cluster
+        behind it owns the model inventory.
+        """
+        if self.backend == "gateway":
+            return True
         prefix = model.split(":")[0]
         return any(m.startswith(prefix) for m in self.models)
 
@@ -74,12 +110,20 @@ class LLMFleet:
         """Return hosts that have a specific model, sorted by latency."""
         return [h for h in self._hosts if h.has_model(model)]
 
+    # Backend preference: the gateway fronts the whole cluster, so it wins;
+    # then a direct llama-server tier; ollama is the legacy fallback.
+    _BACKEND_RANK = {"gateway": 0, "llama-server": 1, "ollama": 2}
+
     def best_host(self, model: str) -> FleetHost | None:
-        """Return the fastest host with this model, or None."""
+        """Return the preferred host that can serve this model, or None.
+
+        Order: gateway > llama-server > ollama, then lowest latency.
+        """
         hosts = self.hosts_with_model(model)
-        # Prefer llama-server over ollama
-        llama_hosts = [h for h in hosts if h.backend == "llama-server"]
-        return llama_hosts[0] if llama_hosts else (hosts[0] if hosts else None)
+        if not hosts:
+            return None
+        return min(hosts, key=lambda h: (
+            self._BACKEND_RANK.get(h.backend, 9), h.latency_ms))
 
     def refresh(self) -> None:
         """Re-discover hosts (useful after network changes)."""
@@ -88,6 +132,9 @@ class LLMFleet:
 
     def _discover(self, auto_discover: bool) -> None:
         """Build host list from all sources."""
+        # Gateway first — the configured live-network front-end.
+        self.discover_gateways()
+
         candidates: set[str] = set()
 
         # Always include localhost llama-server ports
@@ -97,11 +144,12 @@ class LLMFleet:
         candidates.add(f"localhost:{LEGACY_PORT}")
 
         # 1. Conf file (new llm-fleet.conf or legacy ollama-fleet.conf)
-        for conf in [CONF_PATH, LEGACY_CONF_PATH]:
+        for conf in _conf_paths():
             if conf.exists():
                 for line in conf.read_text().splitlines():
                     line = line.strip()
-                    if line and not line.startswith("#"):
+                    if (line and not line.startswith("#")
+                            and not line.lower().startswith("gateway")):
                         if ":" not in line:
                             for port in DEFAULT_PORTS:
                                 candidates.add(f"{line}:{port}")
@@ -142,8 +190,10 @@ class LLMFleet:
                 except Exception:
                     pass
 
-        # Sort by latency (fastest first), prefer llama-server
-        self._hosts.sort(key=lambda h: (0 if h.backend == "llama-server" else 1, h.latency_ms))
+        # Sort by backend preference (gateway > llama-server > ollama),
+        # then latency. Gateways were already added by discover_gateways().
+        self._hosts.sort(key=lambda h: (
+            self._BACKEND_RANK.get(h.backend, 9), h.latency_ms))
 
     def _scan_tailscale(self) -> set[str]:
         """Discover LLM servers on Tailscale peers."""
@@ -260,6 +310,100 @@ class LLMFleet:
 
         return None
 
+    # ----- Gateway (live-network front-end) -------------------------------
+
+    def _gateway_urls(self) -> list[str]:
+        """Configured gateway base URLs, from env + conf. No defaults —
+        a gateway is used only when explicitly configured."""
+        urls: list[str] = []
+        env = os.environ.get(GATEWAY_ENV, "")
+        for u in env.split(","):
+            u = u.strip().rstrip("/")
+            if u:
+                urls.append(u)
+        for conf in _conf_paths():
+            if not conf.exists():
+                continue
+            for line in conf.read_text().splitlines():
+                line = line.strip()
+                if line.lower().startswith("gateway"):
+                    # `gateway = URL` or `gateway=URL`
+                    _, _, val = line.partition("=")
+                    val = val.strip().rstrip("/")
+                    if val:
+                        urls.append(val)
+        # De-dup, preserve order.
+        seen: set[str] = set()
+        return [u for u in urls if not (u in seen or seen.add(u))]
+
+    def _source_headers(self) -> dict[str, str]:
+        """Identification / QoS hints for the gateway (never secrets)."""
+        h = {"X-Source": os.environ.get(SOURCE_ENV, DEFAULT_SOURCE)}
+        prio = os.environ.get(PRIORITY_ENV, "")
+        if prio:
+            h["X-Priority"] = prio
+        return h
+
+    def discover_gateways(self) -> int:
+        """Probe configured gateways and add the reachable ones as hosts.
+
+        Returns the number added. Idempotent-ish: never adds a duplicate
+        URL already present. Safe to call with nothing configured (no-op).
+        """
+        existing = {h.url for h in self._hosts}
+        added = 0
+        for url in self._gateway_urls():
+            if url in existing:
+                continue
+            host = self._probe_gateway(url)
+            if host is not None:
+                self._hosts.append(host)
+                existing.add(url)
+                added += 1
+        # Keep preference order stable after a late add.
+        self._hosts.sort(key=lambda h: (
+            self._BACKEND_RANK.get(h.backend, 9), h.latency_ms))
+        return added
+
+    def _probe_gateway(self, url: str) -> FleetHost | None:
+        """GET /health -> a gateway FleetHost with its healthy-node count."""
+        import urllib.request
+        try:
+            t0 = time.monotonic()
+            req = urllib.request.Request(
+                f"{url}/health", headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT) as resp:
+                if resp.status != 200:
+                    return None
+                latency = (time.monotonic() - t0) * 1000
+                body = resp.read().decode()
+        except Exception:
+            return None
+
+        healthy = 0
+        try:
+            data = json.loads(body) if body else {}
+            healthy = int(data.get("backends", {}).get("healthy", 0))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        # Optional: list models the cluster advertises (best-effort).
+        models: list[str] = []
+        try:
+            req = urllib.request.Request(
+                f"{url}/v1/models", headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT) as resp:
+                mdata = json.loads(resp.read().decode())
+                models = mdata.get("models", []) or [
+                    m.get("id", "") for m in mdata.get("data", [])]
+        except Exception:
+            pass
+
+        name = url.split("//", 1)[-1]
+        return FleetHost(url=url, name=name, models=models,
+                         latency_ms=latency, backend="gateway",
+                         backends_connected=healthy)
+
     def chat(
         self, model: str, prompt: str, images: list[str] | None = None,
         timeout: float = 30.0,
@@ -292,6 +436,8 @@ class LLMFleet:
         if images:
             message["images"] = images
 
+        if host.backend == "gateway":
+            return self._gateway_chat(host, model, [message], timeout)
         if host.backend == "llama-server":
             # OpenAI-compatible API
             payload = json.dumps({
@@ -347,6 +493,8 @@ class LLMFleet:
         if host is None:
             return ""
 
+        if host.backend == "gateway":
+            return self._gateway_generate(host, model, prompt, timeout)
         if host.backend == "llama-server":
             # llama-server doesn't have /api/generate — use chat completions
             return self.chat(model, prompt, timeout=timeout)
@@ -371,6 +519,49 @@ class LLMFleet:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return data.get("response", "")
+        except Exception:
+            return ""
+
+    def _gateway_chat(self, host: FleetHost, model: str,
+                      messages: list[dict[str, Any]], timeout: float) -> str:
+        """POST /v1/chat — gateway chat API ({"message": {"content": ...}})."""
+        import urllib.request
+        payload = json.dumps({
+            "model": model, "messages": messages, "stream": False,
+        }).encode()
+        headers = {"Content-Type": "application/json",
+                   "Accept": "application/json", **self._source_headers()}
+        try:
+            req = urllib.request.Request(
+                f"{host.url}/v1/chat", data=payload, headers=headers,
+                method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            if "error" in data:
+                return ""
+            msg = data.get("message", {})
+            return msg.get("content", "") if isinstance(msg, dict) else str(msg)
+        except Exception:
+            return ""
+
+    def _gateway_generate(self, host: FleetHost, model: str,
+                          prompt: str, timeout: float) -> str:
+        """POST /v1/generate — gateway completion API ({"response": ...})."""
+        import urllib.request
+        payload = json.dumps({
+            "model": model, "prompt": prompt, "stream": False,
+        }).encode()
+        headers = {"Content-Type": "application/json",
+                   "Accept": "application/json", **self._source_headers()}
+        try:
+            req = urllib.request.Request(
+                f"{host.url}/v1/generate", data=payload, headers=headers,
+                method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            if "error" in data:
+                return ""
+            return data.get("response", "")
         except Exception:
             return ""
 

@@ -1,0 +1,33 @@
+# llm-fleet.conf — LLM inference fleet configuration (EXAMPLE)
+#
+# Copy to `llm-fleet.conf` (same dir) and edit. The real file is
+# gitignored, so your private LAN hosts never land in the repo.
+#
+# Resolution order, best first:
+#   1. gateway   — the live-network inference gateway (preferred: it load-
+#                  balances the whole GPU cluster behind one endpoint)
+#   2. direct hosts — llama-server tiers (OpenAI-compatible, ports 8081-8083)
+#   3. ollama    — legacy fallback (port 11434), fine for small/local tests
+#
+# Everything here can also come from the environment, which wins for
+# ephemeral / CI use:
+#   LLM_GATEWAY_URL=http://gateway-host:PORT[,http://gateway-2:PORT]
+#   LLM_HOSTS=host-a,host-b:8082        (direct llama-server hosts)
+#   LLM_SOURCE=tritium                  (X-Source sent to the gateway)
+#   LLM_PRIORITY=normal                 (optional X-Priority QoS hint)
+
+# --- Inference gateway (the production path) ------------------------------
+# One `gateway = URL` line per gateway. The gateway exposes:
+#   GET  /health        -> {"backends": {"healthy": N}}
+#   POST /v1/generate   -> {"response": "..."}
+#   POST /v1/chat       -> {"message": {"content": "..."}}
+# gateway = http://your-gateway-host:PORT
+
+# --- Direct llama-server hosts (fallback if no gateway) -------------------
+# Bare hostname (probes ports 8081-8083) or host:port. One per line.
+# inference-host-1
+# inference-host-2:8082
+
+# --- Ollama (legacy fallback / quick local tests) -------------------------
+# A host:11434 line, or just rely on the localhost:11434 auto-probe.
+# localhost:11434

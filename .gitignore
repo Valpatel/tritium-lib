@@ -15,3 +15,7 @@ data/models/*.pkl
 data/models/*.json
 .memsearch/
 docs/local/
+
+# LLM fleet config — contains private LAN hosts; only the .example is tracked
+src/tritium_lib/conf/llm-fleet.conf
+src/tritium_lib/conf/ollama-fleet.conf
