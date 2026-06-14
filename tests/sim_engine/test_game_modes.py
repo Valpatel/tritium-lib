@@ -645,6 +645,9 @@ class TestLeakStakes:
         gm.wave = wave
         gm._wave_hostile_ids = {f"h{i}" for i in range(spawned)}
         gm.wave_eliminations = eliminated
+        # Leaks are counted directly from escaped status now; the non-eliminated
+        # hostiles are the ones that leaked.
+        gm._wave_escaped_ids = {f"h{i}" for i in range(eliminated, spawned)}
         gm._wave_start_time = gm._sim_time  # elapsed 0 -> time_bonus 50
         gm.score = 0
         gm._on_wave_complete()
@@ -685,3 +688,40 @@ class TestLeakStakes:
         gm.reset()
         assert gm.total_leaked == 0
         assert gm.wave_leaked == 0
+
+
+class TestLeakCountRobustness:
+    """Leaks are counted from escaped STATUS, not spawned-minus-eliminations, so
+    the count stays correct even when the elimination counter is 0 (e.g. a
+    headless/replay path with no event-bus wiring).  Without this, every
+    defeated hostile is miscounted as a leak (FEATURE-AUDIT 2026-06-14).
+    """
+
+    def test_track_escapes_reads_status(self):
+        gm, bus, engine = _build_game_mode()
+        h = [engine.spawn_hostile() for _ in range(3)]
+        for t in h:
+            gm._wave_hostile_ids.add(t.target_id)
+        h[0].status = "escaped"
+        gm._track_escapes()
+        assert gm._wave_escaped_ids == {h[0].target_id}
+        # idempotent + dedup
+        gm._track_escapes()
+        assert len(gm._wave_escaped_ids) == 1
+
+    def test_leak_count_independent_of_elimination_counter(self):
+        gm, bus, engine = _build_game_mode()
+        gm.wave = 1
+        h = [engine.spawn_hostile() for _ in range(3)]
+        for t in h:
+            gm._wave_hostile_ids.add(t.target_id)
+        # One escapes; the other two were defeated but the elimination event
+        # never fired (wave_eliminations stays 0, as in an unwired harness).
+        h[0].status = "escaped"
+        gm.wave_eliminations = 0
+        gm._wave_start_time = gm._sim_time
+        gm.score = 0
+        gm._on_wave_complete()
+        assert gm.wave_leaked == 1, "only the actually-escaped hostile is a leak"
+        # defeat fraction 2/3 -> wave bonus int(200*2/3)=133, + time 50
+        assert gm.score == int(1 * 200 * (2 / 3)) + 50

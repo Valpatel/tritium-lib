@@ -171,6 +171,13 @@ class GameMode:
         self._game_start_time: float = 0.0
         self._wave_complete_time: float = 0.0
         self._wave_hostile_ids: set[str] = set()
+        # Wave hostiles observed to have escaped (status "escaped").  Tracked
+        # DIRECTLY from status each tick (FEATURE-AUDIT 2026-06-14) rather than
+        # inferred as spawned-minus-eliminations, so the leak count / wave bonus
+        # do not silently break if the elimination-event wiring is ever absent
+        # (a headless/replay path with no event bus would otherwise count every
+        # kill as a leak).
+        self._wave_escaped_ids: set[str] = set()
         # Legacy attribute kept for external checks; always None — wave
         # spawning is tick-driven via _spawn_queue (G-1), never a thread.
         self._spawn_thread: threading.Thread | None = None
@@ -258,6 +265,7 @@ class GameMode:
         self.wave_leaked = 0
         self._countdown_remaining = _COUNTDOWN_DURATION
         self._wave_hostile_ids.clear()
+        self._wave_escaped_ids.clear()
         self._spawn_queue.clear()
         self._counted_eliminations.clear()
         self._combat.reset_streaks()
@@ -456,6 +464,9 @@ class GameMode:
             self._last_combat_progress_time = self._sim_time
         self._last_wave_hostile_health = cur_hp
 
+        # Track leaks directly from status (robust to elimination-event wiring).
+        self._track_escapes()
+
         # Stalemate detection: force-eliminate remaining hostiles only when there
         # has been NO combat progress (neither a kill nor damage dealt) for
         # _STALEMATE_TIMEOUT seconds -- or when the wave exceeds the absolute
@@ -587,6 +598,7 @@ class GameMode:
         self._last_wave_hostile_health = 0.0
         self._wave_active_since = self._sim_time
         self._wave_hostile_ids.clear()
+        self._wave_escaped_ids.clear()
 
         # Wave 3+ adds environmental pressure via random hazard spawning.
         # Hazard count scales with wave number (1 per wave, capped at 5).
@@ -782,6 +794,22 @@ class GameMode:
                 count += 1
         return count
 
+    def _track_escapes(self) -> None:
+        """Record wave hostiles that have escaped (status "escaped"), observed
+        directly each tick before the engine removes them.
+
+        Counting leaks this way (rather than spawned-minus-eliminations) means
+        the leak count and wave-bonus math stay correct even if the
+        elimination-event wiring is absent -- otherwise a path without an event
+        bus counts every kill as a leak (FEATURE-AUDIT 2026-06-14).
+        """
+        for t in self._engine.get_targets():
+            tid = getattr(t, "target_id", None)
+            if (tid in self._wave_hostile_ids
+                    and tid not in self._wave_escaped_ids
+                    and getattr(t, "status", "") == "escaped"):
+                self._wave_escaped_ids.add(tid)
+
     def _wave_hostiles_total_health(self) -> float:
         """Total current HP of alive wave hostiles (for stalemate progress).
 
@@ -833,10 +861,14 @@ class GameMode:
         # difficulty, never the score, and were invisible to the operator).
         # Scale the bonus by the fraction defeated so it stays meaningful at
         # every wave size; a perfectly-defended wave is unchanged.
+        self._track_escapes()  # catch any last-tick escapes before completion
         hostiles_spawned = len(self._wave_hostile_ids)
-        escapes = max(0, hostiles_spawned - self.wave_eliminations)
+        # Leaks are counted DIRECTLY from escaped status (robust to the
+        # elimination-event wiring); a hostile is either defeated or it leaked.
+        escapes = min(hostiles_spawned, len(self._wave_escaped_ids))
+        defeated = max(0, hostiles_spawned - escapes)
         defeat_fraction = (
-            self.wave_eliminations / hostiles_spawned if hostiles_spawned else 1.0
+            defeated / hostiles_spawned if hostiles_spawned else 1.0
         )
         defeat_fraction = max(0.0, min(1.0, defeat_fraction))
         wave_bonus = int(self.wave * 200 * defeat_fraction)
