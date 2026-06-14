@@ -681,15 +681,22 @@ class TestAbstainExcludedFromConfidence:
         return TargetCorrelator(tracker, max_age=9999, **kw).correlate()
 
     def test_clear_cross_modal_match_reaches_high_confidence(self):
-        """Same place + same time, two modalities -> high confidence (>=0.70).
+        """Co-located + co-timed cross-modal detections fuse at high confidence
+        (>=0.70) -- the INTENDED multi-sensor fusion (one entity seen by BLE +
+        camera + acoustic at one place/time).
 
-        Before the abstain fix this capped at ~0.51 (temporal/dossier/wifi_probe
-        abstained but were counted as 0 in the denominator)."""
+        Honest caveat (FEATURE-AUDIT 2026-06-14): proximity + timing alone carry
+        no identity-discriminating evidence, so this input shape is the same as
+        two genuinely-different co-located entities -- the system fuses them by
+        design. What it MUST NOT do is fuse entities KNOWN to be different; that
+        is guarded by TestIdentityVeto (a different-dossier veto). Before the
+        abstain fix this capped at ~0.51 (temporal/dossier/wifi_probe abstained
+        but were counted as 0 in the denominator)."""
         now = time.monotonic()
         ble = _make_target("ble_aa", "ble", position=(100.0, 100.0), last_seen=now)
         aco = _make_target("acoustic_x", "acoustic", position=(100.0, 100.0), last_seen=now)
         records = self._corr([ble, aco])
-        assert records, "a clear same-entity cross-modal pair must correlate"
+        assert records, "a co-located cross-modal pair must correlate (intended fusion)"
         assert records[0].confidence >= 0.70, (
             f"confidence {records[0].confidence:.3f} below the 0.70 high-confidence "
             "bar -- abstaining strategies are still penalising a genuine match"
@@ -754,3 +761,49 @@ class TestAbstainExcludedFromConfidence:
             StrategyScore("dossier", 1.0, "match"),
         ]
         assert c._weighted_score(one_disagrees) < c._weighted_score(all_agree)
+
+
+class TestIdentityVeto:
+    """Definitive identity disagreement (known-different dossiers) vetoes a
+    merge, so co-location can never override known identity (FEATURE-AUDIT
+    2026-06-14 fusion over-correlation fix).
+    """
+
+    def _corr(self, targets, ds=None, **kw):
+        tracker = TargetTracker()
+        with tracker._lock:
+            for t in targets:
+                tracker._targets[t.target_id] = t
+        return TargetCorrelator(tracker, max_age=9999, dossier_store=ds, **kw).correlate()
+
+    def test_known_different_dossiers_do_not_merge(self):
+        from tritium_lib.tracking.dossier import DossierStore
+        ds = DossierStore()
+        ds.create_or_update("ble_x", "ble", "filler1", "x", 0.9)      # dossier 1
+        ds.create_or_update("aco_y", "acoustic", "filler2", "y", 0.9)  # dossier 2
+        a = _make_target("ble_x", "ble", position=(100.0, 100.0))
+        b = _make_target("aco_y", "acoustic", position=(100.0, 100.0))
+        records = self._corr([a, b], ds)
+        # co-located AND co-timed, but the dossier KNOWS they are different
+        # entities -> proximity must not override that.
+        assert records == [], "known-different entities must not merge despite co-location"
+
+    def test_veto_forces_weighted_score_to_zero(self):
+        c = TargetCorrelator(TargetTracker())
+        scores = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+            StrategyScore("dossier", 0.0, "different dossiers", applicable=True, veto=True),
+        ]
+        # Without the veto these would score 0.733; the veto forces 0.
+        assert c._weighted_score(scores) == 0.0
+
+    def test_non_veto_disagreement_still_scores(self):
+        """A veto is only for DEFINITIVE negative evidence; an ordinary low
+        applicable score must not zero the whole correlation."""
+        c = TargetCorrelator(TargetTracker())
+        scores = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+        ]
+        assert c._weighted_score(scores) > 0.0

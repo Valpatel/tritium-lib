@@ -51,6 +51,12 @@ class StrategyScore:
     score: float  # 0.0 to 1.0
     detail: str  # human-readable explanation
     applicable: bool = True  # False = abstained (no data), excluded from denom
+    # ``veto`` = definitive evidence the two targets are DIFFERENT entities
+    # (e.g. they belong to different known dossiers).  A veto forces combined
+    # confidence to 0 regardless of proximity, so co-location can never override
+    # known identity (FEATURE-AUDIT 2026-06-14: a 0.60 evidence floor was
+    # absorbing the dossier disagreement and merging known-different entities).
+    veto: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -504,10 +510,14 @@ class DossierStrategy(CorrelationStrategy):
         d_b = self._store.find_by_signal(target_b.target_id)
 
         if d_a is not None and d_b is not None and d_a.uuid != d_b.uuid:
+            # Definitive negative identity evidence: the two targets are already
+            # known to be DIFFERENT entities -- veto the merge so proximity can
+            # never override it (FEATURE-AUDIT 2026-06-14).
             return StrategyScore(
                 strategy_name=self.name,
                 score=0.0,
                 detail="targets belong to different known dossiers",
+                veto=True,
             )
 
         return StrategyScore(

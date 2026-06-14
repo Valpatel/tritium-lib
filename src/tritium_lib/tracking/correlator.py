@@ -410,6 +410,11 @@ class TargetCorrelator:
         total_score = 0.0
 
         for s in scores:
+            # Definitive negative identity evidence (e.g. known-different
+            # dossiers) vetoes the whole correlation -- proximity must never
+            # override known identity (FEATURE-AUDIT 2026-06-14).
+            if getattr(s, "veto", False) and getattr(s, "applicable", True):
+                return 0.0
             if not getattr(s, "applicable", True):
                 continue  # abstained: no data, excluded from the average
             w = self.weights.get(s.strategy_name, 0.0)
@@ -433,6 +438,7 @@ class TargetCorrelator:
                     score=cal_score,
                     detail=s.detail,
                     applicable=getattr(s, "applicable", True),
+                    veto=getattr(s, "veto", False),
                 )
             )
         return calibrated
