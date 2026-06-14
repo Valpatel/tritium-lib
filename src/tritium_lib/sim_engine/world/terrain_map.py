@@ -107,6 +107,12 @@ class TerrainMap:
         self._grid_size = int(2 * self._bounds / resolution) + 1
         self._cells: dict[tuple[int, int], TerrainCell] = {}
         self._is_flying_checker = is_flying_checker
+        # Original building footprint polygons passed to load_buildings,
+        # retained so a network-independent obstacle source can be derived
+        # from the terrain (offline building avoidance) and so collision and
+        # render can share one footprint set. Rasterizing to cells is lossy;
+        # this keeps the exact polygons.
+        self._building_footprints: list[list[tuple[float, float]]] = []
 
     # -- Public grid properties ------------------------------------------------
 
@@ -322,6 +328,11 @@ class TerrainMap:
             if len(footprint) < 3:
                 continue
 
+            # Retain the exact polygon (for offline obstacle derivation and
+            # shared collision/render footprints).
+            self._building_footprints.append(
+                [(float(p[0]), float(p[1])) for p in footprint])
+
             # Find bounding box of the polygon
             xs = [p[0] for p in footprint]
             ys = [p[1] for p in footprint]
@@ -338,6 +349,13 @@ class TerrainMap:
                     wx, wy = self._grid_to_world(col, row)
                     if _point_in_polygon(wx, wy, footprint):
                         self.set_cell(wx, wy, "building")
+
+    def building_footprints(self) -> list[list[tuple[float, float]]]:
+        """Exact building footprint polygons passed to load_buildings.
+
+        Network-independent source for deriving obstacle geometry (the grid
+        cells are a lossy rasterization; these are the real polygons)."""
+        return list(self._building_footprints)
 
     # -- Terrain queries -------------------------------------------------------
 

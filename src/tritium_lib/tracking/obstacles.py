@@ -306,6 +306,35 @@ class BuildingObstacles:
         self._compute_aabbs()
         logger.info(f"Building obstacles: loaded {len(self.polygons)} buildings from overture data")
 
+    def add_polygons(self, footprints, heights=None) -> int:
+        """Merge additional building footprints into this obstacle set.
+
+        Unlike ``load_from_overture`` (which REPLACES), this EXTENDS the
+        existing polygons — so a network-independent source (a layout file,
+        derived terrain footprints) can contribute buildings whether or not
+        Overpass succeeded. Footprints with fewer than 3 vertices are
+        ignored. Returns the number of polygons actually added.
+
+        Args:
+            footprints: iterable of [(x, y), ...] polygons in local meters.
+            heights: optional parallel iterable of roof heights (default 8m).
+        """
+        added = 0
+        heights = list(heights) if heights is not None else None
+        for i, poly in enumerate(footprints):
+            pts = [(float(p[0]), float(p[1])) for p in poly]
+            if len(pts) < 3:
+                continue
+            self.polygons.append(pts)
+            h = heights[i] if (heights is not None and i < len(heights)) else 8.0
+            self._heights.append(h)
+            added += 1
+        if added:
+            self._compute_aabbs()
+            logger.info(f"Building obstacles: merged {added} footprint(s) "
+                        f"(now {len(self.polygons)} total)")
+        return added
+
     def to_dicts(self, default_height: float = 8.0) -> list[dict]:
         """Export building polygons as a list of dicts for the frontend.
 
