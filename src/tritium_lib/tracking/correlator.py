@@ -86,6 +86,16 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "wifi_probe": 0.15,
 }
 
+# Minimum applicable-strategy weight used as the confidence denominator floor.
+# Confidence is the fraction of AVAILABLE judgment weight that voted yes, but a
+# match supported by only a little judgment weight cannot reach full confidence
+# -- this floor preserves skepticism and stops a single applicable strategy from
+# over-correlating (FEATURE-AUDIT 2026-06-14).  Tuned so a clean two-sensor
+# match (spatial 0.30 + signal_pattern 0.14 = 0.44) lands at ~0.73, above the
+# 0.70 "high confidence" bar, while distant/out-of-time pairs -- where spatial
+# and temporal DO vote and score low -- stay well below it.
+_MIN_EVIDENCE_WEIGHT: float = 0.60
+
 
 class TargetCorrelator:
     """Multi-strategy identity resolution engine.
@@ -385,19 +395,32 @@ class TargetCorrelator:
         return scores
 
     def _weighted_score(self, scores: list[StrategyScore]) -> float:
-        """Compute weighted combination of strategy scores."""
-        total_weight = 0.0
+        """Compute weighted combination of strategy scores.
+
+        ABSTAINING strategies (``applicable=False`` -- no data to judge this
+        pair) are excluded from both numerator and denominator so they cannot
+        penalise a genuine match.  A strategy that judged the pair and scored
+        low (``applicable=True``) stays in the denominator, so distant or
+        out-of-time pairs still score low and cannot over-correlate.  The
+        denominator is floored at ``_MIN_EVIDENCE_WEIGHT`` to keep a match
+        backed by little judgment weight from reaching full confidence
+        (FEATURE-AUDIT 2026-06-14).
+        """
+        applicable_weight = 0.0
         total_score = 0.0
 
         for s in scores:
+            if not getattr(s, "applicable", True):
+                continue  # abstained: no data, excluded from the average
             w = self.weights.get(s.strategy_name, 0.0)
-            total_weight += w
+            applicable_weight += w
             total_score += w * s.score
 
-        if total_weight <= 0:
+        if applicable_weight <= 0:
             return 0.0
 
-        return min(1.0, total_score / total_weight)
+        denom = max(applicable_weight, _MIN_EVIDENCE_WEIGHT)
+        return min(1.0, total_score / denom)
 
     def _calibrate_scores(self, scores: list[StrategyScore]) -> list[StrategyScore]:
         """Return calibrated copies of strategy scores using the calibrator."""
@@ -409,6 +432,7 @@ class TargetCorrelator:
                     strategy_name=s.strategy_name,
                     score=cal_score,
                     detail=s.detail,
+                    applicable=getattr(s, "applicable", True),
                 )
             )
         return calibrated

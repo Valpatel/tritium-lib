@@ -655,3 +655,102 @@ class TestCorrelateEmptyTracker:
         c = TargetCorrelator(tracker, confidence_threshold=0.01, max_age=9999)
         records = c.correlate()
         assert records == []
+
+
+class TestAbstainExcludedFromConfidence:
+    """Strategies with no data to judge a pair must ABSTAIN, not vote 0.
+
+    FEATURE-AUDIT 2026-06-14 ("does fusion actually fuse?"): the live
+    correlation dashboard showed 387 correlations but ZERO high-confidence
+    ones (avg 0.488).  Tracing a textbook same-entity case
+    (POST /api/fusion/inject_test_quad) found a perfect cross-modal match
+    capped at ~0.51 confidence purely because temporal ("insufficient
+    history"), dossier ("no prior association") and wifi_probe ("not a
+    BLE+wifi pair") scored 0 for lack of data and dragged the weighted
+    average down.  Those are abstentions, not evidence against; they are now
+    excluded from the confidence denominator (with a floor that preserves
+    skepticism), so genuine matches can reach the 0.70 "high confidence" bar
+    while distant / out-of-time pairs still cannot over-correlate.
+    """
+
+    def _corr(self, targets, **kw):
+        tracker = TargetTracker()
+        with tracker._lock:
+            for t in targets:
+                tracker._targets[t.target_id] = t
+        return TargetCorrelator(tracker, max_age=9999, **kw).correlate()
+
+    def test_clear_cross_modal_match_reaches_high_confidence(self):
+        """Same place + same time, two modalities -> high confidence (>=0.70).
+
+        Before the abstain fix this capped at ~0.51 (temporal/dossier/wifi_probe
+        abstained but were counted as 0 in the denominator)."""
+        now = time.monotonic()
+        ble = _make_target("ble_aa", "ble", position=(100.0, 100.0), last_seen=now)
+        aco = _make_target("acoustic_x", "acoustic", position=(100.0, 100.0), last_seen=now)
+        records = self._corr([ble, aco])
+        assert records, "a clear same-entity cross-modal pair must correlate"
+        assert records[0].confidence >= 0.70, (
+            f"confidence {records[0].confidence:.3f} below the 0.70 high-confidence "
+            "bar -- abstaining strategies are still penalising a genuine match"
+        )
+
+    def test_same_place_different_time_does_not_over_correlate(self):
+        """SAFETY: same position but far apart in time must stay below 0.70.
+
+        signal_pattern HAS timing data and disagrees, so it stays in the
+        denominator and holds confidence down -- the abstain fix must not turn
+        coincidental co-location into a false fusion."""
+        now = time.monotonic()
+        ble = _make_target("ble_bb", "ble", position=(100.0, 100.0), last_seen=now)
+        aco = _make_target("acoustic_y", "acoustic", position=(100.0, 100.0),
+                           last_seen=now - 60.0)
+        records = self._corr([ble, aco], confidence_threshold=0.01)
+        conf = records[0].confidence if records else 0.0
+        assert conf < 0.70, (
+            f"same-place/different-time pair reached {conf:.3f} -- the abstain "
+            "fix must not over-correlate coincidental co-location"
+        )
+
+    def test_distant_pair_does_not_correlate(self):
+        """SAFETY: spatial always votes, so a distant pair stays low / unformed."""
+        now = time.monotonic()
+        a = _make_target("ble_cc", "ble", position=(100.0, 100.0), last_seen=now)
+        b = _make_target("acoustic_z", "acoustic", position=(400.0, 400.0), last_seen=now)
+        records = self._corr([a, b])
+        assert records == [] or records[0].confidence < 0.50, (
+            "a pair hundreds of metres apart must not become a confident fusion"
+        )
+
+    def test_weighted_score_excludes_abstentions(self):
+        """Unit: an abstaining (applicable=False) strategy is excluded from the
+        denominator, so it does not dilute the applicable strategies."""
+        c = TargetCorrelator(TargetTracker())
+        applicable_only = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+        ]
+        with_abstention = applicable_only + [
+            StrategyScore("dossier", 0.0, "no data", applicable=False),
+            StrategyScore("temporal", 0.0, "no history", applicable=False),
+        ]
+        # Adding pure abstentions must not lower the combined confidence.
+        assert c._weighted_score(with_abstention) == pytest.approx(
+            c._weighted_score(applicable_only)
+        )
+        # ...whereas a real low-scoring (applicable) strategy DOES lower it.
+        # Use enough applicable weight that the denominator floor is not masking
+        # the effect (applicable weight must exceed _MIN_EVIDENCE_WEIGHT).
+        all_agree = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+            StrategyScore("temporal", 1.0, "match"),
+            StrategyScore("dossier", 1.0, "match"),
+        ]
+        one_disagrees = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+            StrategyScore("temporal", 0.0, "different movement", applicable=True),
+            StrategyScore("dossier", 1.0, "match"),
+        ]
+        assert c._weighted_score(one_disagrees) < c._weighted_score(all_agree)

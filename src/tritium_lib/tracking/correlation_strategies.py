@@ -34,11 +34,23 @@ from .target_tracker import TrackedTarget
 
 @dataclass(slots=True)
 class StrategyScore:
-    """Result of a single strategy evaluation."""
+    """Result of a single strategy evaluation.
+
+    ``applicable`` distinguishes an ABSTENTION (the strategy had no data to
+    judge this pair -- e.g. no movement history, no dossier, wrong source mix)
+    from a DISAGREEMENT (it judged the pair and scored low).  Abstentions are
+    excluded from the weighted-confidence denominator so they cannot penalise a
+    genuine match (FEATURE-AUDIT 2026-06-14): a perfect spatial + signal match
+    between cross-modal detections used to cap at ~0.5 confidence purely because
+    temporal/dossier/wifi_probe scored 0 for lack of data.  A low score with
+    ``applicable=True`` (real disagreement) still drags confidence down, so
+    distant or out-of-time pairs cannot over-correlate.
+    """
 
     strategy_name: str
     score: float  # 0.0 to 1.0
     detail: str  # human-readable explanation
+    applicable: bool = True  # False = abstained (no data), excluded from denom
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +299,7 @@ class TemporalStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail=f"insufficient history ({len(trail_a)}/{len(trail_b)} samples)",
+                applicable=False,  # no movement history -> abstain, don't penalise
             )
 
         heading_a = self._compute_heading(trail_a)
@@ -303,6 +316,7 @@ class TemporalStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail="both targets stationary",
+                applicable=False,  # no motion to compare -> abstain
             )
 
         if heading_diff > self.heading_tolerance:
@@ -376,6 +390,7 @@ class SignalPatternStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail="same source type, signal pattern N/A",
+                applicable=False,  # appearance timing only meaningful cross-source
             )
 
         time_diff = abs(target_a.last_seen - target_b.last_seen)
@@ -421,6 +436,7 @@ class WiFiProbeStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail="not a BLE+wifi_probe pair",
+                applicable=False,  # only judges BLE<->wifi_probe pairs -> abstain
             )
 
         time_diff = abs(target_a.last_seen - target_b.last_seen)
@@ -498,4 +514,5 @@ class DossierStrategy(CorrelationStrategy):
             strategy_name=self.name,
             score=0.0,
             detail="no prior association found",
+            applicable=False,  # no dossier history -> abstain (NOT evidence against)
         )
