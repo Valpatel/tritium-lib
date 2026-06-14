@@ -98,6 +98,27 @@ def _segments_intersect(
     return False
 
 
+def _dist_to_polygon_edge(
+    x: float, y: float, poly: list[tuple[float, float]]
+) -> float:
+    """Shortest distance from point (x, y) to any edge of *poly*."""
+    best = float("inf")
+    n = len(poly)
+    for i in range(n):
+        ax, ay = poly[i]
+        bx, by = poly[(i + 1) % n]
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        if seg2 <= 1e-12:
+            d = math.hypot(x - ax, y - ay)
+        else:
+            t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / seg2))
+            d = math.hypot(x - (ax + t * dx), y - (ay + t * dy))
+        if d < best:
+            best = d
+    return best
+
+
 class BuildingObstacles:
     """Building footprints for collision/obstacle detection.
 
@@ -118,6 +139,13 @@ class BuildingObstacles:
         self._heights: list[float] = []
         # AABB bounding boxes: (min_x, min_y, max_x, max_y) per polygon
         self._aabbs: list[tuple[float, float, float, float]] = []
+        # Unit-radius standoff (m). When > 0, point_in_building also flags
+        # points within this distance of a building EDGE — so paths keep a
+        # clean margin off walls instead of riding them (units are points
+        # in the planner/checker but have width in reality). Honored by both
+        # planning (path_crosses_building) and per-tick enforcement, with no
+        # call-site changes. Default 0.0 = exact footprint (unchanged).
+        self.clearance: float = 0.0
 
     def load(
         self,
@@ -186,16 +214,21 @@ class BuildingObstacles:
         contain the point.  ~95% of polygons are rejected in 4 float
         comparisons, reducing full ray-casts to ~10 per call for 227 buildings.
         """
+        c = self.clearance
         if self._aabbs:
             for i, (min_x, min_y, max_x, max_y) in enumerate(self._aabbs):
-                if x < min_x or x > max_x or y < min_y or y > max_y:
+                if x < min_x - c or x > max_x + c or y < min_y - c or y > max_y + c:
                     continue
                 if _point_in_polygon(x, y, self.polygons[i]):
+                    return True
+                if c > 0.0 and _dist_to_polygon_edge(x, y, self.polygons[i]) <= c:
                     return True
             return False
         # Fallback: no AABBs computed (shouldn't happen after load)
         for poly in self.polygons:
             if _point_in_polygon(x, y, poly):
+                return True
+            if c > 0.0 and _dist_to_polygon_edge(x, y, poly) <= c:
                 return True
         return False
 

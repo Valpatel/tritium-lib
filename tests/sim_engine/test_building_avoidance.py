@@ -126,6 +126,18 @@ def simulate(target: SimulationTarget, dt: float = 0.1,
 # --------------------------------------------------------------------------
 # 0. Primitive sanity — the geometry the whole proof rests on
 # --------------------------------------------------------------------------
+def test_clearance_standoff():
+    """obs.clearance flags points within the standoff of a building edge —
+    unit-radius inflation so paths don't ride walls. Default 0 = exact."""
+    obs = make_obstacles([rect(0, 0, 20, 20)])  # edges at x/y = ±10
+    near = (12.0, 0.0)  # 2 m outside the right wall
+    assert not obs.point_in_building(*near)      # clearance 0 -> clear
+    obs.clearance = 3.0
+    assert obs.point_in_building(*near)           # within 3 m standoff
+    assert not obs.point_in_building(20.0, 0.0)   # 10 m out -> still clear
+    obs.clearance = 0.0
+
+
 def test_obstacle_primitives_are_sound():
     obs = make_obstacles([rect(0, 0, 20, 20)])  # 20x20 building at origin
     assert obs.point_in_building(0, 0)            # center inside
