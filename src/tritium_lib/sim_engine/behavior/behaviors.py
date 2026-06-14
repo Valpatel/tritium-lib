@@ -584,7 +584,10 @@ class UnitBehaviors:
         # seconds — wall-clock here broke replay determinism, G-1).
         # Reduced during group rush
         now = self._sim_time
-        last_dodge = self._last_dodge.get(kid.target_id, 0.0)
+        # -1e9 "never dodged" sentinel: a 0.0 default suppressed the FIRST
+        # dodge for the whole cooldown window after sim-clock zero (the same
+        # G-1 sentinel class as last_fired). Lets the first dodge fire.
+        last_dodge = self._last_dodge.get(kid.target_id, -1e9)
         dodge_interval = random.uniform(2.0, 4.0)
         if kid.target_id in self._group_rush_ids:
             dodge_interval *= 3.0  # Dodge less during rush
@@ -702,7 +705,9 @@ class UnitBehaviors:
         Returns True if flank was applied.
         """
         now = self._sim_time
-        last_flank = self._last_flank.get(hostile.target_id, 0.0)
+        # -1e9 "never flanked" sentinel — a 0.0 default suppressed the FIRST
+        # flank for the cooldown window after sim-clock zero (G-1 class).
+        last_flank = self._last_flank.get(hostile.target_id, -1e9)
         if now - last_flank < _FLANK_COOLDOWN:
             return False
 
