@@ -151,6 +151,23 @@ class TestSimulationTarget:
         assert abs(idle / active - _IDLE_DRAIN_FACTOR) < 0.01
         assert abs(stationary / active - _IDLE_DRAIN_FACTOR) < 0.01
 
+    def test_recharge_window_is_brief(self):
+        """The low_battery recharge window must be a brief inert blip, not a long
+        freeze -- a low_battery unit can't move/fire/be targeted until it resumes
+        (FEATURE-AUDIT 2026-06-14, self-audit #9/#10: was 25s)."""
+        t = SimulationTarget(
+            target_id="d", name="D", alliance="friendly",
+            asset_type="drone", position=(0.0, 0.0),
+        )
+        t.status = "low_battery"
+        t.battery = 0.05
+        ticks = 0
+        while t.status == "low_battery" and ticks < 1000:
+            t.tick(0.1)
+            ticks += 1
+        assert ticks * 0.1 <= 8.0, f"recharge window {ticks*0.1:.1f}s too long for an inert unit"
+        assert t.status == "active"
+
     def test_low_battery_unit_recharges_and_resumes(self):
         """low_battery is 'reduced capability, not dead': a parked unit must
         trickle-charge and resume, not freeze forever (FEATURE-AUDIT 2026-06-14).

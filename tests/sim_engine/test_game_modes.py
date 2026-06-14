@@ -725,3 +725,28 @@ class TestLeakCountRobustness:
         assert gm.wave_leaked == 1, "only the actually-escaped hostile is a leak"
         # defeat fraction 2/3 -> wave bonus int(200*2/3)=133, + time 50
         assert gm.score == int(1 * 200 * (2 / 3)) + 50
+
+
+class TestLowBatteryHostilesCountAlive:
+    """A recharging (low_battery) hostile is still on the map and a threat, so it
+    must count as alive -- otherwise a wave completes / mis-accounts while it
+    recharges (FEATURE-AUDIT 2026-06-14, self-audit #11)."""
+
+    def test_low_battery_hostile_counts_alive_and_in_hp(self):
+        gm, bus, engine = _build_game_mode()
+        ids = []
+        for _ in range(3):
+            h = engine.spawn_hostile()
+            ids.append(h.target_id)
+            gm._wave_hostile_ids.add(h.target_id)
+        engine._targets[ids[0]].status = "low_battery"  # one recharging
+        assert gm._count_wave_hostiles_alive() == 3, "recharging hostile must count as alive"
+        assert gm._wave_hostiles_total_health() > 0.0
+
+    def test_force_eliminate_clears_low_battery_hostile(self):
+        gm, bus, engine = _build_game_mode()
+        h = engine.spawn_hostile()
+        gm._wave_hostile_ids.add(h.target_id)
+        h.status = "low_battery"
+        gm._force_eliminate_wave_hostiles()
+        assert h.status == "eliminated", "a recharging hostile must be force-eliminable"

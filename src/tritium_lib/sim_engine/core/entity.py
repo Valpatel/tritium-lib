@@ -415,7 +415,12 @@ _DRAIN_RATES: dict[str, float] = {
 # the 0.05 floor after an idle run).  A parked low_battery unit now trickle-
 # charges and resumes once it has enough charge.  Real hardware units report
 # battery via telemetry and never use this drain/recharge model.
-_RECHARGE_RATE: float = 0.01    # battery per second while in low_battery
+# Recharge fast (FEATURE-AUDIT 2026-06-14, self-audit #9/#10): a low_battery
+# unit is inert (can't move/fire/be targeted) until it resumes, so the recharge
+# window must be a brief blip, not a 25s freeze.  0.05/s recovers the
+# 0.05->0.30 band in ~5s; an actively-draining unit (e.g. a drone) then runs
+# ~2min before the next blip instead of freezing for 25s every cycle.
+_RECHARGE_RATE: float = 0.05    # battery per second while in low_battery
 _RECHARGE_RESUME: float = 0.30  # resume "active" once battery recovers to here
 
 # Battery draw scales with activity (FEATURE-AUDIT 2026-06-14): an idle or

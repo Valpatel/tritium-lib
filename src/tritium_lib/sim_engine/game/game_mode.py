@@ -796,7 +796,7 @@ class GameMode:
         """Count wave hostiles that are still active threats."""
         count = 0
         for t in self._engine.get_targets():
-            if t.target_id in self._wave_hostile_ids and t.status == "active":
+            if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
                 count += 1
         return count
 
@@ -825,7 +825,7 @@ class GameMode:
         """
         total = 0.0
         for t in self._engine.get_targets():
-            if t.target_id in self._wave_hostile_ids and t.status == "active":
+            if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
                 hp = getattr(t, "health", 0.0)
                 total += hp if hp is not None else 0.0
         return total
@@ -833,7 +833,7 @@ class GameMode:
     def _force_eliminate_wave_hostiles(self) -> None:
         """Force-eliminate remaining wave hostiles to break a stalemate."""
         for t in self._engine.get_targets():
-            if t.target_id in self._wave_hostile_ids and t.status == "active":
+            if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
                 t.status = "eliminated"
                 t.health = 0
                 # Mark counted BEFORE publishing so the event echo through
