@@ -120,7 +120,13 @@ _STALEMATE_TIMEOUT = 60.0  # seconds since last combat progress
 # Absolute ceiling: even if damage keeps trickling, a single wave can never run
 # longer than this (sim seconds) before remaining hostiles are force-eliminated.
 # Backstop against a pathological trickle that resets the progress clock forever.
-_WAVE_HARD_TIMEOUT = 240.0  # seconds since the wave went active
+# Must stay well ABOVE how long a legitimate climactic wave takes: the standard
+# 10-wave layout's biggest waves (Full Invasion 20, FINAL STAND 25) grind for
+# ~230-290s of real combat, and 240s was clipping them mid-fight and counting
+# the survivors as leaks (FEATURE-AUDIT 2026-06-14).  600s = a true backstop
+# (>2x the worst legit wave); the 60s no-progress stalemate is the real
+# anti-infinite-game guard.
+_WAVE_HARD_TIMEOUT = 600.0  # seconds since the wave went active
 
 
 class GameMode:
