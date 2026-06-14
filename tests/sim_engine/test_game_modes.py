@@ -628,3 +628,60 @@ class TestGameOverPayloadClamp:
         data = gm._build_game_over_data("defeat")
         assert data["wave"] == 23
         assert data["total_waves"] == -1
+
+
+class TestLeakStakes:
+    """Leaking hostiles past the defense must have stakes, not be rewarded like
+    a kill (FEATURE-AUDIT 2026-06-14).
+
+    Before: the full wave*200 bonus was awarded on wave-complete regardless of
+    how many hostiles escaped; escapes only fed adaptive difficulty and were
+    invisible to the operator.  Now the wave bonus scales by the fraction
+    DEFEATED, and leaked counts are tracked + surfaced.
+    """
+
+    def _complete_wave(self, spawned, eliminated, wave=1):
+        gm, bus, engine = _build_game_mode()
+        gm.wave = wave
+        gm._wave_hostile_ids = {f"h{i}" for i in range(spawned)}
+        gm.wave_eliminations = eliminated
+        gm._wave_start_time = gm._sim_time  # elapsed 0 -> time_bonus 50
+        gm.score = 0
+        gm._on_wave_complete()
+        return gm, bus
+
+    def test_clean_wave_gets_full_bonus(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=4)
+        assert gm.wave_leaked == 0
+        assert gm.score == 1 * 200 + 50  # full wave bonus + time bonus (unchanged)
+
+    def test_half_leaked_halves_wave_bonus(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=2)
+        assert gm.wave_leaked == 2
+        assert gm.total_leaked == 2
+        assert gm.score == int(1 * 200 * 0.5) + 50  # 100 + 50
+
+    def test_all_leaked_forfeits_wave_bonus(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=0)
+        assert gm.wave_leaked == 4
+        assert gm.score == 0 + 50  # only the time bonus; no wave bonus earned
+
+    def test_leaked_counts_surface_in_state(self):
+        gm, _ = self._complete_wave(spawned=3, eliminated=1)
+        st = gm.get_state()
+        assert st["wave_leaked"] == 2
+        assert st["total_leaked"] == 2
+
+    def test_wave_complete_event_reports_escaped(self):
+        gm, bus = self._complete_wave(spawned=5, eliminated=3)
+        wc = [d for (name, d) in bus.events if name == "wave_complete"]
+        assert wc, "a wave_complete event should be published"
+        assert wc[-1]["escaped"] == 2
+        assert wc[-1]["hostiles_spawned"] == 5
+
+    def test_reset_clears_leaked(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=1)
+        assert gm.total_leaked == 3
+        gm.reset()
+        assert gm.total_leaked == 0
+        assert gm.wave_leaked == 0

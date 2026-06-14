@@ -161,6 +161,11 @@ class GameMode:
         self.score: int = 0
         self.total_eliminations: int = 0
         self.wave_eliminations: int = 0
+        # Hostiles that escaped/leaked past the defense (FEATURE-AUDIT
+        # 2026-06-14): tracked so leaking has visible stakes instead of being
+        # silently treated as a clean wave.
+        self.total_leaked: int = 0
+        self.wave_leaked: int = 0
         self._countdown_remaining: float = _COUNTDOWN_DURATION
         self._wave_start_time: float = 0.0
         self._game_start_time: float = 0.0
@@ -226,6 +231,8 @@ class GameMode:
         self.score = 0
         self.total_eliminations = 0
         self.wave_eliminations = 0
+        self.total_leaked = 0
+        self.wave_leaked = 0
         self._counted_eliminations.clear()
         self._combat.reset_streaks()
         self._publish_state_change()
@@ -247,6 +254,8 @@ class GameMode:
         self.score = 0
         self.total_eliminations = 0
         self.wave_eliminations = 0
+        self.total_leaked = 0
+        self.wave_leaked = 0
         self._countdown_remaining = _COUNTDOWN_DURATION
         self._wave_hostile_ids.clear()
         self._spawn_queue.clear()
@@ -382,6 +391,8 @@ class GameMode:
             "score": self.score,
             "total_eliminations": self.total_eliminations,
             "wave_eliminations": self.wave_eliminations,
+            "total_leaked": self.total_leaked,
+            "wave_leaked": self.wave_leaked,
             "wave_hostiles_remaining": self._count_wave_hostiles_alive(),
             "infinite": self.infinite,
             "game_mode_type": self.game_mode_type,
@@ -814,12 +825,24 @@ class GameMode:
         elapsed = self._sim_time - self._wave_start_time
         # Time bonus: starts at 50, decreases by 5 per 10s elapsed
         time_bonus = max(0, 50 - int(elapsed / 10) * 5)
-        wave_bonus = self.wave * 200
-        self.score += wave_bonus + time_bonus
 
-        # Record wave performance for adaptive difficulty
+        # Stakes for leaking (FEATURE-AUDIT 2026-06-14): the wave bonus is EARNED
+        # by DEFEATING hostiles, not by letting them walk past.  Previously the
+        # full wave*200 bonus was awarded even if every hostile escaped, so
+        # leaking was rewarded identically to a kill (escapes only fed adaptive
+        # difficulty, never the score, and were invisible to the operator).
+        # Scale the bonus by the fraction defeated so it stays meaningful at
+        # every wave size; a perfectly-defended wave is unchanged.
         hostiles_spawned = len(self._wave_hostile_ids)
         escapes = max(0, hostiles_spawned - self.wave_eliminations)
+        defeat_fraction = (
+            self.wave_eliminations / hostiles_spawned if hostiles_spawned else 1.0
+        )
+        defeat_fraction = max(0.0, min(1.0, defeat_fraction))
+        wave_bonus = int(self.wave * 200 * defeat_fraction)
+        self.score += wave_bonus + time_bonus
+        self.wave_leaked = escapes
+        self.total_leaked += escapes
         friendly_damage = 0.0
         friendly_max_health = 0.0
         for t in self._engine.get_targets():
@@ -844,6 +867,8 @@ class GameMode:
             "wave_name": config.name if config else "",
             "time_elapsed": round(elapsed, 1),
             "eliminations": self.wave_eliminations,
+            "escaped": escapes,
+            "hostiles_spawned": hostiles_spawned,
             "score_bonus": wave_bonus + time_bonus,
             "next_wave_delay": _WAVE_ADVANCE_DELAY,
         }
