@@ -418,6 +418,13 @@ _DRAIN_RATES: dict[str, float] = {
 _RECHARGE_RATE: float = 0.01    # battery per second while in low_battery
 _RECHARGE_RESUME: float = 0.30  # resume "active" once battery recovers to here
 
+# Battery draw scales with activity (FEATURE-AUDIT 2026-06-14): an idle or
+# stationary unit (a parked rover, a defending turret) sips power, so it rarely
+# hits the low-battery floor -- this keeps a long-running/idle demo smooth (far
+# fewer recharge pauses) and lets fixed defenses outlast a battle.  Moving /
+# engaging units still draw the full per-type rate.
+_IDLE_DRAIN_FACTOR: float = 0.15
+
 # Combat stat profiles by (asset_type, alliance).
 # Format: (health, max_health, weapon_range, weapon_cooldown, weapon_damage, is_combatant)
 _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
@@ -765,8 +772,11 @@ class SimulationTarget:
                 self.status = "active"
             return
 
-        # Battery drain
-        drain = _DRAIN_RATES.get(self.asset_type, 0.001) * dt
+        # Battery drain — idle/stationary units sip power; active ones draw full.
+        base_drain = _DRAIN_RATES.get(self.asset_type, 0.001)
+        if self.status in ("idle", "stationary"):
+            base_drain *= _IDLE_DRAIN_FACTOR
+        drain = base_drain * dt
         self.battery = max(0.0, self.battery - drain)
         if self.battery < 0.05:
             self.status = "low_battery"

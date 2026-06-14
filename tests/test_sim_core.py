@@ -127,6 +127,30 @@ class TestSimulationTarget:
         t.tick(100.0)  # Large dt to drain battery
         assert t.status == "low_battery"
 
+    def test_idle_units_drain_less_than_active(self):
+        """Activity-scaled drain: idle/stationary units sip power, active draw
+        the full per-type rate (FEATURE-AUDIT 2026-06-14)."""
+        from tritium_lib.sim_engine.core.entity import _IDLE_DRAIN_FACTOR
+
+        def one_tick(status):
+            t = SimulationTarget(
+                target_id="r", name="R", alliance="friendly",
+                asset_type="rover", position=(0.0, 0.0),
+            )
+            t.status = status
+            t.battery = 1.0
+            before = t.battery
+            t.tick(0.1)
+            return before - t.battery
+
+        active = one_tick("active")
+        idle = one_tick("idle")
+        stationary = one_tick("stationary")
+        assert active > 0.0
+        assert idle < active and stationary < active
+        assert abs(idle / active - _IDLE_DRAIN_FACTOR) < 0.01
+        assert abs(stationary / active - _IDLE_DRAIN_FACTOR) < 0.01
+
     def test_low_battery_unit_recharges_and_resumes(self):
         """low_battery is 'reduced capability, not dead': a parked unit must
         trickle-charge and resume, not freeze forever (FEATURE-AUDIT 2026-06-14).
@@ -148,11 +172,16 @@ class TestSimulationTarget:
         assert t.status == "active", "a low_battery unit must recover, not stay frozen"
 
     def test_draining_unit_never_permanently_dies(self):
-        """Over a long run a unit cycles drain -> low_battery -> recharge and
-        stays alive, instead of the whole sim draining to a dead map."""
+        """Over a long run an actively-operating unit cycles drain ->
+        low_battery -> recharge and stays alive, instead of the whole sim
+        draining to a dead map."""
+        # Looping waypoints keep the unit moving (status "active") so it draws
+        # the full drain rate -- an idle/stationary unit now sips power
+        # (activity-scaled drain) and would barely deplete in this window.
         t = SimulationTarget(
             target_id="rover_long", name="Rover", alliance="friendly",
             asset_type="rover", position=(0.0, 0.0), speed=3.0,
+            waypoints=[(50.0, 0.0), (0.0, 0.0)], loop_waypoints=True,
         )
         t.status = "active"
         t.battery = 1.0
