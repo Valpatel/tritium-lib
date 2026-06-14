@@ -86,6 +86,16 @@ _TASK_REQUIRED_CAPS: dict[TaskType, set[str]] = {
     TaskType.CHAT: {"text"},
 }
 
+# "Hard" capabilities a generic text model genuinely cannot fake.  A vision
+# request carries images; routing it to a text-only model returns confident
+# garbage rather than a useful answer.  When no model with a hard capability is
+# available, infer() must fail cleanly (AllHostsFailedError) so the caller can
+# degrade properly -- skip vision / use a non-LLM heuristic -- instead of
+# silently trusting a blind model (FEATURE-AUDIT 2026-06-14).  "code" is soft:
+# a text model produces lower-quality code but still functions, so it may fall
+# back.
+_HARD_CAPABILITIES: set[str] = {"vision"}
+
 # Tasks that prefer quality (larger models) over speed
 _QUALITY_TASKS = {TaskType.COMPLEX_REASON, TaskType.CODE_GEN}
 
@@ -204,7 +214,14 @@ class ModelRouter:
         chain = self.select_chain(task_type)
 
         if not chain:
-            # No matching profiles — try first available model
+            required_caps = _TASK_REQUIRED_CAPS.get(task_type, {"text"})
+            # A hard capability (e.g. vision) cannot be substituted by a generic
+            # text model — do NOT route a vision request to a blind model; fail
+            # cleanly so the caller degrades properly.
+            if required_caps & _HARD_CAPABILITIES:
+                raise AllHostsFailedError(task_type)
+            # Soft tasks (text/chat/code) — try the first available model as an
+            # acceptable, lower-quality degradation.
             if self._profiles:
                 chain = sorted(self._profiles.values(), key=lambda p: p.priority)
             else:
