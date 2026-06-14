@@ -408,6 +408,16 @@ _DRAIN_RATES: dict[str, float] = {
     "bomber_swarm": 0.0,
 }
 
+# Low-battery recovery (sim convenience).  A low_battery unit is "reduced
+# capability, not dead" (the game_mode contract) -- without recovery it froze
+# permanently, so any sim running longer than ~15 min drained every unit to a
+# dead, motionless map (FEATURE-AUDIT 2026-06-14: 10/10 demo units pinned at
+# the 0.05 floor after an idle run).  A parked low_battery unit now trickle-
+# charges and resumes once it has enough charge.  Real hardware units report
+# battery via telemetry and never use this drain/recharge model.
+_RECHARGE_RATE: float = 0.01    # battery per second while in low_battery
+_RECHARGE_RESUME: float = 0.30  # resume "active" once battery recovers to here
+
 # Combat stat profiles by (asset_type, alliance).
 # Format: (health, max_health, weapon_range, weapon_cooldown, weapon_damage, is_combatant)
 _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
@@ -743,9 +753,16 @@ class SimulationTarget:
         # terminal/low-battery units — a unit's clock never runs
         # backwards relative to the engine's.
         self.sim_time += dt
-        # Skip ticking when target is terminal OR in low_battery (non-terminal
-        # but still inactive — battery drain pass already set this state).
-        if is_terminal(self.status) or self.status == "low_battery":
+        # Terminal units never tick again.
+        if is_terminal(self.status):
+            return
+        # low_battery is "reduced capability, not dead": trickle-charge while
+        # parked and resume once recovered, so an idle unit isn't frozen forever
+        # (otherwise a long-running sim drains every unit to a dead map).
+        if self.status == "low_battery":
+            self.battery = min(1.0, self.battery + _RECHARGE_RATE * dt)
+            if self.battery >= _RECHARGE_RESUME:
+                self.status = "active"
             return
 
         # Battery drain
