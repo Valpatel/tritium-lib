@@ -873,6 +873,13 @@ class GameMode:
         # elimination-event wiring); a hostile is either defeated or it leaked.
         escapes = min(hostiles_spawned, len(self._wave_escaped_ids))
         defeated = max(0, hostiles_spawned - escapes)
+        # Empty _wave_hostile_ids at completion means "wave cleared" across the
+        # codebase (the engine never empties the set mid-wave; only _start_wave
+        # clears it for the next wave, and tests use it as the cleared-signal),
+        # so it maps to a full bonus.  (Self-audit #8 -- zeroing the bonus for a
+        # genuinely-empty custom wave -- was reverted: it's a latent edge that's
+        # harmless for the standard configs and it conflicts with that
+        # established convention.)
         defeat_fraction = (
             defeated / hostiles_spawned if hostiles_spawned else 1.0
         )

@@ -783,7 +783,11 @@ class SimulationTarget:
             base_drain *= _IDLE_DRAIN_FACTOR
         drain = base_drain * dt
         self.battery = max(0.0, self.battery - drain)
-        if self.battery < 0.05:
+        # Only units that actually draw power enter the low-battery/recharge
+        # model.  Zero-drain entities (person/vehicle/animal/crowd roles) report
+        # battery via telemetry and must never be forced low_battery here even if
+        # their battery field is set <0.05 externally (self-audit #12).
+        if base_drain > 0 and self.battery < 0.05:
             self.status = "low_battery"
             return
 

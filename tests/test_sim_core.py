@@ -151,6 +151,27 @@ class TestSimulationTarget:
         assert abs(idle / active - _IDLE_DRAIN_FACTOR) < 0.01
         assert abs(stationary / active - _IDLE_DRAIN_FACTOR) < 0.01
 
+    def test_zero_drain_unit_never_enters_low_battery(self):
+        """Zero-drain entities (person/vehicle/crowd roles) never enter the
+        low-battery/recharge model, even at battery<0.05 (self-audit #12)."""
+        person = SimulationTarget(
+            target_id="p", name="P", alliance="neutral",
+            asset_type="person", position=(0.0, 0.0),
+        )
+        person.status = "active"
+        person.battery = 0.01
+        person.tick(0.1)
+        assert person.status != "low_battery"
+        # a unit that DOES drain still transitions correctly
+        rover = SimulationTarget(
+            target_id="r", name="R", alliance="friendly",
+            asset_type="rover", position=(0.0, 0.0),
+        )
+        rover.status = "active"
+        rover.battery = 0.01
+        rover.tick(0.1)
+        assert rover.status == "low_battery"
+
     def test_recharge_window_is_brief(self):
         """The low_battery recharge window must be a brief inert blip, not a long
         freeze -- a low_battery unit can't move/fire/be targeted until it resumes

@@ -807,3 +807,30 @@ class TestIdentityVeto:
             StrategyScore("signal_pattern", 1.0, "match"),
         ]
         assert c._weighted_score(scores) > 0.0
+
+
+class TestCalibrationTopBinAndVeto:
+    """Scores of exactly 1.0 are calibratable (top bin inclusive), so a trained
+    calibrator can veto a known-bad high-score fusion (self-audit #15)."""
+
+    def test_score_one_is_calibratable(self):
+        cal = ConfidenceCalibrator()
+        for _ in range(15):
+            cal.record_outcome("spatial", 1.0, actual_match=False)
+        # Before the top-bin fix, calibrate_score(1.0) fell through to raw (1.0)
+        # because the 0.9 bin was half-open [0.9, 1.0).
+        assert cal.calibrate_score("spatial", 1.0) < 0.5
+
+    def test_trained_calibrator_lowers_combined_confidence(self):
+        cal = ConfidenceCalibrator()
+        for _ in range(15):
+            cal.record_outcome("spatial", 1.0, actual_match=False)
+            cal.record_outcome("signal_pattern", 1.0, actual_match=False)
+        c = TargetCorrelator(TargetTracker(), calibrator=cal)
+        scores = [StrategyScore("spatial", 1.0, "x"),
+                  StrategyScore("signal_pattern", 1.0, "x")]
+        raw = c._weighted_score(scores)
+        calibrated = c._weighted_score(c._calibrate_scores(scores))
+        assert raw >= 0.70
+        assert calibrated < raw, "trained calibrator must be able to lower confidence"
+        assert min(raw, calibrated) < c.confidence_threshold, "merge would be vetoed"

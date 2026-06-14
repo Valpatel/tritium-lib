@@ -159,12 +159,19 @@ class ConfidenceCalibrator:
         if not records or len(records) < 10:
             return raw_score  # not enough data to calibrate
 
-        # Find the bin (0.0-0.1, 0.1-0.2, ..., 0.9-1.0)
+        # Find the bin (0.0-0.1, 0.1-0.2, ..., 0.9-1.0).  The top bin is
+        # INCLUSIVE of 1.0 -- a half-open [0.9, 1.0) excluded scores of exactly
+        # 1.0 (the common "perfect spatial/signal match" case), so those scores
+        # could never be calibrated (self-audit #15: this is why calibration
+        # couldn't veto the over-correlation case, whose scores are 1.0).
         bin_idx = min(9, int(raw_score * 10))
         bin_low = bin_idx * 0.1
         bin_high = bin_low + 0.1
 
-        in_bin = [r for r in records if bin_low <= r.predicted_score < bin_high]
+        if bin_idx == 9:
+            in_bin = [r for r in records if bin_low <= r.predicted_score <= bin_high]
+        else:
+            in_bin = [r for r in records if bin_low <= r.predicted_score < bin_high]
         if len(in_bin) < 3:
             return raw_score  # not enough samples in this bin
 

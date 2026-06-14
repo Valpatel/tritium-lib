@@ -256,12 +256,19 @@ class TargetCorrelator:
                 calibrated_scores = self._calibrate_scores(scores)
                 calibrated_confidence = self._weighted_score(calibrated_scores)
 
+                # Gate on the more-skeptical of raw vs calibrated confidence, so a
+                # trained calibrator that has learned a strategy historically
+                # false-positives can VETO a known-bad fusion (self-audit #15).
+                # Without training data calibrated == raw, so this is a no-op; it
+                # can only make the merge MORE conservative, never inflate one.
+                gate_confidence = min(weighted_confidence, calibrated_confidence)
+
                 self._log_correlation_decision(
                     primary, secondary, scores, weighted_confidence,
-                    correlated=weighted_confidence >= self.confidence_threshold,
+                    correlated=gate_confidence >= self.confidence_threshold,
                 )
 
-                if weighted_confidence < self.confidence_threshold:
+                if gate_confidence < self.confidence_threshold:
                     continue
 
                 contributing = [s for s in scores if s.score > 0]
