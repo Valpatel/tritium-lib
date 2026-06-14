@@ -110,10 +110,17 @@ _WAVE_ADVANCE_DELAY = 5.0  # seconds
 # Countdown duration before wave 1
 _COUNTDOWN_DURATION = 5.0  # seconds
 
-# Stalemate timeout: if no hostiles are eliminated for this many seconds
-# during an active wave, remaining hostiles are forcibly eliminated.
-# Prevents infinite stalemates when hostiles wander out of weapon range.
-_STALEMATE_TIMEOUT = 60.0  # seconds
+# Stalemate timeout: if NO combat progress is made (no elimination AND no
+# damage dealt to wave hostiles) for this many seconds during an active wave,
+# remaining hostiles are forcibly eliminated.  Prevents infinite stalemates
+# when hostiles wander permanently out of weapon range.  Slow-but-real combat
+# (defenders steadily chipping hostiles) resets this clock so a wave is decided
+# by actual kills, not by the timer (FEATURE-AUDIT 2026-06-14).
+_STALEMATE_TIMEOUT = 60.0  # seconds since last combat progress
+# Absolute ceiling: even if damage keeps trickling, a single wave can never run
+# longer than this (sim seconds) before remaining hostiles are force-eliminated.
+# Backstop against a pathological trickle that resets the progress clock forever.
+_WAVE_HARD_TIMEOUT = 240.0  # seconds since the wave went active
 
 
 class GameMode:
@@ -169,6 +176,17 @@ class GameMode:
         self._spawn_queue: list = []   # thunks; each spawns one hostile
         self._next_spawn_at: float = 0.0
         self._last_elimination_time: float = 0.0  # for stalemate detection
+        # Combat-progress tracking (FEATURE-AUDIT 2026-06-14): a wave is only a
+        # stalemate when NOTHING is happening.  Slow-but-real combat (defenders
+        # chipping hostiles down) used to be force-eliminated by the stalemate
+        # timer at 60s because the clock only reset on a KILL, not on damage --
+        # so wave 1 was routinely "won" by the timer, not by the defenders.
+        # We stamp _last_combat_progress_time whenever total wave-hostile HP
+        # drops, and only declare a stalemate when neither a kill nor damage has
+        # occurred for the timeout.  A hard ceiling still bounds total duration.
+        self._last_combat_progress_time: float = 0.0
+        self._last_wave_hostile_health: float = 0.0
+        self._wave_active_since: float = 0.0  # sim_time the wave went active
         # Dedup guard: target_ids already counted as eliminations.  The
         # stalemate force-eliminator increments counters directly AND
         # publishes target_eliminated, which the engine listener echoes
@@ -418,12 +436,26 @@ class GameMode:
             self._publish_state_change()
             return
 
-        # Stalemate detection: if no elimination for _STALEMATE_TIMEOUT seconds
-        # and there are hostiles alive, force-eliminate remaining hostiles.
-        # This prevents infinite games when hostiles wander out of weapon range.
-        if (self._last_elimination_time > 0
-                and (self._sim_time - self._last_elimination_time) >= _STALEMATE_TIMEOUT
-                and not self._is_spawning()):
+        # Combat-progress tracking: if total wave-hostile HP dropped since last
+        # tick, the defenders are actively fighting -- that is NOT a stalemate,
+        # so stamp the progress clock.  (New spawns only ever raise total HP, so
+        # they never falsely register as progress.)
+        cur_hp = self._wave_hostiles_total_health()
+        if cur_hp < self._last_wave_hostile_health - 0.5:
+            self._last_combat_progress_time = self._sim_time
+        self._last_wave_hostile_health = cur_hp
+
+        # Stalemate detection: force-eliminate remaining hostiles only when there
+        # has been NO combat progress (neither a kill nor damage dealt) for
+        # _STALEMATE_TIMEOUT seconds -- or when the wave exceeds the absolute
+        # hard ceiling.  This lets slow-but-real combat resolve a wave by actual
+        # kills instead of the timer short-circuiting it (FEATURE-AUDIT 2026-06-14).
+        last_progress = max(self._last_elimination_time, self._last_combat_progress_time)
+        stale = (last_progress > 0
+                 and (self._sim_time - last_progress) >= _STALEMATE_TIMEOUT)
+        hard_timeout = (self._wave_active_since > 0
+                        and (self._sim_time - self._wave_active_since) >= _WAVE_HARD_TIMEOUT)
+        if (stale or hard_timeout) and not self._is_spawning():
             stale_alive = self._count_wave_hostiles_alive()
             if stale_alive > 0:
                 self._force_eliminate_wave_hostiles()
@@ -540,6 +572,9 @@ class GameMode:
         self.wave_eliminations = 0
         self._wave_start_time = self._sim_time
         self._last_elimination_time = self._sim_time  # reset stalemate clock
+        self._last_combat_progress_time = self._sim_time  # reset progress clock
+        self._last_wave_hostile_health = 0.0
+        self._wave_active_since = self._sim_time
         self._wave_hostile_ids.clear()
 
         # Wave 3+ adds environmental pressure via random hazard spawning.
@@ -735,6 +770,20 @@ class GameMode:
             if t.target_id in self._wave_hostile_ids and t.status == "active":
                 count += 1
         return count
+
+    def _wave_hostiles_total_health(self) -> float:
+        """Total current HP of alive wave hostiles (for stalemate progress).
+
+        A drop in this sum between ticks means the defenders are dealing damage
+        -- combat progress -- which resets the stalemate clock so a slow fight
+        is not force-eliminated by the timer (FEATURE-AUDIT 2026-06-14).
+        """
+        total = 0.0
+        for t in self._engine.get_targets():
+            if t.target_id in self._wave_hostile_ids and t.status == "active":
+                hp = getattr(t, "health", 0.0)
+                total += hp if hp is not None else 0.0
+        return total
 
     def _force_eliminate_wave_hostiles(self) -> None:
         """Force-eliminate remaining wave hostiles to break a stalemate."""
