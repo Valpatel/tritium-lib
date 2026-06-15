@@ -1204,6 +1204,13 @@ def _build_riot(
     # map rather than hugging the centre).
     n = 6
     riot_sectors = {1, 4}
+    # Scale the crowd with the arena so a big "use the whole city" riot stays
+    # believably dense instead of a sparse scatter (riot city-scale, 2026-06-15).
+    # Baseline span 240 m -> ~200 members; up to 1.8x for a large arena. Spans at
+    # or below the 200 m test bounds keep dmult=1.0 (occupancy test unchanged).
+    dmult = max(1.0, min(span / 240.0, 1.8))
+    n_riot = round(30 * dmult)
+    n_agit = round(35 * dmult)
     sector_points: list[Vec2] = []
     for i in range(n):
         angle = 2 * math.pi * i / n + 0.2
@@ -1216,13 +1223,13 @@ def _build_riot(
     rioting_core_pos: Vec2 | None = None
     for i, anchor in enumerate(sector_points):
         if i in riot_sectors:
-            sim.spawn_crowd(anchor, 30, radius=span * 0.05,
+            sim.spawn_crowd(anchor, n_riot, radius=span * 0.05,
                             mood=CrowdMood.RIOTING, leader_ratio=0.10,
                             rng=rng, anchor=anchor)
             if rioting_core_pos is None:
                 rioting_core_pos = anchor
         else:
-            sim.spawn_crowd(anchor, 35, radius=span * 0.05,
+            sim.spawn_crowd(anchor, n_agit, radius=span * 0.05,
                             mood=CrowdMood.AGITATED, leader_ratio=0.06,
                             rng=rng, anchor=anchor)
 
