@@ -12,6 +12,8 @@ mill and disperse organically.
 
 from __future__ import annotations
 
+import random
+
 from tritium_lib.sim_engine.crowd import (
     CrowdSimulator, CrowdMember, CrowdMood, CrowdEvent,
     _SPEED_FLEEING, _build_riot,
@@ -64,8 +66,10 @@ def test_fleeing_disperses_across_many_exit_zones():
 
 
 def test_riot_does_not_collapse_to_a_point():
-    """The scattered riot preset stays spread across the area (organic clusters
-    clashing locally), not a single dense blob rushing one central point."""
+    """Weak sanity check only. NOTE: bbox spread != legibility — a crowd can have
+    a wide bounding box yet still be an unreadable pile in the centre (two outlier
+    members stretch the bbox while everyone else stacks). The load-bearing metric
+    is OCCUPANCY (see test_riot_occupancy_is_spread_not_a_central_pile)."""
     sim = _build_riot(BOUNDS)
     for _ in range(30):
         sim.tick(0.5)
@@ -75,6 +79,58 @@ def test_riot_does_not_collapse_to_a_point():
     assert spread_x > 40.0 and spread_y > 40.0, (
         f"riot collapsed to a blob: {spread_x:.1f} x {spread_y:.1f} m"
     )
+
+
+def _occupancy(sim, cell_size=20.0):
+    """Bin members into *cell_size* m cells. Returns (busiest_count, n_members,
+    occupied_cell_count)."""
+    cells: dict[tuple[int, int], int] = {}
+    for m in sim.members:
+        key = (int(m.position[0] // cell_size), int(m.position[1] // cell_size))
+        cells[key] = cells.get(key, 0) + 1
+    busiest = max(cells.values()) if cells else 0
+    return busiest, len(sim.members), len(cells)
+
+
+def test_riot_occupancy_is_spread_not_a_central_pile():
+    """LOAD-BEARING legibility metric (riot rework, 2026-06-15): bin the riot
+    into 20 m cells and require that NO single cell holds a large share of the
+    crowd AND that members occupy MANY distinct cells — at spawn AND after the
+    crowd has marched/held/rotated. This is what the operator complaint ("a
+    massive pile of units only in the centre") actually demands; bbox spread
+    (test_riot_does_not_collapse_to_a_point) does not capture it.
+
+    Thresholds are set from MEASURED post-fix values with wide headroom:
+      busiest cell  9.5% / 8.0% / 7.5% at t=0/30/90s  -> assert < 20%
+      occupied      24   / 26   / 24   cells          -> assert >= 12
+    Determinism: _build_riot(seed=...) seeds placement + objective RNG, and we
+    seed the module RNG (movement jitter) — so these numbers are repeatable.
+    """
+    random.seed(20260615)
+    sim = _build_riot(BOUNDS, seed=1234)
+    cell = 20.0
+    max_share = 0.20
+    min_cells = 12
+
+    def check(label):
+        busiest, n, occupied = _occupancy(sim, cell)
+        share = busiest / n
+        assert share < max_share, (
+            f"{label}: busiest cell holds {share:.1%} of the crowd "
+            f"({busiest}/{n}) — a central pile (want < {max_share:.0%})"
+        )
+        assert occupied >= min_cells, (
+            f"{label}: only {occupied} cells occupied (want >= {min_cells}) — "
+            f"crowd is clumped, not spread across the map"
+        )
+
+    check("t=0")
+    for _ in range(60):     # 30 sim-seconds
+        sim.tick(0.5)
+    check("t=30s")
+    for _ in range(120):    # to 90 sim-seconds
+        sim.tick(0.5)
+    check("t=90s")
 
 
 def test_riot_preset_spawns_scattered_subgroups():
