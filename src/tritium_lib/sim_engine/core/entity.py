@@ -430,6 +430,18 @@ _RECHARGE_RESUME: float = 0.30  # resume "active" once battery recovers to here
 # engaging units still draw the full per-type rate.
 _IDLE_DRAIN_FACTOR: float = 0.15
 
+# Neutral civilian FSM states that mean "actively reacting to a live threat"
+# (fleeing to / sheltering at a door, or a vehicle speeding away).  A neutral
+# whose flee path COMPLETES while still in one of these states must NOT
+# terminalize (despawn) — that would STRAND the ped mid-incident and the engine
+# would never resume its routine after the threat passes.  Instead it stays
+# "active" (sheltering in place) so its behavior FSM keeps ticking; once the
+# danger decays and the flee max_duration returns it to "walking", the routine
+# bridge re-routes it to its scheduled destination (resume).
+_NEUTRAL_SHELTER_STATES: frozenset[str] = frozenset(
+    {"fleeing", "hiding", "panicking", "evading", "startled"}
+)
+
 # Combat stat profiles by (asset_type, alliance).
 # Format: (health, max_health, weapon_range, weapon_cooldown, weapon_damage, is_combatant)
 _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
@@ -891,7 +903,18 @@ class SimulationTarget:
         alive on the map and is NOT cleaned up by the generic despawn path —
         the SimulationEngine GC removes arrived neutrals separately, after a
         short POI dwell, so they free their spawner slot.
+
+        ANTI-STRAND: when the neutral is mid-flee (its behavior FSM is in a
+        shelter/flee/evade state), completing the short flee path is NOT an end
+        of life — the ped has reached shelter and must WAIT OUT the incident,
+        then resume its routine.  Returning "active" here keeps the engine FSM
+        ticking (despawned/arrived neutrals are skipped by _tick_fsms), so the
+        flee max_duration can return it to walking and the bridge re-routes it
+        to its scheduled destination.  Without this, a fast flee path that
+        finishes before the danger decays strands the ped (despawn → GC).
         """
+        if self.fsm_state in _NEUTRAL_SHELTER_STATES:
+            return "active"
         dest = self.routine_destination
         if dest is not None:
             if math.hypot(
