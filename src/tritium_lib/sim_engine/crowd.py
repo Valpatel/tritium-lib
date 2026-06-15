@@ -61,6 +61,10 @@ class CrowdMember:
     has_weapon: bool = False
     is_leader: bool = False
     group_id: str = ""
+    # Organic-movement state (riot-quality rework, 2026-06-14)
+    exit_target: Vec2 | None = None   # sticky flee destination (dispersed exits)
+    dwell: float = 0.0                 # CALM/UNEASY: seconds left standing still (milling)
+    wander: Vec2 = (0.0, 0.0)          # persistent, slowly-turning wander heading
 
 
 @dataclass
@@ -196,7 +200,8 @@ class CrowdSimulator:
         Hard cap on crowd size.
     """
 
-    def __init__(self, bounds: tuple[float, float, float, float], max_members: int = 500) -> None:
+    def __init__(self, bounds: tuple[float, float, float, float], max_members: int = 500,
+                 obstacles: Any = None, street_nodes: list[Vec2] | None = None) -> None:
         self.bounds = bounds
         self.max_members = max_members
         self.members: list[CrowdMember] = []
@@ -205,17 +210,29 @@ class CrowdSimulator:
         self._time: float = 0.0
         self._exits: list[Vec2] = self._compute_exits()
         self._grid = _CrowdGrid(cell_size=5.0)
+        # Optional BuildingObstacles (duck-typed: needs point_in_building(x, y)).
+        # When set, members never walk into buildings — the crowd is confined to
+        # streets / open space instead of drifting through footprints.
+        self.obstacles = obstacles
+        # Optional list of (x, y) street-node positions. When set, group gather
+        # points snap to the nearest street node so crowds form on real streets /
+        # junctions instead of collapsing onto an arbitrary centroid.
+        self.street_nodes = street_nodes
 
     # -- helpers -------------------------------------------------------------
 
     def _compute_exits(self) -> list[Vec2]:
-        """Compute exit points at midpoints of each boundary edge."""
+        """Exit zones distributed around the boundary so fleeing crowds disperse
+        in many directions instead of streaming onto 4 midpoints (the old
+        4-exit model produced the conspicuous "lines of units")."""
         x0, y0, x1, y1 = self.bounds
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        rx, ry = (x1 - x0) / 2.0, (y1 - y0) / 2.0
+        n = 12
         return [
-            ((x0 + x1) / 2, y0),  # bottom
-            ((x0 + x1) / 2, y1),  # top
-            (x0, (y0 + y1) / 2),  # left
-            (x1, (y0 + y1) / 2),  # right
+            (cx + rx * math.cos(2 * math.pi * i / n),
+             cy + ry * math.sin(2 * math.pi * i / n))
+            for i in range(n)
         ]
 
     def _clamp_to_bounds(self, pos: Vec2) -> Vec2:
@@ -239,15 +256,14 @@ class CrowdSimulator:
             return CrowdMood.UNEASY
         return CrowdMood.CALM
 
-    def _nearest_exit(self, pos: Vec2) -> Vec2:
-        best = self._exits[0]
-        best_d = distance(pos, best)
-        for ex in self._exits[1:]:
-            d = distance(pos, ex)
-            if d < best_d:
-                best_d = d
-                best = ex
-        return best
+    def _pick_exit(self, pos: Vec2) -> Vec2:
+        """Pick a stochastic exit from the nearest few zones, with jitter, so
+        fleeing members spread into a dispersed cloud instead of collapsing
+        onto the single nearest exit (which produced 4 streaming lines)."""
+        ranked = sorted(self._exits, key=lambda ex: distance(pos, ex))
+        choice = random.choice(ranked[: min(3, len(ranked))])
+        return (choice[0] + random.uniform(-6.0, 6.0),
+                choice[1] + random.uniform(-6.0, 6.0))
 
     # -- public API ----------------------------------------------------------
 
@@ -409,55 +425,118 @@ class CrowdSimulator:
         for m in self.members:
             m.mood = self._resolve_mood(m)
 
+    def _blocked(self, pos: Vec2) -> bool:
+        """True if pos is inside a building footprint (guarded, no-op if no obstacles)."""
+        if self.obstacles is None:
+            return False
+        try:
+            return bool(self.obstacles.point_in_building(pos[0], pos[1]))
+        except Exception:
+            return False
+
+    def _apply_velocity(self, member: CrowdMember, dt: float) -> None:
+        """Advance a member by its velocity, but never INTO a building. If the
+        diagonal move is blocked, SLIDE along the wall — move on whichever axis
+        is still free — so members flow around buildings instead of piling up at
+        the wall (riot-mode rework, 2026-06-14)."""
+        # Already inside a building (spawned/snapped in, or steered to a gather
+        # point that sat on a building node)? Eject to the nearest open space.
+        # Wall-slide only stops members ENTERING; it cannot free one that begins
+        # the tick inside (every slide axis is blocked -> frozen inside forever).
+        if self._blocked(member.position):
+            out = self._nearest_open(member.position)
+            if out is not None:
+                member.position = out
+            member.velocity = (0.0, 0.0)
+            return
+        vx, vy = member.velocity
+        full = self._clamp_to_bounds((member.position[0] + vx * dt, member.position[1] + vy * dt))
+        if not self._blocked(full):
+            member.position = full
+            return
+        # Wall-slide: take whichever single-axis move is unobstructed.
+        slide_x = self._clamp_to_bounds((member.position[0] + vx * dt, member.position[1]))
+        if not self._blocked(slide_x):
+            member.position = slide_x
+            member.velocity = (vx, 0.0)
+            return
+        slide_y = self._clamp_to_bounds((member.position[0], member.position[1] + vy * dt))
+        if not self._blocked(slide_y):
+            member.position = slide_y
+            member.velocity = (0.0, vy)
+            return
+        member.velocity = (0.0, 0.0)   # truly cornered
+
     def _move_members(self, dt: float) -> None:
-        """Move each member according to their mood."""
+        """Move each member according to their mood — with organic milling,
+        dispersed flight, jittered cluster targets, and exponentially-smoothed
+        velocity, so the crowd reads as a believable gathering rather than
+        lines streaming onto a handful of points."""
         for m in self.members:
             target: Vec2 | None = None
             speed = _SPEED_CALM
 
-            if m.mood == CrowdMood.CALM:
-                # Random walk
-                speed = _SPEED_CALM
-                angle = random.uniform(0, 2 * math.pi)
-                jitter = (math.cos(angle) * speed * 0.5, math.sin(angle) * speed * 0.5)
-                target = _add(m.position, jitter)
-
-            elif m.mood == CrowdMood.UNEASY:
-                speed = _SPEED_CALM * 1.2
-                angle = random.uniform(0, 2 * math.pi)
-                jitter = (math.cos(angle) * speed * 0.3, math.sin(angle) * speed * 0.3)
-                target = _add(m.position, jitter)
+            if m.mood in (CrowdMood.CALM, CrowdMood.UNEASY):
+                m.exit_target = None
+                speed = _SPEED_CALM * (1.2 if m.mood == CrowdMood.UNEASY else 1.0)
+                # Mill: occasionally stand still, else drift on a slowly-turning
+                # heading (not a fresh random angle every tick, which spins in place).
+                if m.dwell > 0.0:
+                    m.dwell -= dt
+                    m.velocity = (m.velocity[0] * 0.5, m.velocity[1] * 0.5)
+                    self._apply_velocity(m, dt)
+                    continue
+                if magnitude(m.wander) < 1e-6 or random.random() < 0.05:
+                    a = random.uniform(0, 2 * math.pi)
+                    m.wander = (math.cos(a), math.sin(a))
+                    if random.random() < 0.25:
+                        m.dwell = random.uniform(0.5, 2.0)   # pause and mill
+                a = math.atan2(m.wander[1], m.wander[0]) + random.uniform(-0.4, 0.4)
+                m.wander = (math.cos(a), math.sin(a))
+                target = _add(m.position, _scale(m.wander, speed))
 
             elif m.mood == CrowdMood.AGITATED:
+                m.exit_target = None
                 speed = _SPEED_AGITATED
-                # Move toward group center / leaders
-                target = self._group_center(m)
+                gc = self._group_center(m)
+                # Loose cluster AROUND the center (jittered), not a snap onto it.
+                target = (gc[0] + random.uniform(-3.0, 3.0), gc[1] + random.uniform(-3.0, 3.0))
 
             elif m.mood == CrowdMood.RIOTING:
+                m.exit_target = None
                 speed = _SPEED_RIOTING
-                # Move toward nearest event or random aggressive direction
+                # Surge toward a NEARBY flashpoint; otherwise hold the local
+                # cluster so scattered groups clash across the area instead of
+                # every rioter rushing one central point (which made a tight blob).
+                near_ev = None
                 if self.events:
-                    nearest_evt = min(self.events, key=lambda e: distance(m.position, e.position))
-                    target = nearest_evt.position
+                    ev = min(self.events, key=lambda e: distance(m.position, e.position))
+                    if distance(m.position, ev.position) < 25.0:
+                        near_ev = ev
+                if near_ev is not None:
+                    target = (near_ev.position[0] + random.uniform(-5.0, 5.0),
+                              near_ev.position[1] + random.uniform(-5.0, 5.0))
                 else:
-                    target = self._group_center(m)
+                    gc = self._group_center(m)
+                    target = (gc[0] + random.uniform(-4.0, 4.0), gc[1] + random.uniform(-4.0, 4.0))
 
             elif m.mood == CrowdMood.PANICKED:
                 speed = _SPEED_PANICKED
-                # Move away from nearest threat event
                 threat = self._nearest_threat(m)
-                if threat:
+                if threat and distance(m.position, threat) < 30.0:
                     away = _sub(m.position, threat)
                     if magnitude(away) > 1e-6:
                         target = _add(m.position, _scale(normalize(away), speed))
-                    else:
-                        target = self._nearest_exit(m.position)
-                else:
-                    target = self._nearest_exit(m.position)
+                if target is None:
+                    if m.exit_target is None:
+                        m.exit_target = self._pick_exit(m.position)
+                    target = m.exit_target
 
             elif m.mood == CrowdMood.FLEEING:
                 speed = _SPEED_FLEEING
-                target = self._nearest_exit(m.position)
+                if m.exit_target is None:
+                    m.exit_target = self._pick_exit(m.position)
+                target = m.exit_target
 
             if target is None:
                 continue
@@ -465,19 +544,18 @@ class CrowdSimulator:
             desired = _sub(target, m.position)
             d = magnitude(desired)
             if d < 1e-6:
-                m.velocity = (0.0, 0.0)
+                m.velocity = (m.velocity[0] * 0.5, m.velocity[1] * 0.5)
                 continue
 
             desired_vel = _scale(normalize(desired), speed)
-
-            # Separation force — avoid bumping into others
+            # Separation spreads the crowd into a cluster instead of a stack.
             sep = self._separation_force(m)
-            combined = _add(desired_vel, _scale(sep, 2.0))
+            combined = _add(desired_vel, _scale(sep, speed * 1.2))
             combined = truncate(combined, speed)
-
-            m.velocity = combined
-            new_pos = _add(m.position, _scale(m.velocity, dt))
-            m.position = self._clamp_to_bounds(new_pos)
+            # Exponential velocity smoothing -> no per-tick heading snaps/jitter.
+            m.velocity = (0.7 * m.velocity[0] + 0.3 * combined[0],
+                          0.7 * m.velocity[1] + 0.3 * combined[1])
+            self._apply_velocity(m, dt)
 
     def _compute_group_centers(self) -> dict[str, Vec2]:
         """Precompute center position for each group, biased toward leaders.
@@ -503,10 +581,47 @@ class CrowdSimulator:
         for gid, (sx, sy, cnt) in all_sums.items():
             ldata = leader_sums.get(gid)
             if ldata and ldata[2] > 0:
-                centers[gid] = (ldata[0] / ldata[2], ldata[1] / ldata[2])
+                c = (ldata[0] / ldata[2], ldata[1] / ldata[2])
             elif cnt > 0:
-                centers[gid] = (sx / cnt, sy / cnt)
+                c = (sx / cnt, sy / cnt)
+            else:
+                continue
+            # Anchor the gather point to the nearest street node so the group
+            # forms on a real street/junction, not an arbitrary centroid (which
+            # can sit inside a building). One scan per group per tick.
+            centers[gid] = self._nearest_street(c)
         return centers
+
+    def _nearest_street(self, pos: Vec2) -> Vec2:
+        """Snap a point to the nearest street node, if street data is loaded."""
+        nodes = self.street_nodes
+        if not nodes:
+            return pos
+        best = pos
+        best_d = float("inf")
+        px, py = pos
+        for nx, ny in nodes:
+            d = (nx - px) * (nx - px) + (ny - py) * (ny - py)
+            if d < best_d:
+                best_d = d
+                best = (nx, ny)
+        return best
+
+    def _nearest_open(self, pos: Vec2) -> Vec2 | None:
+        """Nearest open (non-building) point to pos, via a radial search outward.
+        Used to eject a member that ended up inside a building — the smallest pop
+        that clears the footprint, so they reappear just outside the wall rather
+        than teleporting across the map. Returns None if nothing open is found."""
+        if self.obstacles is None:
+            return pos
+        px, py = pos
+        for r in (1.5, 3.0, 4.5, 6.0, 8.0, 11.0, 15.0, 20.0, 28.0, 40.0):
+            for k in range(12):
+                ang = k * (math.pi / 6.0)
+                cand = self._clamp_to_bounds((px + math.cos(ang) * r, py + math.sin(ang) * r))
+                if not self._blocked(cand):
+                    return cand
+        return None
 
     def _group_center(self, member: CrowdMember) -> Vec2:
         """Center of this member's group, biased toward leaders.
@@ -531,7 +646,7 @@ class CrowdSimulator:
 
         Uses the spatial grid for O(k) neighbor lookups instead of O(n) scans.
         """
-        sep_radius = 1.5
+        sep_radius = 3.0
         force = (0.0, 0.0)
         count = 0
         neighbors = self._grid.query_radius(member.position, sep_radius)
@@ -541,10 +656,18 @@ class CrowdSimulator:
             d = distance(member.position, m.position)
             if 1e-6 < d < sep_radius:
                 diff = normalize(_sub(member.position, m.position))
-                force = _add(force, _scale(diff, 1.0 / d))
+                # Linear falloff (strongest when close) — spreads the crowd into
+                # a believable cluster instead of letting members stack into lines.
+                w = (sep_radius - d) / sep_radius
+                force = _add(force, _scale(diff, w))
                 count += 1
         if count > 0:
             force = _scale(force, 1.0 / count)
+            # De-clump dense pockets: averaging by count weakens separation
+            # exactly where it's needed most, so amplify when many neighbours
+            # are crowded in close — the crowd actively spreads instead of stacking.
+            if count > 3:
+                force = _scale(force, 1.0 + 0.4 * (count - 3))
         return force
 
     def _decay_events(self, dt: float) -> None:
@@ -729,25 +852,38 @@ class CrowdSimulator:
 # ---------------------------------------------------------------------------
 
 def _build_peaceful_protest(bounds: tuple[float, float, float, float]) -> CrowdSimulator:
-    """200 calm protesters with leaders. Slow escalation if police arrive."""
+    """~200 calm protesters gathering in several scattered clusters (organic
+    groups, not one blob). Slow escalation if police arrive."""
     sim = CrowdSimulator(bounds, max_members=500)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
-    sim.spawn_crowd((cx, cy), 200, radius=30.0, mood=CrowdMood.CALM, leader_ratio=0.05)
+    span = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    off = span * 0.15
+    for dx, dy in [(0.0, 0.0), (-off, off * 0.6), (off, off * 0.5),
+                   (-off * 0.6, -off), (off * 0.7, -off * 0.7)]:
+        sim.spawn_crowd((cx + dx, cy + dy), 40, radius=span * 0.08,
+                        mood=CrowdMood.CALM, leader_ratio=0.05)
     return sim
 
 
 def _build_riot(bounds: tuple[float, float, float, float]) -> CrowdSimulator:
-    """150 agitated + 50 rioting, leaders, objects thrown."""
+    """~200 agitated members in several scattered clusters with two rioting
+    cores (organic groups, not one blob), leaders, objects thrown."""
     sim = CrowdSimulator(bounds, max_members=500)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
-    sim.spawn_crowd((cx, cy), 150, radius=25.0, mood=CrowdMood.AGITATED, leader_ratio=0.03)
-    sim.spawn_crowd((cx + 10, cy), 50, radius=15.0, mood=CrowdMood.RIOTING, leader_ratio=0.06)
-    # Initial thrown objects
+    span = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    off = span * 0.18
+    for dx, dy in [(-off, -off), (off, -off), (-off, off), (off, off)]:
+        sim.spawn_crowd((cx + dx, cy + dy), 35, radius=span * 0.09,
+                        mood=CrowdMood.AGITATED, leader_ratio=0.06)
+    for dx, dy in [(-off * 0.4, off * 0.3), (off * 0.4, -off * 0.3)]:
+        sim.spawn_crowd((cx + dx, cy + dy), 30, radius=span * 0.07,
+                        mood=CrowdMood.RIOTING, leader_ratio=0.10)
+    # Initial thrown objects at the center
     sim.inject_event(CrowdEvent(
         event_type="throw_object",
-        position=(cx + 5, cy + 5),
+        position=(cx, cy),
         radius=10.0,
         intensity=0.6,
         timestamp=0.0,

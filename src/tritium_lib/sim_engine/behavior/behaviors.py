@@ -227,6 +227,10 @@ class UnitBehaviors:
             if self._is_emp_stunned(tid):
                 continue
 
+            # Track whether a rover fired this tick — civil_unrest de-escalation
+            # backfires when an operator fires near the crowd.
+            rover_fired = False
+
             if t.asset_type == "missile_turret" and self._game_mode_type == "drone_swarm":
                 self._missile_turret_aa_priority(t, hostiles, vision_state=vision_state)
             elif t.asset_type == "turret":
@@ -238,15 +242,17 @@ class UnitBehaviors:
             elif t.asset_type in ("scout_drone",):
                 self._drone_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type == "rover":
-                self._rover_behavior(t, hostiles, vision_state=vision_state)
+                rover_fired = self._rover_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type in ("tank", "apc"):
                 self._rover_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type == "graphling":
                 self._graphling_behavior(t, hostiles, vision_state=vision_state)
 
-            # Rover de-escalation in civil_unrest mode
+            # Rover de-escalation in civil_unrest mode.  Pass whether the rover
+            # fired so firing near the crowd backfires (resets timers + may
+            # radicalize bystanders) instead of silently de-escalating.
             if t.asset_type == "rover" and self._game_mode_type == "civil_unrest":
-                self._rover_de_escalation(t, targets, dt=dt)
+                self._rover_de_escalation(t, targets, dt=dt, rover_fired=rover_fired)
 
         # Detect group rushes before individual hostile ticks
         self._detect_group_rush(hostiles)
@@ -393,22 +399,26 @@ class UnitBehaviors:
         rover: SimulationTarget,
         hostiles: dict[str, SimulationTarget],
         vision_state=None,
-    ) -> None:
+    ) -> bool:
         """Tanky. Move toward nearest hostile, engage at range.
 
         FSM-aware: in retreating state, does not engage.  In rtb state,
         ignores enemies and heads home.  In patrolling, fires at targets
         of opportunity but doesn't pursue beyond patrol route.
+
+        Returns True if the rover actually fired a shot this tick.  In
+        civil_unrest mode the caller feeds this to de-escalation so that
+        firing near the crowd backfires.
         """
         fsm = getattr(rover, "fsm_state", None)
 
         # In rtb or retreating, do not engage (heading home or withdrawing)
         if fsm in ("rtb", "retreating"):
-            return
+            return False
 
         # Degradation: too damaged to fire
         if not can_fire_degraded(rover):
-            return
+            return False
 
         # Track nearest enemy for heading (vision cone follows heading)
         any_target = self._nearest_in_range(rover, hostiles)
@@ -420,15 +430,20 @@ class UnitBehaviors:
         # Only fire at vision-confirmed targets
         target = self._nearest_in_range(rover, hostiles, vision_state=vision_state)
         if target is not None:
-            # Fire if in range (terrain LOS check)
+            # Fire if in range (terrain LOS check). fire() returns the
+            # projectile when a shot actually goes off, None otherwise
+            # (cooldown / no ammo / out of range / LOS blocked / miss).
             ptype = _WEAPON_TYPES.get(rover.asset_type, "nerf_dart")
-            self._combat.fire(rover, target, projectile_type=ptype,
-                              terrain_map=self._terrain_map)
+            proj = self._combat.fire(rover, target, projectile_type=ptype,
+                                     terrain_map=self._terrain_map)
+            return proj is not None
         elif hostiles and self._game_mode_type == "battle":
             # No target in weapon range — pursue nearest hostile.
             # During active battle, idle rovers should advance toward hostiles
             # instead of waiting for them to wander into weapon range.
             self._pursue_nearest_hostile(rover, hostiles)
+
+        return False
 
     def _graphling_behavior(
         self,
