@@ -208,32 +208,58 @@ class CrowdSimulator:
         self.events: list[CrowdEvent] = []
         self.overall_mood: CrowdMood = CrowdMood.CALM
         self._time: float = 0.0
-        self._exits: list[Vec2] = self._compute_exits()
-        self._grid = _CrowdGrid(cell_size=5.0)
         # Optional BuildingObstacles (duck-typed: needs point_in_building(x, y)).
         # When set, members never walk into buildings — the crowd is confined to
         # streets / open space instead of drifting through footprints.
         self.obstacles = obstacles
         # Optional list of (x, y) street-node positions. When set, group gather
         # points snap to the nearest street node so crowds form on real streets /
-        # junctions instead of collapsing onto an arbitrary centroid.
+        # junctions instead of collapsing onto an arbitrary centroid, AND fleeing
+        # crowds disperse toward real perimeter streets (set before exits so the
+        # exit zones are street-aware from construction).
         self.street_nodes = street_nodes
+        self._exits: list[Vec2] = self._compute_exits()
+        self._grid = _CrowdGrid(cell_size=5.0)
 
     # -- helpers -------------------------------------------------------------
 
     def _compute_exits(self) -> list[Vec2]:
         """Exit zones distributed around the boundary so fleeing crowds disperse
         in many directions instead of streaming onto 4 midpoints (the old
-        4-exit model produced the conspicuous "lines of units")."""
+        4-exit model produced the conspicuous "lines of units").
+
+        When street nodes are loaded, prefer real PERIMETER street nodes — the
+        roads leading out of the area — so a fleeing crowd disperses DOWN actual
+        streets (makes the "scatters down the streets" narration literally true),
+        not toward arbitrary geometric boundary points. Falls back to the
+        geometric ring when there's no road graph or too few perimeter nodes.
+        """
         x0, y0, x1, y1 = self.bounds
         cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
         rx, ry = (x1 - x0) / 2.0, (y1 - y0) / 2.0
+        nodes = self.street_nodes
+        if nodes:
+            rad = max(rx, ry) or 1.0
+            perimeter = [
+                (nx, ny) for (nx, ny) in nodes
+                if math.hypot(nx - cx, ny - cy) >= 0.55 * rad
+            ]
+            if len(perimeter) >= 4:
+                return perimeter
         n = 12
         return [
             (cx + rx * math.cos(2 * math.pi * i / n),
              cy + ry * math.sin(2 * math.pi * i / n))
             for i in range(n)
         ]
+
+    def set_street_nodes(self, nodes: list[Vec2] | None) -> None:
+        """Set the street-node positions and recompute exit zones so fleeing
+        crowds disperse toward real perimeter streets. Use this (not direct
+        attribute assignment) when street data arrives after construction, e.g.
+        the live crowd worker loading the road graph on an existing sim."""
+        self.street_nodes = nodes
+        self._exits = self._compute_exits()
 
     def _clamp_to_bounds(self, pos: Vec2) -> Vec2:
         x0, y0, x1, y1 = self.bounds

@@ -127,6 +127,33 @@ def test_member_slides_along_wall_instead_of_piling():
     assert m.position[1] > 0.5, "slid along the free +y axis instead of stopping dead"
 
 
+def test_exits_prefer_perimeter_street_nodes():
+    """With a road graph, flee exits are real PERIMETER street nodes (roads out of
+    the area), so a fleeing crowd disperses DOWN actual streets — not arbitrary
+    geometric boundary points. Makes 'scatters down the streets' literally true."""
+    # BOUNDS radius is 100; perimeter band starts at 55.
+    central = [(0.0, 0.0), (5.0, 5.0), (-8.0, 3.0)]
+    perimeter = [(90.0, 0.0), (-90.0, 0.0), (0.0, 90.0), (0.0, -90.0), (70.0, 70.0)]
+    sim = CrowdSimulator(BOUNDS, street_nodes=central + perimeter)
+    exits = sim._exits
+    assert len(exits) >= 4
+    for ex in exits:
+        assert magnitude(ex) >= 55.0, f"exit {ex} is not on the perimeter"
+    for c in central:
+        assert c not in exits, f"central node {c} must not be an exit"
+
+
+def test_set_street_nodes_recomputes_exits():
+    """Live path: street data arrives after construction. set_street_nodes must
+    swap the geometric ring exits for perimeter street exits."""
+    sim = CrowdSimulator(BOUNDS)  # no streets -> geometric ring
+    ring = list(sim._exits)
+    sim.set_street_nodes([(90.0, 0.0), (-90.0, 0.0), (0.0, 90.0), (0.0, -90.0), (80.0, 80.0)])
+    assert sim._exits != ring, "exits should be recomputed from street nodes"
+    for ex in sim._exits:
+        assert magnitude(ex) >= 55.0
+
+
 def test_member_inside_building_is_ejected():
     """A member that STARTS a tick inside a building (spawned/snapped in, or a
     gather point that sat on a building node) must be ejected to open space, not
