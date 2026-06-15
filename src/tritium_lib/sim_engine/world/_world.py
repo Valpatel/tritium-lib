@@ -313,12 +313,26 @@ class World:
         radius: float,
         mood: CrowdMood = CrowdMood.CALM,
     ) -> list[str]:
-        """Spawn crowd members.  Enables the crowd subsystem if needed."""
+        """Spawn crowd members.  Enables the crowd subsystem if needed.
+
+        A volatile (RIOTING / AGITATED) crowd auto-fans into distinct
+        compass-sector sub-clusters (cohesion-to-distributed-anchors) so an
+        operator-spawned riot spreads across the map like the seeded preset
+        instead of collapsing onto one group centroid — the central-pile bug.
+        Here we force 6 sectors for those moods explicitly. Calmer / panicked
+        / fleeing crowds are NOT fanned (they don't pile, and fanning them only
+        hurts perf and legibility), so they keep the original single-cluster
+        behaviour regardless of size.
+        """
         if self.crowd is None:
             map_w, map_h = self.config.map_size
             self.crowd = CrowdSimulator(bounds=(0.0, 0.0, map_w, map_h), max_members=500)
             self.config.enable_crowds = True
-        ids = self.crowd.spawn_crowd(center, count, radius, mood=mood)
+        # A volatile crowd (riot / agitated) must spread; force 6 sectors so it
+        # uses the whole city. Calmer / panicked / fleeing crowds are left as a
+        # single cluster (CrowdSimulator only auto-fans volatile moods).
+        sectors = 6 if mood in (CrowdMood.RIOTING, CrowdMood.AGITATED) else None
+        ids = self.crowd.spawn_crowd(center, count, radius, mood=mood, sectors=sectors)
         self.events.append({"type": "spawn_crowd", "center": center, "count": len(ids)})
         return ids
 

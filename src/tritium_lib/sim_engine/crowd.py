@@ -309,6 +309,27 @@ class CrowdSimulator:
 
     # -- public API ----------------------------------------------------------
 
+    # Auto-fan threshold (riot legibility rework B, 2026-06-15): an anchorless
+    # spawn larger than this many members fans into multiple sector sub-clusters
+    # so an operator-spawned riot spreads across the map instead of collapsing
+    # onto one group centroid (the central-pile bug). Below it a single small
+    # cluster reads fine, so we leave behaviour unchanged.
+    _AUTO_FAN_THRESHOLD = 40
+
+    # Auto-fan is VOLATILE-ONLY (round-1 fix, 2026-06-15): the central-pile bug
+    # is specific to a high-aggression crowd that escalates to RIOTING and then
+    # has _assign_objectives seed ONE group anchor (the centroid) that everyone
+    # holds. Calm / uneasy / panicked / fleeing crowds do NOT pile that way, and
+    # auto-fanning them (a) packs them into tight knots that super-linearly raise
+    # the per-tick separation cost (perf regression) and (b) fragments a single
+    # legible gathering / stampede / standoff line into 6 scattered knots
+    # (semantic regression). So only these moods trigger the auto-fan; every
+    # other anchorless crowd keeps the original single-cluster behaviour
+    # regardless of size. Callers that genuinely want a calm crowd fanned can
+    # still pass an explicit ``sectors``; callers that want a volatile crowd kept
+    # as one cluster (e.g. _build_standoff) pass ``sectors=1``.
+    _AUTO_FAN_MOODS = frozenset({CrowdMood.RIOTING, CrowdMood.AGITATED})
+
     def spawn_crowd(
         self,
         center: Vec2,
@@ -318,6 +339,7 @@ class CrowdSimulator:
         leader_ratio: float = 0.05,
         rng: random.Random | None = None,
         anchor: Vec2 | None = None,
+        sectors: int | None = None,
     ) -> list[str]:
         """Spawn *count* crowd members around *center* within *radius*.
 
@@ -327,9 +349,38 @@ class CrowdSimulator:
         *anchor* — optional stable sector point assigned to every member's
         ``anchor`` field, so the cluster steers toward its seeded sector instead
         of the live centroid (riot legibility rework, 2026-06-15).
+        *sectors* — optional number of distinct sector sub-clusters to fan the
+        crowd into (cohesion-to-distributed-anchors, the standard fix for
+        centroid collapse). Each sub-cluster gets its OWN group_id + its OWN
+        compass-sector anchor spread across the radius (reusing the ring/angle
+        math from ``_build_riot``), so a large anchorless crowd distributes
+        across the map instead of imploding to one centre. ``sectors=1`` (or 0)
+        is an explicit opt-OUT that forces single-cluster behaviour even for a
+        large volatile crowd. When *sectors* is None and no *anchor* is given, a
+        crowd larger than ``_AUTO_FAN_THRESHOLD`` *and* in a volatile mood
+        (RIOTING / AGITATED — see ``_AUTO_FAN_MOODS``) auto-fans into 6 sectors;
+        calmer / smaller crowds (or any explicit *anchor*) keep the
+        single-cluster behaviour unchanged.
 
-        Returns list of member IDs created.
+        Returns list of member IDs created (across all sub-clusters).
         """
+        # -- Auto-fan: split a large VOLATILE anchorless crowd into N sector
+        # sub-clusters. An explicit *anchor* means the caller already placed this
+        # cluster in a specific sector (e.g. the seeded _build_riot preset), so
+        # never re-fan. The mood gate (``_AUTO_FAN_MOODS``) keeps calm/panicked/
+        # fleeing crowds as a single cluster — only the volatile moods that
+        # actually pile (escalate to RIOTING -> single centroid anchor) fan out.
+        if anchor is None:
+            if (sectors is None
+                    and count > self._AUTO_FAN_THRESHOLD
+                    and mood in self._AUTO_FAN_MOODS):
+                sectors = 6
+            if sectors is not None and sectors > 1:
+                return self._spawn_fanned(
+                    center, count, radius, sectors,
+                    mood=mood, leader_ratio=leader_ratio, rng=rng,
+                )
+
         rnd = rng if rng is not None else random
         ids: list[str] = []
         available = self.max_members - len(self.members)
@@ -379,6 +430,72 @@ class CrowdSimulator:
             ids.append(mid)
 
         return ids
+
+    def _spawn_fanned(
+        self,
+        center: Vec2,
+        count: int,
+        radius: float,
+        sectors: int,
+        mood: CrowdMood = CrowdMood.CALM,
+        leader_ratio: float = 0.05,
+        rng: random.Random | None = None,
+    ) -> list[str]:
+        """Fan *count* members across *sectors* distinct compass-sector
+        sub-clusters around *center* (cohesion-to-distributed-anchors).
+
+        Each sub-cluster is a separate ``spawn_crowd`` call with its OWN
+        group_id and its OWN sector anchor, so the operator-spawned crowd
+        distributes across the map exactly like the seeded ``_build_riot``
+        preset instead of collapsing onto one centroid. Reuses the same
+        ring/angle math as ``_build_riot`` (alternating 0.30 / 0.42-of-span
+        rings, +0.2 rad phase) but scales the ring radius down when the
+        requested spawn *radius* is small, so a tight operator radius still
+        produces visibly distinct knots without flinging members off-map.
+
+        Anchors are clamped to bounds and the per-cluster spawn radius is a
+        fraction of the inter-cluster spacing, keeping clusters legibly
+        separated. The placement RNG (``rng`` or module ``random``) is threaded
+        through unchanged so determinism is preserved.
+        """
+        sectors = max(2, sectors)
+        span = self._span()
+        cx, cy = center
+        # Spread radius: honour the caller's *radius* as the OUTER extent of the
+        # fan, but never less than a fraction of the arena (so a default
+        # operator radius of ~16 m still fans across a meaningful slice of the
+        # map). The seeded preset uses span*0.30..0.42; we mirror that ceiling.
+        spread = max(radius, span * 0.30)
+        # Per-cluster knot radius: small relative to the inter-cluster spacing
+        # so clusters stay distinct. Cap so dense knots don't visually merge.
+        cluster_r = min(radius * 0.5, span * 0.05)
+        if cluster_r <= 0:
+            cluster_r = span * 0.05
+
+        # Distribute members across sectors as evenly as possible (remainder
+        # spread over the first clusters), so total spawned == count.
+        base = count // sectors
+        extra = count % sectors
+
+        all_ids: list[str] = []
+        for i in range(sectors):
+            n_i = base + (1 if i < extra else 0)
+            if n_i <= 0:
+                continue
+            angle = 2 * math.pi * i / sectors + 0.2
+            ring = 0.85 if (i % 2 == 0) else 1.0  # alternate rings -> not an annulus
+            r = spread * ring
+            ax = cx + r * math.cos(angle)
+            ay = cy + r * math.sin(angle)
+            anchor = self._clamp_to_bounds((ax, ay))
+            all_ids.extend(
+                self.spawn_crowd(
+                    anchor, n_i, cluster_r,
+                    mood=mood, leader_ratio=leader_ratio, rng=rng,
+                    anchor=anchor,
+                )
+            )
+        return all_ids
 
     def inject_event(self, event: CrowdEvent) -> None:
         """Inject a crowd event that affects nearby members."""
@@ -1251,6 +1368,8 @@ def _build_stampede(bounds: tuple[float, float, float, float]) -> CrowdSimulator
     sim = CrowdSimulator(bounds, max_members=500)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
+    # PANICKED is not a volatile auto-fan mood, so this stays ONE radial blob
+    # that explodes outward from the gunshot — the intended stampede shape.
     sim.spawn_crowd((cx, cy), 300, radius=35.0, mood=CrowdMood.PANICKED, leader_ratio=0.0)
     sim.inject_event(CrowdEvent(
         event_type="gunshot",
@@ -1267,7 +1386,10 @@ def _build_standoff(bounds: tuple[float, float, float, float]) -> CrowdSimulator
     sim = CrowdSimulator(bounds, max_members=500)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
-    sim.spawn_crowd((cx, cy - 10), 100, radius=20.0, mood=CrowdMood.AGITATED, leader_ratio=0.05)
+    # sectors=1 opts OUT of the volatile-mood auto-fan: a standoff is ONE crowd
+    # massed in front of a single police line, not 6 scattered sector knots.
+    sim.spawn_crowd((cx, cy - 10), 100, radius=20.0, mood=CrowdMood.AGITATED,
+                    leader_ratio=0.05, sectors=1)
     return sim
 
 

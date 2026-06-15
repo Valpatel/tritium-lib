@@ -432,11 +432,16 @@ class TestCrowds:
         world = World(WorldConfig(seed=42))
         ids = world.spawn_crowd((100, 100), 100, 20.0, CrowdMood.AGITATED)
         assert len(ids) == 100
-        # Inject a gunshot event
+        # A volatile (AGITATED) operator crowd now auto-fans into 6 sector
+        # sub-clusters spread across the map (riot legibility rework), so it is
+        # no longer a single knot sitting on the spawn centre. Inject the gunshot
+        # AT an actual member's position so the escalation semantics are tested
+        # against where the crowd really is, not the now-empty centre point.
         from tritium_lib.sim_engine.crowd import CrowdEvent
+        member_pos = world.crowd.members[0].position
         world.crowd.inject_event(CrowdEvent(
             event_type="gunshot",
-            position=(100, 100),
+            position=member_pos,
             radius=50.0,
             intensity=0.9,
             timestamp=0.0,
