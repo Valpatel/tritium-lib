@@ -573,6 +573,13 @@ class SimulationTarget:
     # "sim" = locally simulated, "real" = physical hardware/YOLO, "graphling" = remote agent
     source: str = "sim"
 
+    # Daily-routine destination (x, y) for neutral pedestrians driven by the
+    # NPCWorldBridge.  When set, a neutral that completes its path WITHIN
+    # ~3m of this point terminates as "arrived" (reached its scheduled POI)
+    # rather than the generic "despawned".  None = no routine destination
+    # (legacy edge-to-edge transit).
+    routine_destination: tuple[float, float] | None = None
+
     # Rich identity information (generated once at spawn from target_id)
     identity: UnitIdentity | None = field(default=None, repr=False)
 
@@ -860,7 +867,7 @@ class SimulationTarget:
         if mc.arrived:
             # Controller finished its path — determine terminal status
             if self.alliance == "neutral":
-                self.status = "despawned"
+                self.status = self._neutral_terminal_status()
             elif self.alliance == "hostile":
                 self.status = "escaped"
             elif self.loop_waypoints:
@@ -868,6 +875,30 @@ class SimulationTarget:
                 pass
             else:
                 self.status = "arrived"
+
+    def _neutral_terminal_status(self) -> str:
+        """End-of-path status for a neutral that finished its route.
+
+        If the routine bridge gave this neutral a scheduled destination and
+        it stopped within ~3m of it, this is a true ARRIVAL at its POI and we
+        return ``"arrived"``.  Otherwise it is a generic edge despawn
+        (``"despawned"``).
+
+        IMPORTANT: ``"arrived"`` is NOT terminal.  Unlike ``"despawned"``
+        (a TERMINAL_STATUS), ``"arrived"`` is a non-terminal RESTING_STATUS
+        (see ``tritium_lib.models.target_status``) shared with the friendly
+        one-shot dispatcher.  A neutral parked at "arrived" therefore stays
+        alive on the map and is NOT cleaned up by the generic despawn path —
+        the SimulationEngine GC removes arrived neutrals separately, after a
+        short POI dwell, so they free their spawner slot.
+        """
+        dest = self.routine_destination
+        if dest is not None:
+            if math.hypot(
+                self.position[0] - dest[0], self.position[1] - dest[1]
+            ) <= 3.0:
+                return "arrived"
+        return "despawned"
 
     def _tick_legacy(self, dt: float) -> None:
         """Legacy linear movement (non-combatants: neutrals, animals, etc.)."""
@@ -881,6 +912,19 @@ class SimulationTarget:
                 self.status = "stationary"
             return
 
+        # Bounds guard: the waypoint list can be REPLACED mid-trip (the NPC
+        # routine bridge re-routes a fleeing/hiding/curious ped to a SHORTER
+        # list while ``_waypoint_index`` is stale).  Clamp the cursor so the
+        # indexed read below cannot IndexError — an un-guarded raise here
+        # aborts the engine's whole tick loop.  Mirrors the id(self.waypoints)
+        # version tracking that _tick_with_controller uses.
+        wv = id(self.waypoints)
+        if wv != self._waypoints_version:
+            self._waypoints_version = wv
+            self._waypoint_index = 0
+        if self._waypoint_index >= len(self.waypoints):
+            self._waypoint_index = max(0, len(self.waypoints) - 1)
+
         tx, ty = self.waypoints[self._waypoint_index]
 
         # Pre-check: if the current waypoint itself is inside a building,
@@ -889,7 +933,7 @@ class SimulationTarget:
             if self._waypoint_index >= len(self.waypoints) - 1:
                 # All remaining waypoints blocked — terminal status
                 if self.alliance == "neutral":
-                    self.status = "despawned"
+                    self.status = self._neutral_terminal_status()
                 elif self.alliance == "hostile":
                     # Don't escape — stay active to participate in combat
                     pass
@@ -908,7 +952,7 @@ class SimulationTarget:
             if self._waypoint_index >= len(self.waypoints) - 1:
                 # Path complete — terminal status depends on alliance
                 if self.alliance == "neutral":
-                    self.status = "despawned"
+                    self.status = self._neutral_terminal_status()
                 elif self.alliance == "hostile":
                     self.status = "escaped"
                 elif self.loop_waypoints:
