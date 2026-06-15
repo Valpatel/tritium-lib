@@ -54,6 +54,60 @@ def _classify(count: int) -> str:
     return _CRITICAL
 
 
+def crowd_density_payload(
+    positions: Any,
+    bounds: tuple[float, float, float, float],
+    cell_size: float = 10.0,
+) -> dict[str, Any]:
+    """Build a ``crowd_density`` event payload directly from member positions.
+
+    The map's heatmap overlay (``game.crowdDensity``) reads exactly this schema
+    (grid / cell_size / bounds / max_density / critical_count). The live crowd
+    worker has raw ``(x, y)`` member positions rather than battle TrackedTargets,
+    so this skips the asset_type/status filtering of :class:`CrowdDensityTracker`
+    and counts every position — every crowd member IS a person. Lets a live riot
+    render as a luminous density mass at any zoom, on any basemap (legibility).
+
+    Args:
+        positions: iterable of ``(x, y)`` tuples (local meters).
+        bounds: ``(x_min, y_min, x_max, y_max)`` map boundary.
+        cell_size: grid cell size in meters (default 10, matching battle mode).
+    """
+    if cell_size <= 0:
+        cell_size = 10.0
+    x_min, y_min, x_max, y_max = bounds
+    cols = max(1, math.ceil((x_max - x_min) / cell_size))
+    rows = max(1, math.ceil((y_max - y_min) / cell_size))
+    counts = [[0] * cols for _ in range(rows)]
+    for pos in positions:
+        if not pos:
+            continue
+        col = int((float(pos[0]) - x_min) / cell_size)
+        row = int((float(pos[1]) - y_min) / cell_size)
+        col = max(0, min(col, cols - 1))
+        row = max(0, min(row, rows - 1))
+        counts[row][col] += 1
+
+    levels = [[_classify(counts[r][c]) for c in range(cols)] for r in range(rows)]
+    order = {_SPARSE: 0, _MODERATE: 1, _DENSE: 2, _CRITICAL: 3}
+    max_density = _SPARSE
+    critical_count = 0
+    for r in range(rows):
+        for c in range(cols):
+            lv = levels[r][c]
+            if order[lv] > order[max_density]:
+                max_density = lv
+            if lv == _CRITICAL:
+                critical_count += 1
+    return {
+        "grid": levels,
+        "cell_size": cell_size,
+        "bounds": [x_min, y_min, x_max, y_max],
+        "max_density": max_density,
+        "critical_count": critical_count,
+    }
+
+
 class CrowdDensityTracker:
     """Track crowd density on a 10m cell grid for civil unrest mode.
 

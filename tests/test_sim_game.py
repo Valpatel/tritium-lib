@@ -590,6 +590,34 @@ class TestCrowdDensityTracker:
         assert cdt.check_poi_defeat(timeout=60.0) is True
 
 
+class TestCrowdDensityPayload:
+    """crowd_density_payload — the live-crowd heatmap feed (legibility)."""
+
+    def test_empty_is_all_sparse(self):
+        from tritium_lib.sim_engine.game.crowd_density import crowd_density_payload
+        p = crowd_density_payload([], (-50, -50, 50, 50), cell_size=10)
+        assert p["max_density"] == "sparse"
+        assert p["critical_count"] == 0
+        assert p["bounds"] == [-50, -50, 50, 50]
+        assert p["cell_size"] == 10
+        # 100m / 10m = 10x10 grid
+        assert len(p["grid"]) == 10 and len(p["grid"][0]) == 10
+
+    def test_clustered_positions_go_critical(self):
+        from tritium_lib.sim_engine.game.crowd_density import crowd_density_payload
+        # 15 members all in one 100m cell -> critical (matches _DENSE_MAX=10 rule).
+        positions = [(0.0, 0.0)] * 15
+        p = crowd_density_payload(positions, (-50, -50, 50, 50), cell_size=100)
+        assert p["max_density"] == "critical"
+        assert p["critical_count"] == 1
+
+    def test_schema_matches_tracker_publish(self):
+        """Payload keys match what CrowdDensityTracker publishes (and the map reads)."""
+        from tritium_lib.sim_engine.game.crowd_density import crowd_density_payload
+        p = crowd_density_payload([(1.0, 2.0)], (-50, -50, 50, 50))
+        assert set(p) == {"grid", "cell_size", "bounds", "max_density", "critical_count"}
+
+
 # ---------------------------------------------------------------------------
 # Ambient helper tests
 # ---------------------------------------------------------------------------
