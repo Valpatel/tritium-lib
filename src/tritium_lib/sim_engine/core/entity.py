@@ -592,6 +592,38 @@ class SimulationTarget:
     # (legacy edge-to-edge transit).
     routine_destination: tuple[float, float] | None = None
 
+    # Home-range anchor (x, y) for neutral ANIMALS (dogs/cats).  When set, an
+    # animal that finishes its wander loop does NOT despawn at a map edge —
+    # it stays "active" so the engine's _tick_animals pass can hand it a fresh
+    # bounded home-range loop (it lives in its territory instead of walking off
+    # the map).  None for non-animals and unanchored animals (legacy behavior).
+    home_anchor: tuple[float, float] | None = None
+
+    # Leash owner (target_id) for a following DOG.  Set by the engine when a
+    # dog is in 'following' and a live neutral person is within leash range;
+    # cleared when the owner is gone/out-of-range.  None = no owner (cats never
+    # get one; only dogs leash).
+    owner_id: str | None = None
+
+    # Species of a neutral ANIMAL ("dog" / "cat"), stamped explicitly by the
+    # AmbientSpawner at spawn (MINOR A, FEATURE-AUDIT 2026-06-15).  The engine
+    # reads this instead of string-matching the display name against _DOG_NAMES
+    # (fragile/coupled).  None for non-animals and for animals spawned without a
+    # species (the engine keeps a name-based getattr fallback so those are
+    # unaffected — only DOGS leash; cats never follow).
+    species: str | None = None
+
+    # Per-animal turnover budget (seconds).  An anchored animal never edge-
+    # despawns (home_anchor keeps it "active"), so without a bounded lifespan it
+    # would be immortal and eventually starve the global AmbientSpawner cap
+    # (MAJOR 2 leak class).  After it has dwelt in its territory for
+    # home_lifespan_s of CALM (non-fleeing, non-following) sim-time, the engine
+    # retires it gracefully (it wanders off the map edge and despawns), freeing
+    # a slot for a fresh spawn so the animal population CYCLES.  None / inf would
+    # mean no turnover.  home_dwell_s is the engine's running accumulator.
+    home_lifespan_s: float | None = None
+    home_dwell_s: float = 0.0
+
     # Rich identity information (generated once at spawn from target_id)
     identity: UnitIdentity | None = field(default=None, repr=False)
 
@@ -915,6 +947,13 @@ class SimulationTarget:
         """
         if self.fsm_state in _NEUTRAL_SHELTER_STATES:
             return "active"
+        # ANTI-DESPAWN (home range): an anchored animal that finishes its
+        # wander/follow loop is HOME, not done.  Returning "active" keeps it on
+        # the map so the engine's _tick_animals pass can hand it a fresh
+        # bounded home-range loop.  Fleeing animals are excluded above (shelter
+        # states), so tick-3 danger-flee still terminalizes/shelters normally.
+        if self.asset_type == "animal" and self.home_anchor is not None:
+            return "active"
         dest = self.routine_destination
         if dest is not None:
             if math.hypot(
@@ -1003,7 +1042,10 @@ class SimulationTarget:
             # Movement would enter a building — skip to next waypoint
             if self._waypoint_index >= len(self.waypoints) - 1:
                 if self.alliance == "neutral":
-                    self.status = "despawned"
+                    # Route through _neutral_terminal_status so an anchored
+                    # animal (or a sheltering ped) is kept "active" instead of
+                    # despawned at a building it can't path past.
+                    self.status = self._neutral_terminal_status()
                 elif self.alliance == "hostile":
                     # Don't escape — stay active to participate in combat
                     pass
