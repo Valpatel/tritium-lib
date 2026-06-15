@@ -133,12 +133,28 @@ class BuildingObstacles:
             ...
     """
 
+    # Uniform-grid broad-phase cell size (meters). Buildings are bucketed into
+    # every grid cell their AABB overlaps; queries only test buildings in the
+    # cells they touch. ~30 m ≈ a few city footprints per cell — small enough to
+    # reject the vast majority of buildings, large enough to keep the bucket map
+    # bounded. Narrow-phase math (ray-cast, segment-intersect) is UNCHANGED, so
+    # the index only changes WHICH buildings are tested, never the answer.
+    _GRID_CELL_M: float = 30.0
+
     def __init__(self) -> None:
         self.polygons: list[list[tuple[float, float]]] = []
         # Per-building roof heights (meters), parallel to self.polygons
         self._heights: list[float] = []
         # AABB bounding boxes: (min_x, min_y, max_x, max_y) per polygon
         self._aabbs: list[tuple[float, float, float, float]] = []
+        # Uniform-grid spatial index (broad phase). Maps a cell key (ci, cj) to
+        # the list of building indices whose AABB overlaps that cell. Built once
+        # in _compute_aabbs(); empty => fall back to the linear scan (so any code
+        # path that mutates polygons without rebuilding still works correctly).
+        self._grid: dict[tuple[int, int], list[int]] = {}
+        # Grid origin (min corner of the bucketed extent) in local meters.
+        self._grid_origin_x: float = 0.0
+        self._grid_origin_y: float = 0.0
         # Unit-radius standoff (m). When > 0, point_in_building also flags
         # points within this distance of a building EDGE — so paths keep a
         # clean margin off walls instead of riding them (units are points
@@ -210,11 +226,27 @@ class BuildingObstacles:
     def point_in_building(self, x: float, y: float) -> bool:
         """Check if the point (x, y) in local meters is inside any building.
 
-        Uses AABB pre-filter to skip polygons whose bounding box doesn't
-        contain the point.  ~95% of polygons are rejected in 4 float
-        comparisons, reducing full ray-casts to ~10 per call for 227 buildings.
+        Broad phase: the uniform-grid index narrows the candidate set to the
+        buildings in the cell(s) covering the point (when ``clearance`` > 0 the
+        point's clearance-expanded box, so wall-margin hits are never missed).
+        Narrow phase (AABB ± clearance pre-filter, then ray-cast / edge-distance)
+        is UNCHANGED, so the result is byte-identical to the full linear scan.
         """
         c = self.clearance
+        if self._grid:
+            seen: set[int] = set()
+            for i in self._candidate_cells_point(x, y, c):
+                if i in seen:
+                    continue
+                seen.add(i)
+                min_x, min_y, max_x, max_y = self._aabbs[i]
+                if x < min_x - c or x > max_x + c or y < min_y - c or y > max_y + c:
+                    continue
+                if _point_in_polygon(x, y, self.polygons[i]):
+                    return True
+                if c > 0.0 and _dist_to_polygon_edge(x, y, self.polygons[i]) <= c:
+                    return True
+            return False
         if self._aabbs:
             for i, (min_x, min_y, max_x, max_y) in enumerate(self._aabbs):
                 if x < min_x - c or x > max_x + c or y < min_y - c or y > max_y + c:
@@ -263,6 +295,12 @@ class BuildingObstacles:
         if len(waypoints) < 2:
             return False
 
+        grid = self._grid
+        # AABB pre-filter is only usable when boxes line up 1:1 with polygons.
+        # If polygons were mutated without _compute_aabbs(), fall back to the
+        # original unfiltered linear scan so the answer stays identical.
+        have_aabbs = len(self._aabbs) == len(self.polygons)
+
         for i in range(len(waypoints) - 1):
             ax, ay = waypoints[i]
             bx, by = waypoints[i + 1]
@@ -273,14 +311,42 @@ class BuildingObstacles:
             if self.point_in_building(mx, my):
                 return True
 
-            # Check segment against all building polygon edges
-            for poly in self.polygons:
-                n = len(poly)
-                for j in range(n):
-                    cx, cy = poly[j]
-                    dx, dy = poly[(j + 1) % n]
-                    if _segments_intersect(ax, ay, bx, by, cx, cy, dx, dy):
-                        return True
+            if grid and have_aabbs:
+                # Broad phase: only the buildings whose AABB can meet this
+                # segment. A building whose AABB is disjoint from the segment's
+                # bbox cannot be crossed (its edges all lie inside its AABB), so
+                # it is rejected without any _segments_intersect call. This
+                # pre-filter is exact — it never skips a building the linear
+                # scan would have hit.
+                seg_min_x = ax if ax < bx else bx
+                seg_max_x = ax if ax > bx else bx
+                seg_min_y = ay if ay < by else by
+                seg_max_y = ay if ay > by else by
+                seen: set[int] = set()
+                for bi in self._candidate_cells_segment(ax, ay, bx, by):
+                    if bi in seen:
+                        continue
+                    seen.add(bi)
+                    min_x, min_y, max_x, max_y = self._aabbs[bi]
+                    if (max_x < seg_min_x or min_x > seg_max_x
+                            or max_y < seg_min_y or min_y > seg_max_y):
+                        continue
+                    poly = self.polygons[bi]
+                    n = len(poly)
+                    for j in range(n):
+                        cx, cy = poly[j]
+                        dx, dy = poly[(j + 1) % n]
+                        if _segments_intersect(ax, ay, bx, by, cx, cy, dx, dy):
+                            return True
+            else:
+                # Linear fallback (no index): check segment against all edges.
+                for poly in self.polygons:
+                    n = len(poly)
+                    for j in range(n):
+                        cx, cy = poly[j]
+                        dx, dy = poly[(j + 1) % n]
+                        if _segments_intersect(ax, ay, bx, by, cx, cy, dx, dy):
+                            return True
 
         return False
 
@@ -349,7 +415,15 @@ class BuildingObstacles:
         return result
 
     def _compute_aabbs(self) -> None:
-        """Compute axis-aligned bounding boxes for all polygons."""
+        """Compute axis-aligned bounding boxes for all polygons and (re)build
+        the uniform-grid broad-phase index.
+
+        The grid is built ONCE here (on load / set), never per query. Each
+        building is bucketed into every grid cell its AABB overlaps, so a
+        building straddling a cell boundary (or spanning many cells) is found
+        from any of those cells. Empty obstacles => empty grid (queries fall
+        back to the trivially-empty linear scan).
+        """
         self._aabbs = []
         for poly in self.polygons:
             if not poly:
@@ -358,6 +432,87 @@ class BuildingObstacles:
             xs = [p[0] for p in poly]
             ys = [p[1] for p in poly]
             self._aabbs.append((min(xs), min(ys), max(xs), max(ys)))
+        self._build_grid()
+
+    def _build_grid(self) -> None:
+        """Bucket every building index into the grid cells its AABB overlaps."""
+        self._grid = {}
+        if not self._aabbs:
+            self._grid_origin_x = 0.0
+            self._grid_origin_y = 0.0
+            return
+        # Grid origin = min corner of the whole extent (keeps cell indices small
+        # and positive regardless of where the local-coordinate map sits).
+        self._grid_origin_x = min(b[0] for b in self._aabbs)
+        self._grid_origin_y = min(b[1] for b in self._aabbs)
+        cell = self._GRID_CELL_M
+        ox, oy = self._grid_origin_x, self._grid_origin_y
+        grid = self._grid
+        for idx, (min_x, min_y, max_x, max_y) in enumerate(self._aabbs):
+            ci0 = int(math.floor((min_x - ox) / cell))
+            ci1 = int(math.floor((max_x - ox) / cell))
+            cj0 = int(math.floor((min_y - oy) / cell))
+            cj1 = int(math.floor((max_y - oy) / cell))
+            for ci in range(ci0, ci1 + 1):
+                for cj in range(cj0, cj1 + 1):
+                    grid.setdefault((ci, cj), []).append(idx)
+
+    def _cell_of(self, x: float, y: float) -> tuple[int, int]:
+        """Grid cell key containing the local-meters point (x, y)."""
+        cell = self._GRID_CELL_M
+        ci = int(math.floor((x - self._grid_origin_x) / cell))
+        cj = int(math.floor((y - self._grid_origin_y) / cell))
+        return (ci, cj)
+
+    def _candidate_cells_point(self, x: float, y: float, c: float):
+        """Yield building indices in the cell(s) covering the point.
+
+        When ``c`` (clearance) > 0 we cover the point's clearance-expanded box
+        so a building whose footprint is up to ``c`` meters away — and therefore
+        a wall-margin hit — is never missed by the broad phase.
+        """
+        grid = self._grid
+        cell = self._GRID_CELL_M
+        ox, oy = self._grid_origin_x, self._grid_origin_y
+        if c <= 0.0:
+            bucket = grid.get(self._cell_of(x, y))
+            if bucket:
+                yield from bucket
+            return
+        ci0 = int(math.floor((x - c - ox) / cell))
+        ci1 = int(math.floor((x + c - ox) / cell))
+        cj0 = int(math.floor((y - c - oy) / cell))
+        cj1 = int(math.floor((y + c - oy) / cell))
+        for ci in range(ci0, ci1 + 1):
+            for cj in range(cj0, cj1 + 1):
+                bucket = grid.get((ci, cj))
+                if bucket:
+                    yield from bucket
+
+    def _candidate_cells_segment(self, ax: float, ay: float, bx: float, by: float):
+        """Yield building indices in the cells the segment AB passes through.
+
+        Covers every cell overlapping the segment's bounding box — a superset of
+        the exact swept cells, which keeps the answer identical (no false skips)
+        while still rejecting the bulk of a hundreds-of-building map. The
+        per-building AABB-vs-segment-bbox check downstream trims the rest.
+        """
+        grid = self._grid
+        cell = self._GRID_CELL_M
+        ox, oy = self._grid_origin_x, self._grid_origin_y
+        smin_x = ax if ax < bx else bx
+        smax_x = ax if ax > bx else bx
+        smin_y = ay if ay < by else by
+        smax_y = ay if ay > by else by
+        ci0 = int(math.floor((smin_x - ox) / cell))
+        ci1 = int(math.floor((smax_x - ox) / cell))
+        cj0 = int(math.floor((smin_y - oy) / cell))
+        cj1 = int(math.floor((smax_y - oy) / cell))
+        for ci in range(ci0, ci1 + 1):
+            for cj in range(cj0, cj1 + 1):
+                bucket = grid.get((ci, cj))
+                if bucket:
+                    yield from bucket
 
     # ------------------------------------------------------------------
     # Internal
