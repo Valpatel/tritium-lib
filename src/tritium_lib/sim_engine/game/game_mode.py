@@ -216,6 +216,17 @@ class GameMode:
         self._scenario: object | None = None
         self._scenario_waves: list | None = None
 
+        # Crowd-driven riot gate (G4): in an un-scripted civil_unrest game the
+        # threat is the live crowd + instigators (NPC-intelligence recruitment
+        # dynamics), NOT edge-spawned battle "Intruder" hostiles.  When True,
+        # _start_wave suppresses the default-WAVE_CONFIGS battle spawner and the
+        # active tick does NOT auto-complete the (intentionally empty) wave —
+        # the riot is resolved by de-escalation / civilian-harm conditions, not
+        # by clearing zero battle hostiles.  A loaded civil_unrest SCENARIO
+        # (with explicit crowd/instigator wave compositions) is unaffected: it
+        # takes the _scenario_waves path and this gate never engages.
+        self._crowd_driven_riot: bool = False
+
         # Mission-type fields (civil unrest, drone swarm)
         self.game_mode_type: str = "battle"
         self.de_escalation_score: int = 0
@@ -280,6 +291,7 @@ class GameMode:
         # unless a new scenario is loaded
         self._scenario_waves = None
         self._scenario = None
+        self._crowd_driven_riot = False
         # Reset game mode type and mode-specific fields
         self.game_mode_type = "battle"
         self.de_escalation_score = 0
@@ -488,6 +500,16 @@ class GameMode:
             if stale_alive > 0:
                 self._force_eliminate_wave_hostiles()
 
+        # G4: a crowd-driven civil_unrest riot has no battle wave hostiles, so
+        # the "all wave hostiles cleared -> wave complete" rule does not apply —
+        # an empty wave would otherwise auto-complete every tick and march the
+        # game straight to victory through the (irrelevant) battle WAVE_CONFIGS.
+        # The riot stays active and is resolved by the de-escalation /
+        # civilian-harm conditions instead (on_civilian_harmed triggers defeat;
+        # the all-friendlies-eliminated defeat check above still applies).
+        if self._crowd_driven_riot:
+            return
+
         # Check wave complete: all wave hostiles eliminated or escaped.
         # If spawn thread hasn't registered any hostiles yet, wait for it
         # (avoids premature wave completion before spawning begins).
@@ -635,6 +657,30 @@ class GameMode:
                     wave_num, wave_def.name, wave_def.total_count,
                 )
             self._queue_scenario_wave(wave_def)
+            return
+
+        # G4 gate: an un-scripted civil_unrest game (no scenario waves loaded)
+        # must NOT run the default battle wave spawner.  In a riot the threat is
+        # the live crowd + instigators driven by NPC-intelligence recruitment —
+        # edge-spawned "Intruder Alpha..Hotel" units with crowd_role=None and
+        # generic assault/scout/infiltrate missions are purposeless battle bleed
+        # that never recede (measured: hostile-person pop rising during a riot
+        # wind-down).  Suppress the spawn; mark the riot crowd-driven so the
+        # active tick does not auto-complete the intentionally empty wave.  A
+        # civil_unrest SCENARIO takes the _scenario_waves path above and is
+        # unaffected.
+        if self.game_mode_type == "civil_unrest" and self._scenario_waves is None:
+            self._crowd_driven_riot = True
+            self._event_bus.publish("wave_start", {
+                "wave_number": wave_num,
+                "wave_name": "Civil Unrest",
+                "hostile_count": 0,
+                "crowd_driven": True,
+            })
+            if hasattr(self._engine, 'stats_tracker'):
+                self._engine.stats_tracker.on_wave_start(
+                    wave_num, "Civil Unrest", 0,
+                )
             return
 
         # Default WAVE_CONFIGS path
