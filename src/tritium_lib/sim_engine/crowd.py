@@ -126,6 +126,15 @@ _LEADER_INFLUENCE_MULT = 2.0
 # Event decay rate per second
 _EVENT_DECAY_RATE = 0.15
 
+# Agent-sink "home" radius (riot wind-down, 2026-06-15): a FLEEING member that
+# reaches within this distance of its boundary exit_target has left the scene —
+# it is removed from ``members`` (gone home). This is the standard agent sink at
+# an exit node: without it fled members clamp to the perimeter and mill there
+# forever, so a riot crowd never drains. PANICKED members are NOT sunk (they are
+# still inside the panic, fleeing a live threat) — only the committed FLEEING
+# flight terminates at the exit. Bounded + O(k): one pass over members per tick.
+_EXIT_HOME_RADIUS = 4.0
+
 # Escalation thresholds
 _ESCALATION_AGITATED_RATIO = 0.30
 _ESCALATION_RIOTING_RATIO = 0.50
@@ -215,6 +224,10 @@ class CrowdSimulator:
         self.events: list[CrowdEvent] = []
         self.overall_mood: CrowdMood = CrowdMood.CALM
         self._time: float = 0.0
+        # Running count of members that fled all the way to an exit and went home
+        # (riot wind-down, 2026-06-15). Lets a caller / test see the crowd drain
+        # without diffing snapshots; never decremented (monotonic episode total).
+        self.members_gone_home: int = 0
         # Optional BuildingObstacles (duck-typed: needs point_in_building(x, y)).
         # When set, members never walk into buildings — the crowd is confined to
         # streets / open space instead of drifting through footprints.
@@ -554,6 +567,11 @@ class CrowdSimulator:
 
         # 3 & 4. Movement
         self._move_members(dt)
+
+        # 4b. Agent sink: FLEEING members that reached their boundary exit go
+        # home (removed from the crowd). Drains a fled crowd to empty instead of
+        # milling at the perimeter forever (riot wind-down, 2026-06-15).
+        self._sink_arrived_fleers()
 
         # 4. Event decay
         self._decay_events(dt)
@@ -985,6 +1003,53 @@ class CrowdSimulator:
             m.velocity = (0.7 * m.velocity[0] + 0.3 * combined[0],
                           0.7 * m.velocity[1] + 0.3 * combined[1])
             self._apply_velocity(m, dt)
+
+    def _sink_arrived_fleers(self) -> None:
+        """Remove FLEEING members that reached the boundary exit (gone home).
+
+        The standard agent sink at an exit node. A member is sunk only when it
+        is genuinely committed to flight (``mood == FLEEING``) AND has reached
+        the perimeter — either within ``_EXIT_HOME_RADIUS`` of the exit it
+        picked, OR pressed against a boundary wall (within ``_EXIT_HOME_RADIUS``
+        of any edge). The wall test matters because ``_pick_exit`` jitters exit
+        points onto / just past the perimeter ring, so a member clamped to the
+        wall can sit a few metres short of an out-of-bounds exit and otherwise
+        never qualify — yet it has plainly LEFT the scene. Either condition
+        means the body has exited.
+
+        Members still en route, or merely PANICKED (fleeing a live threat but
+        not yet committed to an exit), are untouched — so the crowd drains
+        exactly as fast as bodies actually reach the perimeter, never instantly.
+
+        O(k): a single pass building the survivor list. Only rebuilds the
+        ``members`` list when at least one member is removed, so the common
+        no-flee tick pays just one cheap scan.
+        """
+        members = self.members
+        if not members:
+            return
+        home_r = _EXIT_HOME_RADIUS
+        x0, y0, x1, y1 = self.bounds
+        survivors: list[CrowdMember] = []
+        gone = 0
+        for m in members:
+            if m.mood == CrowdMood.FLEEING:
+                px, py = m.position
+                at_wall = (
+                    px - x0 <= home_r or x1 - px <= home_r
+                    or py - y0 <= home_r or y1 - py <= home_r
+                )
+                at_exit = (
+                    m.exit_target is not None
+                    and distance(m.position, m.exit_target) <= home_r
+                )
+                if at_wall or at_exit:
+                    gone += 1
+                    continue
+            survivors.append(m)
+        if gone:
+            self.members = survivors
+            self.members_gone_home += gone
 
     def _compute_group_centers(self) -> dict[str, Vec2]:
         """Precompute center position for each group, biased toward leaders.
