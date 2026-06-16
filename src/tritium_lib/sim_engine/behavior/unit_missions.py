@@ -24,8 +24,19 @@ import random
 import threading
 from typing import TYPE_CHECKING
 
+from tritium_lib.models.target_status import RESTING_STATUSES, is_terminal
+
 if TYPE_CHECKING:
     from tritium_lib.sim_engine.core.entity import SimulationTarget
+
+# Friendly mission types that carry a multi-waypoint route we should re-fly as
+# a loiter loop when the unit goes idle (instead of re-rolling a brand-new
+# random route every cycle).  Flying starter missions are tagged scout/sweep;
+# ground patrols are tagged patrol/escort.  All of them are closed/repeatable
+# routes, so looping them gives a stable, cheap, replay-deterministic patrol.
+_LOOPABLE_MISSION_TYPES = frozenset(
+    {"patrol", "scout", "sweep", "escort"}
+)
 
 
 # -- Patrol route generators -----------------------------------------------
@@ -221,27 +232,60 @@ class UnitMissionSystem:
         self._last_idle_check = self._sim_time
 
         for tid, t in targets.items():
-            if t.status != "active":
+            # Skip only TERMINAL units (eliminated/escaped/despawned/...): a
+            # dead/gone unit must never be re-missioned.  A friendly combatant
+            # that finished (or never had) a route is RESTING (idle /
+            # stationary / arrived) — alive and present but not moving — and is
+            # EXACTLY who this loop exists to put back to work.  The old
+            # `status != "active"` gate skipped resting units, which made this
+            # whole re-mission branch dead for friendly drones: a drone spawns
+            # with no waypoints and flips active->idle on its first movement
+            # tick (entity._tick_with_controller), so it was idle before the
+            # first idle check ran and stayed frozen forever — contradicting
+            # this module's promise that "Friendly units NEVER sit idle."
+            if is_terminal(t.status):
                 continue
 
-            # Check if unit is idle (no waypoints, no active mission)
-            is_idle = not t.waypoints or len(t.waypoints) == 0
+            # A unit is idle when it has no waypoint route left to follow.
+            # We also treat a RESTING status (idle/stationary/arrived) as
+            # idle even if a stale waypoint list lingers, so a unit that has
+            # genuinely stopped gets re-missioned.
+            is_idle = (
+                not t.waypoints
+                or len(t.waypoints) == 0
+                or t.status in RESTING_STATUSES
+            )
             has_mission = tid in self._missions
 
             if is_idle and t.alliance == "friendly" and t.is_combatant:
-                # Friendly combatant is idle — give it a mission
-                if has_mission and self._missions[tid]["type"] == "patrol":
-                    # Restart patrol loop
-                    wps = self._missions[tid].get("waypoints", [])
-                    if wps:
-                        t.waypoints = self._route_mission_waypoints(t, wps)
-                        t._waypoint_index = 0
+                # Friendly combatant is at rest — put it back on its loiter
+                # loop.  If it already carries a route-based mission, re-fly
+                # that exact route (cheap, deterministic, no re-roll).  Only
+                # mint a fresh mission when it has none or its mission carries
+                # no route (e.g. a "hold" turret that was given mobility).
+                mission = self._missions.get(tid) if has_mission else None
+                wps = mission.get("waypoints") if mission else None
+                if (
+                    mission
+                    and mission.get("type") in _LOOPABLE_MISSION_TYPES
+                    and wps
+                ):
+                    # Re-fly the existing route as a loiter loop.
+                    t.waypoints = self._route_mission_waypoints(t, wps)
+                    t._waypoint_index = 0
                 else:
                     mission = self.assign_starter_mission(t)
                     if mission and "waypoints" in mission:
                         t.waypoints = self._route_mission_waypoints(
                             t, mission["waypoints"])
                         t._waypoint_index = 0
+                # Re-missioning resumes active movement: clear the resting
+                # status so the FSM/behavior ticks again (the engine's
+                # _tick_fsms / behaviors skip non-active units).  The entity
+                # will re-derive idle/stationary on its own once the new route
+                # depletes.
+                if t.waypoints and t.status in RESTING_STATUSES:
+                    t.status = "active"
 
             elif is_idle and t.alliance == "neutral":
                 # Neutral reached destination — let it despawn naturally
