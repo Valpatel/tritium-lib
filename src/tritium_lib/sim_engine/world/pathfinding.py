@@ -84,8 +84,16 @@ def plan_path(
     if unit_type in _PEDESTRIAN_TYPES and sidewalk_graph is not None:
         path = _sidewalk_path(start, end, sidewalk_graph)
         if path is not None and len(path) > 2:
-            return path
-        # Sidewalk graph didn't have coverage — fall through to other methods
+            # A curb-side sidewalk graph derived from roads is purely
+            # geometric, so a run can clip a building that sits beside a
+            # road. Only hand back a sidewalk route that stays clear of
+            # buildings; otherwise fall through to the building-aware grid
+            # A* so the pedestrian still REACHES its destination instead of
+            # stalling against a wall on the swept per-tick collision check.
+            if obstacles is None or not obstacles.path_crosses_building(path):
+                return path
+        # Sidewalk graph didn't help (no coverage or building-crossing) —
+        # fall through to other methods (grid A* avoids buildings).
 
     # Hostile persons: road approach then direct last 30m
     if alliance == "hostile" and unit_type == "person":
