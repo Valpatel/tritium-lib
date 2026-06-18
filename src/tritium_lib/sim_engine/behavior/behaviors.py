@@ -142,6 +142,10 @@ class UnitBehaviors:
 
         # Upgrade system reference (for EMP stun checks)
         self._upgrade_system = None
+        # Optional callable(target_id)->bool: True when an embodiment slot is
+        # OCCUPIED by an external agent (Graphling). Occupied units skip the
+        # stand-in AI entirely — Tritium never puppets the occupant.
+        self._occupancy_check = None
 
         # Pathfinding router callback
         self._router = None  # Callable[[start, end, asset_type, alliance], list]
@@ -207,6 +211,23 @@ class UnitBehaviors:
             return False
         return self._upgrade_system.is_emp_stunned(target_id)
 
+    def set_occupancy_check(self, fn) -> None:
+        """Wire a callable(target_id)->bool that reports embodiment occupancy.
+
+        When it returns True, the unit's stand-in AI is SUPPRESSED for this tick
+        (an external agent / Graphling is on shift and decides its own actions).
+        No-op when unset (backward compatible).
+        """
+        self._occupancy_check = fn
+
+    def _is_occupied(self, target_id: str) -> bool:
+        if self._occupancy_check is None:
+            return False
+        try:
+            return bool(self._occupancy_check(target_id))
+        except Exception:
+            return False
+
     def tick(self, dt: float, targets: dict[str, SimulationTarget],
              vision_state=None) -> None:
         """For each active combatant, run its type-specific behavior."""
@@ -225,6 +246,10 @@ class UnitBehaviors:
         for tid, t in friendlies.items():
             # EMP-stunned friendlies cannot act
             if self._is_emp_stunned(tid):
+                continue
+            # Occupied embodiment: an external agent (Graphling) drives this
+            # unit; suppress the stand-in AI so Tritium never puppets it.
+            if self._is_occupied(tid):
                 continue
 
             # Track whether a rover fired this tick — civil_unrest de-escalation
@@ -260,6 +285,10 @@ class UnitBehaviors:
         for tid, t in hostiles.items():
             # EMP-stunned hostiles cannot act (no movement, no firing)
             if self._is_emp_stunned(tid):
+                continue
+            # Occupied embodiment: an external agent (Graphling) drives this
+            # unit; suppress the stand-in AI so Tritium never puppets it.
+            if self._is_occupied(tid):
                 continue
 
             # Dispatch based on crowd_role and drone_variant
