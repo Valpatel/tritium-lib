@@ -234,6 +234,14 @@ class GameMode:
         self.infrastructure_max: float = 1000.0
         self.civilian_harm_count: int = 0
         self.civilian_harm_limit: int = 5
+        # Escort mode: a MOVING protectee whose ARRIVAL wins and LOSS loses.
+        self.protectee_id: str | None = None
+        self.escort_destination: tuple[float, float] | None = None
+        self.protectee_arrived: bool = False
+        self.protectee_lost: bool = False
+        # True once a finite mode's ambush waves are exhausted but the game is
+        # NOT yet over (escort: hold "active" until the protectee arrives/dies).
+        self._waves_exhausted: bool = False
 
     # -- Public interface -------------------------------------------------------
 
@@ -257,6 +265,7 @@ class GameMode:
         self.wave_eliminations = 0
         self.total_leaked = 0
         self.wave_leaked = 0
+        self._waves_exhausted = False
         self._counted_eliminations.clear()
         self._combat.reset_streaks()
         self._publish_state_change()
@@ -297,6 +306,11 @@ class GameMode:
         self.de_escalation_score = 0
         self.infrastructure_health = 0.0
         self.civilian_harm_count = 0
+        self.protectee_id = None
+        self.escort_destination = None
+        self.protectee_arrived = False
+        self.protectee_lost = False
+        self._waves_exhausted = False
         self.difficulty.reset()
         self._publish_state_change()
 
@@ -389,6 +403,39 @@ class GameMode:
             ))
             self._publish_state_change()
 
+    def on_protectee_arrived(self) -> None:
+        """The escorted protectee reached its destination (escort mode WIN).
+
+        Escort's victory is ARRIVAL, not wave-clearing — the genuinely new
+        dynamic vs the static-defense modes. No-op in other modes / once the
+        game is already over.
+        """
+        self.protectee_arrived = True
+        if (self.state in ("active", "countdown", "wave_complete")
+                and self.game_mode_type == "escort"):
+            self.state = "victory"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "victory", reason="protectee_reached_destination",
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+
+    def on_protectee_lost(self) -> None:
+        """The escorted protectee was destroyed / lost (escort mode DEFEAT).
+
+        Mirrors on_civilian_harmed / on_infrastructure_damaged: in other modes
+        the flag is recorded but no game over is triggered. No-op once over.
+        """
+        self.protectee_lost = True
+        if (self.state in ("active", "countdown", "wave_complete")
+                and self.game_mode_type == "escort"):
+            self.state = "defeat"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "defeat", reason="protectee_lost",
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+
     def get_state(self) -> dict:
         """Return serializable game state for API/frontend.
 
@@ -435,6 +482,14 @@ class GameMode:
         elif self.game_mode_type == "drone_swarm":
             state["infrastructure_health"] = self.infrastructure_health
             state["infrastructure_max"] = self.infrastructure_max
+        elif self.game_mode_type == "escort":
+            state["protectee_id"] = self.protectee_id
+            state["escort_destination"] = (
+                list(self.escort_destination)
+                if self.escort_destination is not None else None
+            )
+            state["protectee_arrived"] = self.protectee_arrived
+            state["protectee_lost"] = self.protectee_lost
         return state
 
     # -- State tick handlers ----------------------------------------------------
@@ -510,6 +565,13 @@ class GameMode:
         if self._crowd_driven_riot:
             return
 
+        # Escort: once ambush waves are exhausted, hold "active" while the
+        # protectee completes its route. Escort is won by ARRIVAL
+        # (on_protectee_arrived), never by clearing waves — so do not let an
+        # empty post-wave battlefield auto-complete toward a wave victory.
+        if self._waves_exhausted:
+            return
+
         # Check wave complete: all wave hostiles eliminated or escaped.
         # If spawn thread hasn't registered any hostiles yet, wait for it
         # (avoids premature wave completion before spawning begins).
@@ -529,13 +591,23 @@ class GameMode:
             else:
                 total_waves = len(WAVE_CONFIGS)
             if not self.infinite and self.wave > total_waves:
-                # All waves cleared — victory! (finite mode only)
-                self.state = "victory"
-                self._event_bus.publish("game_over", self._build_game_over_data(
-                    "victory", reason="all_waves_cleared",
-                    waves_completed=total_waves,
-                ))
-                self._publish_state_change()
+                if self.game_mode_type == "escort":
+                    # Ambush waves exhausted, but escort is won by ARRIVAL, not
+                    # wave-clearing. Clamp the wave + hold "active" (guarded by
+                    # _waves_exhausted) while the protectee finishes its route;
+                    # on_protectee_arrived / on_protectee_lost ends the game.
+                    self.wave = total_waves
+                    self._waves_exhausted = True
+                    self.state = "active"
+                    self._publish_state_change()
+                else:
+                    # All waves cleared — victory! (finite mode only)
+                    self.state = "victory"
+                    self._event_bus.publish("game_over", self._build_game_over_data(
+                        "victory", reason="all_waves_cleared",
+                        waves_completed=total_waves,
+                    ))
+                    self._publish_state_change()
             else:
                 self.state = "active"
                 self._start_wave(self.wave)
