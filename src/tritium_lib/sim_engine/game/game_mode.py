@@ -643,6 +643,7 @@ class GameMode:
                 "wave_number": wave_num,
                 "wave_name": wave_def.name,
                 "hostile_count": wave_def.total_count,
+                "game_mode_type": self.game_mode_type,
             }
             if wave_def.briefing:
                 event_data["briefing"] = wave_def.briefing
