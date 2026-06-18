@@ -713,18 +713,24 @@ class GameMode:
         """
         def _make(group):
             def _spawn() -> None:
+                role = getattr(group, "crowd_role", None)
                 hostile = self._engine.spawn_hostile_typed(
                     asset_type=group.asset_type,
                     speed=group.speed * wave_def.speed_mult,
                     health=group.health * wave_def.health_mult,
                     drone_variant=group.drone_variant,
+                    crowd_role=role,
                 )
                 # Apply scenario overrides if available
                 if self._scenario is not None:
                     apply_fn = getattr(self._scenario, "apply_overrides", None)
                     if apply_fn is not None:
                         apply_fn(hostile, group)
-                self._wave_hostile_ids.add(hostile.target_id)
+                # civil_unrest: protected civilians are NOT wave hostiles to
+                # eliminate — counting them would make the wave never complete
+                # (you'd have to kill the people you are meant to protect).
+                if role != "civilian":
+                    self._wave_hostile_ids.add(hostile.target_id)
             return _spawn
 
         self._spawn_queue = [
