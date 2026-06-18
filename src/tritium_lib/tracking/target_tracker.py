@@ -1098,6 +1098,54 @@ class TargetTracker:
 
         return result
 
+    def tactical_brief(self) -> str:
+        """Concise live situational grounding for the cognition layer.
+
+        Unlike :meth:`summary` (combat-oriented: proximity alerts + hostile
+        sectors, and which OMITS the ``neutral`` alliance), this is a
+        state-of-the-board inventory meant to ground an operator/Amy question
+        regardless of game state — it is a pure tracker read with no
+        ``game_mode`` dependency, so it works in monitor mode too:
+
+        - counts by alliance INCLUDING ``neutral`` (the civilian
+          non-combatants the combat summary leaves invisible), and
+        - a breakdown by target classification (person/vehicle/phone/animal —
+          the operational mission's "track every target" taxonomy), falling
+          back to ``asset_type`` when a target has no ML classification.
+
+        Returns ``""`` when nothing is tracked.
+        """
+        targets = self.get_all()
+        if not targets:
+            return ""
+
+        alliance_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        for t in targets:
+            alliance_counts[t.alliance] = alliance_counts.get(t.alliance, 0) + 1
+            # Prefer the ML/RL classification; fall back to the asset type.
+            kind = t.classification
+            if not kind or kind == "unknown":
+                kind = t.asset_type or "unknown"
+            type_counts[kind] = type_counts.get(kind, 0) + 1
+
+        # Stable, operator-meaningful ordering; unknown alliances trail.
+        order = ["friendly", "hostile", "neutral", "unknown"]
+        ordered = [a for a in order if a in alliance_counts]
+        ordered += [a for a in alliance_counts if a not in order]
+        alliance_str = ", ".join(f"{alliance_counts[a]} {a}" for a in ordered)
+
+        lines = [f"TRACKING {len(targets)} target(s): {alliance_str}"]
+
+        # Type breakdown — most common first (deterministic tie-break by name),
+        # capped to keep the brief short for the small chat model.
+        known = {k: v for k, v in type_counts.items() if k and k != "unknown"}
+        if known:
+            top = sorted(known.items(), key=lambda kv: (-kv[1], kv[0]))[:6]
+            lines.append("Types: " + ", ".join(f"{v} {k}" for k, v in top))
+
+        return "\n".join(lines)
+
     SIM_STALE_TIMEOUT = 10.0
 
     def _prune_stale(self) -> None:
