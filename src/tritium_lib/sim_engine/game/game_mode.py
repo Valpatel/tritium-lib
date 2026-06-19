@@ -1169,6 +1169,21 @@ class GameMode:
         elif self.game_mode_type == "drone_swarm":
             data["infrastructure_health"] = self.infrastructure_health
             data["infrastructure_max"] = self.infrastructure_max
+        elif self.game_mode_type == "escort":
+            data["protectee_id"] = self.protectee_id
+            data["protectee_arrived"] = self.protectee_arrived
+            data["protectee_lost"] = self.protectee_lost
+            data["escort_destination"] = (
+                list(self.escort_destination)
+                if self.escort_destination is not None else None
+            )
+        elif self.game_mode_type == "patrol":
+            data["protected_point"] = (
+                list(self.protected_point)
+                if self.protected_point is not None else None
+            )
+            data["breach_radius"] = self.breach_radius
+            data["perimeter_breached"] = self.perimeter_breached
         return data
 
     def _publish_state_change(self) -> None:

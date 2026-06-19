@@ -93,6 +93,41 @@ class DeEscalationSummary(BaseModel):
     weighted_score: int = 0
 
 
+class EscortSummary(BaseModel):
+    """Escort-mode outcome — did the VIP get delivered, and how far it got.
+
+    Escort is the moving-objective mode: a friendly non-combatant protectee
+    travels A->B.  The mission is won by ARRIVAL and lost by LOSS, never by
+    clearing waves, so the after-action record reports the delivery outcome
+    plus how much of the route was covered (``route_progress``, 0..1) and the
+    metres still to go (``distance_remaining``) — the honest convoy debrief.
+    """
+
+    protectee_id: str = ""
+    protectee_name: str = ""
+    delivered: bool = False  # reached destination (victory)
+    lost: bool = False  # destroyed / lost en route (defeat)
+    destination: tuple[float, float] | None = None
+    distance_remaining: float = 0.0  # metres from VIP to destination at end
+    route_progress: float = 0.0  # 0.0..1.0 fraction of A->B covered
+
+
+class PatrolSummary(BaseModel):
+    """Patrol-mode outcome — was the protected perimeter HELD or BREACHED.
+
+    Patrol is the static perimeter-security mode: a single hostile inside the
+    ``breach_radius`` of the protected point is an immediate defeat, distinct
+    from battle's all-friendlies-eliminated.  The after-action record reports
+    whether the zone held and the closest a hostile got to the centre.
+    """
+
+    protected_point: tuple[float, float] | None = None
+    breach_radius: float = 0.0
+    held: bool = False  # perimeter survived every wave without a breach (victory)
+    breached: bool = False  # a hostile entered the secure zone (defeat)
+    closest_approach: float = 0.0  # nearest hostile distance to the point (m)
+
+
 class MVPHighlight(BaseModel):
     """The most valuable friendly unit of the engagement."""
 
@@ -130,6 +165,8 @@ class AfterActionReport(BaseModel):
     )
     civilian: CivilianCollateral = Field(default_factory=CivilianCollateral)
     de_escalation: DeEscalationSummary | None = None  # civil_unrest only
+    escort: EscortSummary | None = None  # escort mode only
+    patrol: PatrolSummary | None = None  # patrol mode only
 
     mvp: MVPHighlight | None = None
 
@@ -145,6 +182,8 @@ __all__ = [
     "FactionSummary",
     "CivilianCollateral",
     "DeEscalationSummary",
+    "EscortSummary",
+    "PatrolSummary",
     "MVPHighlight",
     "KillGraphEntry",
     "MoraleSample",
