@@ -35,6 +35,20 @@ from tritium_lib.intelligence.fusion_metrics import FusionMetrics
 
 logger = logging.getLogger("fusion_engine")
 
+# Sensor-record store bounds (long-run RSS protection).
+#
+# _sensor_records is keyed by every target_id ever ingested.  The per-key
+# list is capped (``_max_records_per_target``), but without key eviction the
+# KEY COUNT grows monotonically over uptime.  We drop a key once its newest
+# record is older than this TTL.  The TTL is set at or above the tracker's
+# longest stale window (``TargetTracker.MESH_STALE_TIMEOUT`` = 300s) so a
+# still-active target — which keeps appending fresh records — is never
+# evicted while live; only targets the tracker has already dropped age out.
+DEFAULT_SENSOR_RECORD_TTL = 300.0  # seconds
+# Amortized sweep cadence: run an eviction pass every N record appends so the
+# bound holds on the live ingest path without a dedicated timer thread.
+SENSOR_RECORD_EVICT_INTERVAL = 256
+
 
 # ---------------------------------------------------------------------------
 # Data classes for query results
@@ -160,6 +174,7 @@ class FusionEngine:
         correlation_radius: float = 5.0,
         heatmap_retention: float = 86400.0,
         auto_correlate: bool = False,
+        sensor_record_ttl: float = DEFAULT_SENSOR_RECORD_TTL,
     ) -> None:
         self._event_bus = event_bus
         self._lock = threading.Lock()
@@ -189,6 +204,11 @@ class FusionEngine:
         # Sensor record store: target_id -> list of SensorRecords
         self._sensor_records: dict[str, list[SensorRecord]] = {}
         self._max_records_per_target = 500
+        # Long-run key-count bound: TTL after which a key with no fresh
+        # record is evicted, plus an amortized append counter that triggers
+        # the sweep on the live ingest path.
+        self._sensor_record_ttl = float(sensor_record_ttl)
+        self._records_since_evict = 0
 
         if auto_correlate:
             self._correlator.start()
@@ -244,9 +264,52 @@ class FusionEngine:
                 self._sensor_records[target_id] = []
             records = self._sensor_records[target_id]
             records.append(rec)
-            # Prune old records
+            # Prune old records (per-key list cap)
             if len(records) > self._max_records_per_target:
                 self._sensor_records[target_id] = records[-self._max_records_per_target:]
+            # Amortized key-count bound: sweep stale keys every N appends so
+            # the dict plateaus at the currently-active target set instead of
+            # growing for the full process uptime.
+            self._records_since_evict += 1
+            if self._records_since_evict >= SENSOR_RECORD_EVICT_INTERVAL:
+                self._records_since_evict = 0
+                self._evict_stale_records_locked(time.time(), self._sensor_record_ttl)
+
+    def _evict_stale_records_locked(self, now: float, ttl: float) -> int:
+        """Drop sensor-record keys whose newest record is older than *ttl*.
+
+        Caller MUST hold ``self._lock``.  Records are appended in time order
+        (the per-key cap slices off the oldest), so ``records[-1]`` is the
+        newest observation for a key.  An empty list is also treated as stale.
+        """
+        cutoff = now - ttl
+        stale = [
+            tid for tid, records in self._sensor_records.items()
+            if not records or records[-1].timestamp < cutoff
+        ]
+        for tid in stale:
+            del self._sensor_records[tid]
+        if stale:
+            logger.debug(
+                "Evicted %d stale sensor-record keys (ttl=%.0fs, remaining=%d)",
+                len(stale), ttl, len(self._sensor_records),
+            )
+        return len(stale)
+
+    def evict_stale_sensor_records(
+        self, ttl: float | None = None, now: float | None = None
+    ) -> int:
+        """Evict sensor-record keys with no observation newer than *ttl* seconds.
+
+        Bounds the long-run memory of ``_sensor_records``: keys for targets
+        the tracker has already dropped age out instead of living for the full
+        process uptime.  Returns the number of keys removed.  ``now`` is
+        injectable for deterministic testing.
+        """
+        eff_ttl = self._sensor_record_ttl if ttl is None else float(ttl)
+        eff_now = time.time() if now is None else float(now)
+        with self._lock:
+            return self._evict_stale_records_locked(eff_now, eff_ttl)
 
     def _publish_event(self, topic: str, data: dict) -> None:
         """Publish to event bus if available."""

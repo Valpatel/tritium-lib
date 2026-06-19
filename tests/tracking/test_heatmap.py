@@ -157,4 +157,51 @@ class TestEventCount:
         assert eng.event_count("ble_activity") == 5
         assert eng.event_count("camera_activity") == 3
         assert eng.event_count("all") == 8
+
+
+class TestAmortizedPrune:
+    """record_event must self-bound so _events plateaus at a retention
+    window instead of growing for the full process uptime.
+
+    The live server's drain thread calls record_event on every
+    BLE/camera/motion event and never schedules prune(), so the bound has
+    to live on the write path.  These tests pin: events outside the
+    retention window are swept automatically, and in-window reads are
+    byte-for-byte identical to the pre-change behavior.
+    """
+
+    def test_amortized_prune_drops_out_of_retention_events(self):
+        from tritium_lib.tracking.heatmap import PRUNE_CHECK_INTERVAL
+
+        eng = HeatmapEngine(retention_seconds=3600.0)  # 1h
+        now = time.time()
+        # Record a full sweep-interval of ANCIENT events (well outside
+        # retention).  Without the self-bound these all accumulate.
+        for i in range(PRUNE_CHECK_INTERVAL):
+            eng.record_event("ble_activity", float(i), 0.0, timestamp=now - 100_000)
+        # The amortized sweep should have fired and dropped the ancient
+        # events.  Add a fresh one to prove live recording still works.
+        eng.record_event("ble_activity", 1.0, 1.0, timestamp=now)
+
+        # Stored count plateaus near the (here: empty) retention window —
+        # nowhere near PRUNE_CHECK_INTERVAL ancient events.
+        assert eng.event_count("ble_activity") <= 2
+        # The fresh in-window event survives.
+        result = eng.get_heatmap(time_window_minutes=30, layer="ble_activity")
+        assert result["event_count"] == 1
+
+    def test_amortized_prune_preserves_in_window_reads(self):
+        from tritium_lib.tracking.heatmap import PRUNE_CHECK_INTERVAL
+
+        eng = HeatmapEngine(retention_seconds=3600.0)
+        now = time.time()
+        # All events are well within the retention window — none may be
+        # dropped, so reads are identical to the unbounded behavior.
+        n = PRUNE_CHECK_INTERVAL + 50
+        for i in range(n):
+            eng.record_event("ble_activity", float(i % 10), 0.0, timestamp=now - 10)
+
+        assert eng.event_count("ble_activity") == n
+        result = eng.get_heatmap(time_window_minutes=30, layer="ble_activity")
+        assert result["event_count"] == n
         assert eng.event_count("motion_activity") == 0

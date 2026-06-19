@@ -585,3 +585,74 @@ class TestComponentAccessors:
 
     def test_fusion_metrics_accessible(self, engine):
         assert engine.fusion_metrics is not None
+
+
+# ---------------------------------------------------------------------------
+# Sensor-record stale-key eviction (long-run RSS bound)
+# ---------------------------------------------------------------------------
+
+class TestSensorRecordEviction:
+    """The _sensor_records dict is keyed by every target_id ever ingested.
+
+    Without eviction the KEY COUNT grows monotonically over uptime (the
+    per-key list is already capped at 500).  These tests pin the bound:
+    keys whose newest record is older than the TTL are dropped, live keys
+    are preserved, and the live write-path triggers the sweep on a cadence.
+    """
+
+    def test_evict_stale_sensor_records_drops_old_keys(self, engine):
+        now = time.time()
+        for i in range(100):
+            engine._sensor_records[f"ble_old_{i}"] = [
+                SensorRecord(source="ble", raw_data={}, timestamp=now - 1000.0)
+            ]
+        for i in range(5):
+            engine._sensor_records[f"ble_live_{i}"] = [
+                SensorRecord(source="ble", raw_data={}, timestamp=now)
+            ]
+        assert len(engine._sensor_records) == 105
+
+        removed = engine.evict_stale_sensor_records(now=now)
+
+        assert removed == 100
+        assert len(engine._sensor_records) == 5
+        assert all(k.startswith("ble_live_") for k in engine._sensor_records)
+
+    def test_evict_uses_newest_record_per_key(self, engine):
+        now = time.time()
+        # A key whose newest record is fresh must survive even if it also
+        # holds old records (a long-lived, still-active target).
+        engine._sensor_records["ble_active"] = [
+            SensorRecord(source="ble", raw_data={}, timestamp=now - 5000.0),
+            SensorRecord(source="ble", raw_data={}, timestamp=now - 1.0),
+        ]
+        removed = engine.evict_stale_sensor_records(now=now)
+        assert removed == 0
+        assert "ble_active" in engine._sensor_records
+
+    def test_evict_respects_custom_ttl(self, engine):
+        now = time.time()
+        engine._sensor_records["ble_x"] = [
+            SensorRecord(source="ble", raw_data={}, timestamp=now - 50.0)
+        ]
+        # Under a 100s TTL the 50s-old key survives; under a 10s TTL it goes.
+        assert engine.evict_stale_sensor_records(ttl=100.0, now=now) == 0
+        assert engine.evict_stale_sensor_records(ttl=10.0, now=now) == 1
+        assert "ble_x" not in engine._sensor_records
+
+    def test_record_sensor_amortized_eviction(self, engine):
+        # A stale key injected before a burst of live appends must be
+        # swept automatically by the write-path (no manual call), so the
+        # bound holds under the live server's continuous ingest.
+        from tritium_lib.fusion.engine import SENSOR_RECORD_EVICT_INTERVAL
+
+        engine._sensor_records["ble_stale"] = [
+            SensorRecord(source="ble", raw_data={}, timestamp=time.time() - 1000.0)
+        ]
+        for i in range(SENSOR_RECORD_EVICT_INTERVAL):
+            engine._record_sensor("ble_live", "ble", {"i": i})
+
+        assert "ble_stale" not in engine._sensor_records
+        assert "ble_live" in engine._sensor_records
+        # Per-key list cap is still honored.
+        assert len(engine._sensor_records["ble_live"]) <= engine._max_records_per_target
