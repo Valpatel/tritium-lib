@@ -1245,6 +1245,32 @@ class TargetTracker:
             top = sorted(known.items(), key=lambda kv: (-kv[1], kv[0]))[:6]
             lines.append("Types: " + ", ".join(f"{v} {k}" for k, v in top))
 
+        # Zone occupancy — surface live geofence state to cognition so an
+        # operator/Amy can answer "what's in the restricted zone?" instead of
+        # guessing (UX Loop 5 / 10). The tracker already holds the geofence
+        # engine reference (set via set_geofence_engine), and knows each
+        # target's alliance/classification, so it can resolve occupants into a
+        # threat-aware breakdown (a hostile in a restricted zone = BREACH).
+        geo = getattr(self, "_geofence_engine", None)
+        if geo is not None and hasattr(geo, "zone_brief"):
+            try:
+                by_id = {t.target_id: t for t in targets}
+
+                def _resolve(tid):
+                    t = by_id.get(tid)
+                    if t is None:
+                        return None
+                    kind = t.classification
+                    if not kind or kind == "unknown":
+                        kind = t.asset_type or "unknown"
+                    return {"alliance": t.alliance, "classification": kind}
+
+                zb = geo.zone_brief(occupant_resolver=_resolve)
+                if zb:
+                    lines.append(zb)
+            except Exception:
+                pass
+
         return "\n".join(lines)
 
     SIM_STALE_TIMEOUT = 10.0

@@ -100,3 +100,82 @@ class TestTacticalBrief:
         types_line = [ln for ln in brief.splitlines() if ln.startswith("Types:")][0]
         # vehicle (3) must be listed before person (1)
         assert types_line.index("vehicle") < types_line.index("person")
+
+
+class TestTacticalBriefZones:
+    """tactical_brief() surfaces live geofence occupancy to cognition.
+
+    Before this, asking Amy "what's in the restricted zone?" got an
+    ungrounded answer (Tick D follow-up): the grounding brief had no zone
+    source at all. The tracker already holds the geofence engine, so the
+    brief now appends a zone inventory with a threat-aware alliance
+    breakdown (a hostile in a restricted zone = BREACH).
+    """
+
+    def _square_zone(self, zid, name, ztype="monitored"):
+        from tritium_lib.tracking.geofence import GeoZone
+        return GeoZone(
+            zone_id=zid, name=name, zone_type=ztype,
+            polygon=[(0, 0), (10, 0), (10, 10), (0, 10)],
+        )
+
+    def test_no_zone_line_when_no_geofence_engine(self):
+        """A tracker with no geofence engine is unchanged (no zone line)."""
+        tr = TargetTracker()
+        _add(tr, "h1", "hostile")
+        assert "ZONES" not in tr.tactical_brief()
+
+    def test_no_zone_line_when_engine_has_no_zones(self):
+        from tritium_lib.tracking.geofence import GeofenceEngine
+        tr = TargetTracker()
+        tr.set_geofence_engine(GeofenceEngine())
+        _add(tr, "h1", "hostile")
+        assert "ZONES" not in tr.tactical_brief()
+
+    def test_zone_occupancy_surfaced_in_brief(self):
+        from tritium_lib.tracking.geofence import GeofenceEngine
+        tr = TargetTracker()
+        geo = GeofenceEngine()
+        geo.add_zone(self._square_zone("z1", "North Gate"))
+        tr.set_geofence_engine(geo)
+        _add(tr, "h1", "hostile")
+        _add(tr, "n1", "neutral")
+        # Put both targets inside the zone (engine tracks membership by id).
+        geo.check("h1", (5.0, 5.0))
+        geo.check("n1", (4.0, 4.0))
+
+        brief = tr.tactical_brief()
+        assert "ZONES: 1 defined" in brief
+        assert "2 target(s) inside" in brief
+        assert "NORTH GATE" in brief.upper()
+
+    def test_alliance_breakdown_resolved_from_tracker(self):
+        """The brief resolves occupant ids to their tracked alliance."""
+        from tritium_lib.tracking.geofence import GeofenceEngine
+        tr = TargetTracker()
+        geo = GeofenceEngine()
+        geo.add_zone(self._square_zone("z1", "Plaza"))
+        tr.set_geofence_engine(geo)
+        _add(tr, "h1", "hostile")
+        _add(tr, "n1", "neutral")
+        geo.check("h1", (5.0, 5.0))
+        geo.check("n1", (4.0, 4.0))
+
+        brief = tr.tactical_brief()
+        assert "1 hostile" in brief
+        # disambiguate from the top-level alliance count line
+        zone_line = [ln for ln in brief.splitlines() if "Plaza" in ln][0]
+        assert "1 hostile" in zone_line
+        assert "1 neutral" in zone_line
+
+    def test_hostile_in_restricted_zone_breach_grounded(self):
+        from tritium_lib.tracking.geofence import GeofenceEngine
+        tr = TargetTracker()
+        geo = GeofenceEngine()
+        geo.add_zone(self._square_zone("z1", "Vault", ztype="restricted"))
+        tr.set_geofence_engine(geo)
+        _add(tr, "h1", "hostile")
+        geo.check("h1", (5.0, 5.0))
+
+        brief = tr.tactical_brief()
+        assert "BREACH" in brief
