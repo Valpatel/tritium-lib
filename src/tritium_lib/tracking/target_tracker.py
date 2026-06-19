@@ -793,6 +793,107 @@ class TargetTracker:
             self.history.record(tid, position)
             self._check_geofence(tid, position[0], position[1])
 
+    # Acoustic targets — transient sounds (gunshot/voice/vehicle) detected by a
+    # mic array.  Localisation is coarse (direction-of-arrival, weak range), so
+    # tracks are low-confidence and short-lived, but they still confirm an
+    # entity already seen by RF/vision/mesh — the fourth north-star modality.
+    ACOUSTIC_STALE_TIMEOUT = 60.0
+
+    # Acoustic event type -> (asset_type, classification).  The classification
+    # IS the sound class; asset_type is the most likely emitter.
+    _ACOUSTIC_ASSET = {
+        "gunshot": "person",
+        "voice": "person",
+        "footsteps": "person",
+        "scream": "person",
+        "glass_break": "person",
+        "vehicle": "vehicle",
+        "engine": "vehicle",
+        "drone": "drone",
+    }
+
+    def update_from_acoustic(self, event: dict) -> None:
+        """Update or create a tracked target from an acoustic detection.
+
+        Args:
+            event: Dict with keys: event_type (gunshot/voice/vehicle/...),
+                position {x, y} (coarse DOA estimate), confidence, sensor_id,
+                and optionally target_id / name / alliance.
+
+        Acoustic is the fourth north-star modality (RF + vision + mesh +
+        acoustic).  A co-located acoustic track correlates with the RF/vision
+        tracks for the same entity into ONE unique multi-source ID.
+        """
+        event_type = event.get("event_type", "unknown")
+        target_id = event.get("target_id", "")
+        sensor_id = event.get("sensor_id", "mic")
+
+        # Stable per-entity id when the caller knows which entity made the
+        # sound; otherwise key by the sensor + sound class.
+        if target_id:
+            tid = f"acoustic_{target_id}"
+        elif event.get("position"):
+            tid = f"acoustic_{sensor_id}_{event_type}"
+        else:
+            # Nothing to localise or key on — ignore (never create junk tracks).
+            return
+
+        pos = event.get("position")
+        if pos:
+            position = (float(pos.get("x", 0)), float(pos.get("y", 0)))
+            pos_source = "acoustic_doa"
+        else:
+            position = (0.0, 0.0)
+            pos_source = "unknown"
+
+        name = event.get("name") or target_id or event_type
+        alliance = event.get("alliance", "unknown")
+        asset_type = self._ACOUSTIC_ASSET.get(event_type, "unknown")
+        # DOA localisation is coarse — cap confidence well below RF/vision.
+        confidence = max(0.0, min(0.6, float(event.get("confidence", 0.4))))
+
+        with self._lock:
+            if tid in self._targets:
+                t = self._targets[tid]
+                if pos_source != "unknown":
+                    self._check_velocity(t, position)
+                    t.position = position
+                    t.position_source = pos_source
+                t.last_seen = time.monotonic()
+                t.signal_count += 1
+                t.position_confidence = confidence
+                t._initial_confidence = confidence
+                self._add_confirming_source(t, "acoustic")
+            else:
+                self._membership_count += 1
+                self._targets[tid] = TrackedTarget(
+                    target_id=tid,
+                    name=name,
+                    alliance=alliance,
+                    asset_type=asset_type,
+                    position=position,
+                    last_seen=time.monotonic(),
+                    first_seen=time.monotonic(),
+                    signal_count=1,
+                    source="acoustic",
+                    position_source=pos_source,
+                    position_confidence=confidence,
+                    _initial_confidence=confidence,
+                    confirming_sources={"acoustic"},
+                    classification=event_type,
+                    classification_confidence=confidence,
+                )
+                self.reappearance_monitor.check_reappearance(
+                    target_id=tid,
+                    name=name,
+                    source="acoustic",
+                    asset_type=asset_type,
+                    position=position,
+                )
+        if pos_source != "unknown":
+            self.history.record(tid, position)
+            self._check_geofence(tid, position[0], position[1])
+
     # ADS-B aircraft targets
     ADSB_STALE_TIMEOUT = 120.0
 
@@ -1159,6 +1260,7 @@ class TargetTracker:
                 or (t.source == "ble" and (now - t.last_seen) > self.BLE_STALE_TIMEOUT)
                 or (t.source == "rf_motion" and (now - t.last_seen) > self.RF_MOTION_STALE_TIMEOUT)
                 or (t.source == "mesh" and (now - t.last_seen) > self.MESH_STALE_TIMEOUT)
+                or (t.source == "acoustic" and (now - t.last_seen) > self.ACOUSTIC_STALE_TIMEOUT)
                 or (t.source == "adsb" and (now - t.last_seen) > self.ADSB_STALE_TIMEOUT)
             ]
             if stale:
