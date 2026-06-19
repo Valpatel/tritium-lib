@@ -124,6 +124,7 @@ class TargetCorrelator:
         tracker: TargetTracker,
         *,
         radius: float = 5.0,
+        broad_phase_radius: float = 50.0,
         max_age: float = 30.0,
         interval: float = 5.0,
         confidence_threshold: float = 0.3,
@@ -138,6 +139,13 @@ class TargetCorrelator:
     ) -> None:
         self.tracker = tracker
         self.radius = radius
+        # Broad-phase spatial gate: pairs farther than this are never evaluated.
+        # Correlation requires spatial proximity (the merge radius is small), so
+        # a generous distance gate (>> radius, above realistic cross-sensor
+        # error/lag) cuts the O(n^2) pass to ~O(n*k) AND prevents false merges
+        # of distant co-movers — without changing which co-located pairs fuse.
+        self.broad_phase_radius = broad_phase_radius
+        self._bp_radius_sq = broad_phase_radius * broad_phase_radius
         self.max_age = max_age
         self.interval = interval
         self.confidence_threshold = confidence_threshold
@@ -246,6 +254,15 @@ class TargetCorrelator:
                     continue
 
                 if primary.source == secondary.source:
+                    continue
+
+                # Broad-phase spatial cull: skip the expensive multi-strategy
+                # evaluation for pairs too far apart to be the same entity.
+                # Cheap (one squared-distance) vs the full _evaluate_pair, and
+                # turns the O(n^2) pass tractable at hundreds of nodes.
+                _dx = primary.position[0] - secondary.position[0]
+                _dy = primary.position[1] - secondary.position[1]
+                if (_dx * _dx + _dy * _dy) > self._bp_radius_sq:
                     continue
 
                 scores = self._evaluate_pair(primary, secondary)
