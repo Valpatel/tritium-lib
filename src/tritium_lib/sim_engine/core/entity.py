@@ -373,6 +373,7 @@ def build_identity(target_id: str, asset_type: str, alliance: str) -> UnitIdenti
     # Robot/drone/turret/tank/apc/sensor types
     elif asset_type in (
         "rover", "drone", "turret", "scout_drone", "swarm_drone",
+        "quad_drone", "plane_drone",
         "heavy_turret", "missile_turret", "tank", "apc", "camera", "sensor",
     ):
         ident.serial_number = generate_serial(target_id)
@@ -399,6 +400,8 @@ _DRAIN_RATES: dict[str, float] = {
     "tank": 0.0008,
     "apc": 0.0010,
     "swarm_drone": 0.003,
+    "quad_drone": 0.003,
+    "plane_drone": 0.0022,
     # Mission-type entries (simulation-only, no real battery)
     "instigator": 0.0,
     "rioter": 0.0,
@@ -464,6 +467,12 @@ _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
     "hostile_leader":   (150.0, 150.0, 50.0, 2.0, 12.0, True),
     # Swarm drone: fast, fragile, short-range
     "swarm_drone":      (25.0,  25.0,  20.0, 1.0,  5.0, True),
+    # Quad-copter: fast, fragile, agile — hunts PEOPLE & VEHICLES (anti-personnel
+    # strafing). plane: larger, tougher, faster-forward BOMBER — hits BUILDINGS
+    # & INFRASTRUCTURE (longer range, heavier ordnance). Target preference is
+    # enforced in the swarm targeting logic; these are just the stat lines.
+    "quad_drone":       (28.0,  28.0,  28.0, 0.9,  7.0, True),
+    "plane_drone":      (80.0,  80.0,  40.0, 2.2, 28.0, True),
     # Civil unrest crowd roles
     "instigator":       (60.0,  60.0,  15.0, 3.0,  5.0, True),   # Low range, thrown objects
     "rioter":           (50.0,  50.0,   3.0, 2.0,  3.0, True),   # Melee range only
@@ -657,7 +666,7 @@ class SimulationTarget:
 
     # Types that fly over buildings (exempt from collision)
     _FLYING_TYPES: tuple[str, ...] = field(
-        default=("drone", "scout_drone", "swarm_drone"), init=False, repr=False
+        default=("drone", "scout_drone", "swarm_drone", "quad_drone", "plane_drone"), init=False, repr=False
     )
 
     def __post_init__(self) -> None:
