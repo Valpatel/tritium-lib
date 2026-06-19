@@ -230,6 +230,13 @@ class GameMode:
         # Mission-type fields (civil unrest, drone swarm)
         self.game_mode_type: str = "battle"
         self.de_escalation_score: int = 0
+        # Civil-unrest DE-ESCALATION VICTORY ("order restored"): when
+        # de_escalation_score reaches this target (>0), the riot is WON without
+        # grinding every attrition wave -- crowd-control doctrine says removing
+        # /identifying enough instigators self-calms the crowd (the Epstein
+        # model the sim uses).  0 = disabled (default; the mode falls back to
+        # the all_waves_cleared victory).  Set via scenario mode_config.
+        self.de_escalation_target: int = 0
         self.infrastructure_health: float = 0.0
         self.infrastructure_max: float = 1000.0
         self.civilian_harm_count: int = 0
@@ -239,6 +246,15 @@ class GameMode:
         self.escort_destination: tuple[float, float] | None = None
         self.protectee_arrived: bool = False
         self.protectee_lost: bool = False
+        # Patrol mode: a PROTECTED secure zone hostiles must not BREACH. Unlike
+        # drone_swarm's attrition (infrastructure HP decays under sustained
+        # fire), a SINGLE intruder reaching the zone is an immediate defeat
+        # (intrusion-response doctrine). Victory is clearing all intrusion waves
+        # without a breach. The engine owns hostile positions and computes the
+        # breach geometry, then calls on_perimeter_breached().
+        self.protected_point: tuple[float, float] | None = None
+        self.breach_radius: float = 30.0
+        self.perimeter_breached: bool = False
         # True once a finite mode's ambush waves are exhausted but the game is
         # NOT yet over (escort: hold "active" until the protectee arrives/dies).
         self._waves_exhausted: bool = False
@@ -304,12 +320,16 @@ class GameMode:
         # Reset game mode type and mode-specific fields
         self.game_mode_type = "battle"
         self.de_escalation_score = 0
+        self.de_escalation_target = 0
         self.infrastructure_health = 0.0
         self.civilian_harm_count = 0
         self.protectee_id = None
         self.escort_destination = None
         self.protectee_arrived = False
         self.protectee_lost = False
+        self.protected_point = None
+        self.breach_radius = 30.0
+        self.perimeter_breached = False
         self._waves_exhausted = False
         self.difficulty.reset()
         self._publish_state_change()
@@ -436,6 +456,25 @@ class GameMode:
             ))
             self._publish_state_change()
 
+    def on_perimeter_breached(self) -> None:
+        """A hostile reached the protected SECURE ZONE (patrol mode DEFEAT).
+
+        Patrol's defeat is a single perimeter breach — the intrusion-response
+        failure case — distinct from drone_swarm's gradual infrastructure
+        attrition and battle's all-friendlies-eliminated. Mirrors the other
+        mode hooks: in other modes the flag is recorded but no game over is
+        triggered, and it is a no-op once the game is already over.
+        """
+        self.perimeter_breached = True
+        if (self.state in ("active", "countdown", "wave_complete")
+                and self.game_mode_type == "patrol"):
+            self.state = "defeat"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "defeat", reason="perimeter_breached",
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+
     def get_state(self) -> dict:
         """Return serializable game state for API/frontend.
 
@@ -474,6 +513,7 @@ class GameMode:
         }
         if self.game_mode_type == "civil_unrest":
             state["de_escalation_score"] = self.de_escalation_score
+            state["de_escalation_target"] = self.de_escalation_target
             state["civilian_harm_count"] = self.civilian_harm_count
             state["civilian_harm_limit"] = self.civilian_harm_limit
             state["weighted_total_score"] = int(
@@ -490,6 +530,13 @@ class GameMode:
             )
             state["protectee_arrived"] = self.protectee_arrived
             state["protectee_lost"] = self.protectee_lost
+        elif self.game_mode_type == "patrol":
+            state["protected_point"] = (
+                list(self.protected_point)
+                if self.protected_point is not None else None
+            )
+            state["breach_radius"] = self.breach_radius
+            state["perimeter_breached"] = self.perimeter_breached
         return state
 
     # -- State tick handlers ----------------------------------------------------
@@ -523,6 +570,25 @@ class GameMode:
             self.state = "defeat"
             self._event_bus.publish("game_over", self._build_game_over_data(
                 "defeat", reason="all_friendlies_eliminated",
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+            return
+
+        # Civil-unrest DE-ESCALATION VICTORY ("order restored"): when enough
+        # instigators have been identified/neutralized that de_escalation_score
+        # crosses the scenario target, the crowd self-calms and ORDER IS
+        # RESTORED -- a WIN by de-escalation rather than by clearing every
+        # escalating attrition wave.  This is the doctrinally-correct
+        # crowd-control success (remove the ringleaders -> the Epstein crowd
+        # cools) and keeps the mode completable in a fun timeframe.  Disabled
+        # (target == 0) leaves the legacy all_waves_cleared victory untouched.
+        if (self.game_mode_type == "civil_unrest"
+                and self.de_escalation_target > 0
+                and self.de_escalation_score >= self.de_escalation_target):
+            self.state = "victory"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "victory", reason="order_restored",
                 waves_completed=self.wave - 1,
             ))
             self._publish_state_change()
@@ -639,10 +705,15 @@ class GameMode:
                 self.civilian_harm_limit = int(mc["civilian_harm_limit"])
             if "de_escalation_multiplier" in mc:
                 self._de_escalation_multiplier = float(mc["de_escalation_multiplier"])
+            if "de_escalation_target" in mc:
+                self.de_escalation_target = int(mc["de_escalation_target"])
             # Drone swarm settings
             if "infrastructure_max" in mc:
                 self.infrastructure_max = float(mc["infrastructure_max"])
                 self.infrastructure_health = self.infrastructure_max
+            # Patrol settings: how close an intruder may get before a breach.
+            if "breach_radius" in mc:
+                self.breach_radius = float(mc["breach_radius"])
 
         # Update engine map bounds when scenario specifies larger area.
         scenario_bounds = getattr(scenario, "map_bounds", None)
@@ -1089,6 +1160,7 @@ class GameMode:
         }
         if self.game_mode_type == "civil_unrest":
             data["de_escalation_score"] = self.de_escalation_score
+            data["de_escalation_target"] = self.de_escalation_target
             data["civilian_harm_count"] = self.civilian_harm_count
             data["civilian_harm_limit"] = self.civilian_harm_limit
             data["weighted_total_score"] = int(

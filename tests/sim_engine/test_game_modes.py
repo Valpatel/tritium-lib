@@ -265,6 +265,90 @@ class TestCivilUnrestMode:
         assert "weighted_total_score" in data
 
 
+class TestCivilUnrestDeEscalationVictory:
+    """Order-restored WIN: civil_unrest is won by de-escalation, not only by
+    grinding every attrition wave (roadmap #1 — keeps the mode completable)."""
+
+    def test_target_defaults_to_disabled(self):
+        gm, _, _ = _build_game_mode("civil_unrest")
+        assert gm.de_escalation_target == 0
+
+    def _order_restored(self, bus):
+        return [e for name, e in bus.events
+                if name == "game_over" and e.get("reason") == "order_restored"]
+
+    def test_no_victory_when_target_disabled(self):
+        """target == 0 preserves the legacy all_waves_cleared-only behavior."""
+        gm, bus, _ = _build_game_mode("civil_unrest")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_score = 99999
+        gm.tick(0.1)
+        assert gm.state != "victory"
+        assert not self._order_restored(bus)
+
+    def test_victory_when_score_reaches_target(self):
+        gm, bus, _ = _build_game_mode("civil_unrest")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_target = 500
+        gm.de_escalation_score = 500
+        gm.tick(0.1)
+        assert gm.state == "victory"
+        game_over = [e for name, e in bus.events if name == "game_over"]
+        assert len(game_over) == 1
+        assert game_over[0]["result"] == "victory"
+        assert game_over[0]["reason"] == "order_restored"
+
+    def test_no_victory_below_target(self):
+        gm, bus, _ = _build_game_mode("civil_unrest")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_target = 500
+        gm.de_escalation_score = 499
+        gm.tick(0.1)
+        assert gm.state != "victory"
+        assert not self._order_restored(bus)
+
+    def test_target_only_applies_to_civil_unrest(self):
+        """A battle game with a stray target must not order-restore."""
+        gm, bus, _ = _build_game_mode("battle")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_target = 100
+        gm.de_escalation_score = 999
+        gm.tick(0.1)
+        assert gm.state != "victory"
+        assert not self._order_restored(bus)
+
+    def test_target_in_get_state_and_game_over(self):
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_target = 600
+        assert gm.get_state()["de_escalation_target"] == 600
+        data = gm._build_game_over_data("victory", reason="order_restored")
+        assert data["de_escalation_target"] == 600
+
+    def test_reset_clears_target(self):
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_target = 600
+        gm.reset()
+        assert gm.de_escalation_target == 0
+
+    def test_load_scenario_applies_target_from_mode_config(self):
+        """The scenario->game_mode seam: mode_config carries the target."""
+        gm, _, _ = _build_game_mode("civil_unrest")
+
+        class _StubScenario:
+            waves = []
+            defenders = []
+            map_bounds = 100.0
+            mode_config = {"de_escalation_target": 750, "civilian_harm_limit": 3}
+
+        gm.load_scenario(_StubScenario())
+        assert gm.de_escalation_target == 750
+        assert gm.civilian_harm_limit == 3
+
+
 # ===================================================================
 # Drone Swarm mode
 # ===================================================================

@@ -77,6 +77,22 @@ class CivilianCollateral(BaseModel):
     # cause string -> count, e.g. {"crossfire": 3, "explosion": 1, "panic": 2}
 
 
+class DeEscalationSummary(BaseModel):
+    """Civil-unrest de-escalation outcome — how ORDER was (or wasn't) restored.
+
+    Surfaces the mode's central metric in the after-action record: the riot is
+    won by identifying/neutralizing enough instigators that the crowd
+    self-calms (de_escalation_score crosses de_escalation_target), NOT by
+    grinding every attrition wave.  ``weighted_score`` is the operator's
+    headline number (30% combat score + 70% de-escalation).
+    """
+
+    score: int = 0
+    target: int = 0
+    target_met: bool = False
+    weighted_score: int = 0
+
+
 class MVPHighlight(BaseModel):
     """The most valuable friendly unit of the engagement."""
 
@@ -100,6 +116,8 @@ class AfterActionReport(BaseModel):
     scenario_name: str = ""  # Human-readable name (e.g. "Drone Swarm")
     game_mode_type: str = "battle"
     result: str = "draw"  # victory, defeat, draw, aborted
+    result_reason: str = ""  # why it ended: order_restored, civilian_harm_limit,
+    # all_friendlies_eliminated, all_waves_cleared, ...
     started_at: float = Field(default_factory=time.time)
     ended_at: float = Field(default_factory=time.time)
     duration_seconds: float = 0.0
@@ -111,6 +129,7 @@ class AfterActionReport(BaseModel):
         default_factory=lambda: FactionSummary(alliance="hostile")
     )
     civilian: CivilianCollateral = Field(default_factory=CivilianCollateral)
+    de_escalation: DeEscalationSummary | None = None  # civil_unrest only
 
     mvp: MVPHighlight | None = None
 
@@ -125,6 +144,7 @@ __all__ = [
     "AfterActionReport",
     "FactionSummary",
     "CivilianCollateral",
+    "DeEscalationSummary",
     "MVPHighlight",
     "KillGraphEntry",
     "MoraleSample",
