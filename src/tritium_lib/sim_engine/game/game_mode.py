@@ -163,6 +163,13 @@ class GameMode:
         )
 
         self.state: str = "setup"
+        # The doctrinal reason the game reached its terminal state -- the SAME
+        # string the game_over event carries (e.g. "protectee_reached_destination",
+        # "perimeter_breached", "all_waves_cleared", "infrastructure_destroyed").
+        # Captured centrally in _build_game_over_data so it is queryable from
+        # get_state() (a POLLED snapshot), not only from the one-shot event a
+        # consumer might miss. None until the game ends; cleared on reset.
+        self.end_reason: str | None = None
         self.wave: int = 0
         self.score: int = 0
         self.total_eliminations: int = 0
@@ -273,6 +280,7 @@ class GameMode:
                 if t.status in ("low_battery", "idle", "stationary"):
                     t.status = "active"
         self.state = "countdown"
+        self.end_reason = None
         self._countdown_remaining = _COUNTDOWN_DURATION
         self._game_start_time = self._sim_time
         self.wave = 1
@@ -299,6 +307,7 @@ class GameMode:
     def reset(self) -> None:
         """Reset to setup state. Clear game-mode hostiles and scenario data."""
         self.state = "setup"
+        self.end_reason = None
         self.wave = 0
         self.score = 0
         self.total_eliminations = 0
@@ -507,6 +516,7 @@ class GameMode:
             display_wave = min(self.wave, total_waves)
         state: dict = {
             "state": self.state,
+            "end_reason": self.end_reason,
             "wave": display_wave,
             "wave_name": wave_config.name if wave_config else "",
             "total_waves": total_waves,
@@ -1153,7 +1163,17 @@ class GameMode:
     # -- Event publishing -------------------------------------------------------
 
     def _build_game_over_data(self, result: str, **extra) -> dict:
-        """Build a game_over event dict with mode-specific fields included."""
+        """Build a game_over event dict with mode-specific fields included.
+
+        Side effect (deliberate, documented): captures ``extra["reason"]`` into
+        ``self.end_reason``. This is the single choke point every terminal
+        transition routes through -- in this module AND in the SC engine's
+        mode-specific defeats (e.g. infrastructure_overwhelmed) -- so capturing
+        here exposes the doctrinal end reason via get_state() without editing
+        every one of the ~9 call sites.
+        """
+        if "reason" in extra and extra["reason"]:
+            self.end_reason = extra["reason"]
         # Same display clamp as get_state(): victory is detected at
         # wave == total+1 internally, but consumers never see "wave 8"
         # on a 7-wave scenario.
