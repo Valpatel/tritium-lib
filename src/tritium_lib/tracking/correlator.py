@@ -262,7 +262,25 @@ class TargetCorrelator:
                 # turns the O(n^2) pass tractable at hundreds of nodes.
                 _dx = primary.position[0] - secondary.position[0]
                 _dy = primary.position[1] - secondary.position[1]
-                if (_dx * _dx + _dy * _dy) > self._bp_radius_sq:
+                _dist_sq = _dx * _dx + _dy * _dy
+                if _dist_sq > self._bp_radius_sq:
+                    continue
+
+                # Fine spatial gate: two LOCALIZED targets farther apart than the
+                # merge radius are different physical entities and must NEVER be
+                # fused, no matter how well their non-spatial features match.
+                # SpatialStrategy is only a 0.30-weight feature, so a low
+                # confidence_threshold can otherwise merge distant targets on
+                # signal/temporal similarity alone -- collapsing distinct entities
+                # and breaking the unique-target-ID guarantee (regression:
+                # test_snapshot_integrity merged a camera 28 units away). Position-
+                # less targets ((0,0): correlated by signal/fingerprint, not space)
+                # skip this gate so signal-only fusion still works.
+                if (
+                    primary.position != (0.0, 0.0)
+                    and secondary.position != (0.0, 0.0)
+                    and _dist_sq > self.radius * self.radius
+                ):
                     continue
 
                 scores = self._evaluate_pair(primary, secondary)
