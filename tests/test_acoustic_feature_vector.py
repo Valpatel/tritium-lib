@@ -197,3 +197,39 @@ class TestAcousticFeatureVector:
         fv = AcousticFeatureVector(device_id="compact-test")
         payload = fv.to_mqtt_payload()
         assert " " not in payload
+
+    def test_node_position_omitted_by_default(self):
+        """No node position -> nx/ny absent so the SC declines to localise."""
+        fv = AcousticFeatureVector(device_id="no-pos")
+        payload = fv.to_mqtt_payload()
+        data = json.loads(payload)
+        assert "nx" not in data
+        assert "ny" not in data
+        restored = AcousticFeatureVector.from_mqtt_payload(payload)
+        assert restored.node_x is None
+        assert restored.node_y is None
+
+    def test_node_position_roundtrip(self):
+        """A node-stamped position survives the compact MQTT roundtrip."""
+        fv = AcousticFeatureVector(
+            device_id="mic-07",
+            classification="gunshot",
+            confidence=0.82,
+            node_x=123.456,
+            node_y=-78.913,
+        )
+        payload = fv.to_mqtt_payload()
+        data = json.loads(payload)
+        # Wire keys are the compact nx/ny the edge HAL emits.
+        assert data["nx"] == 123.46
+        assert data["ny"] == -78.91
+        restored = AcousticFeatureVector.from_mqtt_payload(payload)
+        assert restored.node_x == 123.46
+        assert restored.node_y == -78.91
+        assert restored.classification == "gunshot"
+
+    def test_node_position_emitted_together(self):
+        """nx/ny are all-or-nothing: a lone coordinate is never emitted."""
+        only_x = AcousticFeatureVector(device_id="half", node_x=5.0)
+        data = json.loads(only_x.to_mqtt_payload())
+        assert "nx" not in data and "ny" not in data

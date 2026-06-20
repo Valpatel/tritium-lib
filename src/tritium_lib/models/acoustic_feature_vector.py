@@ -53,6 +53,15 @@ class AcousticFeatureVector(BaseModel):
     sample_rate: int = 16000
     classification: Optional[str] = None
     confidence: Optional[float] = None
+    # Sensor-node position in the operating frame (local x/y, same frame the
+    # bridge/tracker use for robot telemetry). A single microphone cannot
+    # localise a sound, so a fixed node stamps its OWN position; the SC then
+    # places the classified acoustic detection at the node and fuses it with
+    # co-located RF/vision/mesh tracks into one unique ID. Omitted (None) when
+    # the node has no known position — the SC then declines to create a track
+    # rather than inventing a junk position at the origin.
+    node_x: Optional[float] = None
+    node_y: Optional[float] = None
 
     def to_mqtt_payload(self) -> str:
         """Serialize to compact JSON string for MQTT publishing.
@@ -75,6 +84,11 @@ class AcousticFeatureVector(BaseModel):
             payload["cls"] = self.classification
         if self.confidence is not None:
             payload["conf"] = round(self.confidence, 3)
+        # Node position is only emitted when BOTH coordinates are known, so the
+        # receiver can rely on "nx present" == "ny present" == localisable.
+        if self.node_x is not None and self.node_y is not None:
+            payload["nx"] = round(self.node_x, 2)
+            payload["ny"] = round(self.node_y, 2)
         return json.dumps(payload, separators=(",", ":"))
 
     @classmethod
@@ -99,4 +113,6 @@ class AcousticFeatureVector(BaseModel):
             sample_rate=data.get("sr", 16000),
             classification=data.get("cls"),
             confidence=data.get("conf"),
+            node_x=data.get("nx"),
+            node_y=data.get("ny"),
         )
