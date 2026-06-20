@@ -1455,8 +1455,38 @@ class InstigatorDetector:
         instigator: Any,
         identifier: Any,
     ) -> None:
-        """Mark instigator as identified and publish event."""
+        """Mark an instigator identified and NON-LETHALLY detain it.
+
+        Identification is not just a scoreboard tick -- it CLOSES the
+        crowd-control action loop. A ringleader a scout has positively
+        identified is peacefully removed from the riot: converted to a neutral,
+        unarmed civilian. This is the doctrinally-correct de-escalation outcome
+        (remove the ringleaders -> the Epstein crowd self-calms -> order is
+        restored) and it is what makes ``order_restored`` actually REACHABLE:
+
+          * crowd_role leaves "instigator", so the activation cycle
+            (hidden->active->throw objects) in behaviors no longer dispatches to
+            it -- it stops attacking AND stops being an "active instigator", so
+            it can no longer recruit nearby civilians into rioters.
+          * alliance -> neutral + is_combatant False removes it as a kill target
+            (non-lethal) and drops it from the wave-hostile headcount, so the
+            wave winds down as ringleaders are pulled rather than only when they
+            are shot dead.
+
+        Without this, identifying a ringleader awarded points but left it
+        throwing rocks and recruiting -- the defenders were overwhelmed before
+        any de-escalation target could be met, so the riot mode could only ever
+        be LOST by attrition, never won by its defining mechanic.
+        """
         instigator.identified = True
+
+        # Non-lethal detain: convert the ringleader to a neutral civilian.
+        instigator.alliance = "neutral"
+        instigator.is_combatant = False
+        instigator.crowd_role = "calmed"
+        instigator.weapon_range = 0.0
+        instigator.weapon_damage = 0.0
+        instigator.weapon_cooldown = 0.0
 
         self._event_bus.publish("instigator_identified", {
             "target_id": instigator.target_id,
@@ -1465,6 +1495,13 @@ class InstigatorDetector:
                 "x": instigator.position[0],
                 "y": instigator.position[1],
             },
+        })
+        # Drive the bonus-objective de-escalation counter (Master De-escalator)
+        # and any other de_escalation consumers -- this event had no publisher
+        # before, leaving that objective unreachable.
+        self._event_bus.publish("de_escalation", {
+            "target_id": instigator.target_id,
+            "reason": "instigator_identified",
         })
 
         # Award de-escalation score if game mode is available

@@ -19,6 +19,8 @@ from tritium_lib.sim_engine.game.game_mode import (
     WaveConfig,
     WAVE_CONFIGS,
     InfiniteWaveMode,
+    InstigatorDetector,
+    _IDENTIFICATION_SCORE,
 )
 
 
@@ -347,6 +349,65 @@ class TestCivilUnrestDeEscalationVictory:
         gm.load_scenario(_StubScenario())
         assert gm.de_escalation_target == 750
         assert gm.civilian_harm_limit == 3
+
+
+class TestInstigatorDetain:
+    """InstigatorDetector._identify NON-LETHALLY detains the ringleader and
+    drives the de-escalation victory loop. Identifying a ringleader must:
+    award de-escalation score, convert it to a neutral non-combatant (so it
+    leaves the hostile headcount and stops recruiting), and publish both the
+    ``instigator_identified`` and ``de_escalation`` events. Without the detain
+    + score, ``order_restored`` victory is mechanically unreachable."""
+
+    def _make_instigator(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            target_id="rioter_7",
+            alliance="hostile",
+            is_combatant=True,
+            crowd_role="instigator",
+            identified=False,
+            position=(10.0, 10.0),
+            weapon_range=8.0,
+            weapon_damage=5.0,
+            weapon_cooldown=1.5,
+        )
+
+    def _make_scout(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(target_id="scout_1", position=(10.0, 10.0))
+
+    def test_identify_detains_non_lethally(self):
+        bus = _FakeEventBus()
+        det = InstigatorDetector(event_bus=bus)
+        inst = self._make_instigator()
+        det._identify(inst, self._make_scout())
+
+        assert inst.identified is True
+        # Non-lethal: neutralized, disarmed, dropped from hostile headcount.
+        assert inst.alliance == "neutral"
+        assert inst.is_combatant is False
+        assert inst.crowd_role == "calmed"
+        assert inst.weapon_range == 0.0
+        assert inst.weapon_damage == 0.0
+        assert inst.weapon_cooldown == 0.0
+
+    def test_identify_publishes_both_events(self):
+        bus = _FakeEventBus()
+        det = InstigatorDetector(event_bus=bus)
+        det._identify(self._make_instigator(), self._make_scout())
+
+        names = [n for n, _ in bus.events]
+        assert "instigator_identified" in names
+        assert "de_escalation" in names
+
+    def test_identify_awards_de_escalation_score(self):
+        bus = _FakeEventBus()
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_score = 0
+        det = InstigatorDetector(event_bus=bus, game_mode=gm)
+        det._identify(self._make_instigator(), self._make_scout())
+        assert gm.de_escalation_score == _IDENTIFICATION_SCORE
 
 
 # ===================================================================
