@@ -1342,6 +1342,9 @@ _DEFAULT_DETECTION_TIME = 3.0
 # De-escalation score awarded per instigator identification
 _IDENTIFICATION_SCORE = 50
 
+# Radius (m) over which detaining a ringleader cools the surrounding crowd.
+_CALMING_RADIUS = 45.0
+
 
 class InstigatorDetector:
     """Detects instigators in civil_unrest mode via sustained proximity.
@@ -1438,6 +1441,13 @@ class InstigatorDetector:
                         ):
                             continue  # Too dense — timer stays but cannot identify
                         self._identify(instigator, friendly)
+                        # Removing the ringleader cools the cluster around it
+                        # (ESIM crowd-control doctrine): nearby rioters disperse
+                        # and would-be agitators back down. This lowers attack
+                        # pressure as detentions mount, so the stock ISR assets
+                        # survive long enough to finish the de-escalation loop
+                        # rather than being overwhelmed mid-way.
+                        self._calm_nearby(instigator, targets)
                         # Remove all timers for this instigator (it is done)
                         self._clear_instigator_timers(instigator.target_id)
                         break  # This instigator is identified, move on
@@ -1507,6 +1517,53 @@ class InstigatorDetector:
         # Award de-escalation score if game mode is available
         if self._game_mode is not None:
             self._game_mode.de_escalation_score += _IDENTIFICATION_SCORE
+
+    def _calm_nearby(self, detained: Any, targets: dict[str, Any]) -> int:
+        """Cool the crowd cluster around a just-detained ringleader.
+
+        ESIM (Elaborated Social Identity Model) crowd-control doctrine: a riot
+        crowd is not uniformly violent -- most are bystanders pulled along by a
+        small set of agitators. Remove a ringleader and the local cluster
+        de-escalates. We model that as a positive feedback loop on detention:
+
+          * nearby ``rioter`` crowd members disperse back to non-combatant
+            ``civilian`` (stop their melee attacks);
+          * nearby still-active, NOT-yet-identified ``instigator`` units back
+            down -- their activation cycle is reset to ``hidden`` so they stop
+            throwing objects for a cooldown -- but they are NOT identified and
+            earn NO score (the win still requires genuine scout identifications;
+            the cascade only lowers attack pressure so the stock defenders
+            survive long enough to finish the loop).
+
+        Already-calmed/identified units and units beyond ``_CALMING_RADIUS`` are
+        untouched. Returns the number of crowd members calmed (telemetry/test).
+        """
+        dx0, dy0 = detained.position
+        r_sq = _CALMING_RADIUS * _CALMING_RADIUS
+        calmed = 0
+        for t in targets.values():
+            if t is detained:
+                continue
+            role = getattr(t, "crowd_role", None)
+            if role not in ("rioter", "instigator"):
+                continue
+            if getattr(t, "identified", False):
+                continue
+            tx, ty = t.position
+            dx = tx - dx0
+            dy = ty - dy0
+            if dx * dx + dy * dy > r_sq:
+                continue
+            if role == "rioter":
+                t.crowd_role = "civilian"
+                t.is_combatant = False
+                calmed += 1
+            else:  # an active instigator backs down (not identified, no score)
+                if getattr(t, "instigator_state", None) != "hidden":
+                    t.instigator_state = "hidden"
+                    t.instigator_timer = 0.0
+                    calmed += 1
+        return calmed
 
     def remove_unit(self, target_id: str) -> None:
         """Clean up timers for a removed unit (either friendly or instigator)."""

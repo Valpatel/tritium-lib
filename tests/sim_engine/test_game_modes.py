@@ -410,6 +410,93 @@ class TestInstigatorDetain:
         assert gm.de_escalation_score == _IDENTIFICATION_SCORE
 
 
+class TestCalmingCascade:
+    """Detaining a ringleader COOLS the local crowd (ESIM doctrine: crowds are
+    not uniformly violent; removing the instigator de-escalates the cluster
+    around it). When ``_calm_nearby`` runs on a detained ringleader it must:
+    revert nearby rioters to non-combatant civilians, and reset nearby ACTIVE
+    (still-hidden-identity) instigators back to their hidden/passive state so
+    they stop throwing objects -- WITHOUT identifying them or awarding score
+    (the win still requires genuine identifications, the cascade only lowers
+    attack pressure so defenders survive to finish the loop). Out-of-radius
+    units and already-calmed units are untouched."""
+
+    def _ns(self, **kw):
+        from types import SimpleNamespace
+        base = dict(
+            alliance="hostile", is_combatant=True, status="active",
+            identified=False, instigator_state="active", instigator_timer=4.0,
+        )
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def _detained(self):
+        return self._ns(target_id="ring_0", position=(0.0, 0.0),
+                        crowd_role="calmed", alliance="neutral",
+                        is_combatant=False, identified=True)
+
+    def test_nearby_rioter_reverts_to_civilian(self):
+        det = InstigatorDetector(event_bus=_FakeEventBus())
+        ring = self._detained()
+        rioter = self._ns(target_id="rt_1", position=(5.0, 0.0),
+                          crowd_role="rioter")
+        n = det._calm_nearby(ring, {"ring_0": ring, "rt_1": rioter})
+        assert rioter.crowd_role == "civilian"
+        assert rioter.is_combatant is False
+        assert n == 1
+
+    def test_nearby_active_instigator_resets_to_hidden(self):
+        det = InstigatorDetector(event_bus=_FakeEventBus())
+        ring = self._detained()
+        other = self._ns(target_id="ig_2", position=(8.0, 0.0),
+                         crowd_role="instigator")
+        det._calm_nearby(ring, {"ring_0": ring, "ig_2": other})
+        # Pacified but NOT identified -- still an instigator, just cooled off.
+        assert other.instigator_state == "hidden"
+        assert other.instigator_timer == 0.0
+        assert other.identified is False
+        assert other.crowd_role == "instigator"
+
+    def test_far_units_untouched(self):
+        det = InstigatorDetector(event_bus=_FakeEventBus())
+        ring = self._detained()
+        far = self._ns(target_id="rt_far", position=(500.0, 0.0),
+                       crowd_role="rioter")
+        n = det._calm_nearby(ring, {"ring_0": ring, "rt_far": far})
+        assert far.crowd_role == "rioter"
+        assert far.is_combatant is True
+        assert n == 0
+
+    def test_cascade_does_not_award_score(self):
+        """The cascade lowers attack pressure but must NOT inflate the metric:
+        only genuine identifications add de_escalation_score."""
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_score = 0
+        det = InstigatorDetector(event_bus=_FakeEventBus(), game_mode=gm)
+        ring = self._detained()
+        rioter = self._ns(target_id="rt_1", position=(3.0, 0.0),
+                          crowd_role="rioter")
+        det._calm_nearby(ring, {"ring_0": ring, "rt_1": rioter})
+        assert gm.de_escalation_score == 0
+
+    def test_identify_triggers_cascade_in_tick(self):
+        """End-to-end via tick(): a scout that identifies a ringleader also
+        calms a rioter standing next to it."""
+        det = InstigatorDetector(event_bus=_FakeEventBus(), detection_time=0.1)
+        scout = self._ns(target_id="scout_1", alliance="friendly",
+                         asset_type="scout_drone", crowd_role=None,
+                         position=(20.0, 20.0))
+        ring = self._ns(target_id="ring_0", crowd_role="instigator",
+                        position=(20.0, 20.0), weapon_range=8.0,
+                        weapon_damage=5.0, weapon_cooldown=1.5)
+        rioter = self._ns(target_id="rt_1", crowd_role="rioter",
+                          position=(22.0, 20.0))
+        targets = {"scout_1": scout, "ring_0": ring, "rt_1": rioter}
+        det.tick(0.2, targets, "civil_unrest")
+        assert ring.identified is True
+        assert rioter.crowd_role == "civilian"
+
+
 # ===================================================================
 # Drone Swarm mode
 # ===================================================================
