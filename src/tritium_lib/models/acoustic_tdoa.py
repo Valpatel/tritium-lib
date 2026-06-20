@@ -339,3 +339,78 @@ def compute_tdoa_position_leastsq(
         event_type=sorted_obs[0].event_type,
         method="tdoa_leastsq",
     )
+
+
+# --- Local planar-frame entry point ------------------------------------------
+#
+# The edge node-position contract (nx/ny) and the TargetTracker both work in a
+# LOCAL operating frame (x = east metres, y = north metres) about a site
+# origin, NOT in lat/lon. Multi-node acoustic localisation therefore needs a
+# metres-in / metres-out entry point. Rather than fork the well-tested
+# hyperbolic solver above, we map the planar metres onto a tiny equirectangular
+# lat/lon patch about the origin (the inverse of the solver's own scale
+# constants) so the same Gauss-Newton routine runs unmodified, then map the
+# result back to metres. Over a sensor array spanning at most a few km the
+# linearisation error is sub-millimetre.
+
+# Metres per degree used for the planar<->pseudo-geographic mapping. LON uses
+# cos(0)=1 since the pseudo-patch is centred on the equator; the solver
+# subtracts its own centroid so only inter-sensor differences matter.
+_M_PER_DEG_LON_EQ = 111_320.0
+
+
+def solve_tdoa_xy(
+    points: list[tuple[float, float]],
+    arrival_times_ms: list[float],
+    *,
+    sensor_ids: Optional[list[str]] = None,
+    signal_strengths: Optional[list[float]] = None,
+    confidences: Optional[list[float]] = None,
+    sync_quality: float = 1.0,
+    event_type: str = "unknown",
+    sound_speed: float = SPEED_OF_SOUND_MPS,
+) -> Optional[dict]:
+    """Localize a sound source from sensors given in a LOCAL planar frame.
+
+    ``points`` are ``(x, y)`` metres in the same operating frame as the edge
+    node position (``nx``/``ny``) and the TargetTracker — x is east, y is
+    north. ``arrival_times_ms`` are NTP-synced arrival times parallel to
+    ``points``. Wraps :func:`compute_tdoa_position_leastsq` so the tested
+    hyperbolic multilateration runs directly on metres.
+
+    Returns a dict with the solved source ``x``/``y`` (metres, same frame),
+    plus ``residual_error_m`` (real RMS misfit), ``confidence``,
+    ``sensors_used``, ``event_type`` and ``method``; or ``None`` for fewer
+    than 3 sensors.
+    """
+    if len(points) < 3 or len(arrival_times_ms) != len(points):
+        return None
+
+    obs: list[TDoAObservation] = []
+    for i, (x, y) in enumerate(points):
+        obs.append(
+            TDoAObservation(
+                sensor_id=sensor_ids[i] if sensor_ids else f"s{i}",
+                arrival_time_ms=float(arrival_times_ms[i]),
+                signal_strength=signal_strengths[i] if signal_strengths else 0.0,
+                event_type=event_type,
+                confidence=confidences[i] if confidences else 1.0,
+                ntp_sync_quality=sync_quality,
+                lat=y / _M_PER_DEG_LAT,
+                lon=x / _M_PER_DEG_LON_EQ,
+            )
+        )
+
+    res = compute_tdoa_position_leastsq(obs, sound_speed=sound_speed)
+    if res is None:
+        return None
+
+    return {
+        "x": round(res.lon * _M_PER_DEG_LON_EQ, 3),
+        "y": round(res.lat * _M_PER_DEG_LAT, 3),
+        "residual_error_m": res.residual_error_m,
+        "confidence": res.confidence,
+        "sensors_used": res.sensors_used,
+        "event_type": res.event_type,
+        "method": res.method,
+    }
