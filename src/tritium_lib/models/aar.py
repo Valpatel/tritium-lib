@@ -128,6 +128,30 @@ class PatrolSummary(BaseModel):
     closest_approach: float = 0.0  # nearest hostile distance to the point (m)
 
 
+class InfrastructureSummary(BaseModel):
+    """Infrastructure-defence outcome — was the protected structure HELD or DESTROYED.
+
+    Drone-swarm and defense are the two structure-integrity modes: a single
+    integrity pool (a comms relay under air assault, or a fixed ground
+    strongpoint under siege) decays as attackers reach it, and the mission is
+    lost the moment it hits zero — distinct from battle's all-friendlies wipe.
+    The after-action record reports the final integrity, the lowest it ever
+    sank to, total damage absorbed, and a per-source breakdown
+    (``bomber_detonation`` / ``attack_fire`` / ``ground_siege``) so the
+    operator can see HOW the structure was worn down, not just whether it fell.
+    """
+
+    final_integrity: float = 0.0  # health at game end
+    max_integrity: float = 0.0  # starting / max health
+    integrity_percent: float = 0.0  # 0.0..100.0 of max remaining at end
+    min_integrity: float = 0.0  # lowest integrity reached during the engagement
+    total_damage: float = 0.0  # cumulative damage absorbed
+    destroyed: bool = False  # integrity hit 0 — mission-critical loss
+    damage_by_source: dict[str, float] = Field(default_factory=dict)
+    # source_type string -> damage dealt, e.g.
+    # {"bomber_detonation": 450.0, "attack_fire": 75.0, "ground_siege": 120.0}
+
+
 class MVPHighlight(BaseModel):
     """The most valuable friendly unit of the engagement."""
 
@@ -167,6 +191,7 @@ class AfterActionReport(BaseModel):
     de_escalation: DeEscalationSummary | None = None  # civil_unrest only
     escort: EscortSummary | None = None  # escort mode only
     patrol: PatrolSummary | None = None  # patrol mode only
+    infrastructure: InfrastructureSummary | None = None  # drone_swarm/defense only
 
     mvp: MVPHighlight | None = None
 
@@ -184,6 +209,7 @@ __all__ = [
     "DeEscalationSummary",
     "EscortSummary",
     "PatrolSummary",
+    "InfrastructureSummary",
     "MVPHighlight",
     "KillGraphEntry",
     "MoraleSample",
