@@ -273,14 +273,16 @@ class TargetCorrelator:
                 # confidence_threshold can otherwise merge distant targets on
                 # signal/temporal similarity alone -- collapsing distinct entities
                 # and breaking the unique-target-ID guarantee (regression:
-                # test_snapshot_integrity merged a camera 28 units away). Position-
-                # less targets ((0,0): correlated by signal/fingerprint, not space)
-                # skip this gate so signal-only fusion still works.
-                if (
-                    primary.position != (0.0, 0.0)
-                    and secondary.position != (0.0, 0.0)
-                    and _dist_sq > self.radius * self.radius
-                ):
+                # test_snapshot_integrity merged a camera 28 units away).
+                # "Localized" = has a real position source/confidence (NOT the
+                # origin heuristic -- (0,0) is a legitimate position). Position-
+                # less targets (source 'unknown', correlated by signal/fingerprint,
+                # not space) skip this gate so signal-only fusion still works.
+                _p_loc = (primary.position_source not in ("unknown", "", None)
+                          or primary.position_confidence > 0.0)
+                _s_loc = (secondary.position_source not in ("unknown", "", None)
+                          or secondary.position_confidence > 0.0)
+                if _p_loc and _s_loc and _dist_sq > self.radius * self.radius:
                     continue
 
                 scores = self._evaluate_pair(primary, secondary)

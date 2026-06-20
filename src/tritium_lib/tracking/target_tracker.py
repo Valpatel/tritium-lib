@@ -102,9 +102,14 @@ _LN2 = math.log(2)
 _MULTI_SOURCE_BOOST = 1.3  # 30% boost per additional confirming source
 _MAX_BOOSTED_CONFIDENCE = 0.99
 
-# Velocity consistency — max plausible speed in meters/second
-# 50 m/s ~ 180 km/h, anything above is suspicious
+# Velocity consistency. The RAIM innovation gate (tracking.integrity) handles
+# normal motion checks; _MAX_PLAUSIBLE_SPEED_MPS is retained as a reference for a
+# typical ground vehicle (~180 km/h). _TELEPORT_SPEED_MPS is the absolute backstop:
+# a single-step speed above it is a teleport/spoof regardless of motion history, and
+# is set well above any plausible platform (fast aircraft ~300 m/s) so legitimate
+# fast movers (e.g. ADS-B aircraft) are not flagged.
 _MAX_PLAUSIBLE_SPEED_MPS = 50.0
+_TELEPORT_SPEED_MPS = 600.0
 _TELEPORT_FLAG_COOLDOWN = 30.0  # seconds before re-flagging same target
 
 
@@ -334,12 +339,22 @@ class TargetTracker:
         if dt <= 0.0 or dt > 120.0:  # skip if first update or very stale
             return
 
+        # Absolute teleport backstop: a single-step speed faster than any plausible
+        # platform (well above even a fast aircraft ~300 m/s) is a teleport / GPS
+        # spoof. Flag it even before a velocity baseline exists -- the innovation
+        # gate below needs >=2 samples, so a teleport on a target's FIRST move would
+        # otherwise slip through warmup unflagged.
+        dx = new_pos[0] - target.position[0]
+        dy = new_pos[1] - target.position[1]
+        speed = math.hypot(dx, dy) / dt
+        teleport = speed > _TELEPORT_SPEED_MPS
+
         m2 = innovation_mahalanobis_sq(
             target.position, new_pos, (target._vx, target._vy), dt
         )
-        target.spoof_score = spoof_score(m2)
+        target.spoof_score = max(spoof_score(m2), 1.0 if teleport else 0.0)
 
-        if is_spoofed(m2, target._v_samples):
+        if teleport or is_spoofed(m2, target._v_samples):
             if (now - target._last_velocity_flag) > _TELEPORT_FLAG_COOLDOWN:
                 target.velocity_suspicious = True
                 target._last_velocity_flag = now
