@@ -48,6 +48,12 @@ from dataclasses import dataclass, field
 
 from .target_history import TargetHistory
 from .target_reappearance import TargetReappearanceMonitor
+from .integrity import (
+    innovation_mahalanobis_sq,
+    update_velocity_ewma,
+    is_spoofed,
+    spoof_score,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +178,10 @@ class TrackedTarget:
     correlation_confidence: float = 0.0  # weighted correlation score from correlator
     velocity_suspicious: bool = False  # flagged if target teleported
     _last_velocity_flag: float = 0.0  # monotonic time of last velocity flag
+    spoof_score: float = 0.0  # 0..1 RAIM innovation-gate plausibility-of-spoof
+    _vx: float = 0.0  # constant-velocity estimate (m/s) for the integrity gate
+    _vy: float = 0.0
+    _v_samples: int = 0  # velocity deltas observed (two-point init at the first)
     classification: str = "unknown"  # RL/ML classification (person, vehicle, phone, etc.)
     classification_confidence: float = 0.0  # confidence of the classification model
     # Structured kinematic / detection metadata.  Sources that report rich
@@ -238,6 +248,7 @@ class TrackedTarget:
             "correlated_ids": list(self.correlated_ids),
             "correlation_confidence": self.correlation_confidence,
             "velocity_suspicious": self.velocity_suspicious,
+            "spoof_score": round(self.spoof_score, 3),
             "classification": self.classification,
             "classification_confidence": self.classification_confidence,
             "kinematics": dict(self.kinematics) if self.kinematics else None,
@@ -308,23 +319,41 @@ class TargetTracker:
             pass  # Don't let geofence errors break target tracking
 
     def _check_velocity(self, target: TrackedTarget, new_pos: tuple[float, float]) -> None:
-        """Check if position change implies impossible velocity (teleportation)."""
+        """RAIM-style integrity gate: flag fixes that defy the motion model.
+
+        Replaces a fixed max-speed threshold (which flagged every legitimately
+        fast, steady mover — e.g. an ADS-B aircraft at 200 m/s — and missed slow
+        drift spoofs) with an innovation test: predict the position from the
+        target's constant-velocity estimate and gate the normalized innovation
+        against a chi-square threshold. A steady fast mover stays in-gate; a
+        teleport / GPS-spoof jump trips the gate. Sets ``spoof_score`` (0..1) for
+        downstream consumers (HUD, anomaly engine, fusion confidence).
+        """
         now = time.monotonic()
         dt = now - target.last_seen
         if dt <= 0.0 or dt > 120.0:  # skip if first update or very stale
             return
 
-        dx = new_pos[0] - target.position[0]
-        dy = new_pos[1] - target.position[1]
-        dist = math.sqrt(dx * dx + dy * dy)
-        speed = dist / dt
+        m2 = innovation_mahalanobis_sq(
+            target.position, new_pos, (target._vx, target._vy), dt
+        )
+        target.spoof_score = spoof_score(m2)
 
-        if speed > _MAX_PLAUSIBLE_SPEED_MPS:
+        if is_spoofed(m2, target._v_samples):
             if (now - target._last_velocity_flag) > _TELEPORT_FLAG_COOLDOWN:
                 target.velocity_suspicious = True
                 target._last_velocity_flag = now
         else:
             target.velocity_suspicious = False
+
+        # Update the constant-velocity model. Two-point init (alpha=1) on the
+        # first delta so a freshly-acquired steady mover gets the right model
+        # immediately, EWMA-smoothed thereafter.
+        alpha = 1.0 if target._v_samples == 0 else 0.4
+        target._vx, target._vy = update_velocity_ewma(
+            (target._vx, target._vy), target.position, new_pos, dt, alpha=alpha
+        )
+        target._v_samples += 1
 
     def _add_confirming_source(self, target: TrackedTarget, source: str) -> None:
         """Register an additional source that confirms this target's existence.
