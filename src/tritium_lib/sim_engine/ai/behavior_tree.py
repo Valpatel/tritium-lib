@@ -22,6 +22,8 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Callable
 
+from tritium_lib.sim_engine.ai.steering import Vec2, distance, pn_steer
+
 
 # ---------------------------------------------------------------------------
 # Status
@@ -240,6 +242,66 @@ class Condition(Node):
 
     def __repr__(self) -> str:
         return f"Condition({self.name!r})"
+
+
+class DivePN(Node):
+    """Terminal dive-bomb leaf driven by Proportional Navigation.
+
+    Steers a unit onto its objective using the PN guidance law
+    (:func:`tritium_lib.sim_engine.ai.steering.pn_steer`) — the same
+    mathematics that homes a missile.  This is the action a plane/dive-bomber
+    commits to once it has lined up on a relay or building: it stops cruising
+    and runs a real terminal descent that nulls the line-of-sight rate to the
+    target.
+
+    It reads kinematics from *context* and writes the commanded acceleration
+    plus a ``"dive"`` decision back into it, leaving the actual integration to
+    the caller (the sim engine / swarm controller).  Context keys consumed:
+
+      - ``pos``         pursuer position (x, y).            [required]
+      - ``vel``         pursuer velocity (vx, vy).          [required]
+      - ``target_pos``  objective position (x, y).          [required]
+      - ``target_vel``  objective velocity (default (0,0)).
+      - ``pn_gain``     navigation constant N (default 3.0).
+      - ``arrive_radius`` distance at which the dive is considered
+        complete (default 1.0).
+
+    Context keys written:
+
+      - ``pn_accel``    the commanded lateral acceleration (ax, ay).
+      - ``decision``    set to ``"dive"`` while running.
+
+    Returns:
+        SUCCESS when within ``arrive_radius`` of the objective (impact),
+        FAILURE when no objective / pursuer state is available,
+        RUNNING while the dive is in progress.
+    """
+
+    def __init__(self, gain: float | None = None, name: str = "dive_pn") -> None:
+        self.gain = gain
+        self.name = name
+
+    def tick(self, context: dict) -> Status:
+        pos: Vec2 | None = context.get("pos")
+        vel: Vec2 | None = context.get("vel")
+        target_pos: Vec2 | None = context.get("target_pos")
+        if pos is None or vel is None or target_pos is None:
+            return Status.FAILURE
+
+        target_vel: Vec2 = context.get("target_vel", (0.0, 0.0))
+        gain = self.gain if self.gain is not None else context.get("pn_gain", 3.0)
+
+        accel = pn_steer(pos, vel, target_pos, target_vel, N=gain)
+        context["pn_accel"] = accel
+        context["decision"] = "dive"
+
+        arrive_radius = context.get("arrive_radius", 1.0)
+        if distance(pos, target_pos) <= arrive_radius:
+            return Status.SUCCESS
+        return Status.RUNNING
+
+    def __repr__(self) -> str:
+        return f"DivePN({self.name!r})"
 
 
 # ---------------------------------------------------------------------------

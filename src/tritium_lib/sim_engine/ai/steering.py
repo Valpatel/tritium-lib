@@ -160,6 +160,90 @@ def evade(
 
 
 # ---------------------------------------------------------------------------
+# Proportional Navigation (missile / dive-bomb guidance)
+# ---------------------------------------------------------------------------
+
+def pn_steer(
+    position: Vec2,
+    velocity: Vec2,
+    target_pos: Vec2,
+    target_vel: Vec2,
+    N: float = 3.0,
+) -> Vec2:
+    """True Proportional-Navigation guidance acceleration.
+
+    Implements the classic PN guidance law used by homing missiles and
+    dive-bombing aircraft (public-domain guidance mathematics)::
+
+        a = N * Vc * lambda_dot
+
+    where ``Vc`` is the closing velocity along the line-of-sight (LOS), and
+    ``lambda_dot`` is the angular rotation rate of the LOS.  The commanded
+    acceleration is applied perpendicular to the LOS, in the direction that
+    nulls the LOS rotation — the defining property of PN.  On a perfect
+    collision course the LOS does not rotate (``lambda_dot == 0``) so the
+    command is zero and the existing geometry produces the intercept; when
+    the target manoeuvres, PN drives the LOS rate (and hence miss-distance)
+    toward zero.
+
+    This is a pure function: it consumes kinematic state and returns a
+    steering acceleration vector.  Integrate it as ``v += a * dt`` (a real
+    pursuer then re-normalizes to its constant flight speed — a turn, not a
+    speed-up).
+
+    Args:
+        position: Pursuer position (x, y) in meters.
+        velocity: Pursuer velocity (vx, vy) in m/s.
+        target_pos: Target position (x, y) in meters.
+        target_vel: Target velocity (vx, vy) in m/s.
+        N: Navigation constant (effective gain).  Practical values are 3-5;
+           higher N reacts harder to LOS rotation.
+
+    Returns:
+        Commanded lateral acceleration (ax, ay).  Zero vector when the LOS
+        is degenerate (coincident positions) or the closing velocity is
+        non-positive (target opening — no intercept geometry).
+    """
+    # Relative position (LOS vector) and relative velocity.
+    rx = target_pos[0] - position[0]
+    ry = target_pos[1] - position[1]
+    vx = target_vel[0] - velocity[0]
+    vy = target_vel[1] - velocity[1]
+
+    r2 = rx * rx + ry * ry
+    r = math.sqrt(r2)
+    if r < 1e-9:
+        return (0.0, 0.0)
+
+    # LOS unit vector.
+    los_x = rx / r
+    los_y = ry / r
+
+    # Closing velocity: positive when the range is shrinking.  V_rel here is
+    # (target - pursuer); range rate R_dot = V_rel . LOS, so closing velocity
+    # Vc = -R_dot.
+    range_rate = vx * los_x + vy * los_y
+    closing_velocity = -range_rate
+    if closing_velocity <= 0.0:
+        # Target is opening (or co-moving) — PN has no intercept to command.
+        return (0.0, 0.0)
+
+    # LOS rotation rate (2-D cross product z-component / R^2):
+    #   lambda_dot = (R x V_rel) / |R|^2
+    los_rate = (rx * vy - ry * vx) / r2
+
+    # Commanded acceleration magnitude: a = N * Vc * lambda_dot.
+    accel_mag = N * closing_velocity * los_rate
+
+    # Apply perpendicular to the LOS.  The left-hand normal of the LOS is
+    # (-los_y, los_x); scaling by the signed accel_mag turns toward the
+    # direction that nulls a positive (CCW) LOS rate.
+    perp_x = -los_y
+    perp_y = los_x
+    return (perp_x * accel_mag, perp_y * accel_mag)
+
+
+# ---------------------------------------------------------------------------
 # Path following
 # ---------------------------------------------------------------------------
 

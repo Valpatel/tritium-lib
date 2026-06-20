@@ -25,6 +25,14 @@ Spectrum analysis layer:
 
 from .base import SDRDevice, SDRInfo, SweepResult, SweepPoint
 from .simulator import SimulatedSDR, SimulatedSignal, default_signal_environment
+from .iq_synth import (
+    CRC24_GENERATOR,
+    PREAMBLE_PULSE_POSITIONS,
+    SAMPLES_PER_US,
+    build_df17_frame,
+    crc24,
+    synth_modes_iq,
+)
 from .analyzer import (
     SpectrumAnalyzer,
     DetectedSignal,
@@ -43,6 +51,12 @@ __all__ = [
     "SimulatedSDR",
     "SimulatedSignal",
     "default_signal_environment",
+    "CRC24_GENERATOR",
+    "PREAMBLE_PULSE_POSITIONS",
+    "SAMPLES_PER_US",
+    "build_df17_frame",
+    "crc24",
+    "synth_modes_iq",
     "SpectrumAnalyzer",
     "DetectedSignal",
     "FrequencyBand",

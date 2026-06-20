@@ -26,7 +26,21 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
+
 from .base import SDRDevice, SDRInfo, SweepPoint, SweepResult
+from .iq_synth import (
+    ADSB_SAMPLE_RATE,
+    LONG_MSG_BITS,
+    PREAMBLE_SAMPLES,
+    SAMPLES_PER_US,
+    build_df17_frame,
+    synth_modes_iq,
+)
+
+# ADS-B occupies a 2 MHz-wide channel centered on 1090 MHz.
+_ADSB_CENTER_HZ = 1_090_000_000
+_ADSB_HALF_BW_HZ = 1_000_000
 
 
 @dataclass
@@ -468,6 +482,89 @@ class SimulatedSDR(SDRDevice):
         """Stop the simulated receiver."""
         self._running = False
         self._tuned_freq = 0
+
+    async def read_iq(self, n_samples: int) -> np.ndarray:
+        """Return ``n_samples`` of synthetic baseband complex IQ.
+
+        Behavior depends on the tuned frequency:
+
+        * **1090 MHz (ADS-B):** emits a stream of decodable Mode S DF17
+          extended-squitter frames (preamble + 112-bit PPM data + valid
+          CRC-24) with AWGN, packed back-to-back with quiet gaps until the
+          requested length is reached.  This drives the Mode S decoder math
+          end-to-end with no radio.
+        * **any other frequency:** returns complex AWGN at the configured
+          noise floor (a quiet channel).
+
+        The device must be tuned first; otherwise a quiet noise channel is
+        returned.
+
+        Args:
+            n_samples: Number of complex IQ samples to return.
+
+        Returns:
+            1-D ``np.complex64`` array of length ``n_samples``.
+        """
+        if n_samples <= 0:
+            return np.zeros(0, dtype=np.complex64)
+
+        tuned = self._tuned_freq
+        in_adsb_band = (
+            abs(tuned - _ADSB_CENTER_HZ) <= _ADSB_HALF_BW_HZ
+        )
+
+        if in_adsb_band:
+            iq = self._synth_adsb_stream(n_samples)
+        else:
+            iq = self._synth_noise(n_samples)
+
+        # Exactly n_samples (pad with noise if a frame block overshot the cut).
+        if len(iq) > n_samples:
+            iq = iq[:n_samples]
+        elif len(iq) < n_samples:
+            pad = self._synth_noise(n_samples - len(iq))
+            iq = np.concatenate([iq, pad])
+        return iq.astype(np.complex64)
+
+    # -- synthetic-IQ helpers -------------------------------------------------
+
+    def _synth_noise(self, n_samples: int) -> np.ndarray:
+        """Complex AWGN at the configured noise floor (a quiet channel)."""
+        # Map the dBm noise floor to a small linear amplitude.
+        noise_lin = 10.0 ** (self.noise_floor_dbm / 20.0)
+        sigma = max(noise_lin, 1e-6)
+        re = np.array([self.rng.gauss(0.0, sigma) for _ in range(n_samples)],
+                      dtype=np.float32)
+        im = np.array([self.rng.gauss(0.0, sigma) for _ in range(n_samples)],
+                      dtype=np.float32)
+        return (re + 1j * im).astype(np.complex64)
+
+    def _synth_adsb_stream(self, n_samples: int) -> np.ndarray:
+        """Synthesize back-to-back decodable ADS-B frames up to n_samples."""
+        block = PREAMBLE_SAMPLES + LONG_MSG_BITS * SAMPLES_PER_US
+        gap = 64
+        lead = 16
+        # How many frames fit (at least one).
+        per = block + gap
+        n_frames = max(1, (n_samples - lead) // per)
+
+        frames = []
+        for _ in range(n_frames):
+            icao = self.rng.randint(0, 0xFFFFFF)
+            # Type code 11 (airborne position) is a representative DF17 frame.
+            tc = self.rng.choice([1, 4, 11, 19])
+            payload = bytes(self.rng.randint(0, 255) for _ in range(6))
+            frames.append(build_df17_frame(icao=icao, type_code=tc,
+                                           payload=payload))
+
+        return synth_modes_iq(
+            frames,
+            snr_db=30.0,
+            amplitude=1.0,
+            gap_samples=gap,
+            lead_samples=lead,
+            seed=self.rng.randint(0, 2**31 - 1),
+        )
 
     @property
     def sweep_count(self) -> int:
