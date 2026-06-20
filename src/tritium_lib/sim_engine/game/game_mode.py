@@ -736,8 +736,12 @@ class GameMode:
 
         # Place pre-defined defenders
         from tritium_lib.sim_engine.core.entity import SimulationTarget
-        for d in scenario.defenders:
-            tid = f"{d.asset_type}-{d.name or 'auto'}-{id(d)}"
+        for di, d in enumerate(scenario.defenders):
+            # Stable index suffix — NOT id(d). The object's memory address
+            # varies per process, which made defender target_ids (and so every
+            # id-sorted targeting tie-break) nondeterministic across runs,
+            # breaking the golden_replay determinism gate (G-5 root cause).
+            tid = f"{d.asset_type}-{d.name or 'auto'}-{di}"
             base_speed = d.speed if d.speed is not None else (
                 0.0 if d.asset_type in ("turret", "heavy_turret", "missile_turret") else 2.0
             )
