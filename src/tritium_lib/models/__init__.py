@@ -277,6 +277,7 @@ from .acoustic_tdoa import (
     TDoAObservation,
     TDoAResult,
     compute_tdoa_position,
+    compute_tdoa_position_leastsq,
     SPEED_OF_SOUND_MPS as TDOA_SPEED_OF_SOUND_MPS,
 )
 from .behavior import (
@@ -1002,6 +1003,7 @@ __all__ = [
     "TDoAObservation",
     "TDoAResult",
     "compute_tdoa_position",
+    "compute_tdoa_position_leastsq",
     "TDOA_SPEED_OF_SOUND_MPS",
     # Behavioral pattern recognition
     "AnomalySeverity",

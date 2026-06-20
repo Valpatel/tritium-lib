@@ -192,3 +192,150 @@ def compute_tdoa_position(
         event_type=sorted_obs[0].event_type,
         method="tdoa_weighted_centroid",
     )
+
+
+# --- Real hyperbolic TDoA multilateration (least-squares) --------------------
+#
+# The weighted-centroid above can only place a source *between* the sensors and
+# reports a fabricated residual. This solver inverts the actual TDoA hyperbolae
+# (|x - s_i| - |x - s_ref| = c * (t_i - t_ref)) via Gauss-Newton, so it
+# localizes sources outside the sensor hull and returns a REAL RMS fit error.
+# Pure NumPy (no SciPy); falls back to the centroid if NumPy is unavailable.
+
+# Local-tangent-plane scale factors (equirectangular approx — exact enough for a
+# sensor array spanning at most a few km).
+_M_PER_DEG_LAT = 110_540.0
+
+
+def _ll_to_local_m(lat: float, lon: float, lat0: float, lon0: float):
+    """(lat, lon) -> local east/north meters about (lat0, lon0)."""
+    import math as _m
+
+    m_per_deg_lon = 111_320.0 * _m.cos(_m.radians(lat0))
+    east = (lon - lon0) * m_per_deg_lon
+    north = (lat - lat0) * _M_PER_DEG_LAT
+    return east, north
+
+
+def _local_m_to_ll(east: float, north: float, lat0: float, lon0: float):
+    """Local east/north meters about (lat0, lon0) -> (lat, lon)."""
+    import math as _m
+
+    m_per_deg_lon = 111_320.0 * _m.cos(_m.radians(lat0))
+    lat = lat0 + north / _M_PER_DEG_LAT
+    lon = lon0 + east / m_per_deg_lon
+    return lat, lon
+
+
+def compute_tdoa_position_leastsq(
+    observations: list[TDoAObservation],
+    sound_speed: float = SPEED_OF_SOUND_MPS,
+    max_iter: int = 50,
+    tol_m: float = 0.01,
+) -> Optional[TDoAResult]:
+    """Localize a sound source by least-squares TDoA multilateration.
+
+    Solves the hyperbolic system |x - s_i| - |x - s_ref| = c * (t_i - t_ref)
+    with Gauss-Newton, seeded from the weighted centroid. Unlike
+    :func:`compute_tdoa_position`, this can place the source OUTSIDE the convex
+    hull of the sensors and returns ``residual_error_m`` as the real RMS misfit
+    of the TDoA equations (meters), not a heuristic.
+
+    Args:
+        observations: 3+ TDoAObservation from different sensors with synced
+            ``arrival_time_ms`` and ``lat``/``lon``.
+        sound_speed: Speed of sound, m/s.
+        max_iter: Maximum Gauss-Newton iterations.
+        tol_m: Convergence tolerance on the position step, meters.
+
+    Returns:
+        TDoAResult(method="tdoa_leastsq") with a real residual, or None if
+        fewer than 3 observations. Falls back to the centroid solver if NumPy
+        is unavailable or the normal equations are singular.
+    """
+    if len(observations) < 3:
+        return None
+
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy absent in core-only install
+        return compute_tdoa_position(observations, sound_speed)
+
+    # Reference = earliest arrival (closest to source); origin = sensor centroid.
+    sorted_obs = sorted(observations, key=lambda o: o.arrival_time_ms)
+    lat0 = sum(o.lat for o in sorted_obs) / len(sorted_obs)
+    lon0 = sum(o.lon for o in sorted_obs) / len(sorted_obs)
+
+    sensors = np.array(
+        [_ll_to_local_m(o.lat, o.lon, lat0, lon0) for o in sorted_obs],
+        dtype=np.float64,
+    )
+    t_s = np.array([o.arrival_time_ms / 1000.0 for o in sorted_obs], dtype=np.float64)
+
+    ref = 0  # earliest
+    s_ref = sensors[ref]
+    t_ref = t_s[ref]
+    others = [i for i in range(len(sorted_obs)) if i != ref]
+    # Range differences d_i = c * (t_i - t_ref)  (>= 0 since ref is earliest)
+    d = np.array([sound_speed * (t_s[i] - t_ref) for i in others], dtype=np.float64)
+    s_oth = sensors[others]
+
+    # Seed from the weighted centroid solution.
+    seed = compute_tdoa_position(observations, sound_speed)
+    if seed is not None:
+        x = np.array(_ll_to_local_m(seed.lat, seed.lon, lat0, lon0), dtype=np.float64)
+    else:
+        x = sensors.mean(axis=0)
+
+    eps = 1e-9
+    converged = False
+    for _ in range(max_iter):
+        r_oth = np.linalg.norm(x - s_oth, axis=1)  # |x - s_i|
+        r_ref = np.linalg.norm(x - s_ref)          # |x - s_ref|
+        r_ref = max(r_ref, eps)
+        r_oth = np.maximum(r_oth, eps)
+
+        residual = (r_oth - r_ref) - d  # want -> 0
+        # Jacobian rows: (x - s_i)/|x - s_i| - (x - s_ref)/|x - s_ref|
+        jac = (x - s_oth) / r_oth[:, None] - (x - s_ref) / r_ref
+
+        jtj = jac.T @ jac
+        jtr = jac.T @ residual
+        try:
+            step = np.linalg.solve(jtj + 1e-6 * np.eye(2), jtr)
+        except np.linalg.LinAlgError:  # pragma: no cover - degenerate geometry
+            return compute_tdoa_position(observations, sound_speed)
+
+        x = x - step
+        if float(np.linalg.norm(step)) < tol_m:
+            converged = True
+            break
+
+    # Real RMS residual in meters.
+    r_oth = np.maximum(np.linalg.norm(x - s_oth, axis=1), eps)
+    r_ref = max(float(np.linalg.norm(x - s_ref)), eps)
+    final_res = (r_oth - r_ref) - d
+    residual_m = float(np.sqrt(np.mean(final_res ** 2)))
+
+    est_lat, est_lon = _local_m_to_ll(float(x[0]), float(x[1]), lat0, lon0)
+
+    # Confidence: geometry (sensor count + spread), sync quality, and fit.
+    n = len(sorted_obs)
+    count_score = min(1.0, 0.4 + (n - 3) * 0.2)
+    avg_sync = sum(o.ntp_sync_quality for o in sorted_obs) / n
+    fit_score = 1.0 / (1.0 + residual_m / 10.0)  # 0 m -> 1.0, 10 m -> 0.5
+    if not converged:
+        fit_score *= 0.5
+    confidence = round(
+        0.30 * count_score + 0.25 * avg_sync + 0.45 * fit_score, 3
+    )
+    confidence = min(1.0, max(0.0, confidence))
+
+    return TDoAResult(
+        position=(round(est_lat, 8), round(est_lon, 8)),
+        confidence=confidence,
+        residual_error_m=round(residual_m, 2),
+        sensors_used=[o.sensor_id for o in sorted_obs],
+        event_type=sorted_obs[0].event_type,
+        method="tdoa_leastsq",
+    )

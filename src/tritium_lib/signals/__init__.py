@@ -58,6 +58,14 @@ from .csi_processor import (
     hampel_filter,
 )
 
+# gcc_phat needs numpy (FFT). Keep it optional so a core-only (no-numpy)
+# install still imports the pure-Python analysers above.
+try:
+    from .gcc_phat import gcc_phat as gcc_phat
+    _HAS_GCC_PHAT = True
+except ImportError:  # pragma: no cover - numpy absent
+    _HAS_GCC_PHAT = False
+
 __all__ = [
     # RSSI
     "RSSIAnalyzer",
@@ -82,3 +90,6 @@ __all__ = [
     "SubcarrierBand",
     "hampel_filter",
 ]
+
+if _HAS_GCC_PHAT:
+    __all__.append("gcc_phat")
