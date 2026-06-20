@@ -209,6 +209,27 @@ class EmbodimentRegistry:
             rec = self.embodiments.get(embodiment_id)
             return rec.get("perception") if rec else None
 
+    def reconcile_to_live(self, live_ids) -> int:
+        """Prune STAND-IN slots whose unit is no longer live.
+
+        The sim engine calls this each tick with its CURRENT target ids. The
+        registry is a process singleton that outlives engine instances (and may
+        load stale slots from disk), so slots from a prior game/instance pile up
+        and an agent's pick_friendly_standin returns a dead slot (perceive/act
+        no-op). This removes any slot that is NOT occupied by a Graphling and NOT
+        in the live set, so the SDK advertises only live embodiable units. An
+        on-shift (occupant == graphling) slot is never pruned — never strip an
+        active shift. NOTE: today only the sim registers slots; a future
+        MQTT/hardware registrant must tag its slots so they are exempt here.
+        """
+        live = set(live_ids)
+        with self.lock:
+            stale = [eid for eid, r in self.embodiments.items()
+                     if r.get("occupant") != "graphling" and eid not in live]
+            for eid in stale:
+                self.embodiments.pop(eid, None)
+        return len(stale)
+
     def deregister_silent(self, embodiment_id: str) -> bool:
         """Remove a slot without raising if it's already gone (engine teardown)."""
         with self.lock:
@@ -283,6 +304,10 @@ def pop_pending_action(embodiment_id: str) -> dict[str, Any] | None:
 
 def occupied_ids() -> list[str]:
     return REGISTRY.occupied_ids()
+
+
+def reconcile_to_live(live_ids) -> int:
+    return REGISTRY.reconcile_to_live(live_ids)
 
 
 def set_perception(embodiment_id: str, snapshot: dict[str, Any] | None) -> None:
