@@ -406,19 +406,30 @@ class GameMode:
             self._publish_state_change()
 
     def on_infrastructure_damaged(self, amount: float) -> None:
-        """Apply damage to infrastructure health (drone swarm mode only).
+        """Apply damage to the protected-structure health pool.
 
-        Reduces infrastructure_health by amount. In drone_swarm mode,
-        triggers defeat when infrastructure reaches 0. In other modes,
-        the counter is still reduced but does not trigger game over.
+        Reduces infrastructure_health by amount.  Two modes lose when the pool
+        hits 0, each with its OWN defeat reason so the end-state debrief is
+        honest per mode:
+
+          - ``drone_swarm`` -> ``infrastructure_destroyed`` (the comms relay /
+            critical infrastructure was bombed out by the air assault).
+          - ``defense`` -> ``strongpoint_overrun`` (a fixed strongpoint that
+            decays under ground siege; the position was overrun).
+
+        In every other mode the counter is still reduced but does not trigger
+        game over.
         """
         self.infrastructure_health = max(0.0, self.infrastructure_health - amount)
         if (self.infrastructure_health <= 0.0
                 and self.state == "active"
-                and self.game_mode_type == "drone_swarm"):
+                and self.game_mode_type in ("drone_swarm", "defense")):
+            reason = ("strongpoint_overrun"
+                      if self.game_mode_type == "defense"
+                      else "infrastructure_destroyed")
             self.state = "defeat"
             self._event_bus.publish("game_over", self._build_game_over_data(
-                "defeat", reason="infrastructure_destroyed",
+                "defeat", reason=reason,
                 waves_completed=self.wave - 1,
             ))
             self._publish_state_change()
@@ -519,7 +530,10 @@ class GameMode:
             state["weighted_total_score"] = int(
                 self.score * 0.3 + self.de_escalation_score * 0.7
             )
-        elif self.game_mode_type == "drone_swarm":
+        elif self.game_mode_type in ("drone_swarm", "defense"):
+            # Both modes defend a structure with an integrity pool — drone_swarm
+            # a comms relay, defense a fixed strongpoint — so both expose it for
+            # the HUD integrity bar.
             state["infrastructure_health"] = self.infrastructure_health
             state["infrastructure_max"] = self.infrastructure_max
         elif self.game_mode_type == "escort":
