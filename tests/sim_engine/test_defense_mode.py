@@ -127,3 +127,66 @@ class TestDefenseStrongpoint:
         assert st["game_mode_type"] == "defense"
         assert st["infrastructure_health"] == 620.0
         assert st["infrastructure_max"] == 1000.0
+
+
+class TestDefenseHoldTheLineVictory:
+    """Hold-the-line WIN: defense is a distinct, WINNABLE objective — survive
+    every wave with the strongpoint intact — not a battle reskin. The win must
+    carry its OWN reason (``strongpoint_held``, like escort's
+    ``protectee_reached_destination`` / civil_unrest's ``order_restored``) so a
+    defense victory is doctrinally distinguishable from a generic battle clear,
+    and the game_over event must carry the integrity pool for the HUD/announcer.
+    """
+
+    def _game_overs(self, bus):
+        return [d for n, d in bus.events if n == "game_over"]
+
+    def test_surviving_all_waves_wins_with_strongpoint_held(self):
+        """Clearing the final wave with the strongpoint alive is a defense WIN
+        with the distinct ``strongpoint_held`` reason — NOT ``all_waves_cleared``."""
+        gm, bus = _defense(integrity=850.0)
+        gm.game_mode_type = "defense"
+        # Stand at the final wave_complete edge: wave == total, no hostiles left.
+        from tritium_lib.sim_engine.game.game_mode import WAVE_CONFIGS
+        gm.state = "wave_complete"
+        gm.wave = len(WAVE_CONFIGS)
+        gm._wave_complete_time = 0.0
+        gm._sim_time = 100.0  # well past the advance delay -> victory path
+        gm.tick(0.1)
+        assert gm.state == "victory"
+        gos = self._game_overs(bus)
+        assert gos and gos[-1]["result"] == "victory"
+        assert gos[-1]["reason"] == "strongpoint_held"
+
+    def test_defense_victory_game_over_includes_integrity(self):
+        """A defense game_over (victory) must expose the integrity pool, like
+        drone_swarm and like defense's own get_state — parity gap was the bug."""
+        gm, _ = _defense(integrity=850.0)
+        data = gm._build_game_over_data("victory", reason="strongpoint_held")
+        assert data["infrastructure_health"] == 850.0
+        assert data["infrastructure_max"] == 1000.0
+
+    def test_defense_defeat_game_over_includes_integrity(self):
+        """The overrun DEFEAT event must also carry the integrity pool (0)."""
+        gm, bus = _defense(integrity=10.0)
+        gm.on_infrastructure_damaged(50.0)
+        gos = self._game_overs(bus)
+        assert gos and gos[-1]["result"] == "defeat"
+        assert gos[-1]["reason"] == "strongpoint_overrun"
+        assert gos[-1]["infrastructure_health"] == 0.0
+        assert gos[-1]["infrastructure_max"] == 1000.0
+
+    def test_battle_still_wins_with_all_waves_cleared(self):
+        """The distinct reason is defense-only: battle's win reason is unchanged."""
+        bus = _Bus()
+        gm = GameMode(event_bus=bus, engine=_Engine(), combat_system=_Combat())
+        gm.game_mode_type = "battle"
+        from tritium_lib.sim_engine.game.game_mode import WAVE_CONFIGS
+        gm.state = "wave_complete"
+        gm.wave = len(WAVE_CONFIGS)
+        gm._wave_complete_time = 0.0
+        gm._sim_time = 100.0
+        gm.tick(0.1)
+        assert gm.state == "victory"
+        gos = self._game_overs(bus)
+        assert gos and gos[-1]["reason"] == "all_waves_cleared"

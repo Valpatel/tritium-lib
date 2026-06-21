@@ -700,9 +700,17 @@ class GameMode:
                     self._publish_state_change()
                 else:
                     # All waves cleared — victory! (finite mode only)
+                    # Defense is won by HOLDING THE LINE: surviving every wave
+                    # with the strongpoint intact. It gets its OWN victory reason
+                    # (like escort's protectee_reached_destination / civil_unrest's
+                    # order_restored) so a held-the-line win is doctrinally
+                    # distinct from a generic battle clear in the debrief/AAR.
+                    reason = ("strongpoint_held"
+                              if self.game_mode_type == "defense"
+                              else "all_waves_cleared")
                     self.state = "victory"
                     self._event_bus.publish("game_over", self._build_game_over_data(
-                        "victory", reason="all_waves_cleared",
+                        "victory", reason=reason,
                         waves_completed=total_waves,
                     ))
                     self._publish_state_change()
@@ -1231,7 +1239,12 @@ class GameMode:
             data["weighted_total_score"] = int(
                 self.score * 0.3 + self.de_escalation_score * 0.7
             )
-        elif self.game_mode_type == "drone_swarm":
+        elif self.game_mode_type in ("drone_swarm", "defense"):
+            # Both defend a structure with an integrity pool (drone_swarm a comms
+            # relay, defense a fixed strongpoint), so both surface it on the
+            # game_over event for the HUD/announcer — matching get_state's parity
+            # for these two modes. Without this a defense win/loss event carried
+            # no integrity at all, unlike its own polled state.
             data["infrastructure_health"] = self.infrastructure_health
             data["infrastructure_max"] = self.infrastructure_max
         elif self.game_mode_type == "escort":
