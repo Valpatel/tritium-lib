@@ -215,9 +215,9 @@ class TestStalemateProgressReset:
         orig = gm._force_eliminate_wave_hostiles
         calls = []
 
-        def spy():
+        def spy(*args, **kwargs):
             calls.append(gm._sim_time)
-            orig()
+            orig(*args, **kwargs)
 
         gm._force_eliminate_wave_hostiles = spy
         # No damage applied -> genuine stalemate.
@@ -237,9 +237,9 @@ class TestStalemateProgressReset:
         orig = gm._force_eliminate_wave_hostiles
         calls = []
 
-        def spy():
+        def spy(*args, **kwargs):
             calls.append(gm._sim_time)
-            orig()
+            orig(*args, **kwargs)
 
         gm._force_eliminate_wave_hostiles = spy
         dt = 0.1
