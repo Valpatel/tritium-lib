@@ -30,6 +30,6 @@ A geo-reference point (map center) anchors all local coordinates to real-world l
 
 ## Related
 
-- [../../../../tritium-sc/src/engine/tactical/geo.py](../../../../tritium-sc/src/engine/tactical/geo.py) — SC-side geo module (uses this library)
-- [../../../../tritium-sc/src/engine/tactical/trilateration.py](../tracking/trilateration.py) — Multi-node position estimation
+- [../../../../tritium-sc/src/engine/tactical/geo_protocols.py](../../../../tritium-sc/src/engine/tactical/geo_protocols.py) — SC-side GIS interop (KML/MGRS/WMS); sources the reference point from this library
+- [../tracking/trilateration.py](../tracking/trilateration.py) — Multi-node position estimation
 - [../models/gis.py](../models/gis.py) — GeoPoint and MapTile models

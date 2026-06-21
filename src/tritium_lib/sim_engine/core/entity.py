@@ -33,9 +33,10 @@ combat system.  Unit type stat profiles are applied via
 ``apply_combat_profile()`` or set explicitly by factories/spawners.
 
 This module lives in tritium-lib for sharing across tritium-sc and
-other consumers.  SC-specific imports (engine.units, engine.tactical.geo)
-are optional — when unavailable, the corresponding features degrade
-gracefully.
+other consumers.  The optional ``engine.units`` import is SC-specific —
+when unavailable, the corresponding features degrade gracefully.  The
+geo-reference comes from ``tritium_lib.geo`` (also degrades to 0,0 when
+no reference has been set).
 """
 
 from __future__ import annotations
@@ -1082,10 +1083,10 @@ class SimulationTarget:
         Note: threat_level is NOT included — it is computed externally by
         ThreatClassifier and lives in ThreatRecord, not on the target.
         """
-        # Geo-reference is SC-specific; when unavailable, default to 0.
+        # When no geo-reference has been set, local_to_latlng returns 0,0.
         geo = {"lat": 0.0, "lng": 0.0, "alt": 0.0}
         try:
-            from engine.tactical.geo import local_to_latlng
+            from tritium_lib.geo import local_to_latlng
             geo = local_to_latlng(self.position[0], self.position[1], self.altitude)
         except ImportError:
             pass
