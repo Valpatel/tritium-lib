@@ -643,7 +643,15 @@ class GameMode:
         if (stale or hard_timeout) and not self._is_spawning():
             stale_alive = self._count_wave_hostiles_alive()
             if stale_alive > 0:
-                self._force_eliminate_wave_hostiles()
+                # A dive-bomber committed to a terminal run on the infrastructure
+                # is making real progress toward its objective -- it is NOT a
+                # stalemate. Exempt live bombers from the *stalemate* cull so the
+                # anti-infrastructure threat (and thus the infrastructure_destroyed
+                # defeat) can actually land instead of being wiped mid-flight; the
+                # hard timeout still culls everyone as an absolute backstop, so a
+                # wave can never hang forever waiting on a stuck bomber.
+                self._force_eliminate_wave_hostiles(
+                    exempt_dive_bombers=(stale and not hard_timeout))
 
         # G4: a crowd-driven civil_unrest riot has no battle wave hostiles, so
         # the "all wave hostiles cleared -> wave complete" rule does not apply —
@@ -1054,10 +1062,29 @@ class GameMode:
                 total += hp if hp is not None else 0.0
         return total
 
-    def _force_eliminate_wave_hostiles(self) -> None:
-        """Force-eliminate remaining wave hostiles to break a stalemate."""
+    @staticmethod
+    def _is_dive_bomber(t) -> bool:
+        """True for anti-infrastructure dive-bombers: a dedicated ``plane_drone``
+        asset, or a ``swarm_drone`` carrying the ``bomber_swarm`` variant. Mirrors
+        ``engine.simulation.swarm.SwarmBehavior._is_dive_bomber`` so the game-mode
+        stalemate logic and the boids dive logic agree on what counts as a bomber.
+        """
+        return (getattr(t, "asset_type", None) == "plane_drone"
+                or getattr(t, "drone_variant", None) == "bomber_swarm")
+
+    def _force_eliminate_wave_hostiles(self, exempt_dive_bombers: bool = False) -> None:
+        """Force-eliminate remaining wave hostiles to break a stalemate.
+
+        When *exempt_dive_bombers* is set, live anti-infrastructure dive-bombers
+        are spared -- they are mid-run on the relay, not stalemated -- so the
+        bomber waves can press their attack home instead of being wiped before
+        impact (the whole point of a bomber wave). The hard-timeout backstop
+        calls this with exemption OFF, so a wave still cannot hang forever.
+        """
         for t in self._engine.get_targets():
             if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
+                if exempt_dive_bombers and self._is_dive_bomber(t):
+                    continue
                 t.status = "eliminated"
                 t.health = 0
                 # Mark counted BEFORE publishing so the event echo through

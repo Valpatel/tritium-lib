@@ -21,6 +21,8 @@ from tritium_lib.sim_engine.game.game_mode import (
     InfiniteWaveMode,
     InstigatorDetector,
     _IDENTIFICATION_SCORE,
+    _STALEMATE_TIMEOUT,
+    _WAVE_HARD_TIMEOUT,
 )
 
 
@@ -982,3 +984,118 @@ class TestLowBatteryHostilesCountAlive:
         h.status = "low_battery"
         gm._force_eliminate_wave_hostiles()
         assert h.status == "eliminated", "a recharging hostile must be force-eliminable"
+
+
+class TestDiveBomberStalemateExemption:
+    """A drone_swarm dive-bomber mid-run on the relay is making real progress
+    toward its objective, NOT stalemated. The stalemate cull must spare live
+    bombers so the anti-infrastructure threat (and thus the
+    ``infrastructure_destroyed`` defeat) can actually land instead of being
+    wiped mid-flight -- while the hard-timeout backstop still culls everyone so
+    a wave can never hang forever. (Recovered + proven 2026-06-20; backlog item
+    'plane_drone dive-bomb so drone_swarm defeat is reachable'.)"""
+
+    def _add_wave_hostile(self, gm, engine, tid, *, asset_type="person",
+                          drone_variant=None):
+        t = _FakeTarget(target_id=tid, alliance="hostile", status="active",
+                        asset_type=asset_type)
+        if drone_variant is not None:
+            t.drone_variant = drone_variant
+        engine.add_target(t)
+        gm._wave_hostile_ids.add(tid)
+        return t
+
+    def test_is_dive_bomber_plane_drone(self):
+        t = _FakeTarget(target_id="p", asset_type="plane_drone")
+        assert GameMode._is_dive_bomber(t) is True
+
+    def test_is_dive_bomber_bomber_swarm_variant(self):
+        t = _FakeTarget(target_id="b", asset_type="swarm_drone")
+        t.drone_variant = "bomber_swarm"
+        assert GameMode._is_dive_bomber(t) is True
+
+    def test_is_dive_bomber_false_for_regular_units(self):
+        # Anti-personnel swarm drones (scout/attack) and ground units are NOT
+        # bombers -- they get no exemption from the stalemate cull.
+        plain = _FakeTarget(target_id="s", asset_type="swarm_drone")
+        assert GameMode._is_dive_bomber(plain) is False
+        scout = _FakeTarget(target_id="sc", asset_type="swarm_drone")
+        scout.drone_variant = "scout_swarm"
+        assert GameMode._is_dive_bomber(scout) is False
+        person = _FakeTarget(target_id="pr", asset_type="person")
+        assert GameMode._is_dive_bomber(person) is False
+
+    def test_stalemate_cull_spares_dive_bombers(self):
+        """exempt_dive_bombers=True: bombers survive, everything else is culled."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        plane = self._add_wave_hostile(gm, engine, "plane",
+                                       asset_type="plane_drone")
+        grunt = self._add_wave_hostile(gm, engine, "grunt")
+
+        gm._force_eliminate_wave_hostiles(exempt_dive_bombers=True)
+
+        assert bomber.status == "active", "bomber spared during stalemate"
+        assert plane.status == "active", "plane_drone spared during stalemate"
+        assert grunt.status == "eliminated", "non-bomber still culled"
+
+    def test_backstop_cull_eliminates_dive_bombers(self):
+        """Default (hard-timeout backstop): EVERYONE is culled, bombers too --
+        a wave can never hang forever waiting on a stuck bomber."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        grunt = self._add_wave_hostile(gm, engine, "grunt")
+
+        gm._force_eliminate_wave_hostiles()  # exempt_dive_bombers defaults False
+
+        assert bomber.status == "eliminated", "backstop must cull stuck bombers"
+        assert grunt.status == "eliminated"
+
+    def test_tick_stalemate_spares_bomber_but_culls_grunt(self):
+        """End-to-end through tick(): a STALEMATE (no combat progress, wave not
+        past the hard ceiling) spares the live bomber and culls the grunt."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        gm.begin_war()
+        gm.state = "active"
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        grunt = self._add_wave_hostile(gm, engine, "grunt")
+        # Stalemate: last progress was long ago, but the wave only just went
+        # active (so we are NOT past _WAVE_HARD_TIMEOUT -> not a hard timeout).
+        gm._sim_time = 1000.0  # positive base so "long ago" stays > 0
+        now = gm._sim_time
+        gm._wave_active_since = now
+        gm._last_elimination_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_combat_progress_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_wave_hostile_health = gm._wave_hostiles_total_health()
+
+        gm.tick(0.1)
+
+        assert bomber.status == "active", "stalemate must not wipe a live bomber"
+        assert grunt.status == "eliminated", "stalemate culls the non-bomber grunt"
+
+    def test_tick_hard_timeout_culls_bomber(self):
+        """End-to-end through tick(): past the HARD timeout, even the bomber is
+        culled -- the absolute backstop, so the wave cannot hang forever."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        gm.begin_war()
+        gm.state = "active"
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        gm._sim_time = 1000.0  # positive base so "long ago" stays > 0
+        now = gm._sim_time
+        # Wave went active long enough ago to exceed the hard ceiling.
+        gm._wave_active_since = now - (_WAVE_HARD_TIMEOUT + 5.0)
+        gm._last_elimination_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_combat_progress_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_wave_hostile_health = gm._wave_hostiles_total_health()
+
+        gm.tick(0.1)
+
+        assert bomber.status == "eliminated", "hard timeout culls even a bomber"
