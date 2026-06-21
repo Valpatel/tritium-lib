@@ -510,3 +510,102 @@ class TestVersionAndSnapshot:
         # version stays the same across two snapshots when no work was
         # done — this is what the ETag short-circuit relies on.
         assert v1 == v2
+
+
+class TestCrowdRole:
+    """crowd_role threads from a civil_unrest sim target -> TrackedTarget -> to_dict.
+
+    Riot/civil-unrest UX: the tactical map needs the finer grain
+    (civilian / instigator / rioter) on top of alliance so it can render a
+    protected civilian distinctly from an agitator.  alliance already gives
+    protect-blue / contain-magenta; crowd_role is the per-entity sub-class.
+    """
+
+    def test_default_crowd_role_is_none(self):
+        """A plain target (not a crowd member) has no crowd_role."""
+        t = TrackedTarget(
+            target_id="rover_01",
+            name="Alpha",
+            alliance="friendly",
+            asset_type="rover",
+        )
+        assert t.crowd_role is None
+        assert t.to_dict()["crowd_role"] is None
+
+    def test_crowd_role_round_trips_through_to_dict(self):
+        """An instigator's crowd_role survives serialization."""
+        t = TrackedTarget(
+            target_id="npc_42",
+            name="NPC 42",
+            alliance="hostile",
+            asset_type="person",
+            crowd_role="instigator",
+        )
+        d = t.to_dict()
+        assert d["crowd_role"] == "instigator"
+
+    def test_crowd_role_threads_from_simulation_bridge(self):
+        """update_from_simulation must carry crowd_role through to the tracker.
+
+        This is the perception->registry->API seam: a civil_unrest
+        SimulationTarget serializes crowd_role in its telemetry dict, the
+        sim->tracker bridge reads it, and /api/targets (to_dict) exposes it.
+        """
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "npc_instigator_7",
+            "name": "Agitator",
+            "alliance": "hostile",
+            "asset_type": "person",
+            "position": {"x": 5.0, "y": 5.0},
+            "crowd_role": "instigator",
+        })
+        target = tracker.get_target("npc_instigator_7")
+        assert target is not None
+        assert target.crowd_role == "instigator"
+        assert target.to_dict()["crowd_role"] == "instigator"
+
+    def test_crowd_role_updates_on_radicalization(self):
+        """A civilian that radicalizes into a rioter updates its crowd_role.
+
+        Civil-unrest civilians can radicalize mid-sim; the tracker must
+        reflect the latest role, not freeze the first one it saw.
+        """
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "npc_9",
+            "alliance": "neutral",
+            "asset_type": "person",
+            "position": {"x": 1.0, "y": 1.0},
+            "crowd_role": "civilian",
+        })
+        assert tracker.get_target("npc_9").crowd_role == "civilian"
+        tracker.update_from_simulation({
+            "target_id": "npc_9",
+            "alliance": "hostile",
+            "asset_type": "person",
+            "position": {"x": 1.5, "y": 1.5},
+            "crowd_role": "rioter",
+        })
+        assert tracker.get_target("npc_9").crowd_role == "rioter"
+
+    def test_missing_crowd_role_leaves_existing_unchanged(self):
+        """A telemetry update without crowd_role must not wipe a known role.
+
+        Not every sim update carries crowd_role (non-crowd modes, throttled
+        partial updates).  An absent key is "no opinion", not "clear it".
+        """
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "npc_5",
+            "asset_type": "person",
+            "position": {"x": 0.0, "y": 0.0},
+            "crowd_role": "rioter",
+        })
+        assert tracker.get_target("npc_5").crowd_role == "rioter"
+        # Subsequent position-only update (no crowd_role key)
+        tracker.update_from_simulation({
+            "target_id": "npc_5",
+            "position": {"x": 0.1, "y": 0.1},
+        })
+        assert tracker.get_target("npc_5").crowd_role == "rioter"

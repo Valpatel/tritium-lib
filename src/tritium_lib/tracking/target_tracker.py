@@ -189,6 +189,13 @@ class TrackedTarget:
     _v_samples: int = 0  # velocity deltas observed (two-point init at the first)
     classification: str = "unknown"  # RL/ML classification (person, vehicle, phone, etc.)
     classification_confidence: float = 0.0  # confidence of the classification model
+    # Civil-unrest crowd sub-classification — finer grain than ``alliance``.
+    # "civilian" (protected), "instigator" (agitator), "rioter" (active).
+    # None for non-crowd entities (rovers, drones, vehicles, etc.).  Threaded
+    # from SimulationTarget.crowd_role through update_from_simulation so the
+    # tactical map / ops surface can render a protected civilian distinctly
+    # from an agitator.  See Wave 213.
+    crowd_role: str | None = None
     # Structured kinematic / detection metadata.  Sources that report rich
     # state (radar range/bearing/speed, RF motion direction hints, etc.)
     # store it here instead of squeezing it into the discrete ``status``
@@ -256,6 +263,7 @@ class TrackedTarget:
             "spoof_score": round(self.spoof_score, 3),
             "classification": self.classification,
             "classification_confidence": self.classification_confidence,
+            "crowd_role": self.crowd_role,
             "kinematics": dict(self.kinematics) if self.kinematics else None,
         }
         if history is not None:
@@ -407,6 +415,12 @@ class TargetTracker:
                 t.speed = sim_data.get("speed", 0.0)
                 t.battery = sim_data.get("battery", 1.0)
                 t.status = sim_data.get("status", "active")
+                # Crowd sub-role can change mid-sim (a civilian radicalizes
+                # into a rioter).  Only overwrite when the telemetry actually
+                # carries the key — an absent key is "no opinion", not "clear
+                # the known role" (throttled/partial updates omit it).
+                if "crowd_role" in sim_data:
+                    t.crowd_role = sim_data.get("crowd_role")
                 t.last_seen = time.monotonic()
                 t.signal_count += 1
                 self._add_confirming_source(t, "simulation")
@@ -436,6 +450,8 @@ class TargetTracker:
                     # cross-modal observations (BLE + YOLO, mesh + ADS-B,
                     # etc.).
                     confirming_sources=set(),
+                    # Civil-unrest crowd sub-role (None for non-crowd units).
+                    crowd_role=sim_data.get("crowd_role"),
                 )
         self.history.record(tid, position)
         self._check_geofence(tid, position[0], position[1])
