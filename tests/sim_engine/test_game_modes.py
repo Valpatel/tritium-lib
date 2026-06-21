@@ -23,6 +23,8 @@ from tritium_lib.sim_engine.game.game_mode import (
     _IDENTIFICATION_SCORE,
     _STALEMATE_TIMEOUT,
     _WAVE_HARD_TIMEOUT,
+    _DEESCALATION_TRICKLE_PER_PACIFIED,
+    _DEESCALATION_TRICKLE_CAP_FRACTION,
 )
 
 
@@ -351,6 +353,184 @@ class TestCivilUnrestDeEscalationVictory:
         gm.load_scenario(_StubScenario())
         assert gm.de_escalation_target == 750
         assert gm.civilian_harm_limit == 3
+
+
+class TestContinuousDeEscalationTrickle:
+    """CONTINUOUS de-escalation trickle (FEATURE-AUDIT 2026-06-21): the riot
+    meter must climb steadily as the operator suppresses ringleaders, not
+    flatline between discrete detain events.  The trickle is EARNED (only flows
+    once active instigators are pacified below the riot's peak), bounded (capped
+    well below the target so it can never win on its own), and civil-unrest-only
+    (no effect on battle/other modes)."""
+
+    def _instigator(self, tid, active=True):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            target_id=tid,
+            alliance="hostile",
+            is_combatant=True,
+            crowd_role="instigator" if active else "calmed",
+            identified=not active,
+            status="active",
+            position=(0.0, 0.0),
+        )
+
+    def _riot(self, target=500):
+        """A civil_unrest GameMode with the de-escalation target enabled.
+
+        Marked crowd-driven (an un-scripted live riot): _tick_active then does
+        not try to auto-complete the (empty) battle wave, so the trickle can be
+        exercised over many ticks in isolation -- the same gate a real
+        un-scripted riot takes.
+        """
+        gm, bus, engine = _build_game_mode("civil_unrest")
+        gm.de_escalation_target = target
+        gm.state = "active"
+        gm._crowd_driven_riot = True
+        return gm, bus, engine
+
+    def test_no_trickle_with_no_pacification(self):
+        """Instigators on the field but none pacified -> meter does NOT move."""
+        gm, _, engine = self._riot()
+        for i in range(4):
+            engine.add_target(self._instigator(f"ig_{i}"))
+        for _ in range(50):
+            gm._tick_active(0.1)  # 5s of ticks
+        assert gm.de_escalation_score == 0
+
+    def test_trickle_climbs_when_instigators_pacified(self):
+        """Pacify 2 of 4 ringleaders -> the meter trickles UP continuously
+        WITHOUT any detain event firing (de_escalation_score is never touched
+        by _identify in this test)."""
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        # Establish the peak (4 active) for a tick.
+        gm._tick_active(0.1)
+        assert gm.de_escalation_score == 0  # nothing pacified yet
+        # Operator suppresses 2 (e.g. cascade/scout) -> flip them to calmed.
+        igs[0].crowd_role = "calmed"; igs[0].identified = True
+        igs[1].crowd_role = "calmed"; igs[1].identified = True
+        before = gm.de_escalation_score
+        for _ in range(30):  # 3s of sustained suppression
+            gm._tick_active(0.1)
+        # 2 pacified * 1.5/sec * 3s = ~9 points, smoothly accrued.
+        assert gm.de_escalation_score > before
+        assert gm.de_escalation_score == pytest.approx(
+            int(2 * _DEESCALATION_TRICKLE_PER_PACIFIED * 3.0), abs=2
+        )
+
+    def test_trickle_is_continuous_not_stepwise(self):
+        """The meter advances on consecutive ticks (no long flatline): after
+        pacification, the score is strictly non-decreasing and reaches several
+        distinct intermediate values rather than jumping once."""
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(6)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak = 6
+        for ig in igs[:4]:  # pacify 4 -> strong, steady trickle
+            ig.crowd_role = "calmed"; ig.identified = True
+        seen = []
+        for _ in range(40):  # 4s
+            gm._tick_active(0.1)
+            seen.append(gm.de_escalation_score)
+        # Non-decreasing and visibly progressing across the window.
+        assert seen == sorted(seen)
+        assert len(set(seen)) >= 4  # several distinct steps, not one jump
+        assert seen[-1] > seen[0]
+
+    def test_trickle_stops_if_instigators_reradicalize(self):
+        """If current active instigators climb back toward the peak, pacified
+        drops to 0 and the trickle halts (the meter does not keep climbing for
+        free)."""
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak 4
+        igs[0].crowd_role = "calmed"; igs[0].identified = True
+        igs[1].crowd_role = "calmed"; igs[1].identified = True
+        for _ in range(20):
+            gm._tick_active(0.1)
+        mid = gm.de_escalation_score
+        assert mid > 0
+        # Re-radicalize: the two calmed ones flare back to active instigators.
+        igs[0].crowd_role = "instigator"; igs[0].identified = False
+        igs[1].crowd_role = "instigator"; igs[1].identified = False
+        for _ in range(20):
+            gm._tick_active(0.1)
+        assert gm.de_escalation_score == mid  # no further trickle
+
+    def test_trickle_is_capped_below_target(self):
+        """Even with sustained max pacification, the cumulative trickle is
+        capped at _DEESCALATION_TRICKLE_CAP_FRACTION of the target -- the win
+        can never be carried over the line by the trickle alone."""
+        gm, _, engine = self._riot(target=500)
+        igs = [self._instigator(f"ig_{i}") for i in range(10)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak 10
+        for ig in igs:  # pacify ALL
+            ig.crowd_role = "calmed"; ig.identified = True
+        for _ in range(2000):  # way more than enough to saturate
+            gm._tick_active(0.1)
+        cap = int(500 * _DEESCALATION_TRICKLE_CAP_FRACTION)
+        assert gm.de_escalation_score == cap
+        assert gm.de_escalation_score < gm.de_escalation_target
+
+    def test_trickle_can_complete_a_near_win(self):
+        """A trickle that crosses the target on a tick wins immediately
+        (order_restored) -- it runs before the victory check.  Seed the score
+        just below target so the trickle (within cap) finishes it."""
+        gm, bus, engine = self._riot(target=100)
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak 4
+        for ig in igs:
+            ig.crowd_role = "calmed"; ig.identified = True
+        gm.de_escalation_score = 95  # detains already did the bulk of the work
+        for _ in range(200):
+            gm._tick_active(0.1)
+            if gm.state == "victory":
+                break
+        assert gm.state == "victory"
+        reasons = [d.get("reason") for n, d in bus.events if n == "game_over"]
+        assert "order_restored" in reasons
+
+    def test_no_trickle_in_battle_mode(self):
+        """The trickle is civil_unrest-only: a battle game with instigator-like
+        targets never accrues de_escalation_score from the trickle path."""
+        gm, _, engine = _build_game_mode("battle")
+        gm.de_escalation_target = 500  # even if set, mode gates it off
+        gm.state = "active"
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)
+        for ig in igs[:2]:
+            ig.crowd_role = "calmed"; ig.identified = True
+        for _ in range(30):
+            gm._tick_active(0.1)
+        assert gm.de_escalation_score == 0
+
+    def test_reset_clears_trickle_state(self):
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)
+        for ig in igs[:2]:
+            ig.crowd_role = "calmed"; ig.identified = True
+        for _ in range(20):
+            gm._tick_active(0.1)
+        assert gm._peak_active_instigators > 0
+        gm.reset()
+        assert gm._peak_active_instigators == 0
+        assert gm._trickle_accum == 0.0
+        assert gm._trickle_awarded == 0
 
 
 class TestInstigatorDetain:

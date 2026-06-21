@@ -104,8 +104,13 @@ WAVE_CONFIGS: list[WaveConfig] = [
 # Time between staggered spawns within a wave
 _SPAWN_STAGGER = 0.5  # seconds
 
-# Delay before auto-advancing to next wave after wave_complete
-_WAVE_ADVANCE_DELAY = 5.0  # seconds
+# Delay before auto-advancing to next wave after wave_complete.
+# Civil-unrest pacing (FEATURE-AUDIT 2026-06-21): the riot used to dead-air for
+# a full 5s between every wave while the de-escalation meter flatlined.  A
+# shorter advance keeps the crowd churn continuous so waves overlap into a
+# building arc instead of stuttering.  Battle/other modes are unaffected by the
+# civil-unrest-only continuous trickle, but they share the (now tighter) delay.
+_WAVE_ADVANCE_DELAY = 3.0  # seconds
 
 # Countdown duration before wave 1
 _COUNTDOWN_DURATION = 5.0  # seconds
@@ -127,6 +132,31 @@ _STALEMATE_TIMEOUT = 60.0  # seconds since last combat progress
 # (>2x the worst legit wave); the 60s no-progress stalemate is the real
 # anti-infinite-game guard.
 _WAVE_HARD_TIMEOUT = 600.0  # seconds since the wave went active
+
+# --- Civil-unrest continuous de-escalation trickle (FEATURE-AUDIT 2026-06-21) -
+# The riot's de_escalation meter used to advance ONLY on discrete +50 detains
+# (and on new-instigator spawns), so it flatlined for ~50s between events while
+# the operator was actively working the crowd -- correct but a back-loaded
+# grind.  Crowd-control doctrine (Epstein/ESIM) says suppressing ringleaders
+# steadily cools the crowd, so we award a small CONTINUOUS trickle proportional
+# to how many active instigators have been pacified below the peak the riot
+# reached.  The meter then climbs smoothly as the operator keeps the
+# active-instigator population down, and STOPS climbing if instigators
+# re-radicalize (current rises back toward peak) -- it is earned suppression,
+# not a free timer.  A single detain (+50) still dominates, so the win still
+# requires real scout identifications; the trickle just removes the dead air.
+#
+# Trickle per pacified-instigator per sim-second.  Tuned so a typical mid-riot
+# state (a handful of ringleaders suppressed) advances the 500-target meter by a
+# few points/sec -- visible, continuous motion -- without ever out-pacing the
+# detain mechanic or trivializing the win.
+_DEESCALATION_TRICKLE_PER_PACIFIED = 1.5  # points / pacified-instigator / sec
+# Hard cap on cumulative trickle as a fraction of the de-escalation target, so
+# the meter can never be carried across the finish line by the trickle alone --
+# crossing the target always requires genuine detains.  (e.g. target 500 ->
+# trickle contributes at most 300; the last 200 must come from real
+# identifications + the spawn/detain dynamics.)
+_DEESCALATION_TRICKLE_CAP_FRACTION = 0.6
 
 
 class GameMode:
@@ -244,6 +274,16 @@ class GameMode:
         # model the sim uses).  0 = disabled (default; the mode falls back to
         # the all_waves_cleared victory).  Set via scenario mode_config.
         self.de_escalation_target: int = 0
+        # Continuous de-escalation trickle bookkeeping (civil_unrest only).
+        # _trickle_accum carries the fractional remainder so a sub-1.0/tick
+        # trickle still reaches the integer de_escalation_score smoothly;
+        # _peak_active_instigators is the high-water mark of un-pacified
+        # ringleaders (pacified = peak - current drives the trickle rate);
+        # _trickle_awarded is the running total of trickle points granted so
+        # the cap (_DEESCALATION_TRICKLE_CAP_FRACTION * target) is enforceable.
+        self._trickle_accum: float = 0.0
+        self._peak_active_instigators: int = 0
+        self._trickle_awarded: int = 0
         self.infrastructure_health: float = 0.0
         self.infrastructure_max: float = 1000.0
         self.civilian_harm_count: int = 0
@@ -330,6 +370,9 @@ class GameMode:
         self.game_mode_type = "battle"
         self.de_escalation_score = 0
         self.de_escalation_target = 0
+        self._trickle_accum = 0.0
+        self._peak_active_instigators = 0
+        self._trickle_awarded = 0
         self.infrastructure_health = 0.0
         self.civilian_harm_count = 0
         self.protectee_id = None
@@ -598,6 +641,15 @@ class GameMode:
             ))
             self._publish_state_change()
             return
+
+        # Civil-unrest CONTINUOUS de-escalation trickle: advance the meter
+        # smoothly as the operator suppresses ringleaders, instead of only on
+        # discrete detains/spawns (which left it flatlining between events).
+        # Runs BEFORE the victory check so a trickle that crosses the target on
+        # this tick wins immediately.  No-op outside civil_unrest / when the
+        # target is disabled.
+        if self.game_mode_type == "civil_unrest" and self.de_escalation_target > 0:
+            self._tick_deescalation_trickle(dt)
 
         # Civil-unrest DE-ESCALATION VICTORY ("order restored"): when enough
         # instigators have been identified/neutralized that de_escalation_score
@@ -1055,6 +1107,66 @@ class GameMode:
                     and tid not in self._wave_escaped_ids
                     and getattr(t, "status", "") == "escaped"):
                 self._wave_escaped_ids.add(tid)
+
+    def _count_active_instigators(self) -> int:
+        """Count un-pacified, still-active instigators on the field.
+
+        An "active instigator" is a crowd member whose ``crowd_role`` is still
+        ``instigator`` (a scout detain flips it to ``calmed``/``neutral``, a
+        nearby-detain cascade flips it to ``civilian``), that has not been
+        ``identified``, and that is still alive.  This is the live ringleader
+        pressure the operator is working to suppress.  Robust to targets that
+        lack the civil-unrest attributes (battle hostiles): ``getattr`` defaults
+        keep them out of the count.
+        """
+        count = 0
+        for t in self._engine.get_targets():
+            if (getattr(t, "crowd_role", None) == "instigator"
+                    and not getattr(t, "identified", False)
+                    and getattr(t, "status", "") in ("active", "low_battery")):
+                count += 1
+        return count
+
+    def _tick_deescalation_trickle(self, dt: float) -> None:
+        """Advance de_escalation_score continuously as ringleaders are suppressed.
+
+        The riot meter used to move only on discrete +50 detain events (and on
+        new-instigator spawns), so it flatlined for long stretches mid-wave
+        while the operator was actively containing the crowd.  Here we award a
+        small CONTINUOUS trickle proportional to how many active instigators
+        have been pacified below the riot's peak -- the Epstein/ESIM cooling
+        effect, made visible as steady meter motion.
+
+        Rules that keep the win EARNED, not free:
+          * trickle rate = pacified * rate * dt, where
+            ``pacified = peak_active_instigators - current_active_instigators``;
+            so it only flows once the operator has actually removed ringleaders,
+            and it slows/stops if instigators re-radicalize (current climbs).
+          * cumulative trickle is capped at a fraction of the target, so the
+            meter can never be carried over the finish line by the trickle
+            alone -- crossing the target still needs genuine detains.
+        """
+        current = self._count_active_instigators()
+        if current > self._peak_active_instigators:
+            self._peak_active_instigators = current
+        pacified = self._peak_active_instigators - current
+        if pacified <= 0:
+            return
+        cap = int(self.de_escalation_target * _DEESCALATION_TRICKLE_CAP_FRACTION)
+        if self._trickle_awarded >= cap:
+            return
+        self._trickle_accum += pacified * _DEESCALATION_TRICKLE_PER_PACIFIED * dt
+        whole = int(self._trickle_accum)
+        if whole <= 0:
+            return
+        # Respect the cumulative cap (never overshoot it).
+        grant = min(whole, cap - self._trickle_awarded)
+        if grant <= 0:
+            self._trickle_accum -= whole  # drop the un-grantable remainder
+            return
+        self._trickle_accum -= grant
+        self.de_escalation_score += grant
+        self._trickle_awarded += grant
 
     def _wave_hostiles_total_health(self) -> float:
         """Total current HP of alive wave hostiles (for stalemate progress).
