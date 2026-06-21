@@ -508,6 +508,64 @@ class DossierStore(BaseStore):
             self._conn.commit()
             return cur.rowcount > 0
 
+    def update_classification(
+        self,
+        dossier_id: str,
+        *,
+        entity_type: str | None = None,
+        confidence: float | None = None,
+        alliance: str | None = None,
+    ) -> bool:
+        """Fuse a fresh classification into a dossier's typed fields.
+
+        Confidence is monotonic — only a strictly higher-confidence
+        observation raises it, so a weak later sighting never downgrades a
+        strong identification.  ``entity_type``/``alliance`` are upgraded in
+        lockstep: they are overwritten only when the incoming ``confidence``
+        exceeds the stored confidence, so the best evidence wins and the
+        ``unknown`` / ``0.0`` placeholder a dossier is born with gets
+        corrected the moment a real classification arrives.
+
+        When ``confidence`` is omitted the given fields are set
+        unconditionally.  Returns True if the dossier row existed.
+
+        SQLite evaluates every RHS expression against the pre-update row, so
+        the ``CASE`` guards and the ``MAX`` all see the same original
+        confidence regardless of assignment order.
+        """
+        sets: list[str] = []
+        params: list[object] = []
+        if confidence is not None:
+            if entity_type is not None:
+                sets.append(
+                    "entity_type = CASE WHEN ? > confidence "
+                    "THEN ? ELSE entity_type END")
+                params.extend([confidence, entity_type])
+            if alliance is not None:
+                sets.append(
+                    "alliance = CASE WHEN ? > confidence "
+                    "THEN ? ELSE alliance END")
+                params.extend([confidence, alliance])
+            sets.append("confidence = MAX(confidence, ?)")
+            params.append(confidence)
+        else:
+            if entity_type is not None:
+                sets.append("entity_type = ?")
+                params.append(entity_type)
+            if alliance is not None:
+                sets.append("alliance = ?")
+                params.append(alliance)
+        if not sets:
+            return False
+        params.append(dossier_id)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE dossiers SET {', '.join(sets)} WHERE dossier_id = ?",
+                params,
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def _update_json_field(self, dossier_id: str, field: str, value: object) -> bool:
         """Update a JSON-encoded column (tags, notes, identifiers).
 
