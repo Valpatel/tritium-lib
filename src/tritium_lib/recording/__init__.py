@@ -39,6 +39,7 @@ Usage
 
 from .recorder import Recorder
 from .player import Player, ReplayEvent
+from .retention import sweep_recordings
 from .session import Session
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "Player",
     "ReplayEvent",
     "Session",
+    "sweep_recordings",
 ]
