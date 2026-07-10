@@ -19,9 +19,12 @@ Grid convention (shared with telemetry and the DEM):
 Cost model (applied per cell, fixed order regardless of call order):
     1. ``base = base_cost + slope_weight * slope``
     2. ``* road_discount`` if the cell is a road cell
-    3. ``slope > max_slope`` -> ``LETHAL``
-    4. obstacle / water cell -> ``LETHAL``
-    5. optional inflation: non-lethal cells within ``obstacle_inflation_m``
+    3. ``* cost_zone_multiplier`` if the cell falls in one or more soft-cost
+       zones (the MAX multiplier over covering zones — zones never compound
+       and never make a cell lethal)
+    4. ``slope > max_slope`` -> ``LETHAL``
+    5. obstacle / water cell -> ``LETHAL``
+    6. optional inflation: non-lethal cells within ``obstacle_inflation_m``
        of a lethal cell are raised to at least ``inflation_cost``.
 """
 
@@ -35,7 +38,7 @@ from tritium_lib.geo import point_in_polygon
 from .layers import (
     LINE_TYPES,
     POLYGON_TYPES,
-    ElevationGrid,
+    LocalElevationGrid,
     iter_features,
 )
 
@@ -43,8 +46,30 @@ __all__ = [
     "CostmapWeights",
     "Costmap",
     "CostmapBuilder",
+    "MTFCC_WIDTHS_M",
     "costmap_from_terrain_map",
 ]
+
+
+# ---------------------------------------------------------------------------
+# TIGER/Line MTFCC -> stamp width (meters)
+# ---------------------------------------------------------------------------
+#
+# Consumer-side road-width table.  The GIS lane ships TIGER road features
+# tagged with an MTFCC class code (``properties.kind``) but does NOT define a
+# physical width — width is a planning concern, so the mapping lives here.  A
+# feature's own ``properties.width_m`` always wins over this table; an MTFCC
+# code absent from the table falls back to ``weights.road_width_m``.
+MTFCC_WIDTHS_M: dict[str, float] = {
+    "S1100": 18.0,   # primary road (interstate / highway)
+    "S1200": 12.0,   # secondary road
+    "S1400": 8.0,    # local neighborhood street
+    "S1630": 8.0,    # ramp
+    "S1640": 8.0,    # service drive
+    "S1710": 3.0,    # walkway / pedestrian trail
+    "S1720": 3.0,    # stairway
+    "S1730": 4.0,    # alley
+}
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +272,9 @@ class CostmapBuilder:
         self._road_cells: set[tuple[int, int]] = set()
         # obstacle cell -> kind tag (last writer wins for introspection).
         self._obstacle_cells: dict[tuple[int, int], str] = {}
-        self._dem: ElevationGrid | None = None
+        # soft-cost zone cell -> MAX multiplier over covering zones.
+        self._cost_zone_cells: dict[tuple[int, int], float] = {}
+        self._dem: LocalElevationGrid | None = None
 
     # -- Cell helpers -------------------------------------------------------
 
@@ -364,10 +391,127 @@ class CostmapBuilder:
                     if _point_segment_distance(cx, cy, x0, y0, x1, y1) <= half:
                         self._road_cells.add((row, col))
 
-    def add_dem(self, elevation: ElevationGrid) -> "CostmapBuilder":
-        """Attach a DEM used for per-cell slope cost at :meth:`build`."""
+    def add_dem(self, elevation: LocalElevationGrid) -> "CostmapBuilder":
+        """Attach a DEM used for per-cell slope cost at :meth:`build`.
+
+        ``elevation`` is a :class:`~tritium_lib.planning.layers.LocalElevationGrid`
+        (local meters, ``row 0`` = south).  To feed a GIS-lane WGS-84 wire
+        grid, convert it first with
+        :func:`~tritium_lib.planning.layers.local_grid_from_gis`.
+        """
         self._dem = elevation
         return self
+
+    # -- Semantic GIS ingestion --------------------------------------------
+
+    def _mark_zone(self, row: int, col: int, multiplier: float) -> None:
+        """Record ``multiplier`` for a soft-cost cell, keeping the MAX."""
+        key = (row, col)
+        cur = self._cost_zone_cells.get(key)
+        if cur is None or multiplier > cur:
+            self._cost_zone_cells[key] = multiplier
+
+    def add_cost_zones(
+        self,
+        feature_collection: dict,
+        multiplier: float,
+        to_local=None,
+    ) -> "CostmapBuilder":
+        """Stamp Polygon/MultiPolygon features as soft-cost zones.
+
+        Every cell whose center falls inside a zone has its final cost
+        MULTIPLIED by ``multiplier`` (``> 1`` = avoid, ``< 1`` = prefer).
+        Stacking rule: when several zones cover one cell the **MAX**
+        multiplier is kept — zones never compound.  The multiplier is applied
+        in :meth:`build` AFTER the road discount and BEFORE any lethal
+        override, so a cost zone can raise a cell's cost but never make it
+        lethal.  Non-polygon features are ignored.
+        """
+        mult = float(multiplier)
+        for gtype, seqs, _props in iter_features(feature_collection, to_local):
+            if gtype not in POLYGON_TYPES:
+                continue
+            for ring in seqs:
+                self._stamp_polygon(
+                    ring, lambda c, r, m=mult: self._mark_zone(r, c, m)
+                )
+        return self
+
+    def add_gis_features(
+        self,
+        feature_collection: dict,
+        to_local=None,
+    ) -> dict:
+        """Ingest a mixed GIS ``FeatureCollection`` routed by ``properties.source``.
+
+        Dispatches each feature by its ``source`` tag (set by the GIS lane):
+
+        - ``"tiger"`` -> road stamp.  Width is ``properties.width_m`` when
+          present, else :data:`MTFCC_WIDTHS_M` keyed by ``properties.kind``
+          (the MTFCC code), else ``weights.road_width_m``.
+        - ``"fema"`` -> flood.  A truthy ``properties.sfha`` (Special Flood
+          Hazard Area) stamps a **lethal** obstacle tagged ``"flood"``.
+          ``sfha`` falsey (e.g. zone X minimal hazard) is traversable and
+          IGNORED.  Rasterization is driven by ``sfha``/``kind`` only — never
+          from style properties.
+        - ``"noaa"`` -> weather alert.  ``properties.severity`` of ``"Severe"``
+          or ``"Extreme"`` stamps a soft-cost zone with multiplier ``2.0``;
+          other severities are IGNORED.  ``expires`` is ignored here — expiry
+          filtering is the fetch layer's job.
+        - unknown / missing ``source`` -> IGNORED gracefully.
+
+        Returns a summary ``{"roads", "flood", "zones", "ignored"}`` counting
+        features routed to each effect (useful for logging).  Unlike the
+        other ``add_*`` methods this returns the summary dict, not ``self``.
+        """
+        summary = {"roads": 0, "flood": 0, "zones": 0, "ignored": 0}
+        for gtype, seqs, props in iter_features(feature_collection, to_local):
+            source = props.get("source")
+            if source == "tiger":
+                width_m = props.get("width_m")
+                if width_m is None or width_m <= 0:
+                    width_m = MTFCC_WIDTHS_M.get(
+                        props.get("kind"), self.weights.road_width_m
+                    )
+                if gtype in LINE_TYPES:
+                    half = float(width_m) / 2.0
+                    for line in seqs:
+                        self._stamp_line(line, half)
+                    summary["roads"] += 1
+                elif gtype in POLYGON_TYPES:
+                    for ring in seqs:
+                        self._stamp_polygon(
+                            ring, lambda c, r: self._road_cells.add((r, c))
+                        )
+                    summary["roads"] += 1
+                else:
+                    summary["ignored"] += 1
+            elif source == "fema":
+                if props.get("sfha") and gtype in POLYGON_TYPES:
+                    for ring in seqs:
+                        self._stamp_polygon(
+                            ring,
+                            lambda c, r: self._obstacle_cells.__setitem__(
+                                (r, c), "flood"
+                            ),
+                        )
+                    summary["flood"] += 1
+                else:
+                    summary["ignored"] += 1
+            elif source == "noaa":
+                if props.get("severity") in ("Severe", "Extreme") and (
+                    gtype in POLYGON_TYPES
+                ):
+                    for ring in seqs:
+                        self._stamp_polygon(
+                            ring, lambda c, r, m=2.0: self._mark_zone(r, c, m)
+                        )
+                    summary["zones"] += 1
+                else:
+                    summary["ignored"] += 1
+            else:
+                summary["ignored"] += 1
+        return summary
 
     # -- Build --------------------------------------------------------------
 
@@ -387,6 +531,13 @@ class CostmapBuilder:
                 cost = w.base_cost + w.slope_weight * slope
                 if (row, col) in self._road_cells:
                     cost *= w.road_discount
+
+                # Soft-cost zones: MAX multiplier over covering zones, applied
+                # after the road discount but before any lethal override so a
+                # zone can raise cost yet never make a cell impassable.
+                zone_mult = self._cost_zone_cells.get((row, col))
+                if zone_mult is not None:
+                    cost *= zone_mult
 
                 if slope > w.max_slope:
                     cost = lethal

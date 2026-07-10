@@ -32,6 +32,12 @@ __all__ = ["RouteResult", "plan_route"]
 
 _SQRT2 = math.sqrt(2.0)
 
+# Cap the shortcut lookahead in :func:`_smooth_path` to this many waypoints
+# ahead of the current index.  Bounds the smoother at O(n * w^2) instead of
+# O(n^3) on very long paths.  Chosen large enough that ordinary routes (well
+# under this many waypoints) smooth identically to the uncapped version.
+_SMOOTH_WINDOW = 40
+
 # Fixed neighbor order: (dcol, drow, is_diagonal).  Orthogonals first.
 _NEIGHBORS = [
     (1, 0, False),
@@ -362,6 +368,10 @@ def _smooth_path(
     max cell cost on that segment does not exceed the max cell cost along the
     original subpath ``i..j``.  This preserves road preference — a shortcut
     across expensive grass can never replace a cheap road detour.
+
+    ``j`` is capped to :data:`_SMOOTH_WINDOW` waypoints ahead of ``i`` so the
+    worst case stays O(n * w^2) rather than O(n^3); ordinary routes (far
+    shorter than the window) are unaffected and remain deterministic.
     """
     n = len(path)
     if n <= 2:
@@ -371,7 +381,8 @@ def _smooth_path(
     i = 0
     while i < n - 1:
         best_j = i + 1
-        for j in range(n - 1, i + 1, -1):
+        hi = min(n - 1, i + _SMOOTH_WINDOW)
+        for j in range(hi, i + 1, -1):
             if _crosses_lethal(costmap, path[i], path[j]):
                 continue
             seg_max = _cost_max(costmap, path[i], path[j])
