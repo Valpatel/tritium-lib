@@ -9,6 +9,7 @@ runners, and other consumers.
 """
 
 from .game_mode import GameMode, WaveConfig, WAVE_CONFIGS, InfiniteWaveMode, InstigatorDetector
+from .riot_police import PoliceTacticsController
 from .ambient import (
     AmbientSpawner,
     _generate_street_grid,
@@ -32,6 +33,7 @@ __all__ = [
     "WAVE_CONFIGS",
     "InfiniteWaveMode",
     "InstigatorDetector",
+    "PoliceTacticsController",
     # ambient
     "AmbientSpawner",
     # crowd_density

@@ -61,6 +61,12 @@ _GROUP_RUSH_SPEED_MULT = 1.2  # 20% speed boost during rush
 # Cover-seeking parameters
 _COVER_HEALTH_THRESHOLD = 0.5  # seek cover below this health fraction
 
+# Hard rules-of-engagement for police stand-in AI: crowd roles police units
+# must NEVER fire on (protected non-combatants).  Mirrors AutoDispatcher's
+# PROTECTED_CROWD_ROLES so the less-lethal engagement can never target a
+# civilian or an already-calmed (arrested) crowd member.
+_PROTECTED_CROWD_ROLES: frozenset[str] = frozenset({"civilian", "calmed"})
+
 # Weapon projectile type by asset_type (matches weapons.py loadouts)
 _WEAPON_TYPES: dict[str, str | None] = {
     "turret": "nerf_turret_gun",
@@ -79,6 +85,7 @@ _WEAPON_TYPES: dict[str, str | None] = {
     # Mission-type weapon mappings
     "instigator": "thrown_object",
     "rioter": "melee_strike",
+    "police": "pepper_ball",       # Less-lethal crowd control
     "scout_swarm": None,           # Cannot fire
     "attack_swarm": "nerf_dart_gun",
     "bomber_swarm": None,          # Detonation, not projectile
@@ -270,6 +277,8 @@ class UnitBehaviors:
                 rover_fired = self._rover_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type in ("tank", "apc"):
                 self._rover_behavior(t, hostiles, vision_state=vision_state)
+            elif t.asset_type == "police":
+                self._police_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type == "graphling":
                 self._graphling_behavior(t, hostiles, vision_state=vision_state)
 
@@ -543,6 +552,45 @@ class UnitBehaviors:
                     unit.waypoints = [tuple(best.position[:2])]
                     unit._waypoint_index = 0
                 unit.status = "active"
+
+    def _police_behavior(
+        self,
+        officer: SimulationTarget,
+        hostiles: dict[str, SimulationTarget],
+        vision_state=None,
+    ) -> None:
+        """Riot police less-lethal engagement (civil_unrest stand-in AI).
+
+        Aims and fires a pepper_ball at the NEAREST in-range hostile whose
+        crowd_role is NOT a protected non-combatant (civilian / calmed) — a
+        HARD rules-of-engagement guard so police stand-ins never fire on the
+        people they are protecting.  Movement (line formation, dispersal
+        advance, arrests) is driven by PoliceTacticsController; this behavior
+        only orients the weapon and pulls the trigger.
+        """
+        # Degradation: too damaged to fire.
+        if not can_fire_degraded(officer):
+            return
+
+        # HARD ROE: drop civilians and already-calmed (arrested) targets from
+        # the valid engagement set before selecting a target.
+        engageable = {
+            k: v for k, v in hostiles.items()
+            if getattr(v, "crowd_role", None) not in _PROTECTED_CROWD_ROLES
+        }
+
+        target = self._nearest_in_range(officer, engageable, vision_state=vision_state)
+        if target is None:
+            return
+
+        # Face the target (vision cone follows heading next tick).
+        dx = target.position[0] - officer.position[0]
+        dy = target.position[1] - officer.position[1]
+        officer.heading = math.degrees(math.atan2(dx, dy))
+
+        ptype = _WEAPON_TYPES.get("police", "pepper_ball")
+        self._combat.fire(officer, target, projectile_type=ptype,
+                          terrain_map=self._terrain_map)
 
     def _hostile_kid_behavior(
         self,

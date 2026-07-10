@@ -78,6 +78,12 @@ _DEFAULT_WEAPONS: dict[str, Weapon] = {
         name="nerf_scout_gun", damage=5.0, weapon_range=8.0,
         cooldown=1.5, accuracy=0.65, ammo=15, max_ammo=15,
     ),
+    # Riot police: less-lethal pepper-ball launcher (civil_unrest stand-in AI).
+    # Short range, low damage — meant to wear down / suppress, not eliminate.
+    "police": Weapon(
+        name="pepper_ball", damage=6.0, weapon_range=8.0,
+        cooldown=2.0, accuracy=0.8, ammo=40, max_ammo=40,
+    ),
     "graphling": Weapon(
         name="crystal_shard", damage=9.0, weapon_range=25.0,
         cooldown=1.2, accuracy=0.75, ammo=50, max_ammo=50,

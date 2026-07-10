@@ -478,6 +478,8 @@ _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
     "instigator":       (60.0,  60.0,  15.0, 3.0,  5.0, True),   # Low range, thrown objects
     "rioter":           (50.0,  50.0,   3.0, 2.0,  3.0, True),   # Melee range only
     "civilian":         (50.0,  50.0,   0.0, 0.0,  0.0, False),  # Non-combatant
+    # Riot police: tanky, less-lethal (pepper-ball) crowd-control stand-in.
+    "police":           (120.0, 120.0,  8.0, 2.0,  6.0, True),
     # Non-combatant sensors
     "camera":           (50.0,  50.0,   0.0, 0.0,  0.0, False),  # Passive observation
     "sensor":           (30.0,  30.0,   0.0, 0.0,  0.0, False),  # Passive detection

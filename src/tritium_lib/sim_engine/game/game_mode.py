@@ -284,6 +284,12 @@ class GameMode:
         self._trickle_accum: float = 0.0
         self._peak_active_instigators: int = 0
         self._trickle_awarded: int = 0
+        # Riot-police tactical outcomes (civil_unrest): non-lethal detentions
+        # and routs made by the PoliceTacticsController stand-in AI.  Surfaced
+        # in get_state()/game_over so the operator + AAR see crowd-control
+        # effectiveness distinctly from raw eliminations.
+        self.arrest_count: int = 0
+        self.rout_count: int = 0
         self.infrastructure_health: float = 0.0
         self.infrastructure_max: float = 1000.0
         self.civilian_harm_count: int = 0
@@ -373,6 +379,8 @@ class GameMode:
         self._trickle_accum = 0.0
         self._peak_active_instigators = 0
         self._trickle_awarded = 0
+        self.arrest_count = 0
+        self.rout_count = 0
         self.infrastructure_health = 0.0
         self.civilian_harm_count = 0
         self.protectee_id = None
@@ -580,6 +588,8 @@ class GameMode:
             state["de_escalation_target"] = self.de_escalation_target
             state["civilian_harm_count"] = self.civilian_harm_count
             state["civilian_harm_limit"] = self.civilian_harm_limit
+            state["arrest_count"] = self.arrest_count
+            state["rout_count"] = self.rout_count
             state["weighted_total_score"] = int(
                 self.score * 0.3 + self.de_escalation_score * 0.7
             )
@@ -1348,6 +1358,8 @@ class GameMode:
             data["de_escalation_target"] = self.de_escalation_target
             data["civilian_harm_count"] = self.civilian_harm_count
             data["civilian_harm_limit"] = self.civilian_harm_limit
+            data["arrest_count"] = self.arrest_count
+            data["rout_count"] = self.rout_count
             data["weighted_total_score"] = int(
                 self.score * 0.3 + self.de_escalation_score * 0.7
             )
@@ -1479,8 +1491,10 @@ class InfiniteWaveMode:
 # InstigatorDetector -- identifies instigators via sustained proximity
 # ---------------------------------------------------------------------------
 
-# Friendly unit types that can identify instigators (scout/recon roles)
-_IDENTIFIER_TYPES: frozenset[str] = frozenset({"scout_drone", "drone", "rover"})
+# Friendly unit types that can identify instigators (scout/recon roles).
+# Police officers identify/detain a ringleader they get eyes-on near, the same
+# way a scout does — an officer working the line is an ISR asset too.
+_IDENTIFIER_TYPES: frozenset[str] = frozenset({"scout_drone", "drone", "rover", "police"})
 
 # Alive statuses -- units must be in one of these to act as identifiers
 _ALIVE_STATUSES: frozenset[str] = frozenset({"active", "idle", "stationary"})
