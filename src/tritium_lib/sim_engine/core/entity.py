@@ -586,6 +586,11 @@ class SimulationTarget:
 
     # Mission-type fields (civil unrest, drone swarm)
     crowd_role: str | None = None         # "civilian", "instigator", "rioter" for civil unrest
+    # Crowd faction id for rival-faction riots (e.g. "red_bloc"/"blue_bloc").
+    # None = single-faction riot — ALL legacy behavior unchanged.  Inter-
+    # faction hostility is decided by a DiplomacyEngine wired into
+    # UnitBehaviors.set_diplomacy(); this field alone is inert without it.
+    faction: str | None = None
     drone_variant: str | None = None      # "scout_swarm", "attack_swarm", "bomber_swarm" for drone swarm
     instigator_state: str = "hidden"      # Activation cycle: hidden / activating / active
     instigator_timer: float = 0.0         # Timer for activation cycle (seconds)
@@ -1134,6 +1139,7 @@ class SimulationTarget:
             ),
             "vision_range": round(self.vision_range, 1),
             "crowd_role": self.crowd_role,
+            "faction": self.faction,
             "drone_variant": self.drone_variant,
             "instigator_state": self.instigator_state,
             "identified": self.identified,
