@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from math import atan2, degrees, hypot
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 # Physical actuator limits mirrored from examples/robot-template/brain/turret.py.
 # A generated command must stay inside what the real servos can reach.
@@ -142,3 +142,61 @@ def compute_fire_solution(
         tilt = 0.0
 
     return FireSolution(pan=pan, tilt=tilt, distance=distance)
+
+
+class WeaponStatus(BaseModel):
+    """Weapon-status telemetry — the REVERSE of the command direction.
+
+    Where :class:`TurretAimCommand` / :class:`FireCommand` flow SC -> robot on
+    the command topic, ``WeaponStatus`` flows robot -> SC: the turret reports
+    its own live ammo / reload / servo / fault state.  The robot publishes it
+    to::
+
+        tritium/{site}/robots/{device_id}/telemetry   (QoS 1, retain False)
+
+    as a message of type ``"weapon_status"``, so SC can render magazine level,
+    reload countdown, and fault indicators for a real Nerf-class turret.
+
+    ``pan_deg`` / ``tilt_deg`` are the ACTUAL current servo positions and are
+    clamped to the same physical limits (``PAN_MIN_DEG``..``PAN_MAX_DEG``,
+    ``TILT_MIN_DEG``..``TILT_MAX_DEG``) that bound the command direction — a
+    real servo cannot report an angle it cannot reach, so an out-of-range
+    reading is pinned to the boundary rather than dropping the whole packet.
+
+    See ``docs/MQTT-PROTOCOL.md`` for the robot telemetry topic grammar.
+    """
+
+    device_id: str
+    weapon_id: str = "primary"
+    ammo: int = Field(ge=0)
+    max_ammo: int = Field(ge=1)
+    reloading: bool = False
+    reload_remaining_s: float = Field(default=0.0, ge=0.0)
+    pan_deg: float
+    tilt_deg: float
+    fault: str | None = None
+    ts: str = Field(default_factory=_now_iso)
+
+    @field_validator("pan_deg")
+    @classmethod
+    def _clamp_pan(cls, value: float) -> float:
+        """Pin the reported pan to the reachable servo window (mirrors the
+        command direction's ``[PAN_MIN_DEG, PAN_MAX_DEG]`` bound)."""
+        return _clamp(value, PAN_MIN_DEG, PAN_MAX_DEG)
+
+    @field_validator("tilt_deg")
+    @classmethod
+    def _clamp_tilt(cls, value: float) -> float:
+        """Pin the reported tilt to the reachable servo window (mirrors the
+        command direction's ``[TILT_MIN_DEG, TILT_MAX_DEG]`` bound)."""
+        return _clamp(value, TILT_MIN_DEG, TILT_MAX_DEG)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ammo_pct(self) -> float:
+        """Fraction of the magazine remaining, ``0.0`` (empty) .. ``1.0`` (full).
+
+        ``max_ammo >= 1`` is enforced, so this never divides by zero; the
+        result is clamped to ``[0, 1]`` against a nonsensical over-full read.
+        """
+        return _clamp(self.ammo / self.max_ammo, 0.0, 1.0)
