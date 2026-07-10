@@ -26,6 +26,7 @@ from .kalman_predictor import (
 from .heatmap import HeatmapEngine, HeatmapEvent
 from .movement_patterns import MovementPatternAnalyzer, MovementPattern
 from .dossier import DossierStore, TargetDossier
+from .dossier_manager import DossierManager, entity_type_for_class
 from .correlation_strategies import (
     CorrelationStrategy,
     StrategyScore,
@@ -124,6 +125,8 @@ __all__ = [
     # Dossier
     "DossierStore",
     "TargetDossier",
+    "DossierManager",
+    "entity_type_for_class",
     # Strategies
     "CorrelationStrategy",
     "StrategyScore",
