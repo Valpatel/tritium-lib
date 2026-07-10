@@ -89,6 +89,25 @@ MTFCC_WIDTHS_M: dict[str, float] = {
 }
 
 
+# NOAA/NWS active weather alerts -> soft-cost zone multiplier, keyed by the
+# alert's ``properties.severity``.  A weather warning is a DETERRENT, not a
+# wall: the multiplier RAISES a cell's traversal cost (so the planner detours
+# around the warning footprint) but never makes it lethal -- flooding is the
+# one lethal weather effect and it arrives via the FEMA/SFHA path, not here.
+#
+# The values are tuned so the detour is DECISIVE, not marginal.  At x2.0 the
+# old value, crossing a zone one cell wide (~2x cost) roughly tied skirting it
+# (~+1 cell of open travel), so units often ploughed straight through the
+# warning.  x3.0 (Severe) / x6.0 (Extreme) make going around clearly cheaper
+# than going through for any reasonably-sized footprint, so an injected storm
+# produces a VISIBLE re-route on the tactical map.  Severities absent from this
+# table (Moderate / Minor / Unknown) are traversable and IGNORED.
+NOAA_SEVERITY_MULT: dict[str, float] = {
+    "Severe": 3.0,
+    "Extreme": 6.0,
+}
+
+
 # ---------------------------------------------------------------------------
 # Weights
 # ---------------------------------------------------------------------------
@@ -545,9 +564,13 @@ class CostmapBuilder:
           ``sfha`` falsey (e.g. zone X minimal hazard) is traversable and
           IGNORED.  Rasterization is driven by ``sfha``/``kind`` only — never
           from style properties.
-        - ``"noaa"`` -> weather alert.  ``properties.severity`` of ``"Severe"``
-          or ``"Extreme"`` stamps a soft-cost zone with multiplier ``2.0``;
-          other severities are IGNORED.  ``expires`` is ignored here — expiry
+        - ``"noaa"`` -> weather alert.  ``properties.severity`` stamps a
+          soft-cost zone whose multiplier comes from :data:`NOAA_SEVERITY_MULT`
+          (``"Severe"`` -> ``3.0``, ``"Extreme"`` -> ``6.0``) so the planner
+          DETOURS around the warning footprint (never lethal -- a storm is a
+          deterrent, not a wall; flooding is the lethal one, via the FEMA
+          path).  Severities absent from the table (Moderate / Minor) are
+          traversable and IGNORED.  ``expires`` is ignored here — expiry
           filtering is the fetch layer's job.
         - unknown / missing ``source`` -> IGNORED gracefully.
 
@@ -590,12 +613,11 @@ class CostmapBuilder:
                 else:
                     summary["ignored"] += 1
             elif source == "noaa":
-                if props.get("severity") in ("Severe", "Extreme") and (
-                    gtype in POLYGON_TYPES
-                ):
+                mult = NOAA_SEVERITY_MULT.get(props.get("severity"))
+                if mult is not None and gtype in POLYGON_TYPES:
                     for ring in seqs:
                         self._stamp_polygon(
-                            ring, lambda c, r, m=2.0: self._mark_zone(r, c, m)
+                            ring, lambda c, r, m=mult: self._mark_zone(r, c, m)
                         )
                     summary["zones"] += 1
                 else:

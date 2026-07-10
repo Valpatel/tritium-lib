@@ -21,6 +21,7 @@ conventions the costmap lane and SC frontend depend on.
 
 from __future__ import annotations
 
+from .ao_packs import AOPack, active_ao_id, get_ao_pack, list_ao_packs
 from .cache import GISCache
 from .capture import capture_ao_pack
 from .contours import auto_levels, contour_lines
@@ -37,6 +38,10 @@ from .fetchers import (
 from .models import ElevationGrid, GeoBBox
 
 __all__ = [
+    "AOPack",
+    "list_ao_packs",
+    "get_ao_pack",
+    "active_ao_id",
     "GeoBBox",
     "ElevationGrid",
     "GISCache",

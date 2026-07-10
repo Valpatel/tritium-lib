@@ -214,9 +214,9 @@ class TestEnrichment:
         # (b) FEMA SFHA -> lethal.
         assert cm.is_lethal(*cm.world_to_grid(75, 75))
 
-        # (c) NOAA Extreme -> soft-cost x2 over the open baseline.
+        # (c) NOAA Extreme -> soft-cost x6 over the open baseline.
         assert cm.cost_at(*cm.world_to_grid(25, 75)) == pytest.approx(
-            w.base_cost * 2.0
+            w.base_cost * 6.0
         )
 
         # An untouched open cell keeps the base cost.
