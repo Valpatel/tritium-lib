@@ -380,3 +380,161 @@ class TestGuidedMissile:
         _tick_to_resolution(cs, proj, {"r": rover, "t": tgt}, dt=0.1, max_ticks=60)
         assert proj.hit is True
         assert tgt.health < 100.0
+
+
+# ===================================================================
+# (j) landed-dart terminal window
+# ===================================================================
+
+
+class TestTerminalWindow:
+    """A spent ballistic round lingers on its impact point only briefly.
+
+    An UNGUIDED direct-fire round (and a landed mortar) that reaches its
+    committed aim point is physically spent.  It stays live for
+    ``TERMINAL_WINDOW`` sim-seconds — long enough to clip a mover crossing the
+    impact point right then — after which it is removed.  A walker who strolls
+    onto the landing point later takes NO damage (no ghost darts on the floor).
+    Guided (missile) rounds home and never "arrive", so they are unaffected.
+    """
+
+    @staticmethod
+    def _rifle_ws() -> WeaponSystem:
+        # accuracy 1.0 -> zero dispersion, so the committed aim point is exact.
+        ws = WeaponSystem()
+        ws.assign_weapon("r", Weapon(
+            name="rifle", accuracy=1.0, damage=10.0,
+            weapon_range=100.0, ammo=10, max_ammo=10,
+        ))
+        return ws
+
+    def test_dart_lands_and_mover_arriving_later_takes_no_damage(self):
+        bus = _RecordingBus()
+        cs = CombatSystem(event_bus=bus, weapon_system=self._rifle_ws())
+        rover = _FakeTarget(target_id="r", asset_type="rover", position=(0.0, 0.0))
+        tgt = _FakeTarget(
+            target_id="t", position=(20.0, 0.0),
+            alliance="hostile", speed=0.0, health=100.0,
+        )
+        # Commit the shot to (20, 0); accuracy 1.0 means no dispersion.
+        proj = cs.fire(rover, tgt, aim_pos=(20.0, 0.0))
+        assert proj is not None
+        assert proj.guided is False
+        # Target dodges clear before the dart arrives — it lands on empty ground.
+        tgt.position = (20.0, 40.0)
+        # Fly the dart to its committed landing point and let the fuse expire.
+        for _ in range(5):  # 2.5 sim-seconds at dt=0.5
+            cs.tick(0.5, {"r": rover, "t": tgt})
+        assert proj.arrived_at is not None  # stamped on arrival
+        assert proj.missed is True          # spent after the terminal window
+        assert proj.id not in cs._projectiles
+        # ~2s after the round landed, the target strolls onto the impact point.
+        # The dart is long gone, so it takes no damage.
+        tgt.position = (20.0, 0.0)
+        cs.tick(0.5, {"r": rover, "t": tgt})
+        assert tgt.health == 100.0
+
+    def test_mover_within_window_is_still_clipped(self):
+        # Pins the pre-existing behavior: a near-miss can still connect if the
+        # target crosses the impact point while the fuse is still live.
+        bus = _RecordingBus()
+        cs = CombatSystem(event_bus=bus, weapon_system=self._rifle_ws())
+        rover = _FakeTarget(target_id="r", asset_type="rover", position=(0.0, 0.0))
+        tgt = _FakeTarget(
+            target_id="t", position=(20.0, 40.0),  # off the flight path — no early hit
+            alliance="hostile", speed=0.0, health=100.0,
+        )
+        proj = cs.fire(rover, tgt, aim_pos=(20.0, 0.0))
+        assert proj is not None
+        # Fly to the landing point (3 ticks of dt=0.1: 8, 16, 20 -> arrives).
+        for _ in range(3):
+            cs.tick(0.1, {"r": rover, "t": tgt})
+        assert proj.arrived_at is not None
+        assert proj.hit is False
+        # WITHIN the terminal window, the target crosses the impact point.
+        tgt.position = (20.0, 0.0)
+        cs.tick(0.1, {"r": rover, "t": tgt})  # 0.1s after arrival, still fresh
+        assert proj.hit is True
+        assert tgt.health < 100.0
+
+    def test_landed_mortar_round_expires(self):
+        bus = _RecordingBus()
+        ws = WeaponSystem()
+        ws.assign_weapon("m", Weapon(
+            name="mortar", accuracy=1.0, damage=10.0,
+            weapon_range=100.0, ammo=10, max_ammo=10,
+        ))
+        cs = CombatSystem(event_bus=bus, weapon_system=ws)
+        turret = _FakeTarget(
+            target_id="m", asset_type="turret", position=(0.0, 0.0),
+            weapon_range=100.0,
+        )
+        tgt = _FakeTarget(
+            target_id="t", position=(40.0, 0.0),  # 40m > 30% of range -> mortar arc
+            alliance="hostile", speed=0.0, health=100.0,
+        )
+        proj = cs.fire(turret, tgt)
+        assert proj is not None
+        assert proj.is_mortar is True
+        assert proj.guided is False
+        # Target clears the impact point before the round lands.
+        tgt.position = (40.0, 40.0)
+        for _ in range(6):  # 3 sim-seconds at dt=0.5
+            cs.tick(0.5, {"m": turret, "t": tgt})
+        assert proj.arrived_at is not None
+        assert proj.missed is True
+        assert proj.id not in cs._projectiles
+        # A spent mortar round is gone — a mover onto the crater is safe.
+        tgt.position = (40.0, 0.0)
+        cs.tick(0.5, {"m": turret, "t": tgt})
+        assert tgt.health == 100.0
+
+    def test_guided_missile_unaffected_by_terminal_window(self):
+        bus = _RecordingBus()
+        ws = WeaponSystem()
+        ws.assign_weapon("r", Weapon(
+            name="missile", weapon_class="missile", accuracy=1.0,
+            damage=10.0, weapon_range=100.0, ammo=10, max_ammo=10,
+        ))
+        cs = CombatSystem(event_bus=bus, weapon_system=ws)
+        rover = _FakeTarget(target_id="r", asset_type="rover", position=(0.0, 0.0))
+        tgt = _FakeTarget(
+            target_id="t", position=(20.0, 0.0),
+            alliance="hostile", speed=0.0, health=100.0,
+        )
+        proj = cs.fire(rover, tgt)
+        assert proj is not None
+        assert proj.guided is True
+        # Target relocates; the missile homes for ~2 sim-seconds and connects.
+        tgt.position = (20.0, 30.0)
+        for _ in range(20):  # up to 2.0 sim-seconds at dt=0.1
+            cs.tick(0.1, {"r": rover, "t": tgt})
+            if proj.hit or proj.id not in cs._projectiles:
+                break
+        # A guided round never "arrives" at a committed point — no terminal fuse.
+        assert proj.arrived_at is None
+        assert proj.hit is True
+        assert tgt.health < 100.0
+
+    def test_spent_dart_gone_from_active_projectiles(self):
+        # The frontend must not render a lingering dart after it is spent.
+        bus = _RecordingBus()
+        cs = CombatSystem(event_bus=bus, weapon_system=self._rifle_ws())
+        rover = _FakeTarget(target_id="r", asset_type="rover", position=(0.0, 0.0))
+        tgt = _FakeTarget(
+            target_id="t", position=(20.0, 0.0),
+            alliance="hostile", speed=0.0, health=100.0,
+        )
+        proj = cs.fire(rover, tgt, aim_pos=(20.0, 0.0))
+        assert proj is not None
+        tgt.position = (20.0, 40.0)  # dodge -> lands on empty ground
+        for _ in range(3):  # fly to the impact point
+            cs.tick(0.1, {"r": rover, "t": tgt})
+        assert proj.arrived_at is not None
+        # Just arrived, still inside the window -> frontend still renders it.
+        assert proj.id in {p["id"] for p in cs.get_active_projectiles()}
+        # Advance past the terminal window; the spent dart is dropped promptly.
+        for _ in range(5):
+            cs.tick(0.1, {"r": rover, "t": tgt})
+        assert proj.id not in {p["id"] for p in cs.get_active_projectiles()}
+        assert proj.id not in cs._projectiles

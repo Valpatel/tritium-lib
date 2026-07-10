@@ -95,6 +95,13 @@ HIT_RADIUS = 5.0
 # Miss distance — projectile has overshot target by this much
 MISS_OVERSHOOT = 8.0
 
+# Terminal fuse window (sim seconds): brief fuse window after arrival during
+# which a near-miss can still clip a mover crossing the impact point; after
+# that the round is spent.  Prevents a landed, physically-spent dart from
+# sitting on its impact point and damaging a walker who strolls over it
+# seconds later (no "ghost darts on the floor").
+TERMINAL_WINDOW = 0.3
+
 # Standard flight speed for direct-fire projectiles (m/s).  Also the
 # assumed projectile speed used by the internal lead solver when a caller
 # does not supply an explicit aim point.
@@ -156,6 +163,12 @@ class Projectile:
     created_at: float = 0.0
     hit: bool = False
     missed: bool = False
+    # Terminal window (unguided rounds only): sim-time at which a ballistic
+    # round (flat dart OR mortar) first reached its committed aim point.  None
+    # while still in flight; once set, the round is spent TERMINAL_WINDOW
+    # seconds later.  Guided (missile) rounds home and never "arrive" at a
+    # committed point, so they leave this None.
+    arrived_at: float | None = None
     # Guidance: guided projectiles (missile-class weapons) home toward the
     # target's live position each tick; unguided direct fire commits to the
     # fired target_pos and flies straight (ballistic), like a mortar arc.
@@ -486,11 +499,18 @@ class CombatSystem:
                 step = proj.speed * dt
                 if step >= dist_to_aim:
                     proj.position = aim_pos
+                    # Arrival: an unguided ballistic round (flat dart OR mortar)
+                    # reaching its committed aim point is physically spent.
+                    if not proj.guided and proj.arrived_at is None:
+                        proj.arrived_at = self._sim_time
                 else:
                     proj.position = (
                         proj.position[0] + (dx / dist_to_aim) * step,
                         proj.position[1] + (dy / dist_to_aim) * step,
                     )
+            elif not proj.guided and proj.arrived_at is None:
+                # dist_to_aim == 0: already sitting on the committed aim point.
+                proj.arrived_at = self._sim_time
 
             # Update mortar flight progress (0→1) for arc height calculation
             if proj.is_mortar and proj.total_flight_dist > 0:
@@ -523,6 +543,21 @@ class CombatSystem:
                     })
                     to_remove.append(proj.id)
                     continue
+
+            # Landed-dart terminal window: once an unguided round has been
+            # spent on its impact point for longer than TERMINAL_WINDOW, remove
+            # it BEFORE the hit test — a mover strolling onto the landing point
+            # later takes NO damage (no ghost darts on the floor).  A hit WITHIN
+            # the window still counts because the hit check below runs while the
+            # round is still fresh.  The 5.0s max-flight expiry remains the
+            # outer bound for rounds that never arrive.
+            if (
+                proj.arrived_at is not None
+                and self._sim_time - proj.arrived_at > TERMINAL_WINDOW
+            ):
+                proj.missed = True
+                to_remove.append(proj.id)
+                continue
 
             # Check hit: is the projectile within HIT_RADIUS of the actual target?
             if target is not None and target.status in ("active", "idle", "stationary"):
