@@ -151,6 +151,75 @@ class TestBaseStoreThreadSafety:
         assert len(store.get_all()) == 200
 
 
+# ── WAL boundedness (disk guard) ────────────────────────────────────
+
+class TestBaseStoreWalBounded:
+    """The WAL file must never become an unbounded disk consumer.
+
+    Regression (2026-07-10): a long-running server grew
+    ``targets.db-wal`` to 12 GB because BaseStore set no
+    ``journal_size_limit`` and nothing ever ran a TRUNCATE checkpoint —
+    the WAL file kept its high-water mark forever even after all frames
+    were checkpointed back into the main database.
+    """
+
+    _LIMIT = 64 * 1024 * 1024
+
+    def test_journal_size_limit_set(self, tmp_path):
+        s = SimpleStore(tmp_path / "t.db")
+        try:
+            limit = s._conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+            assert 0 <= limit <= self._LIMIT
+        finally:
+            s.close()
+
+    def test_busy_timeout_set(self, tmp_path):
+        s = SimpleStore(tmp_path / "t.db")
+        try:
+            timeout = s._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            assert timeout > 0
+        finally:
+            s.close()
+
+    def test_checkpoint_truncates_wal(self, tmp_path):
+        s = SimpleStore(tmp_path / "t.db")
+        try:
+            payload = "x" * 1024
+            for _ in range(8):
+                s.insert_many([(payload, float(i)) for i in range(500)])
+            wal = tmp_path / "t.db-wal"
+            assert wal.exists()
+            result = s.checkpoint()
+            assert result["busy"] == 0
+            assert result["checkpointed"] == result["log"]
+            assert wal.stat().st_size == 0
+        finally:
+            s.close()
+
+    def test_checkpoint_rejects_bad_mode(self, tmp_path):
+        s = SimpleStore(tmp_path / "t.db")
+        try:
+            with pytest.raises(ValueError):
+                s.checkpoint("VACUUM; DROP TABLE items")
+        finally:
+            s.close()
+
+    def test_checkpoint_on_memory_db_is_noop(self, store):
+        # :memory: databases have no WAL — checkpoint must not raise.
+        result = store.checkpoint()
+        assert isinstance(result, dict)
+
+    def test_wal_file_bounded_after_close(self, tmp_path):
+        s = SimpleStore(tmp_path / "t.db")
+        payload = "y" * 1024
+        for _ in range(8):
+            s.insert_many([(payload, float(i)) for i in range(500)])
+        s.close()
+        wal = tmp_path / "t.db-wal"
+        # Clean close checkpoints + removes (or truncates) the WAL.
+        assert (not wal.exists()) or wal.stat().st_size <= self._LIMIT
+
+
 # ── Multiple schemas ────────────────────────────────────────────────
 
 class TestBaseStoreMultipleSchemas:
