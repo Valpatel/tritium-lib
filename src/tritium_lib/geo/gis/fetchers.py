@@ -88,6 +88,20 @@ def _load_fixture(name: str):
         return None
 
 
+def _resolve_fixture_names(fixture_names, fixture_name: str) -> tuple:
+    """Ordered fixture filenames for a fetcher (multi-AO, back-compatible).
+
+    A fetcher declares one or more packaged Area-of-Operations fixture packs in
+    the class attribute ``FIXTURE_NAMES`` (a tuple, tried in order).  For
+    backward compatibility a fetcher that only sets the legacy single
+    ``FIXTURE_NAME`` still works: resolution order is ``FIXTURE_NAMES`` when it
+    is non-empty, else ``(FIXTURE_NAME,)``.  Empty strings are dropped so a
+    fetcher with neither configured degrades cleanly to no fixtures.
+    """
+    names = tuple(fixture_names) if fixture_names else (fixture_name,)
+    return tuple(n for n in names if n)
+
+
 def _as_bbox(bbox) -> GeoBBox:
     if isinstance(bbox, GeoBBox):
         return bbox
@@ -174,12 +188,17 @@ def filter_features_bbox(fc: dict, bbox) -> dict:
 class _VectorFetcher:
     """Shared degradation machinery for GeoJSON-emitting fetchers."""
 
-    SOURCE = ""          # cache-key source tag
-    FIXTURE_NAME = ""    # packaged demo fixture filename
+    SOURCE = ""               # cache-key source tag
+    FIXTURE_NAME = ""         # legacy single packaged fixture filename
+    FIXTURE_NAMES: tuple = () # multi-AO packaged fixtures, tried in order
 
     def __init__(self, cache: GISCache | None = None, timeout_s: float = 20.0):
         self.cache = cache
         self.timeout_s = timeout_s
+
+    def _fixture_names(self) -> tuple:
+        """Ordered packaged fixtures for this fetcher (see :func:`_resolve_fixture_names`)."""
+        return _resolve_fixture_names(self.FIXTURE_NAMES, self.FIXTURE_NAME)
 
     # -- subclass hooks -----------------------------------------------------
     def _build_url(self, bbox: GeoBBox) -> str:  # pragma: no cover - abstract
@@ -223,13 +242,27 @@ class _VectorFetcher:
             if cached is not None:
                 return cached
 
-        # 3. Packaged fixture — clipped to the requested bbox (fixtures cover
-        #    the whole demo AO, so a distant window must not get the lot).
-        fixture = _load_fixture(self.FIXTURE_NAME)
-        if fixture is not None:
-            return filter_features_bbox(fixture, box)
+        # 3. Packaged fixtures — clipped to the requested bbox (a pack covers a
+        #    whole AO, so a distant window must not get the lot).  Multi-AO:
+        #    try each packaged pack in order and return the FIRST whose clipped
+        #    features are non-empty.  If a fixture loaded but every pack clips to
+        #    empty (the bbox falls outside every packaged AO), return that empty
+        #    result — still ``fixture``-marked — preserving the pre-multi-AO
+        #    contract that an offline far-away fetch yields a fixture-marked
+        #    (empty) collection.
+        last_empty = None
+        for fixture_name in self._fixture_names():
+            fixture = _load_fixture(fixture_name)
+            if fixture is None:
+                continue
+            clipped = filter_features_bbox(fixture, box)
+            if clipped.get("features"):
+                return clipped
+            last_empty = clipped
+        if last_empty is not None:
+            return last_empty
 
-        # 4. Empty but valid.
+        # 4. Empty but valid (no packaged fixtures at all).
         return _empty_fc()
 
 
@@ -238,6 +271,7 @@ class TigerRoadsFetcher(_VectorFetcher):
 
     SOURCE = "tiger"
     FIXTURE_NAME = "tiger_roads_ao.json"
+    FIXTURE_NAMES = ("tiger_roads_ao.json", "tiger_roads_boulder.json")
     URL = (
         "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/"
         "Transportation/MapServer/8/query"
@@ -287,6 +321,7 @@ class FemaFloodFetcher(_VectorFetcher):
 
     SOURCE = "fema"
     FIXTURE_NAME = "fema_flood_ao.json"
+    FIXTURE_NAMES = ("fema_flood_ao.json", "fema_flood_boulder.json")
     URL = (
         "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/"
         "MapServer/28/query"
@@ -337,6 +372,9 @@ class NoaaAlertsFetcher(_VectorFetcher):
 
     SOURCE = "noaa"
     FIXTURE_NAME = "noaa_alerts_ao.json"
+    # Only the Dublin pack: the Boulder AO had no active NWS alerts at capture
+    # time (a legitimately-empty layer), so no boulder fixture was written.
+    FIXTURE_NAMES = ("noaa_alerts_ao.json",)
     URL = "https://api.weather.gov/alerts/active"
 
     def _build_url(self, bbox: GeoBBox) -> str:
@@ -401,6 +439,7 @@ class OverpassBuildingsFetcher(_VectorFetcher):
 
     SOURCE = "osm"
     FIXTURE_NAME = "osm_buildings_ao.json"
+    FIXTURE_NAMES = ("osm_buildings_ao.json", "osm_buildings_boulder.json")
     URL = "https://overpass-api.de/api/interpreter"
 
     def _build_url(self, bbox: GeoBBox) -> str:
@@ -461,7 +500,8 @@ class UsgsElevationFetcher:
     """USGS 3DEP elevation, sampled as a regular grid via ImageServer getSamples."""
 
     SOURCE = "usgs"
-    FIXTURE_NAME = "usgs_dem_ao.json"
+    FIXTURE_NAME = "usgs_dem_ao.json"      # legacy single packaged fixture
+    FIXTURE_NAMES = ("usgs_dem_ao.json", "usgs_dem_boulder.json")  # multi-AO, in order
     URL = (
         "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/"
         "ImageServer/getSamples"
@@ -470,6 +510,34 @@ class UsgsElevationFetcher:
     def __init__(self, cache: GISCache | None = None, timeout_s: float = 20.0):
         self.cache = cache
         self.timeout_s = timeout_s
+
+    def _fixture_names(self) -> tuple:
+        """Ordered packaged DEM fixtures (see :func:`_resolve_fixture_names`)."""
+        return _resolve_fixture_names(self.FIXTURE_NAMES, self.FIXTURE_NAME)
+
+    @staticmethod
+    def _fixture_bbox(fixture: dict):
+        """AO bounding box ``(w, s, e, n)`` of a packaged DEM fixture, or ``None``.
+
+        Prefers a cheap top-level ``"bbox": [w, s, e, n]`` marker (written by the
+        AO capture tool); falls back to the grid's own
+        ``west``/``south``/``east``/``north`` fields when ``"bbox"`` is absent
+        (the original Dublin DEM fixture predates the marker).
+        """
+        marker = fixture.get("bbox")
+        if isinstance(marker, (list, tuple)) and len(marker) == 4:
+            try:
+                return (float(marker[0]), float(marker[1]),
+                        float(marker[2]), float(marker[3]))
+            except (TypeError, ValueError):
+                pass
+        try:
+            return (
+                float(fixture["west"]), float(fixture["south"]),
+                float(fixture["east"]), float(fixture["north"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
 
     @staticmethod
     def build_points(bbox: GeoBBox, ncols: int, nrows: int) -> list:
@@ -542,7 +610,16 @@ class UsgsElevationFetcher:
         )
 
     def fetch_grid(self, bbox, ncols: int = 16, nrows: int = 16) -> ElevationGrid:
-        """Return an :class:`ElevationGrid` via the degradation chain."""
+        """Return an :class:`ElevationGrid` via the degradation chain.
+
+        ⚠️ **Fixture gating (contract change).** The packaged-DEM step now returns
+        a fixture only when its AO bounding box *intersects* the requested bbox.
+        Previously the single Dublin DEM was returned for **any** offline bbox;
+        an offline request for a window outside *every* packaged AO now falls
+        through to the empty all-NoData grid (``source="usgs-empty"``) instead of
+        silently getting Dublin terrain.  Consumers (the costmap lane) must treat
+        an all-NoData grid as "no terrain data here", not as flat ground.
+        """
         box = _as_bbox(bbox)
         key = (
             self.cache.key(self.SOURCE, box, ncols=ncols, nrows=nrows)
@@ -567,10 +644,18 @@ class UsgsElevationFetcher:
             if cached is not None:
                 return ElevationGrid.from_dict(cached)
 
-        # 3. Fixture.
-        fixture = _load_fixture(self.FIXTURE_NAME)
-        if fixture is not None:
-            return ElevationGrid.from_dict(fixture)
+        # 3. Fixtures.  Multi-AO: return the first packaged DEM whose AO bbox
+        #    INTERSECTS the requested bbox.  A request outside every packaged AO
+        #    falls through to the empty grid below (see the method docstring for
+        #    the contract change this represents).
+        target = (box.west, box.south, box.east, box.north)
+        for fixture_name in self._fixture_names():
+            fixture = _load_fixture(fixture_name)
+            if fixture is None:
+                continue
+            fbox = self._fixture_bbox(fixture)
+            if fbox is not None and _bbox_intersects(fbox, target):
+                return ElevationGrid.from_dict(fixture)
 
         # 4. Empty grid (all NoData over the requested window).
         return ElevationGrid(
