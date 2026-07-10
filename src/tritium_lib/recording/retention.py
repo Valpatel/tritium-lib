@@ -14,41 +14,22 @@ battle runs) previously never got swept; the 2026-07-10 audit found a
 because the only sweep call-site was a server daemon thread that wasn't
 running.
 
-Pure function: no environment reads, no global directory default — the
+Since 2026-07-10 (tick 2) this is a thin wrapper over the shared
+:func:`tritium_lib.store.retention.sweep_dir` core, which also backs
+``GISCache.sweep`` — one retention implementation for every
+directory-shaped store.  Pure function: no environment reads, the
 caller supplies the directory and both bounds.  Deletion is
 hard-restricted to ``.jsonl`` files directly inside the target
-directory (see :func:`_safe_unlink`).
+directory.
 """
 from __future__ import annotations
 
-import logging
-import time
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from tritium_lib.store.retention import sweep_dir
 
 __all__ = ["sweep_recordings"]
-
-
-def _safe_unlink(path: Path, base: Path) -> bool:
-    """Delete *path* only if it is a ``.jsonl`` file directly inside *base*.
-
-    Hard-restricts deletion to the recordings directory: the resolved
-    parent must equal the resolved base and the suffix must be
-    ``.jsonl``.  Never follows paths outside the recordings dir.
-    """
-    try:
-        resolved = path.resolve()
-        if resolved.parent != base.resolve():
-            return False
-        if resolved.suffix != ".jsonl":
-            return False
-        resolved.unlink()
-        return True
-    except OSError as exc:
-        logger.debug("sweep_recordings: unlink failed for %s: %s", path, exc)
-        return False
 
 
 def sweep_recordings(
@@ -72,52 +53,13 @@ def sweep_recordings(
     Returns ``{"removed": [names], "freed_bytes": int, "remaining_bytes": int}``.
     A missing directory is a safe no-op.
     """
-    base = Path(directory)
-    eff_now = time.time() if now is None else float(now)
-
-    if not base.is_dir():
-        return {"removed": [], "freed_bytes": 0, "remaining_bytes": 0}
-
-    entries: list[tuple[Path, float, int]] = []
-    for path in base.glob("*.jsonl"):
-        if not path.is_file():
-            continue
-        try:
-            st = path.stat()
-        except OSError:
-            continue
-        entries.append((path, st.st_mtime, st.st_size))
-
-    removed: list[str] = []
-    freed = 0
-
-    # Pass 1: age-based eviction.
-    if retention_days > 0:
-        cutoff = eff_now - retention_days * 86400.0
-        survivors: list[tuple[Path, float, int]] = []
-        for path, mtime, size in entries:
-            if mtime < cutoff and _safe_unlink(path, base):
-                removed.append(path.name)
-                freed += size
-            else:
-                survivors.append((path, mtime, size))
-        entries = survivors
-
-    # Pass 2: size-based eviction, oldest-first.
-    total = sum(size for _, _, size in entries)
-    if max_total_bytes > 0 and total > max_total_bytes:
-        for path, _mtime, size in sorted(entries, key=lambda e: e[1]):
-            if total <= max_total_bytes:
-                break
-            if _safe_unlink(path, base):
-                removed.append(path.name)
-                freed += size
-                total -= size
-
-    if removed:
-        logger.info(
-            "sim_recordings sweep: removed %d file(s), freed %.1f MB "
-            "(remaining %.1f MB)",
-            len(removed), freed / 1e6, total / 1e6,
-        )
-    return {"removed": removed, "freed_bytes": freed, "remaining_bytes": total}
+    return sweep_dir(
+        directory,
+        retention_days=retention_days,
+        max_total_bytes=max_total_bytes,
+        suffixes=(".jsonl",),
+        recursive=False,
+        prune_empty=False,
+        now=now,
+        label="sim_recordings",
+    )
