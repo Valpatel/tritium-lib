@@ -7,7 +7,7 @@ Squads move together in formation along roads and around obstacles.
 Pure math — no rendering or game engine dependencies.
 
 Key components:
-    - FormationType: 10 tactical formations
+    - FormationType: 11 tactical formations
     - get_formation_positions(): Pure math slot computation
     - FormationMover: Moves a group along a path in formation
     - PathPlanner: Road/off-road routing with path smoothing
@@ -57,6 +57,7 @@ class FormationType(Enum):
     CIRCLE = "circle"
     SPREAD = "spread"
     FILE = "file"
+    ARC = "arc"
 
 
 @dataclass
@@ -69,6 +70,11 @@ class FormationConfig:
         facing: Formation heading in radians (0 = +X/East, CCW positive).
         leader_pos: World-space position of the formation leader.
         num_members: Total number of members including the leader.
+        gap_angle: ARC only — angular width (degrees) of the open side (the
+            dispersal gap), centred on ``facing``.  Ignored by other shapes.
+        radius: ARC only — explicit arc radius in meters.  When None the arc
+            radius is derived from ``spacing`` and ``num_members`` (see
+            ``get_formation_positions``).  Ignored by other shapes.
     """
 
     formation_type: FormationType
@@ -76,6 +82,8 @@ class FormationConfig:
     facing: float = 0.0
     leader_pos: Vec2 = (0.0, 0.0)
     num_members: int = 1
+    gap_angle: float = 75.0
+    radius: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +112,16 @@ def get_formation_positions(config: FormationConfig) -> list[Vec2]:
     Slot 0 is the leader position. Remaining slots are arranged
     according to the formation type, rotated to face *config.facing*,
     and translated to *config.leader_pos*.
+
+    ARC semantics (kettling / dispersal cordon)
+    -------------------------------------------
+    ``leader_pos`` is the arc CENTRE (the point being cordoned), NOT a slot
+    itself.  ``facing`` is the direction of the GAP — the open side rioters
+    are meant to flow out of.  Members are spread evenly along a circular arc
+    that spans ``360deg - gap_angle`` centred OPPOSITE ``facing`` (so a wedge
+    of width ``gap_angle`` around ``facing`` is left empty).  The arc radius is
+    ``config.radius`` when given, else ``spacing * num_members / (2*pi)``
+    clamped to a 6.0 m minimum.  Pure and deterministic.
 
     Returns a list of Vec2 with length == config.num_members.
     """
@@ -198,6 +216,29 @@ def get_formation_positions(config: FormationConfig) -> list[Vec2]:
         tight = spacing * 0.6
         for i in range(n):
             offsets.append((-i * tight, 0.0))
+
+    elif config.formation_type == FormationType.ARC:
+        # Cordon arc around leader_pos (the centre), leaving a gap of width
+        # gap_angle centred on the facing direction.  Computed in local space
+        # (leader faces local +X, so the gap opens toward local +X) then
+        # rotated by facing + translated to the centre below.
+        gap = math.radians(config.gap_angle)
+        gap = max(0.0, min(gap, 2 * math.pi - 1e-3))
+        span = 2 * math.pi - gap
+        if config.radius is not None:
+            radius = config.radius
+        else:
+            radius = max(6.0, spacing * n / (2 * math.pi))
+        center_ang = math.pi  # opposite local +X: the arc's midpoint
+        if n == 1:
+            offsets.append((radius * math.cos(center_ang),
+                            radius * math.sin(center_ang)))
+        else:
+            start = center_ang - span / 2.0
+            step = span / (n - 1)
+            for i in range(n):
+                ang = start + i * step
+                offsets.append((radius * math.cos(ang), radius * math.sin(ang)))
 
     else:
         # Fallback: cluster at leader

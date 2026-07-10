@@ -40,8 +40,9 @@ def approx_pos(a: Vec2, b: Vec2, tol: float = 0.5) -> bool:
 
 
 class TestFormationType:
-    def test_all_ten_values(self):
-        assert len(FormationType) == 10
+    def test_all_values(self):
+        # 10 base shapes + ARC (kettle cordon, lane/riot tick 2).
+        assert len(FormationType) == 11
 
     def test_values_are_strings(self):
         for ft in FormationType:
@@ -51,6 +52,7 @@ class TestFormationType:
         expected = {
             "line", "column", "wedge", "diamond", "staggered_column",
             "echelon_left", "echelon_right", "circle", "spread", "file",
+            "arc",
         }
         assert {ft.value for ft in FormationType} == expected
 

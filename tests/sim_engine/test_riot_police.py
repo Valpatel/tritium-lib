@@ -149,7 +149,7 @@ def test_line_slots_perpendicular_to_crowd_axis_and_stable():
 
 
 # ---------------------------------------------------------------------------
-# (b) WEDGE triggers on a tight cluster of >= 6 violent
+# (b) WEDGE triggers on a tight cluster of >= _WEDGE_CLUSTER_MIN (4) violent
 # ---------------------------------------------------------------------------
 
 
@@ -170,12 +170,26 @@ def test_line_on_loose_crowd():
     bus = _FakeBus()
     ctrl = PoliceTacticsController(bus)
     officers = [_officer(f"off_{i}", (float(i), 0.0)) for i in range(6)]
-    # Only 4 rioters (< 6) -> LINE regardless of tightness.
-    rioters = [_rioter(f"r{i}", (20.0, (i - 2) * 1.0)) for i in range(4)]
+    # Only 3 rioters (< _WEDGE_CLUSTER_MIN == 4) -> LINE regardless of tightness.
+    rioters = [_rioter(f"r{i}", (20.0, (i - 1) * 1.0)) for i in range(3)]
     targets = _as_dict(officers + rioters)
 
     ctrl.tick(0.1, targets, "civil_unrest")
     assert ctrl.formation_type == FormationType.LINE
+
+
+def test_auto_wedge_at_cluster_four():
+    """The lowered threshold: a tight knot of exactly 4 violent -> WEDGE."""
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    officers = [_officer(f"off_{i}", (float(i), 0.0)) for i in range(6)]
+    # 4 rioters packed tight around (20, 0): meets _WEDGE_CLUSTER_MIN exactly.
+    rioters = [_rioter(f"r{i}", (20.0 + (i % 2) * 0.5, (i - 2) * 0.5)) for i in range(4)]
+    targets = _as_dict(officers + rioters)
+
+    ctrl.tick(0.1, targets, "civil_unrest")
+    assert ctrl.formation_type == FormationType.WEDGE
+    assert ctrl.commanded_tactic == "auto"
 
 
 # ---------------------------------------------------------------------------

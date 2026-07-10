@@ -182,6 +182,13 @@ class UnitBehaviors:
         # Pathfinding router callback
         self._router = None  # Callable[[start, end, asset_type, alliance], list]
 
+        # Focus-fire spread (civil_unrest riot line): per-tick claim map,
+        # target_id -> number of officers that have already picked it THIS tick.
+        # Cleared at the top of tick(); police prefer the least-claimed nearby
+        # target so the line spreads fire across the front instead of the whole
+        # squad volleying one rioter.  Deterministic within a tick.
+        self._police_claims: dict[str, int] = {}
+
     def set_router(self, route_fn) -> None:
         """Set the pathfinding router callback.
 
@@ -264,6 +271,8 @@ class UnitBehaviors:
              vision_state=None) -> None:
         """For each active combatant, run its type-specific behavior."""
         self._sim_time += dt
+        # Fresh focus-fire claim map each tick (police line fire-spreading).
+        self._police_claims.clear()
         friendlies = {
             k: v for k, v in targets.items()
             if v.alliance == "friendly" and v.status in ("active", "idle", "stationary", "arrived")
@@ -592,6 +601,11 @@ class UnitBehaviors:
         people they are protecting.  Movement (line formation, dispersal
         advance, arrests) is driven by PoliceTacticsController; this behavior
         only orients the weapon and pulls the trigger.
+
+        Focus-fire spread: among in-range engageable targets the officer picks
+        the one minimizing ``(claim_count, distance)`` and claims it, so a
+        line of officers spreads fire across the front (least-shot-at, then
+        nearest) instead of the whole squad volleying one rioter.
         """
         # Degradation: too damaged to fire.
         if not can_fire_degraded(officer):
@@ -604,9 +618,20 @@ class UnitBehaviors:
             if getattr(v, "crowd_role", None) not in _PROTECTED_CROWD_ROLES
         }
 
-        target = self._nearest_in_range(officer, engageable, vision_state=vision_state)
-        if target is None:
+        candidates = self._candidates_in_range(
+            officer, engageable, vision_state=vision_state,
+        )
+        if not candidates:
             return
+
+        # Spread fire: fewest existing claims first, nearest to break ties.
+        target, _ = min(
+            candidates,
+            key=lambda c: (self._police_claims.get(c[0].target_id, 0), c[1]),
+        )
+        self._police_claims[target.target_id] = (
+            self._police_claims.get(target.target_id, 0) + 1
+        )
 
         # Face the target (vision cone follows heading next tick).
         dx = target.position[0] - officer.position[0]
@@ -1120,6 +1145,47 @@ class UnitBehaviors:
                     best_dist = dist
                     best = enemy
         return best
+
+    def _candidates_in_range(
+        self,
+        unit: SimulationTarget,
+        enemies: dict[str, SimulationTarget],
+        vision_state=None,
+    ) -> list[tuple[SimulationTarget, float]]:
+        """All in-range enemies as (target, squared_distance) pairs.
+
+        Mirrors :meth:`_nearest_in_range` gating EXACTLY (do not fork the rules):
+        vision pre-filtering applies only to non-combatants — combatants engage
+        on weapon_range + the fire()-time LOS check — and the SpatialGrid path
+        trusts ``query_radius`` for the range bound just as the nearest lookup
+        does.  Returns the full candidate set instead of only the nearest so the
+        caller can spread fire across the front.
+        """
+        # Only apply vision filtering for non-combatants (mirror nearest).
+        if vision_state is not None and not unit.is_combatant:
+            visible_targets = set(vision_state.can_see.get(unit.target_id, []))
+            enemies = {k: v for k, v in enemies.items() if k in visible_targets}
+
+        out: list[tuple[SimulationTarget, float]] = []
+        if self._spatial_grid is not None:
+            candidates = self._spatial_grid.query_radius(
+                unit.position, unit.weapon_range,
+            )
+            for candidate in candidates:
+                if candidate.target_id not in enemies:
+                    continue
+                dx = candidate.position[0] - unit.position[0]
+                dy = candidate.position[1] - unit.position[1]
+                out.append((candidate, dx * dx + dy * dy))
+        else:
+            wr2 = unit.weapon_range * unit.weapon_range
+            for enemy in enemies.values():
+                dx = enemy.position[0] - unit.position[0]
+                dy = enemy.position[1] - unit.position[1]
+                dist = dx * dx + dy * dy
+                if dist <= wr2:
+                    out.append((enemy, dist))
+        return out
 
     def _pursue_nearest_hostile(
         self,

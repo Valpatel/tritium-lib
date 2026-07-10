@@ -31,6 +31,20 @@ A tight cluster (>= ``_WEDGE_CLUSTER_MIN`` violent within
 ``_WEDGE_CLUSTER_RADIUS`` of the violent centroid) switches LINE -> WEDGE so
 the squad splits a massed crowd instead of stalling against it.
 
+Operator command path
+---------------------
+``command_tactic(tactic, corridor=None)`` is the same interface a real squad
+lead drives the stand-in with: ``"auto"`` (the FSM above), ``"line"`` /
+``"wedge"`` (force that formation), or ``"kettle"``.  Under **kettle** the FSM
+is replaced by a fifth state ``kettle``: officers form an ARC cordon around
+the local violent cluster with a single open corridor (facing an
+operator-supplied point, or auto-set to the far side away from the line), the
+ring tightens each tick, and rioters still inside the ring are shoved out
+through the gap.  ``get_status()`` exposes the live squad state / formation /
+commanded tactic / agitation / corridor / arrests for the operator UI.
+Switching back to ``auto``/``line``/``wedge`` cleanly resumes the FSM at
+``form``.  ``reset()`` restores ``auto``.
+
 Arrests / routs
 ---------------
   * **arrest** -- a violent target worn down to ``arrest_health`` with >= 2
@@ -67,7 +81,11 @@ per-tick spam:
   * ``police_push``   once when the advance begins,
   * ``arrest_surge``  on every 3rd arrest,
   * ``crowd_broken``  once when the violent count first drops below 25 % of
-                      its observed peak while engaged.
+                      its observed peak while engaged,
+  * ``kettle_formed`` once (per kettle command) when >= 75 % of the roster has
+                      reached its ARC cordon slot,
+  * ``corridor_flow`` once (per kettle command) when >= 3 distinct rioters have
+                      been driven out through the dispersal gap.
 
 All duck-typed dependencies (``event_bus.publish(topic, dict)``,
 ``game_mode`` with ``de_escalation_score`` / ``arrest_count`` / ``rout_count``)
@@ -110,7 +128,11 @@ _ADVANCE_SPEED: float = 1.6
 
 # A tight crowd cluster (this many violent within the radius of the violent
 # centroid) switches the formation from LINE to WEDGE to split the mass.
-_WEDGE_CLUSTER_MIN: int = 6
+# Lowered 6 -> 4 (lane/riot tick 2): the push objective is the LOCAL nearest
+# cluster, whose membership rarely reached 6 in a street-distributed riot, so
+# WEDGE never actually triggered in play.  4 is a genuine "massed knot worth
+# splitting" without demanding the whole crowd stack on one point.
+_WEDGE_CLUSTER_MIN: int = 4
 _WEDGE_CLUSTER_RADIUS: float = 12.0
 
 # A violent target within this range of any officer is "in melee contact".
@@ -157,6 +179,30 @@ _ARREST_SURGE_INTERVAL: int = 3
 # rioters never trips the "crowd broken" fanfare).
 _CROWD_BROKEN_FRACTION: float = 0.25
 _CROWD_BROKEN_MIN_PEAK: int = 4
+
+# Operator-commandable tactics (the production command path a squad lead uses).
+# "auto"   -- the automatic hold->form->advance->engage FSM (default).
+# "line"   -- force a LINE formation regardless of cluster size.
+# "wedge"  -- force a WEDGE formation regardless of cluster size.
+# "kettle" -- surround the local violent cluster in an ARC cordon with one
+#             open dispersal corridor and push rioters out through the gap.
+_VALID_TACTICS: frozenset[str] = frozenset({"auto", "line", "wedge", "kettle"})
+
+# Kettle cordon geometry.  The ring starts wide enough to enclose the observed
+# cluster spread, then tightens each tick to squeeze the crowd toward the gap.
+_KETTLE_START_RADIUS: float = 10.0     # minimum initial ring radius (m)
+_KETTLE_MIN_RADIUS: float = 7.0        # floor the ring never shrinks past (m)
+_KETTLE_SHRINK_RATE: float = 0.3       # ring tighten speed (m/s)
+_KETTLE_SPREAD_MARGIN: float = 4.0     # extra radius over the cluster spread (m)
+_KETTLE_GAP_ANGLE: float = 75.0        # open corridor width (degrees)
+_KETTLE_ARRIVE_DIST: float = 3.0       # officer "on its slot" tolerance (m)
+_KETTLE_FORMED_FRACTION: float = 0.75  # roster fraction on-slot -> kettle_formed
+
+# Corridor drive: a still-violent target inside the ring is shoved out the gap
+# to a point this far beyond the ring, at most once per interval per target.
+_CORRIDOR_EXIT_DIST: float = 25.0      # push waypoint distance past the ring (m)
+_CORRIDOR_PUSH_INTERVAL: float = 5.0   # min seconds between pushes of one target
+_CORRIDOR_FLOW_MIN: int = 3            # distinct pushes -> corridor_flow beat
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +292,22 @@ class PoliceTacticsController:
         self._formation_type: FormationType | None = None
         self._replan_accum: float = 0.0
 
+        # Absolute sim clock (accumulated dt) for per-target corridor throttling.
+        self._sim_clock: float = 0.0
+
+        # Operator command override (the production squad-lead command path).
+        self._commanded_tactic: str = "auto"
+        self._corridor: tuple[float, float] | None = None
+
+        # Kettle-cordon transient state (cleared on exit / reset).
+        self._kettle_gap_dir: tuple[float, float] | None = None
+        self._kettle_center: tuple[float, float] | None = None
+        self._kettle_radius: float = _KETTLE_START_RADIUS
+        self._kettle_formed_announced: bool = False
+        self._corridor_flow_announced: bool = False
+        # target_id -> sim-clock time of its last corridor push (throttle).
+        self._corridor_pushed: dict[str, float] = {}
+
         # Grievance level.
         self._agitation: float = _INITIAL_AGITATION
 
@@ -278,6 +340,78 @@ class PoliceTacticsController:
         """The FormationType last planned (None until a line/wedge forms)."""
         return self._formation_type
 
+    @property
+    def commanded_tactic(self) -> str:
+        """Operator-commanded tactic: auto / line / wedge / kettle."""
+        return self._commanded_tactic
+
+    @property
+    def corridor(self) -> tuple[float, float] | None:
+        """Operator-supplied dispersal-corridor point, or None (auto gap)."""
+        return self._corridor
+
+    # -- Operator command path --------------------------------------------------
+
+    def command_tactic(
+        self,
+        tactic: str,
+        corridor: tuple[float, float] | None = None,
+    ) -> bool:
+        """Command a squad tactic (the production squad-lead interface).
+
+        ``tactic`` must be one of ``_VALID_TACTICS`` ("auto", "line", "wedge",
+        "kettle"); an unknown tactic is rejected with no state change and
+        returns False.  A valid command stores the override, publishes a single
+        ``police_tactic_commanded`` event, and returns True.  ``corridor`` (a
+        world point) only matters for ``kettle`` — it aims the dispersal gap
+        from the kettle centre toward that point; omit it to auto-aim the gap
+        away from the squad.
+        """
+        if tactic not in _VALID_TACTICS:
+            return False
+
+        prev = self._commanded_tactic
+        self._commanded_tactic = tactic
+        self._corridor = (
+            (float(corridor[0]), float(corridor[1]))
+            if corridor is not None else None
+        )
+        # Leaving kettle (or re-entering it fresh) clears the cordon transient
+        # state so the FSM resumes cleanly from "form".
+        if tactic != "kettle" or prev != "kettle":
+            self._exit_kettle()
+
+        self._publish("police_tactic_commanded", {
+            "tactic": tactic,
+            "corridor": (
+                {"x": self._corridor[0], "y": self._corridor[1]}
+                if self._corridor is not None else None
+            ),
+        })
+        return True
+
+    def get_status(self) -> dict:
+        """Operator-facing squad status snapshot (stable API contract).
+
+        Exactly these keys: ``squad_state``, ``formation_type`` (string value
+        or None), ``commanded_tactic``, ``agitation``, ``corridor``
+        ({"x","y"} or None), ``arrests``.
+        """
+        return {
+            "squad_state": self._squad_state,
+            "formation_type": (
+                self._formation_type.value
+                if self._formation_type is not None else None
+            ),
+            "commanded_tactic": self._commanded_tactic,
+            "agitation": self._agitation,
+            "corridor": (
+                {"x": self._corridor[0], "y": self._corridor[1]}
+                if self._corridor is not None else None
+            ),
+            "arrests": self._arrest_total,
+        }
+
     # -- Occupancy (Graphling boundary) -----------------------------------------
 
     def _is_occupied(self, target_id: str) -> bool:
@@ -294,6 +428,8 @@ class PoliceTacticsController:
         """Advance the squad AI one step. No-op outside ``civil_unrest``."""
         if game_mode_type != "civil_unrest":
             return
+
+        self._sim_clock += dt
 
         all_targets = _iter_targets(targets)
 
@@ -317,6 +453,10 @@ class PoliceTacticsController:
             self._anchor = None
             self._slots = None
             self._formation_type = None
+            # A cordon with nothing left to contain is disbanded; the cordon
+            # transient state (gap dir, ring, formed/flow beats, push timers)
+            # resets so a fresh kettle command starts clean.
+            self._exit_kettle()
             return
 
         squad_centroid = _centroid([tuple(o.position[:2]) for o in roster])
@@ -348,6 +488,16 @@ class PoliceTacticsController:
             <= _WEDGE_CLUSTER_RADIUS
         ]
         objective = _centroid([tuple(v.position[:2]) for v in cluster])
+
+        # -- Operator override: kettle cordon ----------------------------------
+        # A commanded kettle replaces the advance/engage flow entirely: cordon
+        # the local cluster in an ARC, tighten the ring, and push rioters out
+        # the gap.  Arrests / routs still run inside the cordon.
+        if self._commanded_tactic == "kettle":
+            self._tick_kettle(
+                dt, roster, violent, all_targets, squad_centroid, cluster, objective,
+            )
+            return
 
         if prev_state == "hold":
             new_state = "form"
@@ -391,20 +541,7 @@ class PoliceTacticsController:
             self._publish("crowd_event", {"beat": "police_push", "officers": len(roster)})
 
         # -- Arrests + routs ----------------------------------------------------
-        for v in violent:
-            dists = [
-                math.hypot(o.position[0] - v.position[0],
-                           o.position[1] - v.position[1])
-                for o in roster
-            ]
-            near = [o for o, d in zip(roster, dists) if d <= self._arrest_range]
-            health = getattr(v, "health", 0.0)
-            if health <= self._arrest_health and len(near) >= 2:
-                self._arrest(v, near)
-            elif health <= self._rout_health and min(dists) <= _ROUT_CREDIT_RANGE:
-                # Only the pressure of a NEARBY officer breaks a rioter into
-                # flight — no credit for rioters worn down far from the line.
-                self._rout(v, squad_centroid)
+        self._process_arrests_routs(violent, roster, squad_centroid)
 
         # -- Grievance flare-up: radicalize bystanders while engaged -----------
         if new_state == "engage":
@@ -423,6 +560,40 @@ class PoliceTacticsController:
                 self._crowd_broken_announced = True
                 self._publish("crowd_event", {"beat": "crowd_broken", "rioters": cur_violent})
 
+    # -- Shared arrest / rout loop ---------------------------------------------
+
+    def _process_arrests_routs(
+        self,
+        violent: list,
+        roster: list,
+        squad_centroid: tuple[float, float],
+    ) -> None:
+        """Run the non-lethal arrest + rout pass (shared by all tactics).
+
+        A worn-down violent target with >= 2 officers inside ``arrest_range``
+        is detained; a weaker one broken only by a NEARBY officer routs.  Used
+        by both the automatic FSM and the kettle cordon so arrests keep landing
+        while the crowd is contained.
+        """
+        for v in violent:
+            dists = [
+                math.hypot(o.position[0] - v.position[0],
+                           o.position[1] - v.position[1])
+                for o in roster
+            ]
+            near = [o for o, d in zip(roster, dists) if d <= self._arrest_range]
+            health = getattr(v, "health", 0.0)
+            if health <= self._arrest_health and len(near) >= 2:
+                self._arrest(v, near)
+            elif (
+                health <= self._rout_health
+                and dists
+                and min(dists) <= _ROUT_CREDIT_RANGE
+            ):
+                # Only the pressure of a NEARBY officer breaks a rioter into
+                # flight — no credit for rioters worn down far from the line.
+                self._rout(v, squad_centroid)
+
     # -- FSM internals ----------------------------------------------------------
 
     def _plan_formation(
@@ -436,7 +607,8 @@ class PoliceTacticsController:
         Facing points from the line anchor toward the push objective (the
         local violent cluster); LINE spreads officers perpendicular to that
         axis, WEDGE fans them back from a tip.  Slots are assigned to
-        officers by a stable sort of ``target_id``.
+        officers by a stable sort of ``target_id``.  An operator ``line`` /
+        ``wedge`` command forces that shape regardless of cluster size.
         """
         anchor = self._anchor if self._anchor is not None else _centroid(
             [tuple(o.position[:2]) for o in roster]
@@ -445,13 +617,21 @@ class PoliceTacticsController:
             objective[1] - anchor[1],
             objective[0] - anchor[0],
         )
-        cluster = sum(
-            1
-            for v in violent
-            if math.hypot(v.position[0] - objective[0],
-                          v.position[1] - objective[1]) <= _WEDGE_CLUSTER_RADIUS
-        )
-        ftype = FormationType.WEDGE if cluster >= _WEDGE_CLUSTER_MIN else FormationType.LINE
+        if self._commanded_tactic == "line":
+            ftype = FormationType.LINE
+        elif self._commanded_tactic == "wedge":
+            ftype = FormationType.WEDGE
+        else:
+            cluster = sum(
+                1
+                for v in violent
+                if math.hypot(v.position[0] - objective[0],
+                              v.position[1] - objective[1]) <= _WEDGE_CLUSTER_RADIUS
+            )
+            ftype = (
+                FormationType.WEDGE if cluster >= _WEDGE_CLUSTER_MIN
+                else FormationType.LINE
+            )
 
         config = FormationConfig(
             formation_type=ftype,
@@ -469,6 +649,143 @@ class PoliceTacticsController:
             # Replace the list object (not mutate) so the entity re-syncs its
             # movement controller to the new slot.
             officer.waypoints = [slot]
+
+    # -- Kettle cordon ----------------------------------------------------------
+
+    def _tick_kettle(
+        self,
+        dt: float,
+        roster: list,
+        violent: list,
+        all_targets: list,
+        squad_centroid: tuple[float, float],
+        cluster: list,
+        objective: tuple[float, float],
+    ) -> None:
+        """Kettle a local violent cluster and drive it out a single corridor.
+
+        Officers ring the cluster centroid in an ARC cordon with one open gap;
+        the ring tightens each tick; once formed, rioters still inside the ring
+        are shoved out through the gap.  Arrests / routs keep running inside the
+        cordon.  The gap direction is fixed at command time (deterministic).
+        """
+        self._squad_state = "kettle"
+        center = objective
+
+        # Fix the gap direction + initial ring on the first kettled tick.
+        if self._kettle_gap_dir is None:
+            if self._corridor is not None:
+                gx = self._corridor[0] - center[0]
+                gy = self._corridor[1] - center[1]
+            else:
+                # Auto: gap opens on the FAR side of the cluster from the squad,
+                # so rioters flee away from the line and out the corridor.
+                gx = center[0] - squad_centroid[0]
+                gy = center[1] - squad_centroid[1]
+            gmag = math.hypot(gx, gy)
+            self._kettle_gap_dir = (
+                (gx / gmag, gy / gmag) if gmag > 1e-6 else (1.0, 0.0)
+            )
+            spread = max(
+                (math.hypot(v.position[0] - center[0], v.position[1] - center[1])
+                 for v in cluster),
+                default=0.0,
+            )
+            self._kettle_radius = max(
+                _KETTLE_START_RADIUS, spread + _KETTLE_SPREAD_MARGIN
+            )
+        else:
+            # Tighten the ring toward the floor to squeeze the crowd out.
+            self._kettle_radius = max(
+                _KETTLE_MIN_RADIUS,
+                self._kettle_radius - _KETTLE_SHRINK_RATE * dt,
+            )
+
+        self._kettle_center = center
+        gap_dir = self._kettle_gap_dir
+        facing = math.atan2(gap_dir[1], gap_dir[0])
+
+        # Replan the ARC cordon on the usual cadence.
+        self._replan_accum += dt
+        if self._slots is None or self._replan_accum >= self._replan_interval:
+            self._replan_accum = 0.0
+            self._plan_kettle_formation(roster, center, facing)
+
+        # kettle_formed beat: >= 75% of the roster on its cordon slot.
+        if not self._kettle_formed_announced and self._slots:
+            ordered = sorted(roster, key=lambda o: o.target_id)
+            arrived = sum(
+                1
+                for officer, slot in zip(ordered, self._slots)
+                if math.hypot(officer.position[0] - slot[0],
+                              officer.position[1] - slot[1]) <= _KETTLE_ARRIVE_DIST
+            )
+            if roster and arrived >= _KETTLE_FORMED_FRACTION * len(roster):
+                self._kettle_formed_announced = True
+                self._publish("crowd_event",
+                              {"beat": "kettle_formed", "officers": len(roster)})
+
+        # Corridor drive: once formed, shove still-violent targets inside the
+        # ring out through the gap, throttled per target.
+        if self._kettle_formed_announced:
+            exit_r = self._kettle_radius + _CORRIDOR_EXIT_DIST
+            gap_exit = (center[0] + gap_dir[0] * exit_r,
+                        center[1] + gap_dir[1] * exit_r)
+            for v in violent:
+                if not _is_violent(v):
+                    continue
+                if math.hypot(v.position[0] - center[0],
+                              v.position[1] - center[1]) > self._kettle_radius:
+                    continue
+                last = self._corridor_pushed.get(v.target_id, -1e9)
+                if self._sim_clock - last >= _CORRIDOR_PUSH_INTERVAL:
+                    v.waypoints = [gap_exit]
+                    self._corridor_pushed[v.target_id] = self._sim_clock
+
+            if (
+                not self._corridor_flow_announced
+                and len(self._corridor_pushed) >= _CORRIDOR_FLOW_MIN
+            ):
+                self._corridor_flow_announced = True
+                self._publish("crowd_event",
+                              {"beat": "corridor_flow",
+                               "pushed": len(self._corridor_pushed)})
+
+        # Arrests / routs keep landing inside the cordon.
+        self._process_arrests_routs(violent, roster, squad_centroid)
+
+    def _plan_kettle_formation(
+        self,
+        roster: list,
+        center: tuple[float, float],
+        facing: float,
+    ) -> None:
+        """Place officers on an ARC cordon around ``center`` (gap toward facing)."""
+        config = FormationConfig(
+            formation_type=FormationType.ARC,
+            spacing=self._formation_spacing,
+            facing=facing,
+            leader_pos=center,
+            num_members=len(roster),
+            gap_angle=_KETTLE_GAP_ANGLE,
+            radius=self._kettle_radius,
+        )
+        slots = get_formation_positions(config)
+        self._slots = slots
+        self._formation_type = FormationType.ARC
+
+        ordered = sorted(roster, key=lambda o: o.target_id)
+        for officer, slot in zip(ordered, slots):
+            officer.waypoints = [slot]
+
+    def _exit_kettle(self) -> None:
+        """Clear all kettle-cordon transient state (FSM resumes at ``form``)."""
+        self._kettle_gap_dir = None
+        self._kettle_center = None
+        self._kettle_radius = _KETTLE_START_RADIUS
+        self._kettle_formed_announced = False
+        self._corridor_flow_announced = False
+        self._corridor_pushed.clear()
 
     def _observe_shots(self, roster: list) -> None:
         """Raise agitation once per officer that fired since the last tick."""
@@ -590,6 +907,8 @@ class PoliceTacticsController:
     def remove_unit(self, target_id: str) -> None:
         """Drop per-unit state for a removed officer (mirrors InstigatorDetector)."""
         self._last_fired_seen.pop(target_id, None)
+        # A removed target can never be corridor-pushed again; clear its throttle.
+        self._corridor_pushed.pop(target_id, None)
 
     def reset(self) -> None:
         """Reset the squad AI to its initial state (clears beat transitions)."""
@@ -598,6 +917,7 @@ class PoliceTacticsController:
         self._slots = None
         self._formation_type = None
         self._replan_accum = 0.0
+        self._sim_clock = 0.0
         self._agitation = _INITIAL_AGITATION
         self._last_fired_seen.clear()
         self._line_announced = False
@@ -605,3 +925,7 @@ class PoliceTacticsController:
         self._crowd_broken_announced = False
         self._arrest_total = 0
         self._peak_violent = 0
+        # Operator override + kettle cordon back to defaults ("auto").
+        self._commanded_tactic = "auto"
+        self._corridor = None
+        self._exit_kettle()
