@@ -30,6 +30,7 @@ Cost model (applied per cell, fixed order regardless of call order):
 
 from __future__ import annotations
 
+import heapq
 import math
 from dataclasses import dataclass, field
 
@@ -49,6 +50,21 @@ __all__ = [
     "MTFCC_WIDTHS_M",
     "builder_from_terrain_map",
     "costmap_from_terrain_map",
+]
+
+_SQRT2 = math.sqrt(2.0)
+
+# 8-connected neighbor offsets ``(dcol, drow, is_diagonal)`` for the
+# distance-to-nearest-lethal transform in :meth:`Costmap.clearance_m`.
+_CLEARANCE_NEIGHBORS = [
+    (1, 0, False),
+    (-1, 0, False),
+    (0, 1, False),
+    (0, -1, False),
+    (1, 1, True),
+    (1, -1, True),
+    (-1, 1, True),
+    (-1, -1, True),
 ]
 
 
@@ -128,6 +144,14 @@ class Costmap:
     height: int = 0
     grid: list[list[float]] = field(default_factory=list)
 
+    # Lazily-computed distance-to-nearest-lethal field (meters), cached on the
+    # instance.  ``None`` until the first :meth:`clearance_m` call.  Excluded
+    # from the constructor, equality and repr — the grid is immutable after
+    # :meth:`CostmapBuilder.build`, so the cache never goes stale.
+    _clearance_cache: list[list[float]] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
     # -- Coordinate conversion ---------------------------------------------
 
     def world_to_grid(self, x: float, y: float) -> tuple[int, int] | None:
@@ -159,6 +183,72 @@ class Costmap:
     def is_lethal(self, col: int, row: int) -> bool:
         """True if the cell is impassable (or out of bounds)."""
         return self.cost_at(col, row) == self.LETHAL
+
+    def clearance_m(self, col: int, row: int) -> float:
+        """Meters from cell ``(col, row)``'s center to the nearest lethal cell.
+
+        Lazily builds — once, then caches on the instance — a multi-source
+        8-connected distance transform seeded from every lethal cell (octile
+        step costs: ``resolution`` orthogonal, ``resolution * sqrt(2)``
+        diagonal).  Used by the planner's unit-radius standoff: a cell whose
+        clearance is below a unit's required margin is treated as blocked.
+
+        Return values:
+            - lethal cells -> ``0.0``
+            - out-of-bounds cells -> ``0.0`` (treated as obstacle)
+            - non-lethal cells -> graph distance to the nearest lethal cell
+            - every cell when the grid has NO lethal cell -> ``inf``
+              (infinitely clear)
+
+        The grid is immutable after :meth:`CostmapBuilder.build`, so the field
+        is computed at most once per :class:`Costmap` instance.
+        """
+        if not self.in_bounds(col, row):
+            return 0.0
+        if self._clearance_cache is None:
+            self._clearance_cache = self._build_clearance_field()
+        return self._clearance_cache[row][col]
+
+    def _build_clearance_field(self) -> list[list[float]]:
+        """Compute the distance-to-nearest-lethal field (meters), row-major.
+
+        Multi-source Dijkstra: every lethal cell is a zero-distance source and
+        the wavefront relaxes outward across in-bounds cells with octile step
+        costs.  ``O(cells log cells)``.  When the grid holds no lethal cell the
+        field is left at ``inf`` everywhere (nothing to stand off from).
+        """
+        w, h = self.width, self.height
+        lethal = self.LETHAL
+        inf = math.inf
+        dist: list[list[float]] = [[inf] * w for _ in range(h)]
+
+        heap: list[tuple[float, int, int]] = []
+        for r in range(h):
+            grid_row = self.grid[r]
+            for c in range(w):
+                if grid_row[c] == lethal:
+                    dist[r][c] = 0.0
+                    heap.append((0.0, c, r))
+
+        if not heap:
+            return dist  # no obstacles -> everything is inf-clear
+
+        heapq.heapify(heap)
+        res = self.resolution
+        diag = res * _SQRT2
+        while heap:
+            d, c, r = heapq.heappop(heap)
+            if d > dist[r][c]:
+                continue
+            for dc, dr, is_diag in _CLEARANCE_NEIGHBORS:
+                nc, nr = c + dc, r + dr
+                if nc < 0 or nc >= w or nr < 0 or nr >= h:
+                    continue
+                nd = d + (diag if is_diag else res)
+                if nd < dist[nr][nc]:
+                    dist[nr][nc] = nd
+                    heapq.heappush(heap, (nd, nc, nr))
+        return dist
 
     def min_traversable_cost(self) -> float:
         """Minimum cost over non-lethal cells (floored at ``1e-6``)."""

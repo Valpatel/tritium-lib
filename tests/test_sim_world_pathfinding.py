@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 from tritium_lib.sim_engine.world.pathfinding import (
     plan_path,
+    clearance_for_unit_type,
+    UNIT_CLEARANCE_M,
     _STATIONARY_TYPES,
     _FLYING_TYPES,
     _ROAD_TYPES,
@@ -159,3 +161,34 @@ class TestPlanPathTypeConstants:
 
     def test_hostile_direct_range(self):
         assert _HOSTILE_DIRECT_RANGE == 30.0
+
+
+class TestUnitClearance:
+    """Per-unit-type costmap standoff radius (UX Loop 3 — Add Robot).
+
+    A wide, heavy unit (an APC) needs more wall clearance than a person; the
+    planner reads this via ``clearance_for_unit_type`` and passes it to the
+    costmap A* as its ``clearance_m``.
+    """
+
+    def test_apc_and_tank_get_wide_standoff(self):
+        assert clearance_for_unit_type("apc") == 2.0
+        assert clearance_for_unit_type("tank") == 2.0
+
+    def test_rover_and_vehicle_get_narrow_standoff(self):
+        assert clearance_for_unit_type("rover") == 1.0
+        assert clearance_for_unit_type("vehicle") == 1.0
+
+    def test_pedestrian_is_zero(self):
+        # PINNED: peds keep 0.0 (sidewalk routing + riot golden-replay safety).
+        assert clearance_for_unit_type("person") == 0.0
+        assert clearance_for_unit_type("infantry") == 0.0
+
+    def test_unknown_type_is_zero(self):
+        assert clearance_for_unit_type("zzz_not_a_type") == 0.0
+        assert clearance_for_unit_type("") == 0.0
+
+    def test_table_is_the_pinned_set(self):
+        assert UNIT_CLEARANCE_M == {
+            "rover": 1.0, "vehicle": 1.0, "tank": 2.0, "apc": 2.0,
+        }

@@ -47,6 +47,29 @@ ROAD_TYPES = frozenset(_ROAD_TYPES)
 FLYING_TYPES = frozenset(_FLYING_TYPES)
 STATIONARY_TYPES = frozenset(_STATIONARY_TYPES)
 
+# Per-unit-type standoff radius (meters) fed to the costmap A* planner as its
+# ``clearance_m``: a wide, heavy unit keeps more distance from walls/obstacles
+# than a person.  A tank/APC needs a wider berth than a rover/light vehicle.
+# Pedestrians and unknown types stay 0.0 — PINNED: this protects pedestrian
+# sidewalk routing and the riot golden-replay determinism (a non-zero clearance
+# for peds would perturb their paths).  Consumers read this via
+# :func:`clearance_for_unit_type`.
+UNIT_CLEARANCE_M: dict[str, float] = {
+    "rover": 1.0,
+    "vehicle": 1.0,
+    "tank": 2.0,
+    "apc": 2.0,
+}
+
+
+def clearance_for_unit_type(unit_type: str) -> float:
+    """Return the costmap standoff radius (meters) for ``unit_type``.
+
+    Looks up :data:`UNIT_CLEARANCE_M`; pedestrians and any unrecognised type
+    get ``0.0`` (no extra standoff — historical planner behavior).
+    """
+    return UNIT_CLEARANCE_M.get(unit_type, 0.0)
+
 # Distance threshold for hostile direct approach (meters)
 _HOSTILE_DIRECT_RANGE = 30.0
 
