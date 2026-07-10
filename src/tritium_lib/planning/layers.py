@@ -9,11 +9,21 @@ builder in :mod:`tritium_lib.planning.costmap`.
 
 Two kinds of layer input are supported:
 
-1. :class:`ElevationGrid` — a Digital Elevation Model (DEM).  This is the
-   canonical DEM convention for the whole system.  A GIS pipeline that
-   downloads USGS 3DEP tiles rasterizes them into this exact structure so
-   the costmap builder can read slope without knowing where the data came
-   from.
+1. :class:`LocalElevationGrid` — a Digital Elevation Model (DEM) sampled in
+   **local meters** with ``row 0`` = south.  This is planning's own raster
+   convention.  A GIS pipeline that downloads elevation tiles rasterizes
+   them into this structure so the costmap builder can read slope without
+   knowing where the data came from.
+
+   .. note::
+      This class was called ``ElevationGrid`` before the GIS-lane merge.
+      It was renamed to :class:`LocalElevationGrid` because the parallel
+      GIS lane owns the name ``ElevationGrid`` for its **WGS-84 wire model**
+      (``tritium_lib.geo.gis.models.ElevationGrid``) which uses the OPPOSITE
+      row convention (``row 0`` = *north*, flat row-major ``values`` over a
+      lat/lng bbox).  Planning must not export ``ElevationGrid`` at all.
+      Use :func:`local_grid_from_gis` to convert the WGS-84 wire grid into a
+      local-meter :class:`LocalElevationGrid`.
 
 2. GeoJSON ``FeatureCollection`` dicts — polygons (buildings, water,
    flood masks) and lines (roads).  Coordinates are assumed to be **local
@@ -32,7 +42,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
 __all__ = [
-    "ElevationGrid",
+    "LocalElevationGrid",
+    "local_grid_from_gis",
     "wgs84_to_local",
     "iter_features",
     "iter_polygons",
@@ -49,11 +60,11 @@ _EPS = 1e-9
 
 
 # ---------------------------------------------------------------------------
-# ElevationGrid — the canonical DEM convention
+# LocalElevationGrid — planning's local-meter DEM convention
 # ---------------------------------------------------------------------------
 
 @dataclass
-class ElevationGrid:
+class LocalElevationGrid:
     """A Digital Elevation Model sampled on a regular grid of nodes.
 
     The value ``data[row][col]`` is the elevation (meters) sampled at the
@@ -160,7 +171,7 @@ class ElevationGrid:
         bounds: tuple[float, float, float, float],
         resolution: float,
         fn: Callable[[float, float], float],
-    ) -> "ElevationGrid":
+    ) -> "LocalElevationGrid":
         """Build a synthetic DEM by sampling ``fn(x, y) -> elevation``.
 
         Args:
@@ -211,6 +222,202 @@ def wgs84_to_local() -> Callable[[float, float], tuple[float, float]]:
         return (x, y)
 
     return to_local
+
+
+# ---------------------------------------------------------------------------
+# GIS wire-DEM adapter (WGS-84 row-0-north -> local-meter row-0-south)
+# ---------------------------------------------------------------------------
+
+def _gis_field(gis_grid, key: str):
+    """Read ``key`` from a GIS grid that may be an object or a plain dict."""
+    if isinstance(gis_grid, dict):
+        return gis_grid.get(key)
+    return getattr(gis_grid, key, None)
+
+
+def local_grid_from_gis(
+    gis_grid,
+    *,
+    to_local: Callable[[float, float], tuple[float, float]] | None = None,
+    resolution: float | None = None,
+    nodata_fill: float | None = None,
+) -> LocalElevationGrid:
+    """Adapt a GIS-lane WGS-84 elevation grid into a :class:`LocalElevationGrid`.
+
+    The GIS lane (``tritium_lib.geo.gis.models.ElevationGrid``) delivers a
+    Digital Elevation Model as a **WGS-84 wire model** with the OPPOSITE row
+    convention to planning's local raster:
+
+        - bbox fields ``west, south, east, north`` (degrees),
+        - ``ncols, nrows`` grid dimensions,
+        - ``values`` — a **flat row-major** list of length ``ncols*nrows``
+          with **``row 0`` = NORTH edge**, values increasing eastward within
+          a row.  ``None`` marks NoData.
+        - inclusive-edge sampling: column 0 sits exactly on ``west``, column
+          ``ncols-1`` on ``east``; row 0 on ``north``, row ``nrows-1`` on
+          ``south``.
+
+    ``gis_grid`` is duck-typed: pass either an object exposing those attrs or
+    a plain dict carrying those keys (the ``GET /api/gis/elevation/grid``
+    payload).  Extra keys (``source``, ``resolution_m``, ``fixture``, …) are
+    tolerated and ignored.
+
+    Args:
+        gis_grid: The WGS-84 wire grid (object or dict).
+        to_local: ``to_local(lng, lat) -> (x, y)`` projector.  Defaults to
+            :func:`wgs84_to_local` (needs an initialised ``tritium_lib.geo``
+            reference).
+        resolution: Output node spacing in meters.  Defaults to the mean
+            source cell spacing in meters (floored at ``1e-6``).
+        nodata_fill: Fill value when *all* four source neighbours of an
+            output node are NoData.  Defaults to the mean of every non-None
+            source value (or ``0.0`` if the grid is entirely NoData — which
+            cannot happen because an all-None grid raises first).
+
+    Returns:
+        A :class:`LocalElevationGrid` in local meters with ``row 0`` = south.
+
+    Raises:
+        ValueError: Empty/degenerate grid (``ncols`` or ``nrows`` < 2, a
+            ``values`` length mismatch, an all-NoData grid, or a bbox that
+            projects to a zero-area local extent).
+
+    Assumption:
+        The tritium geo projection is **equirectangular over an AO-sized
+        bbox**, so the mapping from local ``(x, y)`` to fractional source
+        index is AFFINE.  The four bbox corners are projected and their
+        min/max define the axis-aligned local extent; each output node maps
+        back to a fractional ``(iy_frac, ix_frac)`` source index (with a row
+        FLIP, since the source ``row 0`` = north but the output ``row 0`` =
+        south) and is sampled by BILINEAR interpolation.
+    """
+    west = _gis_field(gis_grid, "west")
+    south = _gis_field(gis_grid, "south")
+    east = _gis_field(gis_grid, "east")
+    north = _gis_field(gis_grid, "north")
+    ncols = _gis_field(gis_grid, "ncols")
+    nrows = _gis_field(gis_grid, "nrows")
+    values = _gis_field(gis_grid, "values")
+
+    if None in (west, south, east, north, ncols, nrows) or values is None:
+        raise ValueError(
+            "local_grid_from_gis: gis_grid is missing required fields "
+            "(west/south/east/north/ncols/nrows/values)"
+        )
+    ncols = int(ncols)
+    nrows = int(nrows)
+    if ncols < 2 or nrows < 2:
+        raise ValueError(
+            f"local_grid_from_gis: degenerate grid {ncols}x{nrows} — need "
+            "ncols >= 2 and nrows >= 2"
+        )
+    if len(values) != ncols * nrows:
+        raise ValueError(
+            f"local_grid_from_gis: values length {len(values)} != "
+            f"ncols*nrows ({ncols * nrows})"
+        )
+
+    non_none = [v for v in values if v is not None]
+    if not non_none:
+        raise ValueError("local_grid_from_gis: grid is entirely NoData")
+    if nodata_fill is None:
+        nodata_fill = sum(non_none) / len(non_none)
+
+    if to_local is None:
+        to_local = wgs84_to_local()
+
+    # Project the four bbox corners; the local extent is their min/max.
+    corners = [
+        to_local(west, north),
+        to_local(east, north),
+        to_local(west, south),
+        to_local(east, south),
+    ]
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    x_west, x_east = min(xs), max(xs)
+    y_south, y_north = min(ys), max(ys)
+    span_x = x_east - x_west
+    span_y = y_north - y_south
+    if span_x <= _EPS or span_y <= _EPS:
+        raise ValueError(
+            "local_grid_from_gis: bbox projects to a zero-area local extent"
+        )
+
+    if resolution is None:
+        x_spacing = span_x / (ncols - 1)
+        y_spacing = span_y / (nrows - 1)
+        resolution = max((x_spacing + y_spacing) / 2.0, 1e-6)
+    resolution = float(resolution)
+
+    out_cols = max(2, int(math.floor(span_x / resolution + _EPS)) + 1)
+    out_rows = max(2, int(math.floor(span_y / resolution + _EPS)) + 1)
+
+    def _sample(iy_frac: float, ix_frac: float) -> float:
+        # Clamp fractional index into the valid lattice.
+        if ix_frac < 0.0:
+            ix_frac = 0.0
+        elif ix_frac > ncols - 1:
+            ix_frac = float(ncols - 1)
+        if iy_frac < 0.0:
+            iy_frac = 0.0
+        elif iy_frac > nrows - 1:
+            iy_frac = float(nrows - 1)
+
+        ic0 = int(math.floor(ix_frac))
+        ir0 = int(math.floor(iy_frac))
+        if ic0 > ncols - 2:
+            ic0 = ncols - 2
+        if ir0 > nrows - 2:
+            ir0 = nrows - 2
+        ic1 = ic0 + 1
+        ir1 = ir0 + 1
+        tx = ix_frac - ic0
+        ty = iy_frac - ir0
+
+        v00 = values[ir0 * ncols + ic0]
+        v01 = values[ir0 * ncols + ic1]
+        v10 = values[ir1 * ncols + ic0]
+        v11 = values[ir1 * ncols + ic1]
+
+        if None not in (v00, v01, v10, v11):
+            top = v00 + (v01 - v00) * tx
+            bot = v10 + (v11 - v10) * tx
+            return top + (bot - top) * ty
+
+        # NoData: nearest non-None of the four neighbours by fractional
+        # distance in index space; all-None -> nodata_fill.
+        neighbours = [
+            (v00, math.hypot(ty, tx)),
+            (v01, math.hypot(ty, 1.0 - tx)),
+            (v10, math.hypot(1.0 - ty, tx)),
+            (v11, math.hypot(1.0 - ty, 1.0 - tx)),
+        ]
+        candidates = sorted(
+            ((d, v) for (v, d) in neighbours if v is not None),
+            key=lambda t: t[0],
+        )
+        if candidates:
+            return float(candidates[0][1])
+        return float(nodata_fill)
+
+    data: list[list[float]] = []
+    for out_row in range(out_rows):
+        y = y_south + out_row * resolution
+        iy_frac = (y_north - y) / span_y * (nrows - 1)  # row FLIP
+        grid_row: list[float] = []
+        for out_col in range(out_cols):
+            x = x_west + out_col * resolution
+            ix_frac = (x - x_west) / span_x * (ncols - 1)
+            grid_row.append(_sample(iy_frac, ix_frac))
+        data.append(grid_row)
+
+    return LocalElevationGrid(
+        origin_x=x_west,
+        origin_y=y_south,
+        resolution=resolution,
+        data=data,
+    )
 
 
 # ---------------------------------------------------------------------------

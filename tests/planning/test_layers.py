@@ -11,7 +11,7 @@ from tritium_lib import geo
 from tritium_lib.planning.layers import (
     LINE_TYPES,
     POLYGON_TYPES,
-    ElevationGrid,
+    LocalElevationGrid,
     iter_features,
     iter_lines,
     iter_polygons,
@@ -20,12 +20,12 @@ from tritium_lib.planning.layers import (
 
 
 # ---------------------------------------------------------------------------
-# ElevationGrid
+# LocalElevationGrid
 # ---------------------------------------------------------------------------
 
-class TestElevationGrid:
+class TestLocalElevationGrid:
     def test_from_callable_dimensions(self):
-        dem = ElevationGrid.from_callable((0, 0, 100, 100), 10.0, lambda x, y: 0.0)
+        dem = LocalElevationGrid.from_callable((0, 0, 100, 100), 10.0, lambda x, y: 0.0)
         # 0..100 inclusive at 10m spacing -> 11 nodes per axis.
         assert dem.width == 11
         assert dem.height == 11
@@ -34,7 +34,7 @@ class TestElevationGrid:
         assert dem.resolution == 10.0
 
     def test_elevation_at_nodes_exact(self):
-        dem = ElevationGrid.from_callable((0, 0, 100, 100), 10.0, lambda x, y: 0.2 * x)
+        dem = LocalElevationGrid.from_callable((0, 0, 100, 100), 10.0, lambda x, y: 0.2 * x)
         # At a node the interpolation is exact.
         assert dem.elevation_at(0, 0) == pytest.approx(0.0)
         assert dem.elevation_at(10, 50) == pytest.approx(2.0)
@@ -42,14 +42,14 @@ class TestElevationGrid:
 
     def test_elevation_at_bilinear_interior(self):
         # Bilinear of a plane returns the exact plane value anywhere.
-        dem = ElevationGrid.from_callable(
+        dem = LocalElevationGrid.from_callable(
             (0, 0, 40, 40), 10.0, lambda x, y: 3.0 * x + 5.0 * y
         )
         assert dem.elevation_at(12.5, 7.5) == pytest.approx(3.0 * 12.5 + 5.0 * 7.5)
         assert dem.elevation_at(23.3, 11.1) == pytest.approx(3.0 * 23.3 + 5.0 * 11.1)
 
     def test_elevation_out_of_bounds_none(self):
-        dem = ElevationGrid.from_callable((0, 0, 40, 40), 10.0, lambda x, y: 1.0)
+        dem = LocalElevationGrid.from_callable((0, 0, 40, 40), 10.0, lambda x, y: 1.0)
         assert dem.elevation_at(-5, 10) is None
         assert dem.elevation_at(10, -5) is None
         assert dem.elevation_at(45, 10) is None
@@ -57,28 +57,28 @@ class TestElevationGrid:
 
     def test_slope_on_ramp_known_gradient(self):
         # Elevation rises 0.3 per meter in x, flat in y -> slope magnitude 0.3.
-        dem = ElevationGrid.from_callable((0, 0, 100, 100), 5.0, lambda x, y: 0.3 * x)
+        dem = LocalElevationGrid.from_callable((0, 0, 100, 100), 5.0, lambda x, y: 0.3 * x)
         assert dem.slope_at(50, 50) == pytest.approx(0.3)
         assert dem.slope_at(25, 75) == pytest.approx(0.3)
 
     def test_slope_diagonal_ramp(self):
         # Gradient (0.3, 0.4) -> magnitude 0.5.
-        dem = ElevationGrid.from_callable(
+        dem = LocalElevationGrid.from_callable(
             (0, 0, 100, 100), 5.0, lambda x, y: 0.3 * x + 0.4 * y
         )
         assert dem.slope_at(50, 50) == pytest.approx(0.5)
 
     def test_slope_flat_is_zero(self):
-        dem = ElevationGrid.from_callable((0, 0, 100, 100), 5.0, lambda x, y: 42.0)
+        dem = LocalElevationGrid.from_callable((0, 0, 100, 100), 5.0, lambda x, y: 42.0)
         assert dem.slope_at(50, 50) == pytest.approx(0.0)
 
     def test_slope_out_of_bounds_zero(self):
-        dem = ElevationGrid.from_callable((0, 0, 40, 40), 5.0, lambda x, y: 0.3 * x)
+        dem = LocalElevationGrid.from_callable((0, 0, 40, 40), 5.0, lambda x, y: 0.3 * x)
         # A sample step off the grid -> slope defaults to 0.0.
         assert dem.slope_at(-100, 20) == 0.0
 
     def test_empty_grid(self):
-        dem = ElevationGrid(origin_x=0, origin_y=0, resolution=5.0, data=[])
+        dem = LocalElevationGrid(origin_x=0, origin_y=0, resolution=5.0, data=[])
         assert dem.width == 0
         assert dem.height == 0
         assert dem.elevation_at(0, 0) is None

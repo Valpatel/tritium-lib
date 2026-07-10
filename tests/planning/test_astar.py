@@ -161,13 +161,13 @@ class TestRoadPreference:
 
 class TestSlopeAvoidance:
     def _cone_costmap(self):
-        from tritium_lib.planning.layers import ElevationGrid
+        from tritium_lib.planning.layers import LocalElevationGrid
 
         def cone(x, y):
             # Constant-slope cone -> a lethal disk of steep terrain.
             return max(0.0, 60.0 - 1.0 * math.hypot(x - 100, y - 100))
 
-        dem = ElevationGrid.from_callable((-30, -30, 230, 230), 10.0, cone)
+        dem = LocalElevationGrid.from_callable((-30, -30, 230, 230), 10.0, cone)
         b = CostmapBuilder((0, 0, 200, 200), resolution=10.0)
         b.add_dem(dem)
         return b.build()

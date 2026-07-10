@@ -13,7 +13,7 @@ from tritium_lib.planning.costmap import (
     CostmapWeights,
     costmap_from_terrain_map,
 )
-from tritium_lib.planning.layers import ElevationGrid
+from tritium_lib.planning.layers import LocalElevationGrid
 
 LETHAL = float("inf")
 
@@ -219,7 +219,7 @@ class TestRoads:
 class TestDemSlope:
     def test_gentle_ramp_adds_slope_cost(self):
         # slope 0.1 everywhere -> cost = 1 + 5*0.1 = 1.5, none lethal.
-        dem = ElevationGrid.from_callable((-30, -30, 130, 130), 10.0, lambda x, y: 0.1 * x)
+        dem = LocalElevationGrid.from_callable((-30, -30, 130, 130), 10.0, lambda x, y: 0.1 * x)
         b = CostmapBuilder((0, 0, 100, 100), resolution=10.0)
         b.add_dem(dem)
         cm = b.build()
@@ -230,7 +230,7 @@ class TestDemSlope:
 
     def test_steep_region_lethal(self):
         # slope 1.0 > max_slope 0.7 everywhere -> all lethal.
-        dem = ElevationGrid.from_callable((-30, -30, 130, 130), 10.0, lambda x, y: 1.0 * x)
+        dem = LocalElevationGrid.from_callable((-30, -30, 130, 130), 10.0, lambda x, y: 1.0 * x)
         b = CostmapBuilder((0, 0, 100, 100), resolution=10.0)
         b.add_dem(dem)
         cm = b.build()
@@ -245,7 +245,7 @@ class TestDemSlope:
         def cone(x, y):
             return max(0.0, 60.0 - 1.0 * math.hypot(x - 100, y - 100))
 
-        dem = ElevationGrid.from_callable((-30, -30, 230, 230), 10.0, cone)
+        dem = LocalElevationGrid.from_callable((-30, -30, 230, 230), 10.0, cone)
         b = CostmapBuilder((0, 0, 200, 200), resolution=10.0)
         b.add_dem(dem)
         cm = b.build()
@@ -264,7 +264,7 @@ class TestBuildOrderIndependence:
     def _layers(self):
         obs = _polygon_fc([[40, 40], [60, 40], [60, 60], [40, 60], [40, 40]])
         road = _line_fc([[0, 30], [100, 30]], props={"width_m": 10.0})
-        dem = ElevationGrid.from_callable(
+        dem = LocalElevationGrid.from_callable(
             (-30, -30, 130, 130), 10.0, lambda x, y: 0.05 * x + 0.05 * y
         )
         return obs, road, dem

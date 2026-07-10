@@ -5,20 +5,21 @@ robot, route it around obstacles). Pure stdlib, no third-party dependencies.
 An advanced flow-field planner exists privately elsewhere; this package is the
 clean, deterministic baseline any unit can run against with zero extra deps.
 
-> **This file is the contract for the parallel GIS lane.** The GIS pipeline
-> produces `ElevationGrid` DEMs and GeoJSON layers in exactly the shapes below;
-> the costmap builder consumes them without knowing where the data came from.
+> **This lane consumes the parallel GIS lane's output.** The GIS pipeline
+> produces WGS-84 elevation grids and GeoJSON layers; the costmap builder
+> ingests them via `local_grid_from_gis` + `add_gis_features` (see
+> [Consuming real GIS layers](#consuming-real-gis-layers)) without knowing
+> where the data came from.
 
 Coordinate frame everywhere: **local meters, +X = East, +Y = North** — the
 same frame as `tritium_lib.geo`.
 
-## ElevationGrid — the DEM convention
+## LocalElevationGrid — planning's local DEM convention
 
-A regular grid of elevation samples (meters). A GIS lane that downloads USGS
-3DEP tiles rasterizes them into this structure.
+A regular grid of elevation samples (meters) in **local meters**.
 
 ```python
-ElevationGrid(origin_x, origin_y, resolution, data)
+LocalElevationGrid(origin_x, origin_y, resolution, data)
 ```
 
 - `origin_x`, `origin_y` — the **south-west corner** node, local meters.
@@ -30,8 +31,17 @@ ElevationGrid(origin_x, origin_y, resolution, data)
   (blends the four surrounding nodes), returning `None` out of bounds.
 - `slope_at(x, y)` is the gradient magnitude (rise/run, unitless) via central
   differences; `0.0` if a sample falls out of bounds.
-- `ElevationGrid.from_callable((min_x, min_y, max_x, max_y), resolution, fn)`
+- `LocalElevationGrid.from_callable((min_x, min_y, max_x, max_y), resolution, fn)`
   builds a synthetic DEM from `fn(x, y) -> elevation` (for tests / demos).
+
+> **Renamed from `ElevationGrid` (GIS-lane merge).** Planning's raster is
+> **local meters with `row 0` = south**. The GIS lane owns the name
+> `ElevationGrid` for its **WGS-84 wire model**
+> (`tritium_lib.geo.gis.models.ElevationGrid`): a flat row-major `values`
+> list over a `west/south/east/north` lat-lng bbox with the **opposite**
+> convention — **`row 0` = north**. Two different rasters, two names.
+> `tritium_lib.planning` does **not** export `ElevationGrid` at all; convert
+> the wire grid with `local_grid_from_gis` (below).
 
 ## GeoJSON layer-input contract
 
@@ -62,9 +72,12 @@ Obstacle and road layers are plain GeoJSON `FeatureCollection` dicts.
 - Per-cell cost is applied in a **fixed order regardless of layer call order**:
   1. `base = base_cost + slope_weight * slope`
   2. `* road_discount` if the cell is a road cell
-  3. `slope > max_slope` → `LETHAL`
-  4. obstacle / water cell → `LETHAL`
-  5. optional inflation: non-lethal cells within `obstacle_inflation_m` of a
+  3. `* cost_zone_multiplier` if the cell falls in one or more soft-cost zones
+     (the **MAX** multiplier over covering zones — zones never compound and
+     never make a cell lethal)
+  4. `slope > max_slope` → `LETHAL`
+  5. obstacle / water cell → `LETHAL`
+  6. optional inflation: non-lethal cells within `obstacle_inflation_m` of a
      lethal cell are raised to at least `inflation_cost`.
 - `costmap_from_terrain_map(terrain_map)` adapts the existing sim `TerrainMap`
   (building/water → lethal, road → discount, else → base).
@@ -98,12 +111,12 @@ lethal cell).
 ### Example
 
 ```python
-from tritium_lib.planning import CostmapBuilder, CostmapWeights, ElevationGrid, plan_route
+from tritium_lib.planning import CostmapBuilder, CostmapWeights, LocalElevationGrid, plan_route
 
 bounds = (0.0, 0.0, 500.0, 500.0)  # local meters
 
 # Synthetic layers (a real GIS lane would supply these).
-dem = ElevationGrid.from_callable(bounds, 10.0, lambda x, y: 0.02 * x)
+dem = LocalElevationGrid.from_callable(bounds, 10.0, lambda x, y: 0.02 * x)
 buildings = {"type": "FeatureCollection", "features": [
     {"type": "Feature", "properties": {},
      "geometry": {"type": "Polygon",
@@ -122,4 +135,102 @@ route = plan_route(cm, start=(20.0, 20.0), goal=(480.0, 480.0))
 if route.success:
     print(route.path)          # world-coordinate waypoints
     telemetry = cm.to_telemetry()  # for the tactical map
+```
+
+## Consuming real GIS layers
+
+The parallel GIS lane fetches WGS-84 elevation and tagged vector features.
+Planning ingests them through two entry points that translate the wire model
+into the local-meter cost world.
+
+### `local_grid_from_gis(gis_grid, *, to_local=None, resolution=None, nodata_fill=None)`
+
+Adapts the GIS lane's WGS-84 elevation grid
+(`tritium_lib.geo.gis.models.ElevationGrid`) into a `LocalElevationGrid`.
+`gis_grid` is **duck-typed** — pass either that object or the plain dict from
+`GET /api/gis/elevation/grid`, both carrying:
+
+- `west, south, east, north` — lat/lng bbox (degrees).
+- `ncols, nrows` — grid dimensions.
+- `values` — **flat row-major** list of length `ncols*nrows`, **`row 0` =
+  north**, values increasing eastward, `None` = NoData. Inclusive-edge
+  sampling (col 0 on `west`, col `ncols-1` on `east`; row 0 on `north`, row
+  `nrows-1` on `south`). Extra keys (`source`, `resolution_m`, `fixture`, …)
+  are tolerated.
+
+How it maps:
+
+- `to_local(lng, lat) -> (x, y)` defaults to `wgs84_to_local()` (the geo
+  singleton). The four bbox corners are projected; their min/max define the
+  axis-aligned local extent.
+- **Affine assumption:** the tritium geo projection is equirectangular over an
+  AO-sized bbox, so local `(x, y)` → fractional source index is affine:
+  `ix_frac = (x - x_west)/(x_east - x_west) * (ncols - 1)`,
+  `iy_frac = (y_north - y)/(y_north - y_south) * (nrows - 1)` — note the **row
+  FLIP** (source `row 0` = north, output `row 0` = south).
+- Each output node is **bilinearly** interpolated over its four surrounding
+  source cells. If any of the four is `None`, it falls back to the nearest
+  non-`None` of the four (by fractional distance); if all four are `None` it
+  uses `nodata_fill` (default: mean of all non-`None` values).
+- `resolution` defaults to the mean source cell spacing in meters
+  (floored at `1e-6`).
+- Degenerate input (`ncols` or `nrows` < 2, `values` length mismatch, an
+  all-`None` grid, or a bbox that projects to zero area) raises `ValueError`.
+
+```python
+from tritium_lib.planning import local_grid_from_gis
+dem = local_grid_from_gis(gis_elevation_dict)   # -> LocalElevationGrid
+cm_builder.add_dem(dem)
+```
+
+### `CostmapBuilder.add_gis_features(feature_collection, to_local=None) -> summary`
+
+Routes a mixed GeoJSON `FeatureCollection` by `properties.source` and returns
+a `{"roads", "flood", "zones", "ignored"}` count (for logging). Every feature
+carries `source` and `kind`:
+
+- **`"tiger"`** (roads) → road stamp. Width is `properties.width_m` if present,
+  else the MTFCC table `MTFCC_WIDTHS_M` keyed by `properties.kind`, else
+  `weights.road_width_m`. The width table is the **consumer-side** mapping —
+  the GIS lane tags the MTFCC class but does not define a physical width:
+
+  | MTFCC | meaning | width (m) |
+  |-------|---------|-----------|
+  | S1100 | primary road | 18.0 |
+  | S1200 | secondary road | 12.0 |
+  | S1400 | local street | 8.0 |
+  | S1630 | ramp | 8.0 |
+  | S1640 | service drive | 8.0 |
+  | S1710 | walkway | 3.0 |
+  | S1720 | stairway | 3.0 |
+  | S1730 | alley | 4.0 |
+
+- **`"fema"`** (flood) → **rasterize from `sfha`, never from style props.** A
+  truthy `properties.sfha` (Special Flood Hazard Area) stamps a **lethal**
+  obstacle tagged `"flood"`. `sfha` falsey (e.g. zone X minimal hazard) is
+  traversable and **ignored**.
+- **`"noaa"`** (weather alerts) → `properties.severity` of `"Severe"` or
+  `"Extreme"` stamps a soft-cost zone with multiplier `2.0`; other severities
+  are ignored. `expires` is ignored here — **expiry filtering is the fetch
+  layer's job.**
+- unknown / missing `source` → ignored gracefully.
+
+### `CostmapBuilder.add_cost_zones(feature_collection, multiplier, to_local=None)`
+
+Generic soft-cost polygons: covered cells have their final cost **multiplied**
+by `multiplier` (`> 1` = avoid). Stacking keeps the **MAX** multiplier over
+covering zones (never compounds). Applied in `build()` **after** the road
+discount and **before** any lethal override, so a zone can raise cost but
+never make a cell lethal. The full deterministic per-cell order is therefore:
+
+> `base + slope` → `road discount` → `cost zones (max multiplier)` →
+> `slope lethal` → `obstacle lethal` → `inflation`.
+
+```python
+b = CostmapBuilder(bounds, resolution=5.0)
+b.add_dem(local_grid_from_gis(gis_elevation_dict))
+summary = b.add_gis_features(gis_feature_collection)   # roads + flood + alerts
+b.add_cost_zones(soft_avoid_fc, multiplier=1.5)        # optional extra zones
+cm = b.build()
+# summary -> {"roads": 12, "flood": 3, "zones": 1, "ignored": 4}
 ```

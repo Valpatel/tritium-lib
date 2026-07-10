@@ -24,18 +24,21 @@ from __future__ import annotations
 
 from .astar import RouteResult, plan_route
 from .costmap import (
+    MTFCC_WIDTHS_M,
     Costmap,
     CostmapBuilder,
     CostmapWeights,
     costmap_from_terrain_map,
 )
-from .layers import ElevationGrid, wgs84_to_local
+from .layers import LocalElevationGrid, local_grid_from_gis, wgs84_to_local
 
 __all__ = [
     "Costmap",
     "CostmapWeights",
     "CostmapBuilder",
-    "ElevationGrid",
+    "LocalElevationGrid",
+    "local_grid_from_gis",
+    "MTFCC_WIDTHS_M",
     "costmap_from_terrain_map",
     "plan_route",
     "RouteResult",
