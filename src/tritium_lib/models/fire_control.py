@@ -200,3 +200,21 @@ class WeaponStatus(BaseModel):
         result is clamped to ``[0, 1]`` against a nonsensical over-full read.
         """
         return _clamp(self.ammo / self.max_ammo, 0.0, 1.0)
+
+    def to_ammo_state(self) -> dict:
+        """Collapse this telemetry into the HUD ammo-snapshot shape.
+
+        Returns exactly the four keys the sim's
+        ``WeaponSystem.get_all_ammo_state()`` emits per unit —
+        ``{"ammo", "max_ammo", "reloading", "reload_remaining_s"}`` — so a real
+        turret's ``WeaponStatus`` (robot -> SC over MQTT) and a sim unit's ammo
+        land in the SAME ``/api/combat/status`` ``ammo`` dict and render through
+        the identical combat-HUD path.  Single-sourcing the shape here keeps the
+        wire and sim surfaces from drifting apart.
+        """
+        return {
+            "ammo": self.ammo,
+            "max_ammo": self.max_ammo,
+            "reloading": self.reloading,
+            "reload_remaining_s": self.reload_remaining_s,
+        }

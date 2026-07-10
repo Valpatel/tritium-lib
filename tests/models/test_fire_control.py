@@ -233,3 +233,24 @@ def test_weapon_status_json_round_trip():
     restored2 = WeaponStatus.model_validate_json(ws.model_dump_json())
     assert restored2.reload_remaining_s == pytest.approx(0.8)
     assert restored2.tilt_deg == -5.0
+
+
+def test_weapon_status_to_ammo_state_shape():
+    """to_ammo_state() emits the exact four keys WeaponSystem.get_all_ammo_state
+    does, so a wire-fed robot merges into /api/combat/status.ammo unchanged."""
+    ws = WeaponStatus(
+        device_id="mqtt_rover1", ammo=7, max_ammo=20,
+        reloading=False, reload_remaining_s=0.0, pan_deg=0.0, tilt_deg=0.0,
+    )
+    assert ws.to_ammo_state() == {
+        "ammo": 7, "max_ammo": 20, "reloading": False, "reload_remaining_s": 0.0,
+    }
+    # Reloading turret reports its countdown, same keys.
+    reloading = WeaponStatus(
+        device_id="mqtt_rover1", ammo=0, max_ammo=20,
+        reloading=True, reload_remaining_s=2.4, pan_deg=0.0, tilt_deg=0.0,
+    )
+    state = reloading.to_ammo_state()
+    assert state["reloading"] is True
+    assert state["reload_remaining_s"] == pytest.approx(2.4)
+    assert set(state) == {"ammo", "max_ammo", "reloading", "reload_remaining_s"}
