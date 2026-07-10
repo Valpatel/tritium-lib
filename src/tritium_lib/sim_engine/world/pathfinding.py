@@ -39,6 +39,14 @@ _ROAD_TYPES = {"rover", "tank", "apc", "vehicle"}
 # Unit types that prefer sidewalks (pedestrian navigation)
 _PEDESTRIAN_TYPES = {"person", "infantry", "civilian", "animal"}
 
+# Public aliases (2026-07-10): consumers (sc engine.route_path) need the same
+# unit-type taxonomy to decide network-graph vs costmap planner precedence.
+# Frozen so a consumer cannot mutate the dispatch tables.
+PEDESTRIAN_TYPES = frozenset(_PEDESTRIAN_TYPES)
+ROAD_TYPES = frozenset(_ROAD_TYPES)
+FLYING_TYPES = frozenset(_FLYING_TYPES)
+STATIONARY_TYPES = frozenset(_STATIONARY_TYPES)
+
 # Distance threshold for hostile direct approach (meters)
 _HOSTILE_DIRECT_RANGE = 30.0
 
