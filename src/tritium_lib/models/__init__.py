@@ -764,6 +764,7 @@ from .fire_control import (
     FireCommand,
     FireSolution,
     TurretAimCommand,
+    WeaponStatus,
     compute_fire_solution,
 )
 
@@ -1423,9 +1424,10 @@ __all__ = [
     "DetectionEdge",
     "FusedPositionEstimate",
     "PositionAnchor",
-    # Fire control (turret actuation wire contract)
+    # Fire control (turret actuation wire contract + reverse telemetry)
     "FireCommand",
     "FireSolution",
     "TurretAimCommand",
+    "WeaponStatus",
     "compute_fire_solution",
 ]
