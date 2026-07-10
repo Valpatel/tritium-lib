@@ -89,6 +89,9 @@ class AuditTrail:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # Bound the -wal file (12 GB WAL incident, 2026-07-10 — see
+        # tritium_lib.store.base for the full story).
+        self._conn.execute("PRAGMA journal_size_limit=67108864")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 

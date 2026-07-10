@@ -53,6 +53,9 @@ class AsyncBaseStore(ABC):
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
+        # Bound the -wal file (12 GB WAL incident, 2026-07-10 — see
+        # tritium_lib.store.base for the full story).
+        await self._db.execute("PRAGMA journal_size_limit=67108864")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._create_tables()
         await self._db.commit()
