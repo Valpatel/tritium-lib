@@ -22,13 +22,16 @@ conventions the costmap lane and SC frontend depend on.
 from __future__ import annotations
 
 from .cache import GISCache
+from .contours import auto_levels, contour_lines
 from .fetchers import (
     USER_AGENT,
     USGS_HILLSHADE_TILE_URL,
     FemaFloodFetcher,
     NoaaAlertsFetcher,
+    OverpassBuildingsFetcher,
     TigerRoadsFetcher,
     UsgsElevationFetcher,
+    filter_features_bbox,
 )
 from .models import ElevationGrid, GeoBBox
 
@@ -40,6 +43,10 @@ __all__ = [
     "TigerRoadsFetcher",
     "FemaFloodFetcher",
     "NoaaAlertsFetcher",
+    "OverpassBuildingsFetcher",
     "USGS_HILLSHADE_TILE_URL",
     "USER_AGENT",
+    "auto_levels",
+    "contour_lines",
+    "filter_features_bbox",
 ]

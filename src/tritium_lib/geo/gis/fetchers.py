@@ -41,6 +41,8 @@ __all__ = [
     "TigerRoadsFetcher",
     "FemaFloodFetcher",
     "NoaaAlertsFetcher",
+    "OverpassBuildingsFetcher",
+    "filter_features_bbox",
 ]
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,80 @@ def _as_bbox(bbox) -> GeoBBox:
     return GeoBBox(west=float(w), south=float(s), east=float(e), north=float(n))
 
 
+def _iter_positions(coords):
+    """Yield ``(lon, lat)`` for every position in a GeoJSON coordinate tree."""
+    if isinstance(coords, (list, tuple)):
+        if (
+            len(coords) >= 2
+            and isinstance(coords[0], (int, float))
+            and isinstance(coords[1], (int, float))
+        ):
+            yield (float(coords[0]), float(coords[1]))
+        else:
+            for child in coords:
+                yield from _iter_positions(child)
+
+
+def _geometry_bbox(geometry):
+    """Bounding box ``(w, s, e, n)`` of any GeoJSON geometry, or ``None``.
+
+    Handles every geometry type (Point through MultiPolygon) plus
+    ``GeometryCollection``.  A geometry with no usable coordinate positions
+    returns ``None`` so the caller can drop it.
+    """
+    if not isinstance(geometry, dict):
+        return None
+    lons: list = []
+    lats: list = []
+    coords = geometry.get("coordinates")
+    if coords is not None:
+        for lon, lat in _iter_positions(coords):
+            lons.append(lon)
+            lats.append(lat)
+    else:
+        for sub in geometry.get("geometries") or []:
+            box = _geometry_bbox(sub)
+            if box is not None:
+                lons.extend((box[0], box[2]))
+                lats.extend((box[1], box[3]))
+    if not lons:
+        return None
+    return (min(lons), min(lats), max(lons), max(lats))
+
+
+def _bbox_intersects(a, b) -> bool:
+    """True when the two ``(w, s, e, n)`` boxes overlap (edge-touch counts)."""
+    return not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
+
+
+def filter_features_bbox(fc: dict, bbox) -> dict:
+    """Keep only features whose geometry bounding box intersects ``bbox``.
+
+    A pure helper for the *packaged-fixture* branch of the degradation chain:
+    packaged fixtures cover the whole demo AO, so a query for a distant window
+    would otherwise get the entire AO back.  Live results are already
+    bbox-scoped by the upstream service and cache keys are bbox-rounded, so this
+    is applied *only* to fixtures.
+
+    Features whose geometry yields no coordinates are dropped.  Any top-level
+    keys on ``fc`` other than ``features`` (notably the ``"fixture": true``
+    marker) are preserved so downstream fixture-detection still works.
+    """
+    box = _as_bbox(bbox)
+    target = (box.west, box.south, box.east, box.north)
+    kept = []
+    for feat in (fc or {}).get("features", []) or []:
+        gbox = _geometry_bbox((feat or {}).get("geometry"))
+        if gbox is None:
+            continue
+        if _bbox_intersects(gbox, target):
+            kept.append(feat)
+    result = {k: v for k, v in (fc or {}).items() if k != "features"}
+    result["type"] = "FeatureCollection"
+    result["features"] = kept
+    return result
+
+
 class _VectorFetcher:
     """Shared degradation machinery for GeoJSON-emitting fetchers."""
 
@@ -109,6 +185,15 @@ class _VectorFetcher:
     def _build_url(self, bbox: GeoBBox) -> str:  # pragma: no cover - abstract
         raise NotImplementedError
 
+    def _build_body(self, bbox: GeoBBox) -> bytes | None:
+        """POST body for the live request, or ``None`` for a plain GET.
+
+        Default is ``None`` (GET) — the ArcGIS/NWS fetchers put everything in the
+        query string.  ``OverpassBuildingsFetcher`` overrides this to POST an
+        Overpass QL body.
+        """
+        return None
+
     @staticmethod
     def _parse(raw: dict) -> dict:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -121,7 +206,9 @@ class _VectorFetcher:
 
         # 1. Live.
         try:
-            raw = _http_json(self._build_url(box), timeout=self.timeout_s)
+            raw = _http_json(
+                self._build_url(box), data=self._build_body(box), timeout=self.timeout_s
+            )
             result = self._parse(raw)
             if self.cache and key is not None:
                 self.cache.put(key, result)
@@ -129,16 +216,18 @@ class _VectorFetcher:
         except Exception as exc:  # noqa: BLE001 - any failure => degrade
             logger.info("%s live fetch failed, degrading: %s", self.SOURCE, exc)
 
-        # 2. Cache (no age limit).
+        # 2. Cache (no age limit).  Cache keys are bbox-rounded, so cached
+        #    entries are already scoped to the requested window.
         if self.cache and key is not None:
             cached = self.cache.get(key, max_age_s=None)
             if cached is not None:
                 return cached
 
-        # 3. Packaged fixture.
+        # 3. Packaged fixture — clipped to the requested bbox (fixtures cover
+        #    the whole demo AO, so a distant window must not get the lot).
         fixture = _load_fixture(self.FIXTURE_NAME)
         if fixture is not None:
-            return fixture
+            return filter_features_bbox(fixture, box)
 
         # 4. Empty but valid.
         return _empty_fc()
@@ -284,6 +373,88 @@ class NoaaAlertsFetcher(_VectorFetcher):
         return {"type": "FeatureCollection", "features": features}
 
     _parse = parse_alerts
+
+
+def _building_height(tags: dict) -> float:
+    """Best-effort building height in metres from OSM tags.
+
+    Order: an explicit ``height`` tag (``"12 m"`` / ``"12m"`` / ``"12"``), else
+    ``building:levels`` at 3 m per storey plus 1 m, else a plain ``8.0`` default.
+    """
+    raw_h = tags.get("height")
+    if raw_h not in (None, ""):
+        try:
+            return float(str(raw_h).lower().replace("m", "").strip())
+        except (TypeError, ValueError):
+            pass
+    raw_l = tags.get("building:levels")
+    if raw_l not in (None, ""):
+        try:
+            return float(str(raw_l).split(";")[0].strip()) * 3.0 + 1.0
+        except (TypeError, ValueError):
+            pass
+    return 8.0
+
+
+class OverpassBuildingsFetcher(_VectorFetcher):
+    """OpenStreetMap building footprints via the Overpass API (``out geom``)."""
+
+    SOURCE = "osm"
+    FIXTURE_NAME = "osm_buildings_ao.json"
+    URL = "https://overpass-api.de/api/interpreter"
+
+    def _build_url(self, bbox: GeoBBox) -> str:
+        return self.URL
+
+    def _build_body(self, bbox: GeoBBox) -> bytes:
+        # Overpass bbox order is (south, west, north, east) — NOT w,s,e,n.
+        query = (
+            "[out:json][timeout:30];"
+            f'way["building"]({bbox.south},{bbox.west},{bbox.north},{bbox.east});'
+            "out geom;"
+        )
+        return urllib.parse.urlencode({"data": query}).encode("utf-8")
+
+    @staticmethod
+    def parse_buildings(raw: dict) -> dict:
+        """Normalize Overpass ways into closed-ring ``Polygon`` features.
+
+        Ways with fewer than three geometry points are dropped.  ``kind`` is the
+        ``building`` tag value (``"yes"`` when untyped); ``height_m`` follows
+        :func:`_building_height`; ``levels`` is ``max(1, int(height / 3))``.
+        """
+        features = []
+        for el in (raw or {}).get("elements", []) or []:
+            if el.get("type") != "way":
+                continue
+            geom = el.get("geometry") or []
+            ring = [
+                [pt["lon"], pt["lat"]]
+                for pt in geom
+                if isinstance(pt, dict) and "lon" in pt and "lat" in pt
+            ]
+            if len(ring) < 3:
+                continue
+            if ring[0] != ring[-1]:
+                ring.append(list(ring[0]))
+            tags = el.get("tags") or {}
+            height = _building_height(tags)
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [ring]},
+                    "properties": {
+                        "source": "osm",
+                        "kind": tags.get("building") or "yes",
+                        "name": tags.get("name") or "",
+                        "height_m": height,
+                        "levels": max(1, int(height / 3)),
+                    },
+                }
+            )
+        return {"type": "FeatureCollection", "features": features}
+
+    _parse = parse_buildings
 
 
 class UsgsElevationFetcher:
