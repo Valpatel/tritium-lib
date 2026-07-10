@@ -153,10 +153,15 @@ _WAVE_HARD_TIMEOUT = 600.0  # seconds since the wave went active
 _DEESCALATION_TRICKLE_PER_PACIFIED = 1.5  # points / pacified-instigator / sec
 # Hard cap on cumulative trickle as a fraction of the de-escalation target, so
 # the meter can never be carried across the finish line by the trickle alone --
-# crossing the target always requires genuine detains.  (e.g. target 500 ->
-# trickle contributes at most 300; the last 200 must come from real
-# identifications + the spawn/detain dynamics.)
-_DEESCALATION_TRICKLE_CAP_FRACTION = 0.6
+# crossing the target always requires genuine detains.  (e.g. target 1200 ->
+# trickle contributes at most 300; the rest must come from real
+# identifications, police arrests/routs + the spawn/detain dynamics.)
+# Was 0.6 when the riot target was 400; at the 1200-point full-arc target
+# (police-engagement rebalance, lane/riot 2026-07-10) 0.6 let the trickle
+# CARRY the win at ~10pts/s before the police line ever made contact --
+# order restored in wave 2-3 with zero arrests.  0.25 keeps the smooth
+# meter motion but the fight decides the pace again.
+_DEESCALATION_TRICKLE_CAP_FRACTION = 0.25
 
 
 class GameMode:
@@ -1094,11 +1099,27 @@ class GameMode:
             except Exception:
                 pass
 
+    @staticmethod
+    def _is_pacified(t) -> bool:
+        """A wave hostile that has been non-lethally taken out of the fight.
+
+        Detained ringleaders (InstigatorDetector), arrested rioters
+        (PoliceTacticsController) flip alliance to neutral; routed rioters
+        keep alliance but drop is_combatant. None of them is an active
+        threat any more, so none should hold a wave open — this is what
+        makes arrests/routs/detains ADVANCE the mission instead of
+        stalling it until the stalemate timer culls the pacified.
+        """
+        return (getattr(t, "alliance", "hostile") != "hostile"
+                or not getattr(t, "is_combatant", True))
+
     def _count_wave_hostiles_alive(self) -> int:
         """Count wave hostiles that are still active threats."""
         count = 0
         for t in self._engine.get_targets():
-            if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
+            if (t.target_id in self._wave_hostile_ids
+                    and t.status in ("active", "low_battery")
+                    and not self._is_pacified(t)):
                 count += 1
         return count
 
@@ -1187,7 +1208,9 @@ class GameMode:
         """
         total = 0.0
         for t in self._engine.get_targets():
-            if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
+            if (t.target_id in self._wave_hostile_ids
+                    and t.status in ("active", "low_battery")
+                    and not self._is_pacified(t)):
                 hp = getattr(t, "health", 0.0)
                 total += hp if hp is not None else 0.0
         return total
@@ -1214,6 +1237,11 @@ class GameMode:
         for t in self._engine.get_targets():
             if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
                 if exempt_dive_bombers and self._is_dive_bomber(t):
+                    continue
+                if self._is_pacified(t):
+                    # Detained/arrested/routed crowd members are no longer
+                    # threats — a stalemate cull must not "eliminate" people
+                    # already peacefully taken out of the fight.
                     continue
                 t.status = "eliminated"
                 t.health = 0
@@ -1509,7 +1537,12 @@ _DEFAULT_DETECTION_TIME = 3.0
 _IDENTIFICATION_SCORE = 50
 
 # Radius (m) over which detaining a ringleader cools the surrounding crowd.
-_CALMING_RADIUS = 45.0
+# Was 45.0 — at that radius a single ringleader detain calmed rioters across
+# a third of the block, so the crowd evaporated before the police line ever
+# made contact (police-engagement rebalance, lane/riot 2026-07-10).  20m keeps
+# the ESIM local-cluster cooling but distant rioters stay in the fight and
+# must be pushed back / arrested by the line.
+_CALMING_RADIUS = 20.0
 
 
 class InstigatorDetector:

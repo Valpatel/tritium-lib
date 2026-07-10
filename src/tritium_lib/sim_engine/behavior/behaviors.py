@@ -68,6 +68,11 @@ _COVER_HEALTH_THRESHOLD = 0.5  # seek cover below this health fraction
 _PROTECTED_CROWD_ROLES: frozenset[str] = frozenset({"civilian", "calmed"})
 
 # Weapon projectile type by asset_type (matches weapons.py loadouts)
+# A rioter that spots a friendly unit within this range CHARGES it (the
+# violent minority attacks the line pushing into the crowd — the core riot
+# contact dynamic).  Beyond it, rioters keep their street routine.
+_RIOTER_AGGRO_RANGE: float = 25.0
+
 _WEAPON_TYPES: dict[str, str | None] = {
     "turret": "nerf_turret_gun",
     "heavy_turret": "nerf_heavy_turret",
@@ -1337,15 +1342,42 @@ class UnitBehaviors:
         rioter: SimulationTarget,
         friendlies: dict[str, SimulationTarget],
     ) -> None:
-        """Rioter: melee-range only attacks using melee_strike weapon type.
+        """Rioter: charge nearby friendlies, melee-strike at 3m.
 
-        Rioters can only attack targets within 3m range.
+        AGGRO (ESIM riot dynamic, lane/riot 2026-07-10): a violent rioter
+        that spots a friendly unit within _RIOTER_AGGRO_RANGE converges on
+        it — the violent minority ATTACKS the police line pushing into the
+        crowd, instead of strolling its spawn route while being sniped.
+        This is what turns a riot into a fight: the line advances, the mob
+        charges, melee erupts at the shield wall, and arrests happen at
+        contact.  Beyond aggro range the rioter keeps its street routine.
+
+        Rioters can only attack targets within 3m range (melee_strike).
         """
         if not can_fire_degraded(rioter):
             return
 
         if rioter.ammo_count == 0:
             return
+
+        # Charge the nearest friendly within aggro range (movement).
+        nearest = None
+        nearest_d = _RIOTER_AGGRO_RANGE
+        for f in friendlies.values():
+            d = math.hypot(f.position[0] - rioter.position[0],
+                           f.position[1] - rioter.position[1])
+            if d <= nearest_d:
+                nearest = f
+                nearest_d = d
+        if nearest is not None:
+            wp = rioter.waypoints
+            tx, ty = nearest.position[0], nearest.position[1]
+            # Re-aim only when the charge target moved meaningfully — the
+            # waypoint list is REPLACED (not mutated) so the movement
+            # controller re-syncs, and a 1m hysteresis avoids re-pathing
+            # every tick.
+            if (not wp or math.hypot(wp[-1][0] - tx, wp[-1][1] - ty) > 1.0):
+                rioter.waypoints = [(tx, ty)]
 
         target = self._nearest_in_range(rioter, friendlies)
         if target is not None:

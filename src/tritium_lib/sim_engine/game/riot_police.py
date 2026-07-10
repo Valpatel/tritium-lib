@@ -103,7 +103,10 @@ _ALIVE_STATUSES: frozenset[str] = frozenset(
 _INITIAL_AGITATION: float = 0.35
 
 # Dispersal push speed of the line anchor during "advance" (m/s).
-_ADVANCE_SPEED: float = 1.0
+# 1.0 left the line arriving after the ISR detain loop had already resolved
+# the riot (zero contact); 1.6 is a brisk walking push that reaches the
+# crowd while it is still fighting (lane/riot rebalance 2026-07-10).
+_ADVANCE_SPEED: float = 1.6
 
 # A tight crowd cluster (this many violent within the radius of the violent
 # centroid) switches the formation from LINE to WEDGE to split the mass.
@@ -112,6 +115,13 @@ _WEDGE_CLUSTER_RADIUS: float = 12.0
 
 # A violent target within this range of any officer is "in melee contact".
 _MELEE_CONTACT_RANGE: float = 5.0
+
+# The advancing line stops this far from the nearest violent target.  Must be
+# INSIDE both the pepper_ball range (8 m) and the arrest range (4 m) or the
+# push stalls in a permanent stand-off: holding at engage_range (12 m) left
+# officers 1 m out of arrest reach with zero shots fired either way
+# (2026-07-10 probe: engage state reached, 0 arrests, 0 eliminations).
+_CONTACT_HOLD: float = 3.0
 
 # Un-identified civilians within this range of a melee contact can radicalize.
 _RADICALIZE_RANGE: float = 10.0
@@ -129,6 +139,15 @@ _ROUT_DEESCALATION: int = 10
 
 # Distance a routed rioter flees away from the squad centroid (m).
 _ROUT_FLEE_DIST: float = 30.0
+
+# A rout is only credited to the squad when an officer is actually near the
+# broken rioter.  Without this, rioters worn down by robot fire on the far
+# side of the map "routed" and paid de-escalation score to a police line
+# that never touched them (credit-washing; caught in the 2026-07-10 probe:
+# 3 routs, 0 arrests, squad never left "advance").  6 m = at-the-line only:
+# at 15 m targets routed while the line was still closing, starving the
+# arrest mechanic (arrest window passed before officers reached 4 m).
+_ROUT_CREDIT_RANGE: float = 6.0
 
 # arrest_surge beat fires on every Nth cumulative arrest.
 _ARREST_SURGE_INTERVAL: int = 3
@@ -199,9 +218,14 @@ class PoliceTacticsController:
         *,
         formation_spacing: float = 2.5,
         engage_range: float = 12.0,
-        arrest_range: float = 4.0,
+        # 7 m, not literal grab distance: the engine's crowd-separation floor
+        # keeps entities ~5 m apart, so a 4 m arrest reach was PHYSICALLY
+        # unreachable — chargers crossed the whole arrest window at 5-7 m and
+        # always routed instead (2026-07-10 trace).  Two officers inside 7 m
+        # is "step out of the line and grab".
+        arrest_range: float = 7.0,
         arrest_health: float = 40.0,
-        rout_health: float = 25.0,
+        rout_health: float = 15.0,
         replan_interval: float = 1.0,
         occupancy_check: Any = None,
     ) -> None:
@@ -296,18 +320,34 @@ class PoliceTacticsController:
             return
 
         squad_centroid = _centroid([tuple(o.position[:2]) for o in roster])
-        violent_centroid = _centroid([tuple(v.position[:2]) for v in violent])
 
         # -- Squad FSM transition ----------------------------------------------
         prev_state = self._squad_state
         if self._anchor is None:
             self._anchor = squad_centroid
 
-        frontline = min(
-            math.hypot(v.position[0] - self._anchor[0],
-                       v.position[1] - self._anchor[1])
-            for v in violent
+        # Push objective: the NEAREST violent cluster, not the global violent
+        # centroid.  A street-distributed riot has rioters scattered across
+        # the district; their centroid is an empty point in the middle — a
+        # line marching there never makes contact (2026-07-10 geometry probe:
+        # min officer-to-rioter distance oscillated 27..77 m for a full run).
+        # Instead: walk to the violent target nearest the line, treat every
+        # violent within _WEDGE_CLUSTER_RADIUS of it as the local cluster,
+        # and push at the cluster's centroid.  Clear it, then the next.
+        nearest_v = min(
+            violent,
+            key=lambda v: math.hypot(v.position[0] - self._anchor[0],
+                                     v.position[1] - self._anchor[1]),
         )
+        frontline = math.hypot(nearest_v.position[0] - self._anchor[0],
+                               nearest_v.position[1] - self._anchor[1])
+        cluster = [
+            v for v in violent
+            if math.hypot(v.position[0] - nearest_v.position[0],
+                          v.position[1] - nearest_v.position[1])
+            <= _WEDGE_CLUSTER_RADIUS
+        ]
+        objective = _centroid([tuple(v.position[:2]) for v in cluster])
 
         if prev_state == "hold":
             new_state = "form"
@@ -320,10 +360,14 @@ class PoliceTacticsController:
             new_state = "form"
         self._squad_state = new_state
 
-        # Dispersal push: step the anchor toward the crowd during advance.
-        if new_state == "advance":
-            dx = violent_centroid[0] - self._anchor[0]
-            dy = violent_centroid[1] - self._anchor[1]
+        # Dispersal push: step the anchor toward the local cluster.  The
+        # line keeps stepping THROUGH the engage transition until it is at
+        # true contact distance (_CONTACT_HOLD), so officers actually close
+        # to pepper-ball / arrest range instead of standing off at
+        # engage_range.
+        if new_state in ("advance", "engage") and frontline > _CONTACT_HOLD:
+            dx = objective[0] - self._anchor[0]
+            dy = objective[1] - self._anchor[1]
             d = math.hypot(dx, dy)
             if d > 1e-6:
                 step = min(_ADVANCE_SPEED * dt, d)
@@ -336,7 +380,7 @@ class PoliceTacticsController:
         self._replan_accum += dt
         if self._slots is None or self._replan_accum >= self._replan_interval:
             self._replan_accum = 0.0
-            self._plan_formation(roster, violent, violent_centroid)
+            self._plan_formation(roster, violent, objective)
 
         # -- Beat transitions ---------------------------------------------------
         if new_state == "form" and not self._line_announced:
@@ -348,16 +392,18 @@ class PoliceTacticsController:
 
         # -- Arrests + routs ----------------------------------------------------
         for v in violent:
-            near = [
-                o
+            dists = [
+                math.hypot(o.position[0] - v.position[0],
+                           o.position[1] - v.position[1])
                 for o in roster
-                if math.hypot(o.position[0] - v.position[0],
-                              o.position[1] - v.position[1]) <= self._arrest_range
             ]
+            near = [o for o, d in zip(roster, dists) if d <= self._arrest_range]
             health = getattr(v, "health", 0.0)
             if health <= self._arrest_health and len(near) >= 2:
                 self._arrest(v, near)
-            elif health <= self._rout_health:
+            elif health <= self._rout_health and min(dists) <= _ROUT_CREDIT_RANGE:
+                # Only the pressure of a NEARBY officer breaks a rioter into
+                # flight — no credit for rioters worn down far from the line.
                 self._rout(v, squad_centroid)
 
         # -- Grievance flare-up: radicalize bystanders while engaged -----------
@@ -383,26 +429,27 @@ class PoliceTacticsController:
         self,
         roster: list,
         violent: list,
-        violent_centroid: tuple[float, float],
+        objective: tuple[float, float],
     ) -> None:
         """Compute formation slots and issue movement waypoints.
 
-        Facing points from the line anchor toward the violent centroid; LINE
-        spreads officers perpendicular to that axis, WEDGE fans them back from a
-        tip.  Slots are assigned to officers by a stable sort of ``target_id``.
+        Facing points from the line anchor toward the push objective (the
+        local violent cluster); LINE spreads officers perpendicular to that
+        axis, WEDGE fans them back from a tip.  Slots are assigned to
+        officers by a stable sort of ``target_id``.
         """
         anchor = self._anchor if self._anchor is not None else _centroid(
             [tuple(o.position[:2]) for o in roster]
         )
         facing = math.atan2(
-            violent_centroid[1] - anchor[1],
-            violent_centroid[0] - anchor[0],
+            objective[1] - anchor[1],
+            objective[0] - anchor[0],
         )
         cluster = sum(
             1
             for v in violent
-            if math.hypot(v.position[0] - violent_centroid[0],
-                          v.position[1] - violent_centroid[1]) <= _WEDGE_CLUSTER_RADIUS
+            if math.hypot(v.position[0] - objective[0],
+                          v.position[1] - objective[1]) <= _WEDGE_CLUSTER_RADIUS
         )
         ftype = FormationType.WEDGE if cluster >= _WEDGE_CLUSTER_MIN else FormationType.LINE
 

@@ -242,7 +242,7 @@ def test_rout_flees_away_from_squad():
     # A single officer near a low-health rioter: only ONE officer in arrest range,
     # so the target cannot be arrested (needs >= 2) and is routed instead.
     officer = _officer("off_0", (8.0, 0.0))
-    rioter = _rioter("r0", (12.0, 0.0), health=20.0)
+    rioter = _rioter("r0", (12.0, 0.0), health=12.0)
     targets = _as_dict([officer, rioter])
 
     ctrl.tick(0.1, targets, "civil_unrest")
