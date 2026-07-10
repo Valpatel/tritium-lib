@@ -63,6 +63,10 @@ class RouteResult:
         expansions: Number of nodes expanded by A*.
         reason: One of ``ok``, ``start_out_of_bounds``, ``goal_out_of_bounds``,
             ``start_blocked``, ``goal_blocked``, ``no_path``, ``max_expansions``.
+        clearance_relaxed: True when a ``clearance_m > 0`` request could not be
+            satisfied and the planner fell back to a clearance-0 route so the
+            dispatch still succeeds (see :func:`plan_route`).  Always False for
+            clearance-0 requests and for clearance requests that were met.
     """
 
     success: bool
@@ -70,6 +74,7 @@ class RouteResult:
     cost: float = 0.0
     expansions: int = 0
     reason: str = "ok"
+    clearance_relaxed: bool = False
 
 
 def _octile(c0: int, r0: int, c1: int, r1: int) -> float:
@@ -79,15 +84,34 @@ def _octile(c0: int, r0: int, c1: int, r1: int) -> float:
     return (dc + dr) + (_SQRT2 - 2.0) * min(dc, dr)
 
 
-def _snap_to_free(
-    costmap, col: int, row: int, radius_cells: int
-) -> tuple[int, int] | None:
-    """Ring-search for the nearest non-lethal cell within ``radius_cells``.
+def _cell_blocked(costmap, col: int, row: int, clearance_m: float) -> bool:
+    """True if ``(col, row)`` is impassable for a unit needing ``clearance_m``.
 
-    Returns the original cell if already free, else the closest free cell,
-    or ``None`` if none within radius.
+    A cell is blocked when it is lethal (or out of bounds) OR — only when
+    ``clearance_m > 0`` — when its distance to the nearest lethal cell is below
+    the requested standoff.  At ``clearance_m == 0.0`` this is EXACTLY
+    :meth:`Costmap.is_lethal` (the clearance branch short-circuits and the
+    distance field is never even computed), so clearance-0 planning is
+    byte-for-byte today's behavior.
     """
-    if not costmap.is_lethal(col, row):
+    if costmap.is_lethal(col, row):
+        return True
+    if clearance_m > 0.0 and costmap.clearance_m(col, row) < clearance_m:
+        return True
+    return False
+
+
+def _snap_to_free(
+    costmap, col: int, row: int, radius_cells: int, clearance_m: float = 0.0
+) -> tuple[int, int] | None:
+    """Ring-search for the nearest passable cell within ``radius_cells``.
+
+    "Passable" respects ``clearance_m`` (see :func:`_cell_blocked`): with a
+    positive clearance a sub-clearance cell is not a valid snap target.
+    Returns the original cell if already passable, else the closest passable
+    cell, or ``None`` if none within radius.
+    """
+    if not _cell_blocked(costmap, col, row, clearance_m):
         return (col, row)
     best: tuple[int, int] | None = None
     best_d = math.inf
@@ -98,7 +122,9 @@ def _snap_to_free(
                 if max(abs(dr), abs(dc)) != radius:
                     continue
                 nc, nr = col + dc, row + dr
-                if costmap.in_bounds(nc, nr) and not costmap.is_lethal(nc, nr):
+                if costmap.in_bounds(nc, nr) and not _cell_blocked(
+                    costmap, nc, nr, clearance_m
+                ):
                     d = math.hypot(dc, dr)
                     if d < best_d:
                         best_d = d
@@ -116,6 +142,7 @@ def plan_route(
     smooth: bool = True,
     max_expansions: int | None = None,
     snap_radius_m: float | None = None,
+    clearance_m: float = 0.0,
 ) -> RouteResult:
     """Plan a route from ``start`` to ``goal`` over ``costmap``.
 
@@ -129,6 +156,19 @@ def plan_route(
         snap_radius_m: If start/goal falls in a lethal cell, search for the
             nearest free cell within this radius.  Defaults to
             ``3 * resolution``.
+        clearance_m: Unit-radius standoff (meters).  When ``> 0`` every
+            non-lethal cell whose distance to the nearest lethal cell
+            (:meth:`Costmap.clearance_m`) is below this value is treated as
+            blocked — for snapping, A* traversal AND the smoothing pass — so a
+            wide unit (an APC) keeps more wall clearance than a person.  A value
+            of ``0.0`` (the default) is EXACTLY the historical behavior (the
+            distance field is never computed), which golden replays depend on.
+
+    Graceful fallback:
+        A positive ``clearance_m`` never makes a previously-routable dispatch
+        fail.  If the clearance-constrained plan fails for any reason, the
+        planner retries ONCE with ``clearance_m = 0``; a successful retry is
+        returned with :attr:`RouteResult.clearance_relaxed` set True.
 
     Returns:
         A :class:`RouteResult`.
@@ -138,6 +178,32 @@ def plan_route(
         snap_radius_m = 3.0 * res
     snap_cells = max(0, int(math.floor(snap_radius_m / res + 1e-9)))
 
+    result = _plan_once(
+        costmap, start, goal, smooth, max_expansions, snap_cells, clearance_m
+    )
+    if clearance_m > 0.0 and not result.success:
+        # Standoff could not be honored — never fail a routable dispatch.
+        relaxed = _plan_once(
+            costmap, start, goal, smooth, max_expansions, snap_cells, 0.0
+        )
+        if relaxed.success:
+            relaxed.clearance_relaxed = True
+            return relaxed
+    return result
+
+
+def _plan_once(
+    costmap,
+    start: tuple[float, float],
+    goal: tuple[float, float],
+    smooth: bool,
+    max_expansions: int | None,
+    snap_cells: int,
+    clearance_m: float,
+) -> RouteResult:
+    """One A* solve at a fixed clearance (no fallback).  See :func:`plan_route`."""
+    res = costmap.resolution
+
     start_cell = costmap.world_to_grid(start[0], start[1])
     if start_cell is None:
         return RouteResult(False, reason="start_out_of_bounds")
@@ -145,10 +211,10 @@ def plan_route(
     if goal_cell is None:
         return RouteResult(False, reason="goal_out_of_bounds")
 
-    sc = _snap_to_free(costmap, start_cell[0], start_cell[1], snap_cells)
+    sc = _snap_to_free(costmap, start_cell[0], start_cell[1], snap_cells, clearance_m)
     if sc is None:
         return RouteResult(False, reason="start_blocked")
-    gc = _snap_to_free(costmap, goal_cell[0], goal_cell[1], snap_cells)
+    gc = _snap_to_free(costmap, goal_cell[0], goal_cell[1], snap_cells, clearance_m)
     if gc is None:
         return RouteResult(False, reason="goal_blocked")
 
@@ -191,11 +257,13 @@ def plan_route(
             nc, nr = col + dc, row + dr
             if not costmap.in_bounds(nc, nr):
                 continue
-            if costmap.is_lethal(nc, nr):
+            if _cell_blocked(costmap, nc, nr, clearance_m):
                 continue
             if diag:
-                # Forbid corner-cutting: both shared orthogonal cells free.
-                if costmap.is_lethal(col + dc, row) or costmap.is_lethal(col, row + dr):
+                # Forbid corner-cutting: both shared orthogonal cells passable.
+                if _cell_blocked(costmap, col + dc, row, clearance_m) or _cell_blocked(
+                    costmap, col, row + dr, clearance_m
+                ):
                     continue
             neighbor = (nc, nr)
             if neighbor in closed:
@@ -233,7 +301,7 @@ def plan_route(
         world_path[-1] = goal
 
     if smooth:
-        world_path = _smooth_path(costmap, world_path)
+        world_path = _smooth_path(costmap, world_path, clearance_m)
 
     return RouteResult(
         success=True,
@@ -342,6 +410,19 @@ def _crosses_lethal(costmap, p, q) -> bool:
     return False
 
 
+def _crosses_blocked(costmap, p, q, clearance_m: float) -> bool:
+    """True if segment ``p -> q`` touches a cell blocked at ``clearance_m``.
+
+    Corner-safe supercover.  At ``clearance_m == 0.0`` this is identical to
+    :func:`_crosses_lethal` (the clearance test short-circuits), so smoothing
+    is unchanged for clearance-0 routes.
+    """
+    for c, r in _supercover_cells(costmap, p, q, include_corner_cells=True):
+        if _cell_blocked(costmap, c, r, clearance_m):
+            return True
+    return False
+
+
 def _cost_max(costmap, p, q) -> float:
     """Max non-lethal cell cost along the interior of segment ``p -> q``.
 
@@ -359,15 +440,20 @@ def _cost_max(costmap, p, q) -> float:
 
 
 def _smooth_path(
-    costmap, path: list[tuple[float, float]]
+    costmap, path: list[tuple[float, float]], clearance_m: float = 0.0
 ) -> list[tuple[float, float]]:
     """Greedy cost-aware shortcutting.
 
     From waypoint ``i`` take the farthest ``j`` where the straight segment
-    ``i -> j`` (supercover over cells) crosses only non-lethal cells AND the
+    ``i -> j`` (supercover over cells) crosses only passable cells AND the
     max cell cost on that segment does not exceed the max cell cost along the
     original subpath ``i..j``.  This preserves road preference — a shortcut
     across expensive grass can never replace a cheap road detour.
+
+    ``clearance_m`` extends "passable" to reject a shortcut that cuts through a
+    sub-clearance cell, so the smoothed route keeps the same unit-radius
+    standoff as the A* path.  At ``clearance_m == 0.0`` this is the historical
+    lethal-only smoother.
 
     ``j`` is capped to :data:`_SMOOTH_WINDOW` waypoints ahead of ``i`` so the
     worst case stays O(n * w^2) rather than O(n^3); ordinary routes (far
@@ -383,14 +469,14 @@ def _smooth_path(
         best_j = i + 1
         hi = min(n - 1, i + _SMOOTH_WINDOW)
         for j in range(hi, i + 1, -1):
-            if _crosses_lethal(costmap, path[i], path[j]):
+            if _crosses_blocked(costmap, path[i], path[j], clearance_m):
                 continue
             seg_max = _cost_max(costmap, path[i], path[j])
             # Max cost along the original polyline i..j.
             orig_max = 0.0
             orig_lethal = False
             for k in range(i, j):
-                if _crosses_lethal(costmap, path[k], path[k + 1]):
+                if _crosses_blocked(costmap, path[k], path[k + 1], clearance_m):
                     orig_lethal = True
                     break
                 m = _cost_max(costmap, path[k], path[k + 1])
