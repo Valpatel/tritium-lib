@@ -62,6 +62,16 @@ _GROUP_RUSH_SPEED_MULT = 1.2  # 20% speed boost during rush
 # Cover-seeking parameters
 _COVER_HEALTH_THRESHOLD = 0.5  # seek cover below this health fraction
 
+# Cover-vs-peek arbitration (damaged ground units with a MASKED shot).
+# A wounded unit whose fire solution is blocked prioritizes COVER over the raw
+# peek doctrine: it moves to cover first (seeking), commits there (holding),
+# then leans out to a BOUNDED peek (peeking) and re-engages.  A per-unit phase
+# machine with a minimum sim-time dwell prevents cover<->peek thrash (G-1: the
+# dwell elapses in the behavior SIM clock, never wall-clock).
+_COVER_ARRIVAL_RADIUS = 3.0    # within this of the cover point == "at cover"
+_COVER_PEEK_EXPOSURE = 6.0     # max lean-out distance from the cover anchor
+_COVER_PHASE_DWELL_S = 1.5     # min sim-seconds committed to a phase (hysteresis)
+
 # Engagement-range doctrine parameters (peek/flank to un-mask a fire solution)
 # Minimum sim-seconds between peek recomputes per unit — hysteresis so units
 # commit to a peek and don't thrash their waypoints every tick.
@@ -167,6 +177,14 @@ class UnitBehaviors:
         # blocked fire solution.  unit_id -> (target_id, last_recompute_sim_time,
         # peek_pos).  Recompute is throttled by _PEEK_RECOMPUTE_S (hysteresis).
         self._peek_targets: dict[str, tuple[str, float, tuple[float, float]]] = {}
+
+        # Cover-vs-peek arbitration phase machine (damaged + masked shot).
+        # unit_id -> (phase, phase_enter_sim_time, target_id, cover_anchor).
+        # phase in {"seeking", "holding", "peeking"}.  cover_anchor is the cover
+        # point the unit is committed to; bounded peeks lean out from it.
+        self._cover_phase: dict[
+            str, tuple[str, float, str, tuple[float, float]]
+        ] = {}
 
         # Sensor awareness tracking
         self._detected_base_speeds: dict[str, float] = {}  # speeds before detection boost
@@ -671,23 +689,36 @@ class UnitBehaviors:
             self._comms.emit_retreat(kid.target_id, kid.position, kid.alliance)
 
         # Fire at nearest defender in range (skip if morale-suppressed or too degraded)
+        engaged_target = None
         if not morale_suppressed and can_fire_degraded(kid):
-            target = self._nearest_in_range(kid, friendlies)
-            if target is not None:
+            engaged_target = self._nearest_in_range(kid, friendlies)
+            if engaged_target is not None:
                 # Emit contact signal for allies
                 if self._comms is not None:
                     self._comms.emit_contact(
                         kid.target_id, kid.position, kid.alliance,
-                        enemy_pos=target.position,
+                        enemy_pos=engaged_target.position,
                     )
                 ptype = _WEAPON_TYPES.get(kid.asset_type, "nerf_pistol")
-                self._engage_or_reposition(kid, target, ptype)
+                self._engage_or_reposition(kid, engaged_target, ptype)
 
-        # Cover-seeking: damaged hostile moves toward nearest building edge
-        # When seeking cover, skip flanking and dodge (cover takes priority)
+        # No active engagement this tick -> end any cover-vs-peek episode so a
+        # unit that lost its masked target reverts to the plain retreat below.
+        if engaged_target is None:
+            self._cover_phase.pop(kid.target_id, None)
+
+        # Cover-seeking: damaged hostile moves toward nearest building edge.
+        # When seeking cover, skip flanking and dodge (cover takes priority).
         seeking_cover = self._should_seek_cover(kid)
         if seeking_cover:
-            self._seek_cover(kid)
+            # Only run the DIRECT cover move when the unit is NOT engaging.  When
+            # it IS engaging, _engage_or_reposition already owns its movement —
+            # cover-vs-peek arbitration when the shot is masked, or hold-and-fire
+            # when it is clear.  Direct-moving to cover on top would either fight
+            # the arbitration (thrash) or drag a cleanly-firing unit back into
+            # the mask it just leaned out of (peek<->cover oscillation).
+            if engaged_target is None:
+                self._seek_cover(kid)
             return
 
         # Seek nearest defender if out of waypoints (prevents stalemates)
@@ -950,45 +981,62 @@ class UnitBehaviors:
 
     # -- Cover-seeking ----------------------------------------------------------
 
+    def _is_damaged(self, unit: SimulationTarget) -> bool:
+        """True when *unit* is below the cover health threshold (wounded)."""
+        max_hp = getattr(unit, "max_health", 100.0)
+        if max_hp <= 0:
+            return False
+        return (unit.health / max_hp) < _COVER_HEALTH_THRESHOLD
+
     def _should_seek_cover(self, hostile: SimulationTarget) -> bool:
         """Check if a hostile should seek cover (damaged + obstacles available)."""
         if self._obstacles is None:
             return False
-        max_hp = getattr(hostile, "max_health", 100.0)
-        if max_hp <= 0:
-            return False
-        health_pct = hostile.health / max_hp
-        return health_pct < _COVER_HEALTH_THRESHOLD
+        return self._is_damaged(hostile)
 
-    def _seek_cover(self, hostile: SimulationTarget) -> None:
-        """Move hostile toward the nearest building polygon edge."""
+    def _nearest_cover_point(
+        self, position: tuple[float, float]
+    ) -> tuple[float, float] | None:
+        """Return the closest point on any building polygon edge, or None.
+
+        Buildings ARE the cover: the nearest wall edge is the point a unit
+        tucks against to break line of sight.  Shared by the direct cover-seek
+        move (:meth:`_seek_cover`) and the cover-vs-peek arbitration so both
+        agree on where "cover" is.
+        """
         if self._obstacles is None:
-            return
+            return None
         polygons = getattr(self._obstacles, "polygons", [])
         if not polygons:
-            return
+            return None
 
-        # Find the nearest point on any polygon edge
         best_point = None
         best_dist = float("inf")
-
         for poly in polygons:
             n = len(poly)
             for i in range(n):
                 p1 = poly[i]
                 p2 = poly[(i + 1) % n]
-                cp = self._closest_point_on_segment(hostile.position, p1, p2)
-                dx = cp[0] - hostile.position[0]
-                dy = cp[1] - hostile.position[1]
+                cp = self._closest_point_on_segment(position, p1, p2)
+                dx = cp[0] - position[0]
+                dy = cp[1] - position[1]
                 dist = math.hypot(dx, dy)
                 if dist < best_dist:
                     best_dist = dist
                     best_point = cp
+        return best_point
 
-        if best_point is not None and best_dist > 0.1:
+    def _seek_cover(self, hostile: SimulationTarget) -> None:
+        """Move hostile toward the nearest building polygon edge."""
+        best_point = self._nearest_cover_point(hostile.position)
+        if best_point is None:
+            return
+
+        dx = best_point[0] - hostile.position[0]
+        dy = best_point[1] - hostile.position[1]
+        best_dist = math.hypot(dx, dy)
+        if best_dist > 0.1:
             # Move toward the cover point (fraction of the distance per tick)
-            dx = best_point[0] - hostile.position[0]
-            dy = best_point[1] - hostile.position[1]
             step = min(hostile.speed * 0.1, best_dist)  # move speed * dt toward cover
             hostile.position = (
                 hostile.position[0] + (dx / best_dist) * step,
@@ -1219,13 +1267,20 @@ class UnitBehaviors:
             and target is not None
             and not tm.line_of_sight(unit.position, target.position)
         ):
-            # Fire solution is masked — try to recover LOS by repositioning.
+            # Fire solution is MASKED.  Arbitrate the two movement drives:
+            #   - DAMAGED ground unit -> cover WINS: move to cover, then lean
+            #     out to a bounded peek (cover-vs-peek phase machine).  While
+            #     seeking cover it is NOT given peek waypoints (no thrash).
+            #   - HEALTHY ground unit -> raw engagement-range peek doctrine.
+            if self._arbitrate_cover_peek(unit, target):
+                return None  # phase machine is steering (cover/peek); hold fire
             if self._reposition_for_los(unit, target):
                 return None  # steering toward a peek this tick; hold fire
 
-        # LOS clear (or no peek reachable): normal fire path.  Drop any stale
-        # peek state so a unit that regains LOS re-engages cleanly next tick.
+        # LOS clear (or nothing reachable): normal fire path.  Drop any stale
+        # repositioning state so a unit that regains LOS re-engages cleanly.
         self._peek_targets.pop(unit.target_id, None)
+        self._cover_phase.pop(unit.target_id, None)
         return self._combat.fire(
             unit, target, projectile_type=projectile_type,
             terrain_map=tm,
@@ -1279,6 +1334,153 @@ class UnitBehaviors:
         if unit.status in ("arrived", "idle", "stationary"):
             unit.status = "active"
         self._peek_targets[unit.target_id] = (tid, now, peek)
+        return True
+
+    # -- Cover-vs-peek arbitration (damaged units) --------------------------------
+
+    @staticmethod
+    def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    def _steer_to(self, unit: SimulationTarget, dest: tuple[float, float]) -> None:
+        """Point the unit's waypoint mover at *dest* (idempotent per phase)."""
+        unit.waypoints = [dest]
+        unit._waypoint_index = 0
+        if unit.status in ("arrived", "idle", "stationary"):
+            unit.status = "active"
+
+    def _hold_at_cover(self, unit: SimulationTarget) -> None:
+        """Stay put at cover: drop movement waypoints (no advance while holding)."""
+        if unit.waypoints:
+            unit.waypoints = []
+            unit._waypoint_index = 0
+
+    def _arbitrate_cover_peek(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+    ) -> bool:
+        """Cover-vs-peek arbitration for a DAMAGED ground unit with a masked shot.
+
+        Runs a per-unit phase machine so the two movement drives never fight:
+
+            seeking  -> move to the nearest cover point; NO peek waypoints.
+            holding  -> committed at cover for a minimum dwell (hysteresis).
+            peeking  -> lean out to a BOUNDED peek (<= _COVER_PEEK_EXPOSURE from
+                        the cover anchor) that restores LOS, then re-engage.
+
+        Phase changes carry a minimum sim-time dwell (_COVER_PHASE_DWELL_S) so a
+        unit commits to a phase instead of oscillating between the cover point
+        and the peek point every tick (the thrash this method exists to remove).
+
+        Symmetric: both hostile stand-ins and defender (friendly) stand-ins that
+        route their fire through :meth:`_engage_or_reposition` get this identical
+        arbitration — the riot lane's police reuse the same doctrine.
+
+        Returns True when this method is steering the unit (caller HOLDS fire);
+        False when the unit is not eligible (aerial/static, no cover system, or
+        healthy) so the caller falls through to the raw peek doctrine.
+        """
+        # (5) aerial / static exemption: LOS-exempt or immobile units never
+        # cover-seek or peek — they arc/lob over terrain or cannot move.
+        if unit.speed <= 0 or unit.asset_type in _NO_DOCTRINE_TYPES:
+            return False
+        # No cover SYSTEM wired -> not our job (raw peek doctrine handles it).
+        if self._obstacles is None:
+            return False
+        # (1) only DAMAGED units prioritize cover; healthy units peek freely.
+        if not self._is_damaged(unit):
+            return False
+
+        now = self._sim_time
+        uid = unit.target_id
+        tid = target.target_id
+        state = self._cover_phase.get(uid)
+        if state is not None and state[2] != tid:
+            state = None  # target switched -> restart the arbitration cleanly
+
+        # --- fresh entry: pick cover, begin seeking (or peek if no cover) -----
+        if state is None:
+            cover = self._nearest_cover_point(unit.position)
+            if cover is None:
+                # (2) cover none available -> peek from the current position.
+                return self._begin_peek_from_cover(unit, target, unit.position, now, tid)
+            if self._dist(unit.position, cover) <= _COVER_ARRIVAL_RADIUS:
+                # Already at cover -> hold (commit) before leaning out.
+                self._cover_phase[uid] = ("holding", now, tid, cover)
+                self._hold_at_cover(unit)
+                return True
+            # (1) seeking: steer to cover, NO peek waypoints.
+            self._cover_phase[uid] = ("seeking", now, tid, cover)
+            self._steer_to(unit, cover)
+            return True
+
+        phase, enter_t, _, anchor = state
+        dwell = now - enter_t
+
+        if phase == "seeking":
+            if self._dist(unit.position, anchor) <= _COVER_ARRIVAL_RADIUS:
+                # (2) arrived at cover -> hold.
+                self._cover_phase[uid] = ("holding", now, tid, anchor)
+                self._hold_at_cover(unit)
+                return True
+            # Still moving to the SAME committed cover anchor.  Re-affirm the
+            # waypoint only if it drifted (idempotent -> no per-tick churn).
+            if not unit.waypoints or self._dist(unit.waypoints[-1], anchor) > 0.5:
+                self._steer_to(unit, anchor)
+            return True
+
+        if phase == "holding":
+            # Commit at cover for the minimum dwell (hysteresis) before peeking.
+            if dwell < _COVER_PHASE_DWELL_S:
+                self._hold_at_cover(unit)
+                return True
+            # (2) at cover + still masked -> lean out to a bounded peek.
+            return self._begin_peek_from_cover(unit, target, anchor, now, tid)
+
+        if phase == "peeking":
+            # Committed to the bounded peek for the minimum dwell; then fall
+            # back to holding to re-anchor (re-seek/re-peek cycle) — never
+            # snapping between cover and peek within the dwell window.
+            if dwell < _COVER_PHASE_DWELL_S:
+                return True
+            self._cover_phase[uid] = ("holding", now, tid, anchor)
+            self._hold_at_cover(unit)
+            return True
+
+        return False
+
+    def _begin_peek_from_cover(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+        anchor: tuple[float, float],
+        now: float,
+        tid: str,
+    ) -> bool:
+        """Enter the peeking phase: steer to a bounded peek near *anchor*.
+
+        The peek is constrained to within ``_COVER_PEEK_EXPOSURE`` of the cover
+        anchor (bounded lean-out) and is the CLOSEST such point that restores
+        LOS.  If no bounded peek exists the unit holds at cover rather than
+        over-exposing itself.
+        """
+        peek = find_peek_position(
+            self._terrain_map,
+            unit.position,
+            target.position,
+            unit.weapon_range,
+            max_offset=_COVER_PEEK_EXPOSURE,
+            anchor=anchor,
+            max_anchor_dist=_COVER_PEEK_EXPOSURE,
+        )
+        if peek is None:
+            # No safe lean-out restores the shot -> stay in cover, hold fire.
+            self._cover_phase[unit.target_id] = ("holding", now, tid, anchor)
+            self._hold_at_cover(unit)
+            return True
+        self._steer_to(unit, peek)
+        self._cover_phase[unit.target_id] = ("peeking", now, tid, anchor)
         return True
 
     # -- Mission-type behaviors ---------------------------------------------------
@@ -1581,6 +1783,7 @@ class UnitBehaviors:
         self._detected_base_speeds.pop(target_id, None)
         self._bomber_original_speeds.pop(target_id, None)
         self._peek_targets.pop(target_id, None)
+        self._cover_phase.pop(target_id, None)
 
     def clear_dodge_state(self) -> None:
         """Reset all dodge timers and tactical state (for game reset)."""
@@ -1593,3 +1796,4 @@ class UnitBehaviors:
         self._de_escalation_timers.clear()
         self._bomber_original_speeds.clear()
         self._peek_targets.clear()
+        self._cover_phase.clear()
