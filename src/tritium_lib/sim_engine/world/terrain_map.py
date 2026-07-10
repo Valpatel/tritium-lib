@@ -451,6 +451,41 @@ class TerrainMap:
 
         return True
 
+    def raycast(
+        self, pos_a: tuple, pos_b: tuple
+    ) -> tuple[float, float] | None:
+        """Cast a ray from *pos_a* to *pos_b* and return the first hit.
+
+        Walks the Bresenham cells between the two positions (same octant
+        handling as ``line_of_sight``) and, on the FIRST building cell
+        encountered, returns that cell's world-center ``(x, y)``.  Returns
+        ``None`` when the segment is clear.
+
+        Where ``line_of_sight`` answers "is anything blocking?" with a bool,
+        ``raycast`` answers "where is the block?" — needed for in-flight
+        projectile occlusion (a dart striking a wall detonates AT the wall,
+        not at its intended target).
+
+        Args:
+            pos_a: (x, y) start position (e.g. projectile's previous cell).
+            pos_b: (x, y) end position (e.g. projectile's new cell).
+
+        Returns:
+            (x, y) world-center of the first building cell hit, or None.
+
+        O(n) where n = distance / resolution — at 5m resolution and a 400m
+        map, at most ~113 cell steps, well within the 10Hz tick budget.
+        """
+        col_a, row_a = self._world_to_grid(pos_a[0], pos_a[1])
+        col_b, row_b = self._world_to_grid(pos_b[0], pos_b[1])
+
+        for col, row in _bresenham(col_a, row_a, col_b, row_b):
+            cell = self._cells.get((col, row))
+            if cell is not None and cell.terrain_type == "building":
+                return (cell.x, cell.y)
+
+        return None
+
     # -- Telemetry -------------------------------------------------------------
 
     def to_telemetry(self) -> dict:

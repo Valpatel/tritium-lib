@@ -31,7 +31,7 @@ class Weapon:
     damage: float = 10.0
     weapon_range: float = 15.0
     cooldown: float = 2.0
-    accuracy: float = 0.85  # 0.0-1.0, probability of hit
+    accuracy: float = 0.85  # baseline hit probability — realized as angular dispersion by CombatSystem
     ammo: int = 30
     max_ammo: int = 30
     weapon_class: str = "ballistic"  # ballistic, beam, aoe, missile
