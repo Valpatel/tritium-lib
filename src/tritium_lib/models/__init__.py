@@ -760,6 +760,12 @@ from .position_anchor import (
     FusedPositionEstimate,
     PositionAnchor,
 )
+from .fire_control import (
+    FireCommand,
+    FireSolution,
+    TurretAimCommand,
+    compute_fire_solution,
+)
 
 __all__ = [
     # Deployment
@@ -1417,4 +1423,9 @@ __all__ = [
     "DetectionEdge",
     "FusedPositionEstimate",
     "PositionAnchor",
+    # Fire control (turret actuation wire contract)
+    "FireCommand",
+    "FireSolution",
+    "TurretAimCommand",
+    "compute_fire_solution",
 ]
