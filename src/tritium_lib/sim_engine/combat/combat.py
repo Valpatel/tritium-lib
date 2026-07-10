@@ -286,20 +286,12 @@ class CombatSystem:
         if not source.can_fire():
             return None
 
-        # Ammo check: if ammo_count == 0, cannot fire; if > 0, decrement
+        # Ammo check: empty magazine cannot fire.  The DECREMENT happens at
+        # the bottom of this method, after every refusal path (range / LOS /
+        # reload) — a REFUSED fire solution must not burn a round (a real
+        # turret doesn't eject a dart when it declines to shoot).
         if source.ammo_count == 0:
             return None
-        if source.ammo_count > 0:
-            source.ammo_count -= 1
-
-        # Sync inventory weapon ammo with target.ammo_count depletion
-        if hasattr(source, 'inventory') and source.inventory is not None:
-            active_wp = source.inventory.get_active_weapon()
-            if active_wp is not None and active_wp.ammo > 0:
-                active_wp.ammo -= 1
-                # Auto-switch when active weapon runs dry
-                if active_wp.ammo <= 0:
-                    source.inventory.auto_switch_weapon()
 
         # Check range (with upgrade modifier)
         dx = target.position[0] - source.position[0]
@@ -359,6 +351,18 @@ class CombatSystem:
             if acc_attr is None:
                 acc_attr = getattr(source, "weapon_accuracy", _DEFAULT_ACCURACY)
             accuracy = acc_attr
+
+        # All refusal paths are behind us — this shot is really going out.
+        # Decrement target-level ammo and the synced inventory weapon now.
+        if source.ammo_count > 0:
+            source.ammo_count -= 1
+        if hasattr(source, 'inventory') and source.inventory is not None:
+            active_wp = source.inventory.get_active_weapon()
+            if active_wp is not None and active_wp.ammo > 0:
+                active_wp.ammo -= 1
+                # Auto-switch when active weapon runs dry
+                if active_wp.ammo <= 0:
+                    source.inventory.auto_switch_weapon()
 
         source.last_fired = source_now
 

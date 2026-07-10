@@ -248,6 +248,29 @@ class TestFireTimeLOS:
         tgt = _FakeTarget(target_id="t", position=(40.0, 0.0), alliance="hostile")
         assert cs.fire(rover, tgt) is None
 
+    def test_refused_shot_burns_no_ammo(self):
+        """A REFUSED fire solution (LOS-masked / out of range) must not
+        decrement ammo — a real turret doesn't eject a dart when it
+        declines to shoot.  Regression: the decrement used to run before
+        the range/LOS refusal paths."""
+        bus = _RecordingBus()
+        cs = CombatSystem(event_bus=bus)
+        cs.set_terrain_map(self._walled_map())
+        rover = _FakeTarget(
+            target_id="r", asset_type="rover", position=(0.0, 0.0),
+            ammo_count=5,
+        )
+        tgt = _FakeTarget(target_id="t", position=(40.0, 0.0), alliance="hostile")
+        assert cs.fire(rover, tgt) is None          # LOS-masked
+        assert rover.ammo_count == 5                # no round burned
+        far = _FakeTarget(target_id="f", position=(0.0, 500.0), alliance="hostile")
+        assert cs.fire(rover, far) is None          # out of range
+        assert rover.ammo_count == 5                # still no round burned
+        # A shot that really goes out DOES burn a round.
+        near = _FakeTarget(target_id="n", position=(0.0, 30.0), alliance="hostile")
+        assert cs.fire(rover, near) is not None
+        assert rover.ammo_count == 4
+
     def test_mortar_capable_beyond_30pct_fires_over_wall(self):
         bus = _RecordingBus()
         cs = CombatSystem(event_bus=bus)
