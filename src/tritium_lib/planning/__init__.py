@@ -28,6 +28,7 @@ from .costmap import (
     Costmap,
     CostmapBuilder,
     CostmapWeights,
+    builder_from_terrain_map,
     costmap_from_terrain_map,
 )
 from .layers import LocalElevationGrid, local_grid_from_gis, wgs84_to_local
@@ -39,6 +40,7 @@ __all__ = [
     "LocalElevationGrid",
     "local_grid_from_gis",
     "MTFCC_WIDTHS_M",
+    "builder_from_terrain_map",
     "costmap_from_terrain_map",
     "plan_route",
     "RouteResult",

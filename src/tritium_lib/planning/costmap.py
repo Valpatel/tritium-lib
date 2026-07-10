@@ -47,6 +47,7 @@ __all__ = [
     "Costmap",
     "CostmapBuilder",
     "MTFCC_WIDTHS_M",
+    "builder_from_terrain_map",
     "costmap_from_terrain_map",
 ]
 
@@ -602,6 +603,78 @@ def _inflate(costmap: Costmap, radius_m: float, inflation_cost: float) -> None:
 # TerrainMap adapter
 # ---------------------------------------------------------------------------
 
+def builder_from_terrain_map(
+    terrain_map, weights: CostmapWeights | None = None
+) -> CostmapBuilder:
+    """Seed a :class:`CostmapBuilder` from a sim ``TerrainMap``.
+
+    Unlike :func:`costmap_from_terrain_map` — which returns a *finished*
+    :class:`Costmap` and so cannot be layered on — this returns the builder
+    with its terrain baseline stamped in, ready to be enriched with GIS
+    layers (DEM slope, TIGER roads, FEMA flood, NOAA weather zones) via
+    :meth:`~CostmapBuilder.add_dem`, :meth:`~CostmapBuilder.add_roads`,
+    :meth:`~CostmapBuilder.add_obstacles`,
+    :meth:`~CostmapBuilder.add_cost_zones`, or
+    :meth:`~CostmapBuilder.add_gis_features` before :meth:`~CostmapBuilder.build`.
+
+    Duck-typed against the TerrainMap API (``grid_size``, ``resolution``,
+    ``get_terrain_at(col, row)``, ``_grid_to_world(col, row)``) so tests can
+    pass a fake.  The grid frame is identical to
+    :func:`costmap_from_terrain_map`: the south-west corner is cell
+    ``(0, 0)``'s center minus half a cell, and the grid is ``grid_size`` cells
+    square at the terrain resolution.
+
+    Terrain seeding (the same mapping table as
+    :func:`costmap_from_terrain_map`, expressed as builder layers):
+
+        - ``building`` / ``water`` -> lethal obstacle cell (tagged with the
+          terrain kind for introspection)
+        - ``road`` -> road (discounted) cell
+        - everything else (open, yard, ...) -> untouched open cell
+
+    Args:
+        terrain_map: A sim ``TerrainMap`` (or duck-typed fake) exposing
+            ``grid_size``, ``resolution``, ``get_terrain_at(col, row)`` and
+            ``_grid_to_world(col, row)``.
+        weights: Cost weights for the builder.  Defaults to
+            :class:`CostmapWeights`.
+
+    Returns:
+        A :class:`CostmapBuilder` pre-seeded with the terrain obstacle and
+        road cells, ready for further ``add_*`` enrichment and ``build()``.
+    """
+    w = weights or CostmapWeights()
+    gs = int(terrain_map.grid_size)
+    res = float(terrain_map.resolution)
+
+    # Derive the SW corner from cell (0, 0)'s center — identical frame to
+    # costmap_from_terrain_map.
+    c0x, c0y = terrain_map._grid_to_world(0, 0)
+    origin_x = c0x - res / 2.0
+    origin_y = c0y - res / 2.0
+
+    builder = CostmapBuilder(
+        bounds=(origin_x, origin_y, origin_x + gs * res, origin_y + gs * res),
+        resolution=res,
+        weights=w,
+    )
+    # The ctor derives width/height with math.ceil, which can drift by a cell
+    # on a non-integer span due to float rounding.  Pin the dimensions to
+    # grid_size so the frame is bit-identical to costmap_from_terrain_map.
+    builder.width = gs
+    builder.height = gs
+
+    for row in range(gs):
+        for col in range(gs):
+            terrain = terrain_map.get_terrain_at(col, row)
+            if terrain in ("building", "water"):
+                builder._obstacle_cells[(row, col)] = terrain
+            elif terrain == "road":
+                builder._road_cells.add((row, col))
+
+    return builder
+
+
 def costmap_from_terrain_map(terrain_map, weights: CostmapWeights | None = None) -> Costmap:
     """Adapt an existing sim ``TerrainMap`` into a :class:`Costmap`.
 
@@ -612,36 +685,17 @@ def costmap_from_terrain_map(terrain_map, weights: CostmapWeights | None = None)
         - ``building`` / ``water`` -> ``LETHAL``
         - ``road`` -> ``base_cost * road_discount``
         - everything else (open, yard, ...) -> ``base_cost``
+
+    This is the terrain-only convenience path.  It is exactly
+    :func:`builder_from_terrain_map` followed by
+    :meth:`~CostmapBuilder.build` with no enrichment layers added: with the
+    default weights every open cell is ``base_cost``, every road cell is
+    ``base_cost * road_discount``, every building/water cell is ``LETHAL``,
+    there is no DEM (slope 0) and no inflation (``obstacle_inflation_m`` 0.0).
+    Use :func:`builder_from_terrain_map` directly when you want to enrich the
+    terrain baseline with GIS layers before building.
     """
-    w = weights or CostmapWeights()
-    gs = int(terrain_map.grid_size)
-    res = float(terrain_map.resolution)
-
-    # Derive the SW corner from cell (0, 0)'s center.
-    c0x, c0y = terrain_map._grid_to_world(0, 0)
-    origin_x = c0x - res / 2.0
-    origin_y = c0y - res / 2.0
-
-    lethal = float("inf")
-    grid: list[list[float]] = [[0.0] * gs for _ in range(gs)]
-    for row in range(gs):
-        for col in range(gs):
-            terrain = terrain_map.get_terrain_at(col, row)
-            if terrain in ("building", "water"):
-                grid[row][col] = lethal
-            elif terrain == "road":
-                grid[row][col] = w.base_cost * w.road_discount
-            else:
-                grid[row][col] = w.base_cost
-
-    return Costmap(
-        origin_x=origin_x,
-        origin_y=origin_y,
-        resolution=res,
-        width=gs,
-        height=gs,
-        grid=grid,
-    )
+    return builder_from_terrain_map(terrain_map, weights).build()
 
 
 # ---------------------------------------------------------------------------
