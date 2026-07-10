@@ -33,6 +33,7 @@ import time
 from typing import TYPE_CHECKING
 
 from tritium_lib.models.target_status import is_terminal
+from tritium_lib.sim_engine.behavior.doctrine import find_peek_position
 
 if TYPE_CHECKING:
     from tritium_lib.sim_engine.combat.combat import CombatSystem
@@ -60,6 +61,20 @@ _GROUP_RUSH_SPEED_MULT = 1.2  # 20% speed boost during rush
 
 # Cover-seeking parameters
 _COVER_HEALTH_THRESHOLD = 0.5  # seek cover below this health fraction
+
+# Engagement-range doctrine parameters (peek/flank to un-mask a fire solution)
+# Minimum sim-seconds between peek recomputes per unit — hysteresis so units
+# commit to a peek and don't thrash their waypoints every tick.
+_PEEK_RECOMPUTE_S = 1.5
+# Asset types that never peek: aerial units are LOS-exempt (they shoot/arc
+# over terrain) and static / mortar-capable units either can't move or already
+# lob rounds over obstacles.  Everything else (rover, apc, person, and the
+# person-based crowd roles) is an eligible GROUND stand-in.
+_NO_DOCTRINE_TYPES = frozenset({
+    "drone", "scout_drone", "heavy_drone", "recon_drone",
+    "swarm_drone", "quad_drone", "plane_drone",
+    "turret", "heavy_turret", "missile_turret", "tank",
+})
 
 # Weapon projectile type by asset_type (matches weapons.py loadouts)
 _WEAPON_TYPES: dict[str, str | None] = {
@@ -135,6 +150,11 @@ class UnitBehaviors:
         self._game_mode_type: str | None = None    # "civil_unrest", "drone_swarm", etc.
         self._de_escalation_timers: dict[str, float] = {}  # rioter_id -> accumulated proximity time
         self._bomber_original_speeds: dict[str, float] = {}  # bomber_id -> speed before dive
+
+        # Engagement-range doctrine: ground units that peek/flank to un-mask a
+        # blocked fire solution.  unit_id -> (target_id, last_recompute_sim_time,
+        # peek_pos).  Recompute is throttled by _PEEK_RECOMPUTE_S (hysteresis).
+        self._peek_targets: dict[str, tuple[str, float, tuple[float, float]]] = {}
 
         # Sensor awareness tracking
         self._detected_base_speeds: dict[str, float] = {}  # speeds before detection boost
@@ -459,12 +479,12 @@ class UnitBehaviors:
         # Only fire at vision-confirmed targets
         target = self._nearest_in_range(rover, hostiles, vision_state=vision_state)
         if target is not None:
-            # Fire if in range (terrain LOS check). fire() returns the
-            # projectile when a shot actually goes off, None otherwise
-            # (cooldown / no ammo / out of range / LOS blocked / miss).
+            # Fire if in range, else peek/flank to un-mask a blocked shot
+            # (engagement-range doctrine).  Returns the projectile when a shot
+            # actually goes off, None otherwise (cooldown / no ammo / out of
+            # range / LOS blocked / repositioning / miss).
             ptype = _WEAPON_TYPES.get(rover.asset_type, "nerf_dart")
-            proj = self._combat.fire(rover, target, projectile_type=ptype,
-                                     terrain_map=self._terrain_map)
+            proj = self._engage_or_reposition(rover, target, ptype)
             return proj is not None
         elif hostiles and self._game_mode_type == "battle":
             # No target in weapon range — pursue nearest hostile.
@@ -608,8 +628,7 @@ class UnitBehaviors:
                         enemy_pos=target.position,
                     )
                 ptype = _WEAPON_TYPES.get(kid.asset_type, "nerf_pistol")
-                self._combat.fire(kid, target, projectile_type=ptype,
-                                  terrain_map=self._terrain_map)
+                self._engage_or_reposition(kid, target, ptype)
 
         # Cover-seeking: damaged hostile moves toward nearest building edge
         # When seeking cover, skip flanking and dodge (cover takes priority)
@@ -1115,6 +1134,100 @@ class UnitBehaviors:
             unit._waypoint_index = 0
             unit.status = "active"
 
+    # -- Engagement-range doctrine ------------------------------------------------
+
+    def _engage_or_reposition(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+        projectile_type: str,
+    ) -> "Projectile | None":
+        """Fire at *target*, or peek/flank to un-mask a blocked shot.
+
+        Engagement-range doctrine for GROUND stand-ins.  When line of sight to
+        the target is clear (or no terrain map is wired) this fires exactly as
+        before.  When the shot is LOS-blocked by a building it steers the unit
+        toward a PEEK/FLANK point that restores line of sight (see
+        :meth:`_reposition_for_los`) and HOLDS fire this tick instead of wasting
+        the engagement.  If no peek is reachable it falls back to the normal
+        fire attempt (which returns None while masked) so the unit simply keeps
+        advancing on its existing path.
+
+        Turrets (static) and aerial drones (LOS-exempt) never route through
+        here; mortar-capable / flying types are additionally guarded inside
+        :meth:`_reposition_for_los`.
+
+        Returns the Projectile when a shot actually goes off, else None
+        (repositioning, cooldown, out of ammo, or masked with no peek).
+        """
+        tm = self._terrain_map
+        if (
+            tm is not None
+            and target is not None
+            and not tm.line_of_sight(unit.position, target.position)
+        ):
+            # Fire solution is masked — try to recover LOS by repositioning.
+            if self._reposition_for_los(unit, target):
+                return None  # steering toward a peek this tick; hold fire
+
+        # LOS clear (or no peek reachable): normal fire path.  Drop any stale
+        # peek state so a unit that regains LOS re-engages cleanly next tick.
+        self._peek_targets.pop(unit.target_id, None)
+        return self._combat.fire(
+            unit, target, projectile_type=projectile_type,
+            terrain_map=tm,
+        )
+
+    def _reposition_for_los(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+    ) -> bool:
+        """Steer *unit* toward a peek point that restores LOS to *target*.
+
+        Deterministic and hysteresis-limited: a fresh peek is computed at most
+        once every ``_PEEK_RECOMPUTE_S`` sim-seconds per unit (while the unit is
+        still repositioning toward the SAME target), so units commit to a peek
+        instead of re-solving and re-pathing every tick.
+
+        Returns True when the unit is steering toward a peek (the caller should
+        hold fire), False when the unit can't reposition or no peek is
+        reachable (the caller falls back to its normal behavior).
+        """
+        tm = self._terrain_map
+        if tm is None:
+            return False
+        # Static or LOS-exempt units don't peek (turret / tank-mortar / aerial).
+        if unit.speed <= 0 or unit.asset_type in _NO_DOCTRINE_TYPES:
+            return False
+
+        now = self._sim_time
+        tid = target.target_id
+        state = self._peek_targets.get(unit.target_id)
+        # Hysteresis: keep steering toward the current peek (same target) until
+        # the recompute window elapses — prevents per-tick waypoint thrash.
+        if (
+            state is not None
+            and state[0] == tid
+            and (now - state[1]) < _PEEK_RECOMPUTE_S
+        ):
+            return True
+
+        peek = find_peek_position(
+            tm, unit.position, target.position, unit.weapon_range,
+        )
+        if peek is None:
+            self._peek_targets.pop(unit.target_id, None)
+            return False
+
+        # Steer via the existing waypoint mechanism (same mover as _pursue).
+        unit.waypoints = [peek]
+        unit._waypoint_index = 0
+        if unit.status in ("arrived", "idle", "stationary"):
+            unit.status = "active"
+        self._peek_targets[unit.target_id] = (tid, now, peek)
+        return True
+
     # -- Mission-type behaviors ---------------------------------------------------
 
     def _instigator_behavior(
@@ -1158,8 +1271,7 @@ class UnitBehaviors:
             if target is not None:
                 ptype = _WEAPON_TYPES.get("instigator", "thrown_object")
                 if ptype is not None:
-                    self._combat.fire(instigator, target, projectile_type=ptype,
-                                      terrain_map=self._terrain_map)
+                    self._engage_or_reposition(instigator, target, ptype)
 
     def _bomber_behavior(
         self,
@@ -1303,8 +1415,7 @@ class UnitBehaviors:
         if target is not None:
             ptype = _WEAPON_TYPES.get("rioter", "melee_strike")
             if ptype is not None:
-                self._combat.fire(rioter, target, projectile_type=ptype,
-                                  terrain_map=self._terrain_map)
+                self._engage_or_reposition(rioter, target, ptype)
 
     def _scout_swarm_behavior(
         self,
@@ -1389,6 +1500,7 @@ class UnitBehaviors:
         self._base_speeds.pop(target_id, None)
         self._detected_base_speeds.pop(target_id, None)
         self._bomber_original_speeds.pop(target_id, None)
+        self._peek_targets.pop(target_id, None)
 
     def clear_dodge_state(self) -> None:
         """Reset all dodge timers and tactical state (for game reset)."""
@@ -1400,3 +1512,4 @@ class UnitBehaviors:
         self._detected_ids.clear()
         self._de_escalation_timers.clear()
         self._bomber_original_speeds.clear()
+        self._peek_targets.clear()
