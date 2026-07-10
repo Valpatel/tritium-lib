@@ -23,6 +23,7 @@ reimplemented here.  Pure stdlib — no third-party dependencies.
 from __future__ import annotations
 
 from .astar import RouteResult, plan_route
+from .contours import iso_cost_contours
 from .costmap import (
     MTFCC_WIDTHS_M,
     Costmap,
@@ -42,6 +43,7 @@ __all__ = [
     "MTFCC_WIDTHS_M",
     "builder_from_terrain_map",
     "costmap_from_terrain_map",
+    "iso_cost_contours",
     "plan_route",
     "RouteResult",
     "wgs84_to_local",
