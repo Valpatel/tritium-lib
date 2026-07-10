@@ -18,6 +18,7 @@ from tritium_lib.geo.gis import (
     FemaFloodFetcher,
     GISCache,
     NoaaAlertsFetcher,
+    OverpassBuildingsFetcher,
     TigerRoadsFetcher,
     UsgsElevationFetcher,
 )
@@ -272,7 +273,10 @@ class TestVectorDegradation:
     def test_all_fail_returns_empty_collection(self, monkeypatch):
         _patch(monkeypatch, _boom)
         f = TigerRoadsFetcher(cache=None)
-        f.FIXTURE_NAME = "does_not_exist.json"  # sabotage the last fallback
+        # Multi-AO contract: FIXTURE_NAMES (not the legacy single FIXTURE_NAME)
+        # is the resolution list once a fetcher registers real packs, so sabotage
+        # it directly.  With no loadable pack the chain hits the bare empty FC.
+        f.FIXTURE_NAMES = ("does_not_exist.json",)
         assert f.fetch(BOX) == {"type": "FeatureCollection", "features": []}
 
     @pytest.mark.unit
@@ -328,12 +332,206 @@ class TestGridDegradation:
     def test_all_fail_returns_empty_grid(self, monkeypatch):
         _patch(monkeypatch, _boom)
         f = UsgsElevationFetcher(cache=None)
-        f.FIXTURE_NAME = "does_not_exist.json"
+        # Sabotage the multi-AO resolution list (see vector twin above).
+        f.FIXTURE_NAMES = ("does_not_exist.json",)
         grid = f.fetch_grid(BOX, ncols=4, nrows=4)
         assert grid.source == "usgs-empty"
         assert grid.ncols == 4 and grid.nrows == 4
         assert all(v is None for v in grid.values)
         assert grid.min_max() == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# Multi-AO fixture resolution (fake packs via monkeypatched _load_fixture)
+# ---------------------------------------------------------------------------
+def _pt_feature(lon, lat, kind):
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [lon, lat]},
+        "properties": {"source": "tiger", "kind": kind},
+    }
+
+
+def _pack(*features):
+    return {"type": "FeatureCollection", "fixture": True, "features": list(features)}
+
+
+class TestMultiFixtureResolution:
+    @pytest.mark.unit
+    def test_first_nonempty_pack_wins(self, monkeypatch):
+        # Two packs registered in order: pack A only has a far-away feature
+        # (clips to empty over BOX), pack B has a BOX-local one -> B wins.
+        import tritium_lib.geo.gis.fetchers as fmod
+
+        packs = {
+            "a.json": _pack(_pt_feature(10.0, 10.0, "A")),        # far away
+            "b.json": _pack(_pt_feature(-121.9, 37.71, "B")),     # inside BOX
+        }
+        monkeypatch.setattr(fmod, "_load_fixture", lambda n: packs.get(n))
+        _patch(monkeypatch, _boom)  # force offline
+        f = TigerRoadsFetcher(cache=None)
+        f.FIXTURE_NAMES = ("a.json", "b.json")
+        fc = f.fetch(BOX)
+        assert fc.get("fixture") is True
+        assert [x["properties"]["kind"] for x in fc["features"]] == ["B"]
+
+    @pytest.mark.unit
+    def test_all_packs_clip_empty_yields_fixture_marked_empty(self, monkeypatch):
+        # Every pack clips to empty (bbox outside all AOs) -> a fixture-marked
+        # empty FC (the pre-multi-AO far-bbox contract is preserved).
+        import tritium_lib.geo.gis.fetchers as fmod
+
+        far = _pack(_pt_feature(10.0, 10.0, "FAR"))
+        monkeypatch.setattr(
+            fmod, "_load_fixture", lambda n: far if n in ("a.json", "b.json") else None
+        )
+        _patch(monkeypatch, _boom)
+        f = TigerRoadsFetcher(cache=None)
+        f.FIXTURE_NAMES = ("a.json", "b.json")
+        fc = f.fetch(BOX)
+        assert fc.get("fixture") is True
+        assert fc["features"] == []
+
+    @pytest.mark.unit
+    def test_legacy_fixture_name_still_resolves(self, monkeypatch):
+        # Back-compat: a fetcher that sets ONLY the legacy single FIXTURE_NAME
+        # (FIXTURE_NAMES empty) still resolves via (FIXTURE_NAME,).
+        import tritium_lib.geo.gis.fetchers as fmod
+
+        pack = _pack(_pt_feature(-121.9, 37.71, "LEGACY"))
+        monkeypatch.setattr(
+            fmod, "_load_fixture", lambda n: pack if n == "legacy.json" else None
+        )
+        _patch(monkeypatch, _boom)
+        f = TigerRoadsFetcher(cache=None)
+        f.FIXTURE_NAMES = ()             # multi-AO list not configured
+        f.FIXTURE_NAME = "legacy.json"   # legacy single fixture
+        fc = f.fetch(BOX)
+        assert [x["properties"]["kind"] for x in fc["features"]] == ["LEGACY"]
+
+
+# ---------------------------------------------------------------------------
+# DEM fixture gating — the intersect-or-NoData contract change
+# ---------------------------------------------------------------------------
+class TestGridFixtureGating:
+    @pytest.mark.unit
+    def test_offline_bbox_intersecting_dublin_returns_dublin(self, monkeypatch):
+        _patch(monkeypatch, _boom)
+        f = UsgsElevationFetcher(cache=None)  # packaged Dublin DEM
+        grid = f.fetch_grid(BOX)              # BOX == Dublin AO
+        assert grid.source == "usgs-fixture"
+        mn, mx = grid.min_max()
+        assert 100.0 < mn < mx < 200.0        # real Dublin terrain
+
+    @pytest.mark.unit
+    def test_offline_bbox_outside_all_aos_returns_nodata(self, monkeypatch):
+        # ⚠️ CONTRACT CHANGE: an offline bbox outside EVERY packaged AO no longer
+        # silently gets the Dublin DEM — it gets an all-NoData "usgs-empty" grid.
+        _patch(monkeypatch, _boom)
+        kansas = GeoBBox.from_string("-98.00,38.00,-97.96,38.04")
+        f = UsgsElevationFetcher(cache=None)
+        grid = f.fetch_grid(kansas, ncols=8, nrows=8)
+        assert grid.source == "usgs-empty"
+        assert grid.ncols == 8 and grid.nrows == 8
+        assert all(v is None for v in grid.values)
+        assert grid.min_max() == (None, None)
+
+    @pytest.mark.unit
+    def test_fixture_bbox_prefers_marker_else_corner_fields(self):
+        # Explicit top-level "bbox" marker wins when present ...
+        assert UsgsElevationFetcher._fixture_bbox(
+            {"bbox": [1.0, 2.0, 3.0, 4.0],
+             "west": 9, "south": 9, "east": 9, "north": 9}
+        ) == (1.0, 2.0, 3.0, 4.0)
+        # ... else the grid's own corner fields (the Dublin DEM has no "bbox").
+        assert UsgsElevationFetcher._fixture_bbox(
+            {"west": -121.912, "south": 37.704, "east": -121.88, "north": 37.728}
+        ) == (-121.912, 37.704, -121.88, 37.728)
+        assert UsgsElevationFetcher._fixture_bbox({}) is None
+
+
+# ---------------------------------------------------------------------------
+# Boulder, CO pack — proves the offline system is NOT Dublin-hardcoded
+# ---------------------------------------------------------------------------
+BOULDER = GeoBBox.from_string("-105.30,39.98,-105.26,40.02")
+_BOULDER_BBOX = [-105.3, 39.98, -105.26, 40.02]
+
+
+def _positions(coords):
+    """Yield ``(lon, lat)`` for every position in a coordinate tree."""
+    if isinstance(coords, (list, tuple)):
+        if (len(coords) >= 2 and isinstance(coords[0], (int, float))
+                and isinstance(coords[1], (int, float))):
+            yield (float(coords[0]), float(coords[1]))
+        else:
+            for child in coords:
+                yield from _positions(child)
+
+
+def _all_positions(fc):
+    for feat in fc["features"]:
+        yield from _positions(feat["geometry"]["coordinates"])
+
+
+class TestBoulderPack:
+    @pytest.mark.unit
+    def test_boulder_fixtures_load_via_resources(self):
+        from importlib import resources
+
+        for name in ("tiger_roads_boulder.json", "fema_flood_boulder.json",
+                     "osm_buildings_boulder.json", "usgs_dem_boulder.json"):
+            res = resources.files("tritium_lib.geo.gis.fixtures").joinpath(name)
+            data = json.loads(res.read_text(encoding="utf-8"))
+            assert data.get("fixture") is True
+            assert data.get("bbox") == _BOULDER_BBOX
+
+    @pytest.mark.unit
+    def test_offline_roads_are_boulder_not_dublin(self, monkeypatch):
+        # Live + cache disabled -> packaged fixture.  The Boulder pack must win
+        # for a Boulder bbox, and every coordinate must sit near Boulder (lon
+        # ~-105) — never Dublin, CA (lon ~-121.9).
+        _patch(monkeypatch, _boom)
+        fc = TigerRoadsFetcher(cache=None).fetch(BOULDER)
+        assert fc.get("fixture") is True
+        assert len(fc["features"]) >= 1
+        assert all(x["properties"]["source"] == "tiger" for x in fc["features"])
+        for lon, lat in _all_positions(fc):
+            assert -106.0 <= lon <= -105.0     # Boulder longitude band
+            assert 39.0 <= lat <= 41.0
+
+    @pytest.mark.unit
+    def test_offline_buildings_are_boulder_not_dublin(self, monkeypatch):
+        _patch(monkeypatch, _boom)
+        fc = OverpassBuildingsFetcher(cache=None).fetch(BOULDER)
+        assert fc.get("fixture") is True
+        assert len(fc["features"]) >= 1
+        for lon, _lat in _all_positions(fc):
+            assert -106.0 <= lon <= -105.0
+
+    @pytest.mark.unit
+    def test_offline_dem_is_boulder_terrain(self, monkeypatch):
+        # Boulder relief (mountains-to-plains) is ~1600-2400 m; Dublin is
+        # ~100-200 m — an unambiguous discriminator.
+        _patch(monkeypatch, _boom)
+        grid = UsgsElevationFetcher(cache=None).fetch_grid(BOULDER, ncols=32, nrows=32)
+        assert grid.source == "usgs-fixture"
+        assert grid.west == pytest.approx(-105.30)
+        assert grid.north == pytest.approx(40.02)
+        mn, mx = grid.min_max()
+        assert mn > 1000.0 and mx > 1000.0     # NOT Dublin terrain
+        assert mx < 4000.0
+
+    @pytest.mark.unit
+    def test_dublin_bbox_still_gets_dublin(self, monkeypatch):
+        # The Dublin pack is first in FIXTURE_NAMES; a Dublin bbox still resolves
+        # to Dublin data (Boulder is registered but does not intersect).
+        _patch(monkeypatch, _boom)
+        fc = TigerRoadsFetcher(cache=None).fetch(BOX)
+        assert fc.get("fixture") is True
+        for lon, _lat in _all_positions(fc):
+            assert -122.5 <= lon <= -121.5     # Dublin longitude band
+        grid = UsgsElevationFetcher(cache=None).fetch_grid(BOX)
+        assert grid.min_max()[0] < 200.0       # Dublin terrain
 
 
 class TestConstants:

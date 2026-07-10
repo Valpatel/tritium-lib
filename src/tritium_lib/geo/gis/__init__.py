@@ -22,6 +22,7 @@ conventions the costmap lane and SC frontend depend on.
 from __future__ import annotations
 
 from .cache import GISCache
+from .capture import capture_ao_pack
 from .contours import auto_levels, contour_lines
 from .fetchers import (
     USER_AGENT,
@@ -49,4 +50,5 @@ __all__ = [
     "auto_levels",
     "contour_lines",
     "filter_features_bbox",
+    "capture_ao_pack",
 ]
