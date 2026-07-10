@@ -56,3 +56,10 @@ filterwarnings = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Ship JSON data files as package data so lookups/fixtures survive a wheel build
+# (editable/PYTHONPATH installs read the source tree directly; these entries are
+# what make a real build include them).
+[tool.setuptools.package-data]
+"tritium_lib.data" = ["*.json"]
+"tritium_lib.geo.gis.fixtures" = ["*.json"]
