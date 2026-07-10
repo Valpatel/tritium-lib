@@ -76,7 +76,18 @@ _NO_DOCTRINE_TYPES = frozenset({
     "turret", "heavy_turret", "missile_turret", "tank",
 })
 
+# Hard rules-of-engagement for police stand-in AI: crowd roles police units
+# must NEVER fire on (protected non-combatants).  Mirrors AutoDispatcher's
+# PROTECTED_CROWD_ROLES so the less-lethal engagement can never target a
+# civilian or an already-calmed (arrested) crowd member.
+_PROTECTED_CROWD_ROLES: frozenset[str] = frozenset({"civilian", "calmed"})
+
 # Weapon projectile type by asset_type (matches weapons.py loadouts)
+# A rioter that spots a friendly unit within this range CHARGES it (the
+# violent minority attacks the line pushing into the crowd — the core riot
+# contact dynamic).  Beyond it, rioters keep their street routine.
+_RIOTER_AGGRO_RANGE: float = 25.0
+
 _WEAPON_TYPES: dict[str, str | None] = {
     "turret": "nerf_turret_gun",
     "heavy_turret": "nerf_heavy_turret",
@@ -94,6 +105,7 @@ _WEAPON_TYPES: dict[str, str | None] = {
     # Mission-type weapon mappings
     "instigator": "thrown_object",
     "rioter": "melee_strike",
+    "police": "pepper_ball",       # Less-lethal crowd control
     "scout_swarm": None,           # Cannot fire
     "attack_swarm": "nerf_dart_gun",
     "bomber_swarm": None,          # Detonation, not projectile
@@ -290,6 +302,8 @@ class UnitBehaviors:
                 rover_fired = self._rover_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type in ("tank", "apc"):
                 self._rover_behavior(t, hostiles, vision_state=vision_state)
+            elif t.asset_type == "police":
+                self._police_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type == "graphling":
                 self._graphling_behavior(t, hostiles, vision_state=vision_state)
 
@@ -563,6 +577,45 @@ class UnitBehaviors:
                     unit.waypoints = [tuple(best.position[:2])]
                     unit._waypoint_index = 0
                 unit.status = "active"
+
+    def _police_behavior(
+        self,
+        officer: SimulationTarget,
+        hostiles: dict[str, SimulationTarget],
+        vision_state=None,
+    ) -> None:
+        """Riot police less-lethal engagement (civil_unrest stand-in AI).
+
+        Aims and fires a pepper_ball at the NEAREST in-range hostile whose
+        crowd_role is NOT a protected non-combatant (civilian / calmed) — a
+        HARD rules-of-engagement guard so police stand-ins never fire on the
+        people they are protecting.  Movement (line formation, dispersal
+        advance, arrests) is driven by PoliceTacticsController; this behavior
+        only orients the weapon and pulls the trigger.
+        """
+        # Degradation: too damaged to fire.
+        if not can_fire_degraded(officer):
+            return
+
+        # HARD ROE: drop civilians and already-calmed (arrested) targets from
+        # the valid engagement set before selecting a target.
+        engageable = {
+            k: v for k, v in hostiles.items()
+            if getattr(v, "crowd_role", None) not in _PROTECTED_CROWD_ROLES
+        }
+
+        target = self._nearest_in_range(officer, engageable, vision_state=vision_state)
+        if target is None:
+            return
+
+        # Face the target (vision cone follows heading next tick).
+        dx = target.position[0] - officer.position[0]
+        dy = target.position[1] - officer.position[1]
+        officer.heading = math.degrees(math.atan2(dx, dy))
+
+        ptype = _WEAPON_TYPES.get("police", "pepper_ball")
+        self._combat.fire(officer, target, projectile_type=ptype,
+                          terrain_map=self._terrain_map)
 
     def _hostile_kid_behavior(
         self,
@@ -1401,15 +1454,42 @@ class UnitBehaviors:
         rioter: SimulationTarget,
         friendlies: dict[str, SimulationTarget],
     ) -> None:
-        """Rioter: melee-range only attacks using melee_strike weapon type.
+        """Rioter: charge nearby friendlies, melee-strike at 3m.
 
-        Rioters can only attack targets within 3m range.
+        AGGRO (ESIM riot dynamic, lane/riot 2026-07-10): a violent rioter
+        that spots a friendly unit within _RIOTER_AGGRO_RANGE converges on
+        it — the violent minority ATTACKS the police line pushing into the
+        crowd, instead of strolling its spawn route while being sniped.
+        This is what turns a riot into a fight: the line advances, the mob
+        charges, melee erupts at the shield wall, and arrests happen at
+        contact.  Beyond aggro range the rioter keeps its street routine.
+
+        Rioters can only attack targets within 3m range (melee_strike).
         """
         if not can_fire_degraded(rioter):
             return
 
         if rioter.ammo_count == 0:
             return
+
+        # Charge the nearest friendly within aggro range (movement).
+        nearest = None
+        nearest_d = _RIOTER_AGGRO_RANGE
+        for f in friendlies.values():
+            d = math.hypot(f.position[0] - rioter.position[0],
+                           f.position[1] - rioter.position[1])
+            if d <= nearest_d:
+                nearest = f
+                nearest_d = d
+        if nearest is not None:
+            wp = rioter.waypoints
+            tx, ty = nearest.position[0], nearest.position[1]
+            # Re-aim only when the charge target moved meaningfully — the
+            # waypoint list is REPLACED (not mutated) so the movement
+            # controller re-syncs, and a 1m hysteresis avoids re-pathing
+            # every tick.
+            if (not wp or math.hypot(wp[-1][0] - tx, wp[-1][1] - ty) > 1.0):
+                rioter.waypoints = [(tx, ty)]
 
         target = self._nearest_in_range(rioter, friendlies)
         if target is not None:
