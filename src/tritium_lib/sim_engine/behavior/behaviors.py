@@ -30,6 +30,7 @@ from __future__ import annotations
 import math
 import random
 import time
+import zlib
 from typing import TYPE_CHECKING
 
 from tritium_lib.models.target_status import is_terminal
@@ -895,8 +896,12 @@ class UnitBehaviors:
         if dist < 0.1:
             return False
 
-        # Perpendicular direction (choose a consistent side based on target_id hash)
-        perp_sign = 1.0 if hash(hostile.target_id) % 2 == 0 else -1.0
+        # Perpendicular direction (choose a consistent side per target_id).
+        # NOT the builtin hash(): str hashing is salted by PYTHONHASHSEED, so
+        # the flank side flipped per interpreter — the golden-replay hunt
+        # traced run-to-run battle divergence (swarm_attack victory<->defeat)
+        # to this line. crc32 is stable across processes and machines.
+        perp_sign = 1.0 if zlib.crc32(hostile.target_id.encode()) % 2 == 0 else -1.0
         perp_x = -dy / dist * perp_sign
         perp_y = dx / dist * perp_sign
 
