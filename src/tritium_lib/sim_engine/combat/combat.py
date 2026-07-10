@@ -12,22 +12,63 @@ CombatSystem manages the lifecycle of Projectile instances:
      target's position at the time of firing.
 
   2. ``tick()`` advances each projectile toward its target_pos.  When the
-     projectile enters the hit radius (1.5 units) of the *target* (tracked
-     by ID, not by frozen position), damage is applied.  If the target is
-     eliminated (health <= 0), a ``target_eliminated`` event is published
-     and the interceptor's ``eliminations`` counter is incremented.
+     projectile enters the hit radius (``HIT_RADIUS`` = 5.0 units) of the
+     *target* (tracked by ID, not by frozen position), damage is applied.
+     If the target is eliminated (health <= 0), a ``target_eliminated``
+     event is published and the interceptor's ``eliminations`` counter is
+     incremented.
 
-  3. Projectiles that fly past their target_pos by 3 units without hitting
-     anything are marked as missed and removed.
+  3. Projectiles that exceed their max flight time (5 sim seconds) without
+     hitting anything are marked as missed and removed.
 
 Elimination streaks are tracked per source_id.  Consecutive neutralizations
 within a single game session trigger escalating announcements (3=KILLING
 SPREE, 5=RAMPAGE, 7=DOMINATING, 10=GODLIKE).  The streak counter resets
 when the source is eliminated.
 
+Ballistics (WP1 — real dispersion, unguided direct fire)
+--------------------------------------------------------
+There is NO accuracy pre-roll: every shot that passes cooldown / ammo /
+range / line-of-sight produces a real projectile.  A weapon's ``accuracy``
+is realised as *angular dispersion* about the source->aim bearing rather
+than a coin flip that deletes the shot.
+
+The dispersion is self-calibrated so that, at any fire distance, the
+probability of landing within ``HIT_RADIUS`` of the aim point equals the
+weapon's ``accuracy``.  We draw a lateral miss ``L ~ N(0, sigma)`` and
+rotate the aim vector by ``angle_error = atan2(L, dist)``.  Because the
+lateral offset at the target is ``dist * tan(angle_error) ~= L``, the hit
+probability is ``P(|L| < HIT_RADIUS) = accuracy`` when::
+
+    sigma = HIT_RADIUS / z,   z = NormalDist().inv_cdf((1 + accuracy) / 2)
+
+``z`` is the standard-normal quantile with ``P(|Z| < z) = accuracy``.
+An accuracy of 1.0 (>= ``_MAX_ACCURACY``) yields zero dispersion (a perfect
+shot at the aim point); an accuracy near 0 yields an enormous spread.
+
+Direct (ballistic) fire is UNGUIDED: the projectile commits to its fired
+(dispersed) ``target_pos`` and flies straight, exactly like a mortar arc.
+Only ``missile``-class weapons produce ``guided`` projectiles that home
+toward the target's current position.  A dispersed near-miss can still
+connect if the target walks into it during flight — that is correct.
+
+All randomness in CombatSystem flows through ``self._rng`` (a seedable
+``random.Random``) so a battle is bit-for-bit reproducible under a fixed
+seed (golden-replay determinism).
+
+Occlusion
+---------
+Each tick, a non-mortar / non-aerial projectile that moved is raycast
+against the stored ``TerrainMap``; if it crosses a building cell it
+detonates at the wall (``projectile_impact`` event) and is removed.  Mortar
+rounds arc over terrain and aerial shots (flying source or target) are
+exempt — the same rule as the fire-time line-of-sight check.
+
 Events are published on the EventBus for the frontend and Amy's announcer:
-  - ``projectile_fired``: new dart/rocket in the air
+  - ``projectile_fired``: new dart/rocket in the air (target_pos is the
+    dispersed aim point; ``aim_error_deg`` reports the angular error)
   - ``projectile_hit``: damage applied
+  - ``projectile_impact``: struck a building mid-flight
   - ``target_eliminated``: health reached zero
   - ``elimination_streak``: milestone reached
 """
@@ -36,10 +77,13 @@ from __future__ import annotations
 
 import math
 import random
+import statistics
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from tritium_lib.sim_engine.world.intercept import lead_target, target_velocity
 
 if TYPE_CHECKING:
     from tritium_lib.sim_engine.core.entity import SimulationTarget
@@ -50,6 +94,39 @@ HIT_RADIUS = 5.0
 
 # Miss distance — projectile has overshot target by this much
 MISS_OVERSHOOT = 8.0
+
+# Terminal fuse window (sim seconds): brief fuse window after arrival during
+# which a near-miss can still clip a mover crossing the impact point; after
+# that the round is spent.  Prevents a landed, physically-spent dart from
+# sitting on its impact point and damaging a walker who strolls over it
+# seconds later (no "ghost darts on the floor").
+TERMINAL_WINDOW = 0.3
+
+# Standard flight speed for direct-fire projectiles (m/s).  Also the
+# assumed projectile speed used by the internal lead solver when a caller
+# does not supply an explicit aim point.
+_PROJECTILE_SPEED = 80.0
+
+# Accuracy at or above this is treated as perfect (zero dispersion) — avoids
+# the divergent NormalDist quantile as accuracy -> 1.0.
+_MAX_ACCURACY = 0.999
+
+# Fallback baseline accuracy when neither a weapon-system weapon nor a
+# target-level accuracy attribute is available.
+_DEFAULT_ACCURACY = 0.85
+
+# Weapon class whose projectiles home (track the target's live position).
+_MISSILE_WEAPON_CLASS = "missile"
+
+# Flying unit types exempt from fire-time LOS and in-flight occlusion —
+# a flying source or target shoots/arcs over buildings.  Defined here (not
+# imported from world.terrain_map's private _FLYING_TYPES) so combat owns
+# its own contract; this set is a superset of that one plus the swarm/plane
+# variants that also fly.
+_AERIAL_TYPES = frozenset({
+    "drone", "scout_drone", "heavy_drone", "recon_drone",
+    "swarm_drone", "quad_drone", "plane_drone",
+})
 
 # Mortar fire: turrets lob arcing rounds at targets beyond this fraction of
 # their weapon_range.  Below the threshold they fire direct (flat trajectory).
@@ -86,6 +163,19 @@ class Projectile:
     created_at: float = 0.0
     hit: bool = False
     missed: bool = False
+    # Terminal window (unguided rounds only): sim-time at which a ballistic
+    # round (flat dart OR mortar) first reached its committed aim point.  None
+    # while still in flight; once set, the round is spent TERMINAL_WINDOW
+    # seconds later.  Guided (missile) rounds home and never "arrive" at a
+    # committed point, so they leave this None.
+    arrived_at: float | None = None
+    # Guidance: guided projectiles (missile-class weapons) home toward the
+    # target's live position each tick; unguided direct fire commits to the
+    # fired target_pos and flies straight (ballistic), like a mortar arc.
+    guided: bool = False
+    # Aerial: fired by (or at) a flying unit — exempt from in-flight building
+    # occlusion (the shot arcs/passes over terrain), mirroring fire-time LOS.
+    aerial: bool = False
     # Mortar/indirect fire fields
     is_mortar: bool = False  # True for arcing mortar rounds
     arc_peak: float = 0.0  # Peak Z height of the arc (world units)
@@ -129,13 +219,21 @@ class CombatSystem:
     """Manages projectiles, hit detection, and damage resolution."""
 
     def __init__(self, event_bus: EventBus, stats_tracker=None,
-                 weapon_system=None, upgrade_system: UpgradeSystem | None = None) -> None:
+                 weapon_system=None, upgrade_system: UpgradeSystem | None = None,
+                 *, terrain_map=None, rng: random.Random | None = None) -> None:
         self._projectiles: dict[str, Projectile] = {}
         self._event_bus = event_bus
         self._elimination_streaks: dict[str, int] = {}
         self._stats_tracker = stats_tracker
         self._weapon_system = weapon_system
         self._upgrade_system = upgrade_system
+        # Stored terrain map for fire-time LOS (when fire() gets no explicit
+        # terrain_map) and in-flight occlusion (tick() receives no terrain
+        # arg from the engine).
+        self._terrain_map = terrain_map
+        # Seedable RNG — ALL randomness in CombatSystem (dispersion) flows
+        # through this so a battle is reproducible under a fixed seed.
+        self._rng: random.Random = rng if rng is not None else random.Random()
         # Combat sim clock (gap G-1): advanced only in tick(dt).
         # Projectile created_at / flight expiry use this clock so flight
         # lifetimes scale with replay speed exactly like movement does.
@@ -144,6 +242,32 @@ class CombatSystem:
     @property
     def projectile_count(self) -> int:
         return len(self._projectiles)
+
+    def set_terrain_map(self, terrain_map) -> None:
+        """Set the stored TerrainMap used for fire-time LOS and in-flight
+        occlusion.  An explicit ``terrain_map`` kwarg on ``fire()`` overrides
+        this per-call; ``tick()`` occlusion always uses the stored map."""
+        self._terrain_map = terrain_map
+
+    def set_rng(self, rng: random.Random) -> None:
+        """Set the RNG used for dispersion (seedable determinism)."""
+        self._rng = rng
+
+    @staticmethod
+    def _dispersion_sigma(accuracy: float) -> float:
+        """Lateral dispersion sigma (world units) calibrated so that
+        ``P(|N(0, sigma)| < HIT_RADIUS) == accuracy``.
+
+        Uses the standard-normal quantile ``z = inv_cdf((1 + accuracy) / 2)``
+        (the value with ``P(|Z| < z) = accuracy``) so ``sigma = HIT_RADIUS / z``.
+        Accuracy is clamped to ``[0, _MAX_ACCURACY]``; an accuracy near 0
+        (``z -> 0``) yields an enormous spread rather than dividing by zero.
+        """
+        a = max(0.0, min(accuracy, _MAX_ACCURACY))
+        z = statistics.NormalDist().inv_cdf((1.0 + a) / 2.0)
+        if z <= 1e-9:
+            return HIT_RADIUS * 1e3
+        return HIT_RADIUS / z
 
     def fire(
         self,
@@ -162,20 +286,12 @@ class CombatSystem:
         if not source.can_fire():
             return None
 
-        # Ammo check: if ammo_count == 0, cannot fire; if > 0, decrement
+        # Ammo check: empty magazine cannot fire.  The DECREMENT happens at
+        # the bottom of this method, after every refusal path (range / LOS /
+        # reload) — a REFUSED fire solution must not burn a round (a real
+        # turret doesn't eject a dart when it declines to shoot).
         if source.ammo_count == 0:
             return None
-        if source.ammo_count > 0:
-            source.ammo_count -= 1
-
-        # Sync inventory weapon ammo with target.ammo_count depletion
-        if hasattr(source, 'inventory') and source.inventory is not None:
-            active_wp = source.inventory.get_active_weapon()
-            if active_wp is not None and active_wp.ammo > 0:
-                active_wp.ammo -= 1
-                # Auto-switch when active weapon runs dry
-                if active_wp.ammo <= 0:
-                    source.inventory.auto_switch_weapon()
 
         # Check range (with upgrade modifier)
         dx = target.position[0] - source.position[0]
@@ -196,25 +312,57 @@ class CombatSystem:
             and dist > effective_range * MORTAR_RANGE_FRACTION
         )
 
-        # Check LOS if terrain map is available — skip for mortar arcs
-        if terrain_map is not None and not use_mortar:
-            if not terrain_map.line_of_sight(source.position, target.position):
+        # Aerial shot: a flying source or a flying target.  Exempt from
+        # fire-time LOS and in-flight occlusion (arcs/passes over terrain).
+        aerial = (
+            source.asset_type in _AERIAL_TYPES
+            or target.asset_type in _AERIAL_TYPES
+        )
+
+        # Check LOS — use the explicit kwarg when given, else the stored map.
+        # Skip for mortar arcs and aerial shots (they clear terrain).
+        active_terrain = terrain_map if terrain_map is not None else self._terrain_map
+        if active_terrain is not None and not use_mortar and not aerial:
+            if not active_terrain.line_of_sight(source.position, target.position):
                 return None
 
         # Cooldown stamps are in the SOURCE's sim clock (G-1); duck-typed
         # test stubs without a sim_time fall back to 0.0 harmlessly.
         source_now = getattr(source, "sim_time", 0.0)
 
-        # Weapon system integration: reload check, accuracy, ammo
+        # Weapon system integration: reload check, ammo, and accuracy/guidance.
+        # NOTE: no accuracy pre-roll — every qualifying shot spawns a real
+        # projectile; accuracy is realised below as angular dispersion.
+        accuracy = _DEFAULT_ACCURACY
+        guided = False
+        ws_weapon = None
         if self._weapon_system is not None:
             if self._weapon_system.is_reloading(source.target_id):
                 return None
-            weapon = self._weapon_system.get_weapon(source.target_id)
-            if weapon is not None:
-                if random.random() > weapon.accuracy:
-                    source.last_fired = source_now
-                    return None  # missed due to weapon accuracy
+            ws_weapon = self._weapon_system.get_weapon(source.target_id)
+            if ws_weapon is not None:
+                accuracy = ws_weapon.accuracy
+                guided = ws_weapon.weapon_class == _MISSILE_WEAPON_CLASS
                 self._weapon_system.consume_ammo(source.target_id)
+        if ws_weapon is None:
+            # No weapon-system weapon: prefer a target-level accuracy attr,
+            # then weapon_accuracy, else the baseline default.
+            acc_attr = getattr(source, "accuracy", None)
+            if acc_attr is None:
+                acc_attr = getattr(source, "weapon_accuracy", _DEFAULT_ACCURACY)
+            accuracy = acc_attr
+
+        # All refusal paths are behind us — this shot is really going out.
+        # Decrement target-level ammo and the synced inventory weapon now.
+        if source.ammo_count > 0:
+            source.ammo_count -= 1
+        if hasattr(source, 'inventory') and source.inventory is not None:
+            active_wp = source.inventory.get_active_weapon()
+            if active_wp is not None and active_wp.ammo > 0:
+                active_wp.ammo -= 1
+                # Auto-switch when active weapon runs dry
+                if active_wp.ammo <= 0:
+                    source.inventory.auto_switch_weapon()
 
         source.last_fired = source_now
 
@@ -237,10 +385,42 @@ class CombatSystem:
 
         # Mortar arc: peak height scales with distance (higher lob for longer shots)
         arc_peak = 0.0
-        mortar_speed = 80.0
+        mortar_speed = 40.0
         if use_mortar:
             arc_peak = max(10.0, dist * 0.4)  # 40% of distance as peak height
-            mortar_speed = 40.0  # slower arc trajectory
+
+        # Intended aim point.  An explicit aim_pos wins; otherwise lead the
+        # target internally (live fire sites don't pass a lead point, so the
+        # solver here keeps unguided fire on-target for movers).
+        if aim_pos is not None:
+            intended = (float(aim_pos[0]), float(aim_pos[1]))
+        else:
+            tvel = target_velocity(
+                getattr(target, "heading", 0.0),
+                getattr(target, "speed", 0.0),
+            )
+            intended = lead_target(
+                source.position, target.position, tvel, _PROJECTILE_SPEED,
+            )
+
+        # Angular dispersion about the source->aim bearing, calibrated so the
+        # hit probability equals the weapon accuracy at this fire distance.
+        aim_dx = intended[0] - source.position[0]
+        aim_dy = intended[1] - source.position[1]
+        aim_dist = math.hypot(aim_dx, aim_dy)
+        angle_error = 0.0
+        target_point = intended
+        if accuracy < _MAX_ACCURACY and aim_dist > 1e-9:
+            lateral = self._rng.gauss(0.0, self._dispersion_sigma(accuracy))
+            angle_error = math.atan2(lateral, aim_dist)
+            cos_e = math.cos(angle_error)
+            sin_e = math.sin(angle_error)
+            rot_dx = aim_dx * cos_e - aim_dy * sin_e
+            rot_dy = aim_dx * sin_e + aim_dy * cos_e
+            target_point = (
+                source.position[0] + rot_dx,
+                source.position[1] + rot_dy,
+            )
 
         proj = Projectile(
             id=str(uuid.uuid4()),
@@ -248,13 +428,15 @@ class CombatSystem:
             source_name=source.name,
             target_id=target.target_id,
             position=source.position,
-            target_pos=aim_pos if aim_pos is not None else target.position,
-            speed=mortar_speed if use_mortar else 80.0,
+            target_pos=target_point,
+            speed=mortar_speed if use_mortar else _PROJECTILE_SPEED,
             damage=effective_damage,
             projectile_type=projectile_type,
             source_type=source.asset_type,
             source_pos=source.position,
             created_at=self._sim_time,
+            guided=guided,
+            aerial=aerial,
             is_mortar=use_mortar,
             arc_peak=arc_peak,
             total_flight_dist=dist,
@@ -268,7 +450,10 @@ class CombatSystem:
             "source_type": source.asset_type,
             "source_pos": {"x": source.position[0], "y": source.position[1]},
             "target_id": target.target_id,
-            "target_pos": {"x": target.position[0], "y": target.position[1]},
+            # Dispersed aim point (not the target's live position) so frontend
+            # tracers visibly miss when a shot is off.
+            "target_pos": {"x": target_point[0], "y": target_point[1]},
+            "aim_error_deg": round(math.degrees(angle_error), 2),
             "projectile_type": projectile_type,
             "damage": proj.damage,
             "fire_distance": round(dist, 1),
@@ -295,14 +480,21 @@ class CombatSystem:
                 to_remove.append(proj.id)
                 continue
 
-            # Move projectile toward target.
-            # Mortars fly to the original target_pos (ballistic, not guided).
-            # Direct fire homes toward the target's CURRENT position (semi-guided).
+            # Move projectile toward its aim point.
+            #   - Mortars commit to their fired (dispersed) target_pos arc.
+            #   - Guided (missile) projectiles home toward the target's
+            #     CURRENT position.
+            #   - Unguided direct fire is ballistic: it commits to the fired
+            #     (dispersed) target_pos and flies straight, exactly like a
+            #     mortar — it does NOT curve to follow a moving target.
+            prev_pos = proj.position
             target = targets.get(proj.target_id)
-            if proj.is_mortar:
-                aim_pos = proj.target_pos  # mortars commit to their arc
+            if proj.guided and target is not None and target.status in (
+                "active", "idle", "stationary"
+            ):
+                aim_pos = target.position  # homing munition tracks live pos
             else:
-                aim_pos = target.position if (target is not None and target.status in ("active", "idle", "stationary")) else proj.target_pos
+                aim_pos = proj.target_pos  # ballistic: committed aim point
             dx = aim_pos[0] - proj.position[0]
             dy = aim_pos[1] - proj.position[1]
             dist_to_aim = math.hypot(dx, dy)
@@ -311,11 +503,18 @@ class CombatSystem:
                 step = proj.speed * dt
                 if step >= dist_to_aim:
                     proj.position = aim_pos
+                    # Arrival: an unguided ballistic round (flat dart OR mortar)
+                    # reaching its committed aim point is physically spent.
+                    if not proj.guided and proj.arrived_at is None:
+                        proj.arrived_at = self._sim_time
                 else:
                     proj.position = (
                         proj.position[0] + (dx / dist_to_aim) * step,
                         proj.position[1] + (dy / dist_to_aim) * step,
                     )
+            elif not proj.guided and proj.arrived_at is None:
+                # dist_to_aim == 0: already sitting on the committed aim point.
+                proj.arrived_at = self._sim_time
 
             # Update mortar flight progress (0→1) for arc height calculation
             if proj.is_mortar and proj.total_flight_dist > 0:
@@ -324,6 +523,45 @@ class CombatSystem:
                     proj.position[1] - proj.source_pos[1],
                 )
                 proj.flight_progress = min(1.0, dist_from_source / proj.total_flight_dist)
+
+            # In-flight occlusion: a flat-trajectory ground shot that crosses a
+            # building this tick detonates AT the wall.  Mortars arc over and
+            # aerial shots pass over — both exempt (same rule as fire-time LOS).
+            if (
+                self._terrain_map is not None
+                and not proj.is_mortar
+                and not proj.aerial
+                and proj.position != prev_pos
+            ):
+                impact = self._terrain_map.raycast(prev_pos, proj.position)
+                if impact is not None:
+                    proj.position = impact
+                    proj.missed = True
+                    self._event_bus.publish("projectile_impact", {
+                        "projectile_id": proj.id,
+                        "source_id": proj.source_id,
+                        "source_type": proj.source_type,
+                        "projectile_type": proj.projectile_type,
+                        "position": {"x": impact[0], "y": impact[1]},
+                        "surface": "building",
+                    })
+                    to_remove.append(proj.id)
+                    continue
+
+            # Landed-dart terminal window: once an unguided round has been
+            # spent on its impact point for longer than TERMINAL_WINDOW, remove
+            # it BEFORE the hit test — a mover strolling onto the landing point
+            # later takes NO damage (no ghost darts on the floor).  A hit WITHIN
+            # the window still counts because the hit check below runs while the
+            # round is still fresh.  The 5.0s max-flight expiry remains the
+            # outer bound for rounds that never arrive.
+            if (
+                proj.arrived_at is not None
+                and self._sim_time - proj.arrived_at > TERMINAL_WINDOW
+            ):
+                proj.missed = True
+                to_remove.append(proj.id)
+                continue
 
             # Check hit: is the projectile within HIT_RADIUS of the actual target?
             if target is not None and target.status in ("active", "idle", "stationary"):

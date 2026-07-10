@@ -31,7 +31,7 @@ class Weapon:
     damage: float = 10.0
     weapon_range: float = 15.0
     cooldown: float = 2.0
-    accuracy: float = 0.85  # 0.0-1.0, probability of hit
+    accuracy: float = 0.85  # baseline hit probability — realized as angular dispersion by CombatSystem
     ammo: int = 30
     max_ammo: int = 30
     weapon_class: str = "ballistic"  # ballistic, beam, aoe, missile
@@ -196,11 +196,23 @@ class WeaponSystem:
         """Process reload timers.
 
         When ammo is 0, start a reload. When reload completes, refill ammo.
+
+        Publishes ``reload_started`` the moment a reload timer begins and
+        ``reload_complete`` when the ammo is refilled — each exactly once per
+        reload cycle, and only when an ``event_bus`` is attached.  These are
+        the same state transitions a real turret reports over its WeaponStatus
+        telemetry, so the HUD reads sim and hardware identically.
         """
         # Check for units that need reloading
         for tid, weapon in self._weapons.items():
             if weapon.ammo <= 0 and tid not in self._reload_timers:
                 self._reload_timers[tid] = self._reload_duration
+                if self._event_bus is not None:
+                    self._event_bus.publish("reload_started", {
+                        "target_id": tid,
+                        "weapon": weapon.name,
+                        "duration": self._reload_duration,
+                    })
 
         # Process active reloads
         completed: list[str] = []
@@ -214,6 +226,45 @@ class WeaponSystem:
             weapon = self._weapons.get(tid)
             if weapon is not None:
                 weapon.ammo = weapon.max_ammo
+                if self._event_bus is not None:
+                    self._event_bus.publish("reload_complete", {
+                        "target_id": tid,
+                        "weapon": weapon.name,
+                        "ammo": weapon.ammo,
+                    })
+
+    def reload_state(self, target_id: str) -> dict | None:
+        """Return a reload snapshot for the HUD, or ``None`` if unit unknown.
+
+        ``{"reloading": bool, "remaining_s": float, "duration": float}``.  A
+        known unit that is not reloading reports ``reloading=False`` and
+        ``remaining_s=0.0``.
+        """
+        if target_id not in self._weapons:
+            return None
+        remaining = self._reload_timers.get(target_id, 0.0)
+        return {
+            "reloading": target_id in self._reload_timers,
+            "remaining_s": max(0.0, remaining),
+            "duration": self._reload_duration,
+        }
+
+    def get_all_ammo_state(self) -> dict[str, dict]:
+        """Bulk ammo/reload snapshot for HUD payloads, keyed by ``target_id``.
+
+        Each value: ``{"ammo", "max_ammo", "reloading", "reload_remaining_s"}``.
+        This is the same surface a real turret's WeaponStatus telemetry feeds,
+        so the HUD consumes it identically in sim or on hardware.
+        """
+        state: dict[str, dict] = {}
+        for tid, weapon in self._weapons.items():
+            state[tid] = {
+                "ammo": weapon.ammo,
+                "max_ammo": weapon.max_ammo,
+                "reloading": tid in self._reload_timers,
+                "reload_remaining_s": max(0.0, self._reload_timers.get(tid, 0.0)),
+            }
+        return state
 
     def remove_unit(self, target_id: str) -> None:
         """Remove weapon and reload state for a single unit."""
