@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_DIR = "data/gis_cache"
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
+#: Only these suffixes are ever deleted by :meth:`GISCache.sweep` — a hard
+#: guard so an unexpected file (a ``.txt`` note, a lock file) is never removed.
+_SWEEP_SUFFIXES = {".json", ".bin"}
+
 
 class GISCache:
     """A tiny filename-keyed JSON cache under ``cache_dir``."""
@@ -96,3 +100,125 @@ class GISCache:
         except (OSError, TypeError, ValueError) as exc:
             logger.debug("GIS cache write failed for %s: %s", key, exc)
             return False
+
+    # -- retention ----------------------------------------------------------
+    def sweep(
+        self,
+        *,
+        retention_days: float,
+        max_total_bytes: int,
+        now: float | None = None,
+    ) -> dict:
+        """Bound the on-disk cache by age then by total size, oldest-first.
+
+        Mirrors ``tritium_lib.recording.retention.sweep_recordings`` (on ``dev``,
+        commit ``ffbfd6a``): two passes, both ordered oldest-first by mtime,
+        caller-supplied bounds, safe unlink.  Generalized for the GIS cache — it
+        walks ``cache_dir`` **recursively** (so the ``tiles/`` XYZ tree is
+        covered) and only ever deletes files whose suffix is in
+        :data:`_SWEEP_SUFFIXES` and which resolve to *inside* ``cache_dir`` (an
+        out-of-tree symlink is never followed for deletion).  A later
+        unification of the two sweeps should be mechanical.
+
+        Passes:
+
+        1. **Age** — delete files older than ``retention_days`` (skipped when
+           ``retention_days <= 0``).
+        2. **Size** — while the survivors still exceed ``max_total_bytes``,
+           delete oldest-first until under the cap (skipped when
+           ``max_total_bytes <= 0``).
+
+        Empty subdirectories left behind are pruned best-effort.  A missing
+        cache dir is a safe no-op.  Never raises — returns
+        ``{"removed": [relpaths], "freed_bytes": int, "remaining_bytes": int}``.
+        """
+        base = self.cache_dir
+        eff_now = time.time() if now is None else float(now)
+        empty = {"removed": [], "freed_bytes": 0, "remaining_bytes": 0}
+        try:
+            if not base.is_dir():
+                return empty
+            base_resolved = base.resolve()
+        except OSError:
+            return empty
+
+        entries: list = []  # (path, relpath, mtime, size)
+        try:
+            for path in base.rglob("*"):
+                try:
+                    if not path.is_file():
+                        continue
+                    if path.suffix.lower() not in _SWEEP_SUFFIXES:
+                        continue
+                    st = path.stat()
+                    relpath = str(path.relative_to(base))
+                except (OSError, ValueError):
+                    continue
+                entries.append((path, relpath, st.st_mtime, st.st_size))
+        except OSError as exc:
+            logger.debug("GIS cache sweep walk failed: %s", exc)
+            return empty
+
+        removed: list = []
+        freed = 0
+
+        # Pass 1: age-based eviction.
+        if retention_days > 0:
+            cutoff = eff_now - retention_days * 86400.0
+            survivors: list = []
+            for path, relpath, mtime, size in entries:
+                if mtime < cutoff and self._safe_unlink(path, base_resolved):
+                    removed.append(relpath)
+                    freed += size
+                else:
+                    survivors.append((path, relpath, mtime, size))
+            entries = survivors
+
+        # Pass 2: size-based eviction, oldest-first.
+        total = sum(size for _, _, _, size in entries)
+        if max_total_bytes > 0 and total > max_total_bytes:
+            for path, relpath, _mtime, size in sorted(entries, key=lambda e: e[2]):
+                if total <= max_total_bytes:
+                    break
+                if self._safe_unlink(path, base_resolved):
+                    removed.append(relpath)
+                    freed += size
+                    total -= size
+
+        self._prune_empty_dirs(base)
+
+        if removed:
+            logger.info(
+                "GIS cache sweep: removed %d file(s), freed %.1f MB "
+                "(remaining %.1f MB)",
+                len(removed), freed / 1e6, total / 1e6,
+            )
+        return {"removed": removed, "freed_bytes": freed, "remaining_bytes": total}
+
+    @staticmethod
+    def _safe_unlink(path: Path, base_resolved: Path) -> bool:
+        """Delete *path* only if it resolves inside *base_resolved* with an
+        allowlisted suffix.  Never follows an out-of-tree symlink target."""
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(base_resolved)  # ValueError if outside the tree
+            if resolved.suffix.lower() not in _SWEEP_SUFFIXES:
+                return False
+            resolved.unlink()
+            return True
+        except (OSError, ValueError) as exc:
+            logger.debug("GIS cache sweep: unlink skipped for %s: %s", path, exc)
+            return False
+
+    def _prune_empty_dirs(self, base: Path) -> None:
+        """Remove now-empty subdirectories of *base* (deepest-first). Best-effort."""
+        try:
+            subdirs = [p for p in base.rglob("*") if p.is_dir()]
+        except OSError:
+            return
+        for d in sorted(subdirs, key=lambda p: len(p.parts), reverse=True):
+            try:
+                if not any(d.iterdir()):
+                    d.rmdir()
+            except OSError:
+                continue
