@@ -62,6 +62,8 @@ def find_peek_position(
     *,
     max_offset: float = 30.0,
     step: float = 2.5,
+    anchor: Optional[tuple[float, float]] = None,
+    max_anchor_dist: Optional[float] = None,
 ) -> Optional[tuple[float, float]]:
     """Find the closest lateral peek point that restores LOS to the target.
 
@@ -73,9 +75,16 @@ def find_peek_position(
       (a) walkable / not inside a building (``terrain_map`` walkability),
       (b) clear line of sight to ``target_pos``,
       (c) still within ``weapon_range`` of ``target_pos``,
+      (d) (optional) within ``max_anchor_dist`` of ``anchor`` — BOUNDED
+          EXPOSURE, so a wounded unit leaning out of cover only exposes itself
+          up to a fixed lean-out distance from its cover point.
 
     is returned as ``(x, y)``.  Returns ``None`` when no such point exists
     (fully masked / boxed in / every restoring point is out of range).
+
+    Because the search walks outward from the smallest offset, the first hit is
+    also the peek NEAREST ``shooter_pos`` (and, when ``anchor`` is the cover
+    point the unit is standing at, the peek nearest the cover point).
 
     Args:
         terrain_map: Object exposing ``line_of_sight`` + ``get_movement_cost``
@@ -86,6 +95,12 @@ def find_peek_position(
             still fire — the peek must stay within it.
         max_offset: Largest lateral offset to try, metres.
         step: Lateral sampling increment, metres (smaller == finer, slower).
+        anchor: Optional ``(x, y)`` reference point (e.g. the cover point the
+            unit is holding at).  When given with ``max_anchor_dist`` the peek
+            is constrained to stay within that radius of the anchor — bounded
+            exposure so a unit leans out of cover instead of abandoning it.
+        max_anchor_dist: Optional max distance (metres) a peek candidate may be
+            from ``anchor``.  Ignored when ``anchor`` is ``None``.
 
     Returns:
         The closest valid ``(x, y)`` peek point, or ``None``.
@@ -106,6 +121,12 @@ def find_peek_position(
     wr2 = float(weapon_range) * float(weapon_range)
     steps = max(1, int(max_offset / step))
 
+    # (d) bounded-exposure setup: constrain candidates near the cover anchor.
+    anchor_bounded = anchor is not None and max_anchor_dist is not None
+    if anchor_bounded:
+        ax, ay = float(anchor[0]), float(anchor[1])
+        mad2 = float(max_anchor_dist) * float(max_anchor_dist)
+
     for i in range(1, steps + 1):
         offset = step * i
         for sign in (1.0, -1.0):
@@ -115,6 +136,13 @@ def find_peek_position(
             # (a) must be somewhere the unit could actually stand.
             if not _is_walkable(terrain_map, cx, cy):
                 continue
+
+            # (d) bounded exposure: stay within the lean-out radius of cover.
+            if anchor_bounded:
+                adx = cx - ax
+                ady = cy - ay
+                if (adx * adx + ady * ady) > mad2:
+                    continue
 
             # (c) must keep the target in weapon range (cheap; before LOS).
             cdx = cx - tx
