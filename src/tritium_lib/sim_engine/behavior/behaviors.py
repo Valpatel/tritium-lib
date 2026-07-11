@@ -221,6 +221,15 @@ class UnitBehaviors:
         # Pathfinding router callback
         self._router = None  # Callable[[start, end, asset_type, alliance], list]
 
+        # Weather target-ACQUISITION degradation (1.0 == no degradation). The
+        # engine sets this each tick from the environmental layer's
+        # detection_range_modifier when weather is enabled; fog/snow shrink the
+        # range at which a unit can acquire (open fire on) a target, so the
+        # enemy closes before anyone shoots. Left at exactly 1.0 when weather is
+        # off, and weapon_range * 1.0 == weapon_range in IEEE754, so every
+        # weather-off drive (all 6 canonical goldens) stays byte-identical.
+        self._detection_modifier: float = 1.0
+
         # Focus-fire spread (civil_unrest riot line): per-tick claim map,
         # target_id -> number of officers that have already picked it THIS tick.
         # Cleared at the top of tick(); police prefer the least-claimed nearby
@@ -234,6 +243,15 @@ class UnitBehaviors:
         route_fn signature: (start, end, unit_type, alliance) -> list[waypoints]
         """
         self._router = route_fn
+
+    def set_detection_modifier(self, mod: float) -> None:
+        """Set the weather target-acquisition multiplier (1.0 == no effect).
+
+        < 1.0 shrinks the range at which combatants open fire (fog/snow), so
+        hostiles close before engagement. Clamped to a small floor so a unit is
+        never fully blinded.
+        """
+        self._detection_modifier = max(0.05, float(mod))
 
     def set_obstacles(self, obstacles) -> None:
         """Set obstacle geometry for cover-seeking behavior.
@@ -1271,12 +1289,16 @@ class UnitBehaviors:
             visible_targets = set(vision_state.can_see.get(unit.target_id, []))
             enemies = {k: v for k, v in enemies.items() if k in visible_targets}
 
+        # Weather shrinks the acquisition range (fog/snow). Exactly weapon_range
+        # when the modifier is 1.0 (weather off) => byte-identical goldens.
+        eff_range = unit.weapon_range * self._detection_modifier
+
         best: SimulationTarget | None = None
         best_dist = float("inf")
 
         if self._spatial_grid is not None:
-            # Grid-accelerated: only check targets in weapon_range radius
-            candidates = self._spatial_grid.query_radius(unit.position, unit.weapon_range)
+            # Grid-accelerated: only check targets in the acquisition radius
+            candidates = self._spatial_grid.query_radius(unit.position, eff_range)
             for candidate in candidates:
                 if candidate.target_id not in enemies:
                     continue
@@ -1288,7 +1310,7 @@ class UnitBehaviors:
                     best = candidate
         else:
             # Brute-force fallback
-            wr2 = unit.weapon_range * unit.weapon_range
+            wr2 = eff_range * eff_range
             for enemy in enemies.values():
                 dx = enemy.position[0] - unit.position[0]
                 dy = enemy.position[1] - unit.position[1]
@@ -1318,10 +1340,13 @@ class UnitBehaviors:
             visible_targets = set(vision_state.can_see.get(unit.target_id, []))
             enemies = {k: v for k, v in enemies.items() if k in visible_targets}
 
+        # Weather acquisition-range degradation (mirror nearest exactly).
+        eff_range = unit.weapon_range * self._detection_modifier
+
         out: list[tuple[SimulationTarget, float]] = []
         if self._spatial_grid is not None:
             candidates = self._spatial_grid.query_radius(
-                unit.position, unit.weapon_range,
+                unit.position, eff_range,
             )
             for candidate in candidates:
                 if candidate.target_id not in enemies:
@@ -1330,7 +1355,7 @@ class UnitBehaviors:
                 dy = candidate.position[1] - unit.position[1]
                 out.append((candidate, dx * dx + dy * dy))
         else:
-            wr2 = unit.weapon_range * unit.weapon_range
+            wr2 = eff_range * eff_range
             for enemy in enemies.values():
                 dx = enemy.position[0] - unit.position[0]
                 dy = enemy.position[1] - unit.position[1]
