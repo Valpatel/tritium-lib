@@ -9,7 +9,7 @@ It is the missing rung between the L0-L2 :class:`FrameAnalyzer` (which only
 reports a single motion centroid) and the multi-sensor
 :class:`TargetTracker` (which wants class + position per object).
 
-Two backends fill the SAME :class:`FrameObjectDetector` interface so the
+Three backends fill the SAME :class:`FrameObjectDetector` interface so the
 runtime can pick the best available without the caller caring:
 
   * :class:`BackgroundMotionDetector` — pure OpenCV background-subtraction
@@ -19,7 +19,14 @@ runtime can pick the best available without the caller caring:
     exactly what runs when a real camera has no accelerator.
   * :class:`YoloObjectDetector` — a graceful wrapper over ultralytics YOLO.
     If ultralytics/torch are not importable (the common case on a headless
-    box), it is simply unavailable and the factory falls back to motion.
+    box), it is simply unavailable and the factory falls back.
+  * :class:`OnnxYoloDetector` — a YOLO ``.onnx`` model run through
+    onnxruntime on CPU.  Real class labels without torch/ultralytics:
+    letterbox preprocess + v8/v5 output decode + NMS live here in plain
+    numpy/cv2 (see :func:`letterbox_frame` / :func:`decode_yolo_predictions`,
+    which are pure and unit-testable without a model).  The model path comes
+    from the caller or the ``TRITIUM_YOLO_ONNX`` env var
+    (:func:`resolve_onnx_model`).
 
 Production ↔ fun: the SAME detector runs on synthetic demo frames (a person
 walking through a simulated camera lights up the tactical map) and on real
@@ -30,6 +37,7 @@ camera in changes the frame source, not this code.
 from __future__ import annotations
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 
@@ -56,6 +64,25 @@ RELEVANT_CLASSES = {
     15: "cat",
     16: "dog",
 }
+
+# Full COCO 80-class vocabulary, index == class id.  A raw ONNX YOLO export
+# carries no names metadata, so the decode step maps class ids through this
+# tuple (RELEVANT_CLASSES is the id-filter; this is the id->name map).
+COCO80_NAMES = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+    "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv",
+    "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+    "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+)
 
 
 class FrameObjectDetector(ABC):
@@ -257,6 +284,239 @@ class YoloObjectDetector(FrameObjectDetector):
         return dets
 
 
+# ------------------------------------------------------------------ ONNX
+# Pure preprocessing/decode math for the ONNX backend.  Kept module-level so
+# they are unit-testable without a model file or an onnxruntime install.
+
+def letterbox_frame(
+    frame: np.ndarray, size: int = 640,
+) -> tuple[np.ndarray, float, int, int]:
+    """Letterbox a BGR frame into a square YOLO input blob.
+
+    Scales the frame to fit ``size`` x ``size`` preserving aspect ratio, pads
+    the remainder with the YOLO-standard grey (114), converts BGR->RGB, and
+    normalizes to [0, 1] float32 in NCHW layout.
+
+    Args:
+        frame: HxWx3 BGR uint8 image.
+        size: Square model input edge (e.g. 640).
+
+    Returns:
+        ``(blob, ratio, pad_x, pad_y)`` where ``blob`` is float32
+        ``[1, 3, size, size]``, ``ratio`` is the original->letterbox scale,
+        and ``pad_x``/``pad_y`` are the left/top pad offsets in pixels.
+    """
+    h, w = frame.shape[:2]
+    ratio = min(size / h, size / w)
+    new_w = max(1, int(round(w * ratio)))
+    new_h = max(1, int(round(h * ratio)))
+    pad_x = (size - new_w) // 2
+    pad_y = (size - new_h) // 2
+
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.full((size, size, 3), 114, dtype=np.uint8)
+    canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+
+    rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    blob = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis, ...]
+    return blob, float(ratio), int(pad_x), int(pad_y)
+
+
+def decode_yolo_predictions(
+    pred: np.ndarray,
+    ratio: float,
+    pad_x: int,
+    pad_y: int,
+    conf_threshold: float = 0.4,
+    iou_threshold: float = 0.45,
+    input_size: int = 640,
+) -> list[tuple[int, float, float, float, float, float]]:
+    """Decode a raw YOLO output tensor into NMS-filtered pixel boxes.
+
+    Handles BOTH standard export layouts (with or without a leading batch
+    dim):
+
+      * YOLOv8: ``(4+nc, anchors)`` e.g. (84, 8400) — [cx, cy, w, h] then
+        ``nc`` class scores, no objectness.
+      * YOLOv5: ``(anchors, 5+nc)`` e.g. (25200, 85) — [cx, cy, w, h, obj]
+        then ``nc`` class scores; confidence is ``obj * cls``.
+
+    The layouts are told apart by orientation: the anchor axis is always the
+    (much) longer one.  Some exports emit box coordinates NORMALIZED to
+    [0, 1] instead of letterbox pixels; that is auto-detected (every kept
+    coordinate <= 2) and rescaled by ``input_size``.  Boxes are then
+    un-letterboxed back to ORIGINAL image pixel coordinates using
+    ``ratio``/``pad_x``/``pad_y`` from :func:`letterbox_frame`, and
+    per-class NMS'd via ``cv2.dnn.NMSBoxes``.
+
+    Returns:
+        ``[(cls_id, conf, x, y, w, h), ...]`` with x/y the top-left corner in
+        original-image pixels, sorted by confidence descending.  Boxes are
+        NOT clipped to any frame bounds here (the caller knows the frame).
+    """
+    a = np.asarray(pred, dtype=np.float32)
+    if a.ndim == 3:
+        a = a[0]
+    if a.ndim != 2 or a.shape[0] < 5 or a.shape[1] < 5:
+        return []
+
+    if a.shape[0] <= a.shape[1]:
+        # (channels, anchors) — v8 layout: transpose, no objectness column.
+        a = a.T
+        boxes = a[:, :4]
+        scores = a[:, 4:]
+    else:
+        # (anchors, channels) — v5 layout: objectness * class scores.
+        boxes = a[:, :4]
+        scores = a[:, 5:] * a[:, 4:5]
+    if scores.shape[1] == 0:
+        return []
+
+    cls_ids = np.argmax(scores, axis=1)
+    confs = scores[np.arange(scores.shape[0]), cls_ids]
+    keep = confs >= float(conf_threshold)
+    if not np.any(keep):
+        return []
+    boxes, confs, cls_ids = boxes[keep], confs[keep], cls_ids[keep]
+
+    # Normalized-coordinate exports: every surviving cx/cy/w/h sits in
+    # [0, 1] (letterbox-pixel exports have coords in the hundreds).
+    if float(boxes.max()) <= 2.0:
+        boxes = boxes * float(input_size)
+
+    inv = 1.0 / (float(ratio) if ratio else 1.0)
+    x = (boxes[:, 0] - boxes[:, 2] / 2.0 - float(pad_x)) * inv
+    y = (boxes[:, 1] - boxes[:, 3] / 2.0 - float(pad_y)) * inv
+    w = boxes[:, 2] * inv
+    h = boxes[:, 3] * inv
+
+    out: list[tuple[int, float, float, float, float, float]] = []
+    for cid in np.unique(cls_ids):
+        m = cls_ids == cid
+        cand = np.stack([x[m], y[m], w[m], h[m]], axis=1)
+        cand_conf = confs[m]
+        idxs = cv2.dnn.NMSBoxes(
+            cand.tolist(), cand_conf.tolist(),
+            float(conf_threshold), float(iou_threshold),
+        )
+        if idxs is None or len(idxs) == 0:
+            continue
+        for i in np.asarray(idxs).flatten():
+            out.append((
+                int(cid), float(cand_conf[i]),
+                float(cand[i, 0]), float(cand[i, 1]),
+                float(cand[i, 2]), float(cand[i, 3]),
+            ))
+    out.sort(key=lambda t: t[1], reverse=True)
+    return out
+
+
+def resolve_onnx_model(explicit: str | None = None) -> str | None:
+    """Resolve an ONNX YOLO model path, or ``None`` if none is available.
+
+    Order: ``explicit`` argument if that file exists, else the
+    ``TRITIUM_YOLO_ONNX`` environment variable if set and the file exists,
+    else ``None``.
+    """
+    if explicit:
+        if os.path.isfile(explicit):
+            return explicit
+        logger.debug("Explicit ONNX model path does not exist: %s", explicit)
+    env_path = os.environ.get("TRITIUM_YOLO_ONNX", "").strip()
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    return None
+
+
+class OnnxYoloDetector(FrameObjectDetector):
+    """YOLO ``.onnx`` model through onnxruntime — real classes without torch.
+
+    Constructing this raises ``RuntimeError`` (mirroring
+    :class:`YoloObjectDetector`) when onnxruntime is not importable, the
+    model file is missing, or the session fails to load, so
+    :func:`build_frame_detector` can catch it and fall back gracefully.
+    CPU-only by design (``CPUExecutionProvider``): this is the accelerator-
+    free path that still yields honest class labels on a headless box.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        confidence_threshold: float = 0.4,
+        iou_threshold: float = 0.45,
+    ) -> None:
+        try:
+            import onnxruntime as ort
+        except Exception as exc:  # ImportError or a broken install
+            raise RuntimeError(
+                f"onnxruntime not available ({exc}); "
+                "use BackgroundMotionDetector"
+            ) from exc
+        if not model_path or not os.path.isfile(model_path):
+            raise RuntimeError(f"ONNX model not found: {model_path!r}")
+        try:
+            self._session = ort.InferenceSession(
+                model_path, providers=["CPUExecutionProvider"],
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to load ONNX model {model_path!r}: {exc}"
+            ) from exc
+
+        self.confidence_threshold = float(confidence_threshold)
+        self.iou_threshold = float(iou_threshold)
+
+        model_input = self._session.get_inputs()[0]
+        self._input_name = model_input.name
+        self._output_name = self._session.get_outputs()[0].name
+        # Static export: [1, 3, H, W].  Dynamic dims arrive as strings/None.
+        shape = list(model_input.shape or [])
+        size = 640
+        if len(shape) == 4 and isinstance(shape[2], int) and shape[2] > 0:
+            size = int(shape[2])
+        self.input_size = size
+        self.backend_name = f"onnx:{os.path.basename(model_path)}"
+
+    def detect(self, frame: np.ndarray, source_id: str = "") -> list[CameraDetection]:
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return []
+        if frame.ndim == 2:  # grayscale in -> 3 channels, like the motion backend
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        frame_h, frame_w = frame.shape[:2]
+        blob, ratio, pad_x, pad_y = letterbox_frame(frame, self.input_size)
+        pred = self._session.run([self._output_name], {self._input_name: blob})[0]
+        raw = decode_yolo_predictions(
+            pred, ratio, pad_x, pad_y,
+            self.confidence_threshold, self.iou_threshold,
+            input_size=self.input_size,
+        )
+
+        ts = datetime.now(timezone.utc)
+        dets: list[CameraDetection] = []
+        for cls_id, conf, x, y, w, h in raw:
+            if cls_id not in RELEVANT_CLASSES:
+                continue
+            # Clip to the original frame bounds; drop degenerate remnants.
+            x1 = min(max(x, 0.0), float(frame_w))
+            y1 = min(max(y, 0.0), float(frame_h))
+            x2 = min(max(x + w, 0.0), float(frame_w))
+            y2 = min(max(y + h, 0.0), float(frame_h))
+            if x2 - x1 <= 0.0 or y2 - y1 <= 0.0:
+                continue
+            dets.append(
+                CameraDetection(
+                    source_id=source_id or "onnx",
+                    class_name=COCO80_NAMES[cls_id],
+                    confidence=round(min(1.0, conf), 3),
+                    bbox=BoundingBox(x=x1, y=y1, w=x2 - x1, h=y2 - y1),
+                    timestamp=ts,
+                )
+            )
+        dets.sort(key=lambda d: d.confidence, reverse=True)
+        return dets
+
+
 def yolo_available() -> bool:
     """True if the ultralytics/torch YOLO backend can be imported."""
     try:
@@ -266,9 +526,18 @@ def yolo_available() -> bool:
         return False
 
 
+def onnx_available() -> bool:
+    """True if onnxruntime is importable (model availability is separate)."""
+    try:
+        import onnxruntime  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def available_backends() -> dict[str, bool]:
     """Report which detector backends are usable in this environment."""
-    return {"motion": True, "yolo": yolo_available()}
+    return {"motion": True, "yolo": yolo_available(), "onnx": onnx_available()}
 
 
 def build_frame_detector(
@@ -277,15 +546,28 @@ def build_frame_detector(
     model_name: str = "yolov8n.pt",
     confidence_threshold: float = 0.4,
     device: str | None = None,
+    onnx_model_path: str | None = None,
+    iou_threshold: float = 0.45,
     **motion_kwargs,
 ) -> FrameObjectDetector:
     """Build the best available frame detector.
 
     Args:
-        prefer: "auto" (YOLO if available else motion), "yolo" (require/try
-            YOLO, fall back to motion on failure), or "motion" (force the
-            classical detector).
-        model_name/confidence_threshold/device: forwarded to the YOLO backend.
+        prefer: Backend preference —
+            * ``"auto"``: ultralytics YOLO if importable, else the ONNX
+              backend if a model resolves (``onnx_model_path`` arg or the
+              ``TRITIUM_YOLO_ONNX`` env var), else motion.
+            * ``"yolo"``: a real-YOLO ask — same chain as "auto"
+              (ultralytics, then ONNX, then motion) since ONNX still gives
+              real YOLO classes; failures are logged as warnings.
+            * ``"onnx"``: the ONNX backend, warning + motion fallback when
+              no model resolves or the session fails.
+            * ``"motion"``: force the classical detector.
+        model_name/confidence_threshold/device: forwarded to the ultralytics
+            backend (confidence_threshold also feeds the ONNX backend).
+        onnx_model_path: explicit ONNX model path for the ONNX backend (see
+            :func:`resolve_onnx_model` for the env-var fallback).
+        iou_threshold: NMS IoU threshold, forwarded to the ONNX backend.
         **motion_kwargs: forwarded to :class:`BackgroundMotionDetector`.
 
     Returns:
@@ -293,6 +575,8 @@ def build_frame_detector(
         which backend was selected.
     """
     prefer = (prefer or "auto").lower()
+    explicit_ask = prefer in ("yolo", "onnx")
+
     if prefer in ("yolo", "auto"):
         try:
             det = YoloObjectDetector(
@@ -303,10 +587,33 @@ def build_frame_detector(
             logger.info("Frame detector: %s", det.backend_name)
             return det
         except Exception as exc:
-            if prefer == "yolo":
-                logger.warning("YOLO requested but unavailable (%s); using motion", exc)
-            else:
-                logger.info("YOLO unavailable (%s); using motion detector", exc)
+            logger.log(
+                logging.WARNING if prefer == "yolo" else logging.INFO,
+                "ultralytics YOLO unavailable (%s); trying ONNX", exc,
+            )
+
+    if prefer in ("yolo", "auto", "onnx"):
+        resolved = resolve_onnx_model(onnx_model_path)
+        if resolved is not None:
+            try:
+                det = OnnxYoloDetector(
+                    resolved,
+                    confidence_threshold=confidence_threshold,
+                    iou_threshold=iou_threshold,
+                )
+                logger.info("Frame detector: %s", det.backend_name)
+                return det
+            except Exception as exc:
+                logger.log(
+                    logging.WARNING if explicit_ask else logging.INFO,
+                    "ONNX backend failed (%s); using motion detector", exc,
+                )
+        elif explicit_ask:
+            logger.warning(
+                "No ONNX model resolves (path=%r, env TRITIUM_YOLO_ONNX "
+                "unset or missing); using motion detector", onnx_model_path,
+            )
+
     det = BackgroundMotionDetector(**motion_kwargs)
     logger.info("Frame detector: %s", det.backend_name)
     return det
