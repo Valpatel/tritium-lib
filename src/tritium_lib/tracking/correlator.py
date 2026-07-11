@@ -601,8 +601,18 @@ class TargetCorrelator:
             # the cross-modal confirmation set, even when merged in from a
             # secondary that originated as a sim target. Same-as-primary
             # is also a no-op (the primary already counts itself).
+            # 'camera' and 'yolo' are ONE vision modality (provenance vs
+            # algorithm name): a camera-source secondary merging into a
+            # yolo-source primary is not cross-modal confirmation either —
+            # mirror TargetTracker._add_confirming_source's vision guard.
+            _VISION = ("yolo", "camera")
+
             def _admit(src: str) -> bool:
-                return bool(src) and src != "simulation" and src != primary.source
+                if not src or src == "simulation" or src == primary.source:
+                    return False
+                if src in _VISION and primary.source in _VISION:
+                    return False
+                return True
 
             if _admit(secondary.source):
                 primary.confirming_sources.add(secondary.source)
