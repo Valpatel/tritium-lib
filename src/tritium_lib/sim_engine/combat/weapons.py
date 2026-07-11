@@ -52,6 +52,12 @@ _DEFAULT_WEAPONS: dict[str, Weapon] = {
         name="nerf_cannon", damage=12.0, weapon_range=10.0,
         cooldown=2.0, accuracy=0.85, ammo=40, max_ammo=40,
     ),
+    # Mirrors examples/robot-template/config-dog.yaml (max_ammo 12, reload
+    # 2.5s): the sim dog's magazine matches the real dog's WeaponStatus.
+    "robot_dog": Weapon(
+        name="nerf_blaster", damage=8.0, weapon_range=9.0,
+        cooldown=1.2, accuracy=0.8, ammo=12, max_ammo=12,
+    ),
     "person_hostile": Weapon(
         name="nerf_pistol", damage=10.0, weapon_range=8.0,
         cooldown=2.5, accuracy=0.6, ammo=15, max_ammo=15,

@@ -374,7 +374,7 @@ def build_identity(target_id: str, asset_type: str, alliance: str) -> UnitIdenti
     # Robot/drone/turret/tank/apc/sensor types
     elif asset_type in (
         "rover", "drone", "turret", "scout_drone", "swarm_drone",
-        "quad_drone", "plane_drone",
+        "quad_drone", "plane_drone", "robot_dog",
         "heavy_turret", "missile_turret", "tank", "apc", "camera", "sensor",
     ):
         ident.serial_number = generate_serial(target_id)
@@ -390,6 +390,8 @@ def build_identity(target_id: str, asset_type: str, alliance: str) -> UnitIdenti
 # Battery drain rates per second by asset type
 _DRAIN_RATES: dict[str, float] = {
     "rover": 0.001,
+    # Trot-gait draw from tritium_lib.models.quadruped: 120 W / 155 Wh pack.
+    "robot_dog": 0.00022,
     "drone": 0.002,
     "turret": 0.0005,
     "scout_drone": 0.0025,
@@ -452,6 +454,7 @@ _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
     "turret":           (200.0, 200.0, 80.0, 1.5, 15.0, True),
     "drone":            (60.0,  60.0,  50.0, 1.0,  8.0, True),
     "rover":            (150.0, 150.0, 60.0, 2.0, 12.0, True),
+    "robot_dog":        (120.0, 120.0, 45.0, 1.2,  8.0, True),
     "person_hostile":   (80.0,  80.0,  40.0, 2.5, 10.0, True),
     "person_neutral":   (50.0,  50.0,   0.0, 0.0,  0.0, False),
     "vehicle":          (300.0, 300.0,  0.0, 0.0,  0.0, False),

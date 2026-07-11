@@ -767,6 +767,11 @@ from .fire_control import (
     WeaponStatus,
     compute_fire_solution,
 )
+from .quadruped import (
+    DEFAULT_GAITS,
+    GaitSpec,
+    QuadrupedProfile,
+)
 
 __all__ = [
     # Deployment
@@ -1430,4 +1435,8 @@ __all__ = [
     "TurretAimCommand",
     "WeaponStatus",
     "compute_fire_solution",
+    # Quadruped (robot-dog gait profile — sim animation + Go2-class telemetry)
+    "DEFAULT_GAITS",
+    "GaitSpec",
+    "QuadrupedProfile",
 ]

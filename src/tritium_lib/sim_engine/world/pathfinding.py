@@ -36,8 +36,9 @@ _FLYING_TYPES = {"drone", "scout_drone"}
 # Unit types that follow roads
 _ROAD_TYPES = {"rover", "tank", "apc", "vehicle"}
 
-# Unit types that prefer sidewalks (pedestrian navigation)
-_PEDESTRIAN_TYPES = {"person", "infantry", "civilian", "animal"}
+# Unit types that prefer sidewalks (pedestrian navigation).
+# A quadruped walks where people walk, not where cars drive.
+_PEDESTRIAN_TYPES = {"person", "infantry", "civilian", "animal", "robot_dog"}
 
 # Public aliases (2026-07-10): consumers (sc engine.route_path) need the same
 # unit-type taxonomy to decide network-graph vs costmap planner precedence.
