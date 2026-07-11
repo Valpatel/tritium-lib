@@ -75,6 +75,12 @@ class RouteResult:
             satisfied and the planner fell back to a clearance-0 route so the
             dispatch still succeeds (see :func:`plan_route`).  Always False for
             clearance-0 requests and for clearance requests that were met.
+        strategy: Which planner actually solved the route — ``"flat"`` (the
+            8-connected A* below) or ``"hierarchical"`` (the coarse-to-fine
+            corridor planner engaged for large AOs).  Reported to operator
+            telemetry so the UI can show which planner ran and how hard it
+            worked (``expansions``).  A hierarchical request that degenerates to
+            flat on a tiny map honestly reports ``"flat"``.
     """
 
     success: bool
@@ -83,6 +89,7 @@ class RouteResult:
     expansions: int = 0
     reason: str = "ok"
     clearance_relaxed: bool = False
+    strategy: str = "flat"
 
 
 def _octile(c0: int, r0: int, c1: int, r1: int) -> float:
