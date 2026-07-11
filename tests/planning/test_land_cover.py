@@ -266,6 +266,108 @@ class TestNhdWater:
 
 
 # ---------------------------------------------------------------------------
+# sever_crossings — a blown bridge denies the span; the planner re-routes
+# ---------------------------------------------------------------------------
+
+
+def _road_ew(y):
+    """An E-W TIGER road spanning the world at latitude ``y`` (a bridge where it
+    crosses the N-S river)."""
+    return {"type": "FeatureCollection", "features": [{
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": [[0, y], [400, y]]},
+        "properties": {"source": "tiger", "kind": "S1100"}}]}
+
+
+def _crosses_wall_near(path, y_expected, tol=40.0):
+    """True if the route crosses the x=200 river wall within ``tol`` m of ``y``."""
+    for (x0, y0), (x1, y1) in zip(path, path[1:]):
+        if (x0 - 200.0) * (x1 - 200.0) <= 0 and x0 != x1:
+            t = (200.0 - x0) / (x1 - x0)
+            yc = y0 + t * (y1 - y0)
+            if abs(yc - y_expected) <= tol:
+                return True
+    return False
+
+
+@pytest.mark.unit
+class TestSeverCrossings:
+    """A river wall split by two road bridges; severing one re-routes the plan."""
+
+    def _two_bridge_builder(self):
+        b = CostmapBuilder(BOUNDS, resolution=5.0)
+        b.add_gis_features(_road_ew(100.0), to_local=_identity)   # bridge A
+        b.add_gis_features(_road_ew(300.0), to_local=_identity)   # bridge B
+        b.add_water_obstacles(
+            _nhd_fc([_line([[200, 0], [200, 400]], "river")]),
+            to_local=_identity)
+        return b
+
+    def test_intact_route_uses_the_near_bridge(self):
+        from tritium_lib.planning.astar import plan_route
+        cm = self._two_bridge_builder().build()
+        r = plan_route(cm, (40.0, 100.0), (360.0, 100.0), clearance_m=0.0)
+        assert r.success
+        # It crosses the wall at bridge A (y=100), not the far bridge B.
+        assert _crosses_wall_near(r.path, 100.0)
+
+    def test_severing_near_bridge_reroutes_to_far_bridge(self):
+        from tritium_lib.planning.astar import plan_route
+        b = self._two_bridge_builder()
+        # Blow bridge A (the whole ~span, radius covers road+river width).
+        sv = b.sever_crossings([(200.0, 100.0)], radius_m=20.0)
+        assert sv["severed"] > 0
+        cm = b.build()
+        # Bridge A cell is now lethal (severed) ...
+        assert cm.is_lethal(*cm.world_to_grid(200.0, 100.0))
+        # ... but bridge B survives, so the route still solves — via y=300.
+        r = plan_route(cm, (40.0, 100.0), (360.0, 100.0), clearance_m=0.0)
+        assert r.success
+        assert _crosses_wall_near(r.path, 300.0)
+        assert not _crosses_wall_near(r.path, 100.0)
+
+    def test_severing_the_only_bridge_denies_the_route(self):
+        from tritium_lib.planning.astar import plan_route
+        b = CostmapBuilder(BOUNDS, resolution=5.0)
+        b.add_gis_features(_road_ew(100.0), to_local=_identity)  # sole bridge
+        b.add_water_obstacles(
+            _nhd_fc([_line([[200, 0], [200, 400]], "river")]),
+            to_local=_identity)
+        intact = plan_route(
+            b.build(), (40.0, 100.0), (360.0, 100.0), clearance_m=0.0)
+        assert intact.success  # the lone bridge carries it while intact
+
+        b.sever_crossings([(200.0, 100.0)], radius_m=20.0)
+        denied = plan_route(
+            b.build(), (40.0, 100.0), (360.0, 100.0), clearance_m=0.0)
+        assert not denied.success  # blown -> no crossing -> no path
+
+    def test_repair_is_a_fresh_build_without_the_sever(self):
+        # Sever is per-build state, not a permanent global: the engine rebuilds a
+        # FRESH builder each costmap cycle, so "repair" == the next rebuild omits
+        # the sever.  Two independent builders over the same geometry: one blown,
+        # one intact.
+        from tritium_lib.planning.astar import plan_route
+
+        def _sole_bridge_builder():
+            b = CostmapBuilder(BOUNDS, resolution=5.0)
+            b.add_gis_features(_road_ew(100.0), to_local=_identity)
+            b.add_water_obstacles(
+                _nhd_fc([_line([[200, 0], [200, 400]], "river")]),
+                to_local=_identity)
+            return b
+
+        blown = _sole_bridge_builder()
+        blown.sever_crossings([(200.0, 100.0)], radius_m=20.0)
+        assert not plan_route(
+            blown.build(), (40.0, 100.0), (360.0, 100.0), clearance_m=0.0).success
+
+        repaired = _sole_bridge_builder()  # fresh build, no sever applied
+        assert plan_route(
+            repaired.build(), (40.0, 100.0), (360.0, 100.0), clearance_m=0.0).success
+
+
+# ---------------------------------------------------------------------------
 # Real USGS NHD fixture drives a lethal-water stamp
 # ---------------------------------------------------------------------------
 
