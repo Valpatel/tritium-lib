@@ -7,7 +7,7 @@ import math
 
 import pytest
 
-from tritium_lib.planning.astar import _supercover_cells, plan_route
+from tritium_lib.planning.astar import _supercover_cells, plan_route, segment_clear
 from tritium_lib.planning.costmap import CostmapBuilder, CostmapWeights
 
 LETHAL = float("inf")
@@ -321,3 +321,63 @@ class TestDeterminismAndLimits:
         sm = plan_route(cm, (5, 5), (105, 5), smooth=True)
         # Smoothing must not straight-line across the expensive base cells.
         assert max(p[1] for p in sm.path) >= 20.0
+
+
+class TestSegmentClear:
+    """Public LOS gate — corner-safe supercover, clearance-aware."""
+
+    def test_open_line_is_clear(self):
+        cm = CostmapBuilder((0, 0, 200, 200), resolution=10.0).build()
+        assert segment_clear(cm, (20, 20), (180, 180)) is True
+
+    def test_zero_length_open_cell_is_clear(self):
+        cm = CostmapBuilder((0, 0, 200, 200), resolution=10.0).build()
+        assert segment_clear(cm, (55, 55), (55, 55)) is True
+
+    def test_segment_crossing_lethal_block_is_blocked(self):
+        # A vertical wall at x in [95, 105] spanning the whole map.
+        b = CostmapBuilder((0, 0, 200, 200), resolution=10.0)
+        b.add_obstacles(_polygon_fc([[95, 20], [105, 20], [105, 180], [95, 180], [95, 20]]))
+        cm = b.build()
+        # A horizontal segment through the wall must be blocked...
+        assert segment_clear(cm, (30, 100), (170, 100)) is False
+        # ...while a segment entirely on one side is clear.
+        assert segment_clear(cm, (10, 30), (80, 170)) is True
+
+    def test_endpoint_out_of_bounds_is_blocked(self):
+        cm = CostmapBuilder((0, 0, 100, 100), resolution=10.0).build()
+        assert segment_clear(cm, (50, 50), (500, 50)) is False
+        assert segment_clear(cm, (-50, 50), (50, 50)) is False
+
+    def test_zero_length_lethal_cell_is_blocked(self):
+        b = CostmapBuilder((0, 0, 100, 100), resolution=10.0)
+        b.add_obstacles(_polygon_fc([[40, 40], [60, 40], [60, 60], [40, 60], [40, 40]]))
+        cm = b.build()
+        assert segment_clear(cm, (50, 50), (50, 50)) is False
+
+    def test_diagonal_corner_pinch_is_blocked(self):
+        # Two lethal cells sharing only a corner at (10, 10): cell (1,0) and
+        # cell (0,1).  The OPEN cells (0,0) and (1,1) form the anti-diagonal.
+        # A diagonal threaded from open (0,0) to open (1,1) passes exactly
+        # through the shared corner and must be reported blocked (corner-safe
+        # supercover), never allowed to "slip between" the two obstacles.
+        b = CostmapBuilder((0, 0, 30, 30), resolution=10.0)
+        b.add_obstacles(_polygon_fc([[10, 0], [20, 0], [20, 10], [10, 10], [10, 0]]))
+        b.add_obstacles(_polygon_fc([[0, 10], [10, 10], [10, 20], [0, 20], [0, 10]]))
+        cm = b.build()
+        # Endpoints sit in the OPEN anti-diagonal cells (0,0) and (1,1).
+        assert cm.is_lethal(*cm.world_to_grid(5, 5)) is False
+        assert cm.is_lethal(*cm.world_to_grid(15, 15)) is False
+        assert segment_clear(cm, (5, 5), (15, 15)) is False
+
+    def test_clearance_rejects_sub_standoff_corridor(self):
+        # A gap one cell wide between two walls: passable at clearance 0,
+        # blocked once a standoff wider than the gap half-width is required.
+        b = CostmapBuilder((0, 0, 90, 90), resolution=10.0)
+        b.add_obstacles(_polygon_fc([[0, 30], [40, 30], [40, 40], [0, 40], [0, 30]]))
+        b.add_obstacles(_polygon_fc([[50, 30], [90, 30], [90, 40], [50, 40], [50, 30]]))
+        cm = b.build()
+        thread = ((45, 10), (45, 80))  # straight up the one-cell gap at x=45
+        assert segment_clear(cm, *thread, clearance_m=0.0) is True
+        # A 12 m standoff exceeds the ~5 m clearance in the gap -> blocked.
+        assert segment_clear(cm, *thread, clearance_m=12.0) is False
