@@ -88,6 +88,7 @@ _HALF_LIVES: dict[str, float] = {
     "ble": 30.0,
     "wifi": 45.0,
     "yolo": 15.0,
+    "camera": 15.0,   # frame detections decay like any vision contact
     "rf_motion": 10.0,
     "acoustic": 20.0,     # transient sounds — gunshot/glass-break/voice
     "mesh": 120.0,
@@ -172,7 +173,7 @@ class TrackedTarget:
     last_seen: float = field(default_factory=time.monotonic)
     first_seen: float = field(default_factory=time.monotonic)
     signal_count: int = 0  # number of sightings/updates received
-    source: str = "manual"  # "simulation", "yolo", "manual"
+    source: str = "manual"  # "simulation", "yolo", "camera", "manual", ...
     status: str = "active"
     position_source: str = "unknown"  # "gps", "simulation", "mqtt", "fixed", "yolo", "unknown"
     position_confidence: float = 0.0  # 0.0 = no confidence, 1.0 = high
@@ -274,7 +275,7 @@ class TrackedTarget:
 class TargetTracker:
     """Thread-safe registry of all tracked targets in the battlespace."""
 
-    # Stale timeout — remove YOLO detections older than this
+    # Stale timeout — remove vision detections (yolo/camera) older than this
     STALE_TIMEOUT = 30.0
 
     def __init__(self, event_bus=None, ble_classifier=None) -> None:
@@ -399,6 +400,14 @@ class TargetTracker:
             return
         if source == target.source:
             return
+        # "camera" (posed frame detection) and "yolo" (bare vision detection)
+        # are the SAME modality — vision — differing only in provenance.  A
+        # camera detection refreshing a yolo track (or vice versa) is not
+        # cross-modal confirmation; counting it would inflate the fusion
+        # headline exactly like the simulation artifact above.  Camera
+        # provenance is recorded in ``kinematics`` instead.
+        if source in self.VISION_SOURCES and target.source in self.VISION_SOURCES:
+            return
         target.confirming_sources.add(source)
 
     def update_from_simulation(self, sim_data: dict) -> None:
@@ -462,8 +471,16 @@ class TargetTracker:
     surface streets; faster vehicles will spawn new IDs (and that's fine —
     they're a different track regime)."""
 
-    def update_from_detection(self, detection: dict) -> None:
-        """Update or create a tracked target from a YOLO detection.
+    VISION_SOURCES = ("yolo", "camera")
+    """The single *vision* track regime.  ``"camera"`` marks a detection
+    with camera provenance (a posed security camera saw these pixels —
+    ``source_camera`` in the payload); ``"yolo"`` is a bare vision
+    detection with no camera identity.  Both describe the same physical
+    contact population, so matching treats them as one regime: a camera
+    detection refreshes a yolo track instead of spawning a duplicate id."""
+
+    def update_from_detection(self, detection: dict) -> str | None:
+        """Update or create a tracked target from a vision detection.
 
         Match logic chooses the *closest* existing target within a
         motion-aware radius — not the first that fits.  The radius grows
@@ -471,13 +488,27 @@ class TargetTracker:
         targets do not split into a new ID every frame, while still-recent
         ghosts don't get refreshed by a detection that's actually a new
         entity.
+
+        Camera provenance: when the payload carries ``source_camera`` (set
+        by :class:`tritium_lib.perception.FrameDetectionPipeline` and the
+        SC camera bridges), the track is created with ``source="camera"``
+        and the camera identity/geometry (``camera_id``, ``bearing_deg``,
+        ``distance_m``, ``bbox``) is stamped into ``kinematics`` so the
+        dossier and map can answer *which camera saw this target*.
+
+        Returns:
+            The ``det_*`` target id this detection matched or created, so
+            callers (dossier signals, fusion) can link follow-on records
+            to the exact track — or None if the detection was rejected.
         """
         if detection.get("confidence", 0) < 0.4:
-            return
+            return None
 
         class_name = detection.get("class_name", "unknown")
         cx = detection.get("center_x", 0.0)
         cy = detection.get("center_y", 0.0)
+        camera_id = str(detection.get("source_camera") or "")
+        src = "camera" if camera_id else "yolo"
 
         if class_name == "person":
             alliance = "hostile"
@@ -499,7 +530,7 @@ class TargetTracker:
             matched = None
             best_dist_sq = float("inf")
             for existing in self._targets.values():
-                if existing.source != "yolo":
+                if existing.source not in self.VISION_SOURCES:
                     continue
                 if existing.asset_type != asset_type:
                     continue
@@ -520,13 +551,15 @@ class TargetTracker:
                 matched.position = (cx, cy)
                 matched.last_seen = now
                 matched.signal_count += 1
-                self._add_confirming_source(matched, "yolo")
+                self._add_confirming_source(matched, src)
+                if camera_id:
+                    self._stamp_camera_provenance(matched, camera_id, detection)
                 tid = matched.target_id
             else:
                 self._detection_counter += 1
                 self._membership_count += 1
                 tid = f"det_{class_name}_{self._detection_counter}"
-                self._targets[tid] = TrackedTarget(
+                target = TrackedTarget(
                     target_id=tid,
                     name=f"{class_name.title()} #{self._detection_counter}",
                     alliance=alliance,
@@ -535,15 +568,41 @@ class TargetTracker:
                     last_seen=now,
                     first_seen=now,
                     signal_count=1,
-                    source="yolo",
-                    position_source="yolo",
+                    source=src,
+                    position_source=src,
                     position_confidence=0.1,
                     _initial_confidence=0.1,
-                    confirming_sources={"yolo"},
+                    confirming_sources={src},
                     classification=class_name,
                     classification_confidence=detection.get("confidence", 0.0),
                 )
+                if camera_id:
+                    self._stamp_camera_provenance(target, camera_id, detection)
+                self._targets[tid] = target
         self.history.record(tid, (cx, cy))
+        return tid
+
+    @staticmethod
+    def _stamp_camera_provenance(
+        target: TrackedTarget, camera_id: str, detection: dict
+    ) -> None:
+        """Record which camera saw this track (and where in its view).
+
+        Provenance lives in ``kinematics`` — the structured detection-
+        metadata field — NOT in ``confirming_sources``, because camera and
+        yolo are the same vision modality (see ``_add_confirming_source``).
+        Existing kinematics keys from other sources are preserved.
+        """
+        kin = dict(target.kinematics) if target.kinematics else {}
+        kin["camera_id"] = camera_id
+        for key in ("bearing_deg", "distance_m"):
+            value = detection.get(key)
+            if value is not None:
+                kin[key] = value
+        bbox = detection.get("bbox")
+        if isinstance(bbox, dict):
+            kin["bbox"] = dict(bbox)
+        target.kinematics = kin
 
     def update_from_camera_detection(
         self,
@@ -551,7 +610,8 @@ class TargetTracker:
         camera_lat: float,
         camera_lng: float,
         latlng_to_local_fn=None,
-    ) -> None:
+        camera_id: str = "",
+    ) -> str | None:
         """Update or create a target from a camera detection, positioned near the camera.
 
         Args:
@@ -560,6 +620,11 @@ class TargetTracker:
             camera_lng: Camera longitude.
             latlng_to_local_fn: Optional callable(lat, lng) -> (x, y, z).
                 If None, tries to import from tritium_lib.geo.
+            camera_id: Identity of the observing camera.  When set (or when
+                the detection dict carries ``camera_id``/``source_camera``),
+                the resulting track gets camera provenance: ``source="camera"``
+                and ``kinematics.camera_id`` for the dossier/map surface.
+                Default empty keeps the legacy ``source="yolo"`` behavior.
         """
         if latlng_to_local_fn is None:
             try:
@@ -588,12 +653,23 @@ class TargetTracker:
         game_x = cam_x + offset_x
         game_y = cam_y + offset_y
 
-        self.update_from_detection({
+        cam_id = str(
+            camera_id
+            or detection.get("camera_id")
+            or detection.get("source_camera")
+            or ""
+        )
+        payload = {
             "class_name": label,
             "confidence": confidence,
             "center_x": game_x,
             "center_y": game_y,
-        })
+        }
+        if cam_id:
+            payload["source_camera"] = cam_id
+        if isinstance(bbox, dict):
+            payload["bbox"] = bbox
+        return self.update_from_detection(payload)
 
     # BLE sightings have longer stale timeout — devices can be stationary
     BLE_STALE_TIMEOUT = 120.0
@@ -1341,7 +1417,8 @@ class TargetTracker:
         with self._lock:
             stale = [
                 tid for tid, t in self._targets.items()
-                if (t.source == "yolo" and (now - t.last_seen) > self.STALE_TIMEOUT)
+                if (t.source in self.VISION_SOURCES
+                    and (now - t.last_seen) > self.STALE_TIMEOUT)
                 or (t.source == "simulation" and (now - t.last_seen) > self.SIM_STALE_TIMEOUT)
                 or (t.source == "ble" and (now - t.last_seen) > self.BLE_STALE_TIMEOUT)
                 or (t.source == "rf_motion" and (now - t.last_seen) > self.RF_MOTION_STALE_TIMEOUT)

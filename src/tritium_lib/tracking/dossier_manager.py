@@ -826,10 +826,20 @@ class DossierManager:
             )
 
     def _handle_detection(self, data: dict) -> None:
-        """Handle a YOLO detection event."""
+        """Handle a vision (YOLO / camera-frame) detection event.
+
+        When the event carries a ``camera_id`` (the ``detection:camera``
+        payload shape), the dossier signal records ``source="camera"`` and
+        which camera made the sighting, so an operator investigating the
+        target sees *camera* provenance, not a bare algorithm name.
+        """
         detections = data.get("detections", [])
         if isinstance(data, list):
             detections = data
+            camera_id = ""
+        else:
+            camera_id = str(data.get("camera_id") or "")
+        signal_source = "camera" if camera_id else "yolo"
 
         for det in detections:
             # Generators may use 'label' instead of 'class_name'
@@ -847,18 +857,21 @@ class DossierManager:
                 det_id,
                 name=f"{class_name.title()} Detection",
                 entity_type=entity_type,
-                tags=["yolo", class_name],
+                tags=[signal_source, class_name],
             )
 
+            signal_data = {
+                "class_name": class_name,
+                "confidence": confidence,
+                "bbox": det.get("bbox"),
+            }
+            if camera_id:
+                signal_data["camera_id"] = camera_id
             self._store.add_signal(
                 dossier_id=dossier_id,
-                source="yolo",
+                source=signal_source,
                 signal_type="visual_detection",
-                data={
-                    "class_name": class_name,
-                    "confidence": confidence,
-                    "bbox": det.get("bbox"),
-                },
+                data=signal_data,
                 confidence=confidence,
             )
 
@@ -1419,7 +1432,17 @@ class DossierManager:
                 if entity_type == "unknown" and target.asset_type in (
                         "person", "vehicle"):
                     entity_type = target.asset_type
-                tags.extend(["yolo", target.classification or target.asset_type])
+                # Tag by the track's actual vision source — a camera-seen
+                # contact reads "camera" in the dossier, not the algorithm
+                # name.  (camera_id itself arrives via visual_detection
+                # signals, not identity tags.)
+                vision_tag = (
+                    target.source
+                    if target.source in ("yolo", "camera") else "yolo"
+                )
+                tags.extend(
+                    [vision_tag, target.classification or target.asset_type]
+                )
             elif tid.startswith("mesh_"):
                 entity_type = "mesh_radio"
                 identifiers["node_id"] = tid[5:]

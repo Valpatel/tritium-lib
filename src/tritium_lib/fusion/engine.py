@@ -449,8 +449,11 @@ class FusionEngine:
                 "vehicle" if class_name in ("car", "motorcycle", "bicycle") else class_name
             )
             tid = None
+            vision_sources = getattr(
+                self._tracker, "VISION_SOURCES", ("yolo", "camera")
+            )
             for t in self._tracker.get_all():
-                if t.source != "yolo" or t.asset_type != asset_type:
+                if t.source not in vision_sources or t.asset_type != asset_type:
                     continue
                 dx = t.position[0] - cx
                 dy = t.position[1] - cy
