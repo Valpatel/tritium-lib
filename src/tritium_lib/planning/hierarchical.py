@@ -349,6 +349,9 @@ def plan_route_hierarchical(
             snap_radius_m=snap_radius_m, clearance_m=clearance_m, strategy="flat",
         )
         flat.expansions += coarse_res.expansions
+        # The hierarchical planner ran (coarsened + coarse-solved) and folded its
+        # coarse work into ``expansions`` -> report it as hierarchical.
+        flat.strategy = "hierarchical"
         return flat
 
     # Coarse route cells (unsmoothed path == coarse cell centres) + explicit
@@ -395,6 +398,7 @@ def plan_route_hierarchical(
         )
         if fine.success:
             fine.expansions += total_coarse_exp
+            fine.strategy = "hierarchical"
             return fine
         total_coarse_exp += fine.expansions
 
@@ -406,4 +410,8 @@ def plan_route_hierarchical(
         snap_radius_m=snap_radius_m, clearance_m=clearance_m, strategy="flat",
     )
     flat.expansions += total_coarse_exp
+    # Corridor could not contain a path at any width -> the hierarchical planner
+    # exhausted its ladder and backstopped to a full flat solve; still report it
+    # as hierarchical (its coarse + corridor work is folded into ``expansions``).
+    flat.strategy = "hierarchical"
     return flat

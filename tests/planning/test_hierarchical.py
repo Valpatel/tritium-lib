@@ -27,6 +27,10 @@ from tritium_lib.planning.astar import (
     _AUTO_HIERARCHICAL_MIN_CELLS,
     _supercover_cells,
 )
+from tritium_lib.planning.hierarchical import (
+    DEFAULT_COARSE_FACTOR,
+    _cached_coarse,
+)
 
 LETHAL = float("inf")
 
@@ -436,3 +440,115 @@ class TestCompleteness:
         hier = plan_route_hierarchical(cm, s, g)
         assert hier.success
         assert not _path_touches_lethal(cm, hier.path)
+
+
+# ---------------------------------------------------------------------------
+# Coarse-cache invalidation under a storm re-plan (GIS-version costmap rebuild)
+# ---------------------------------------------------------------------------
+
+class TestCoarseCacheInvalidation:
+    """Pin the coarse-map cache lifecycle so a storm re-plan never serves stale
+    coarse geometry.
+
+    The hierarchical planner memoises the coarsened costmap on the fine costmap
+    instance (``costmap._coarse_cache``) so many dispatches over one version-
+    cached costmap don't re-coarsen a 600² grid each time.  The engine rebuilds
+    a **new** Costmap instance whenever the GIS/terrain version changes (a storm
+    injection stamps flood zones lethal -> ``builder.build()`` returns a fresh
+    object).  These tests prove:
+
+      1. Repeat coarsening of the SAME instance returns the identical cached
+         object (the perf win).
+      2. A freshly built costmap carries its OWN cache — the coarse map reflects
+         the NEW (storm) geometry, never the pre-storm instance's cache.
+      3. End-to-end: after planning over the calm costmap (which populates its
+         coarse cache), planning over the rebuilt storm costmap detours through
+         the only gap in the flood wall — the coarse plan saw the fresh wall.
+    """
+
+    # Gap sits near the bottom, OFF the start->goal straight line (both at mid
+    # height), so the storm route must genuinely detour down to thread it.
+    GAP_BAND = (0.10, 0.20)
+
+    @classmethod
+    def _wall_builder(cls, n=200, gap_band=None, with_wall=True):
+        """A costmap with (optionally) a tall lethal 'flood' wall + one gap.
+
+        ``with_wall=False`` is the calm (pre-storm) map: fully open where the
+        wall would later be.  ``with_wall=True`` stamps the storm flood wall
+        (3 coarse-blocks thick so it is lethal at the coarse level) leaving a
+        single gap band, so the route must detour through the gap.
+        """
+        if gap_band is None:
+            gap_band = cls.GAP_BAND
+        span = n * 5.0
+        b = CostmapBuilder((0, 0, span, span), resolution=5.0)
+        if with_wall:
+            wx = span * 0.5
+            gap_lo, gap_hi = span * gap_band[0], span * gap_band[1]
+            # +-30m wall = 12 fine cells = 1.5 coarse blocks each side of centre
+            # -> at least one fully-lethal coarse column, so the coarse solve
+            # cannot cut straight through it.
+            b.add_obstacles(_polygon_fc([
+                [(wx - 30, 40), (wx + 30, 40), (wx + 30, gap_lo), (wx - 30, gap_lo)],
+                [(wx - 30, gap_hi), (wx + 30, gap_hi),
+                 (wx + 30, span - 40), (wx - 30, span - 40)],
+            ]))
+        return b.build(), span
+
+    def test_same_instance_coarse_is_memoised(self):
+        cm, _ = self._wall_builder(with_wall=False)
+        c1 = _cached_coarse(cm, DEFAULT_COARSE_FACTOR)
+        c2 = _cached_coarse(cm, DEFAULT_COARSE_FACTOR)
+        assert c1 is c2, "same instance must reuse the cached coarse map"
+        assert getattr(cm, "_coarse_cache", None) is not None
+        assert DEFAULT_COARSE_FACTOR in cm._coarse_cache
+
+    def test_rebuilt_costmap_has_independent_fresh_cache(self):
+        # Calm map: plan once so its coarse cache is populated.
+        calm, span = self._wall_builder(with_wall=False)
+        plan_route_hierarchical(calm, (40, span * 0.5), (span - 40, span * 0.5))
+        assert getattr(calm, "_coarse_cache", None), "calm plan should cache coarse"
+
+        # Storm rebuild: a brand-new Costmap instance with the flood wall.
+        storm, _ = self._wall_builder(with_wall=True)
+        # A fresh instance starts with no coarse cache (no cross-instance leak).
+        assert getattr(storm, "_coarse_cache", None) in (None, {})
+
+        calm_coarse = _cached_coarse(calm, DEFAULT_COARSE_FACTOR)
+        storm_coarse = _cached_coarse(storm, DEFAULT_COARSE_FACTOR)
+        assert storm_coarse is not calm_coarse
+        assert storm._coarse_cache is not calm._coarse_cache
+
+        # The storm coarse map must show the wall as lethal coarse cells where
+        # the calm coarse map is open — i.e. no stale 'open ground' is served.
+        # Probe at mid-height (y=span/2), squarely inside the walled band.
+        wx, wy = span * 0.5, span * 0.5
+        wall_cc = storm_coarse.world_to_grid(wx, wy)
+        assert wall_cc is not None
+        assert storm_coarse.is_lethal(*wall_cc), "storm wall must appear in coarse map"
+        calm_cc = calm_coarse.world_to_grid(wx, wy)
+        assert calm_cc is not None
+        assert not calm_coarse.is_lethal(*calm_cc), "calm coarse map stays open"
+
+    def test_storm_replan_detours_through_gap_not_stale_straight_line(self):
+        # Calm plan: straight across (no wall), populates the coarse cache.
+        calm, span = self._wall_builder(with_wall=False)
+        s, g = (40, span * 0.5), (span - 40, span * 0.5)
+        calm_route = plan_route_hierarchical(calm, s, g)
+        assert calm_route.success
+        wx = span * 0.5
+        gap_lo, gap_hi = span * self.GAP_BAND[0], span * self.GAP_BAND[1]
+
+        # Storm rebuild -> route must detour through the gap band (proves the
+        # coarse plan used the fresh storm geometry, not the cached calm coarse).
+        storm, _ = self._wall_builder(with_wall=True)
+        storm_route = plan_route_hierarchical(storm, s, g)
+        assert storm_route.success
+        assert not _path_touches_lethal(storm, storm_route.path)
+        ys = _y_at_x(storm_route.path, wx)
+        assert ys, "storm route should cross the wall x-line"
+        assert all(gap_lo - 6 <= y <= gap_hi + 6 for y in ys), (
+            "storm route must thread the gap, not the stale open corridor", ys)
+        # And it is a genuine detour: strictly costlier than the calm straight run.
+        assert storm_route.cost > calm_route.cost
