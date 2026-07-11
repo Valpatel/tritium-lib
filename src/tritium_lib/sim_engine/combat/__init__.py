@@ -19,6 +19,7 @@ from .match import (
     MatchCombatant,
     MatchReferee,
     ShotOutcome,
+    register_hit_command,
     relative_fire_solution,
 )
 from .weapons import Weapon, WeaponSystem, WEAPON_CATALOG
@@ -39,6 +40,7 @@ __all__ = [
     "MatchCombatant",
     "MatchReferee",
     "ShotOutcome",
+    "register_hit_command",
     "relative_fire_solution",
     "Weapon",
     "WeaponSystem",

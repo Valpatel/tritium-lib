@@ -39,6 +39,19 @@ lands when that offset is within ``hit_radius``.  With perfect aim, the hit
 probability equals the weapon's ``accuracy`` — the same self-calibration
 proven by the projectile-flight sim's goldens.
 
+Hit feedback (wire matches)
+---------------------------
+In a wire match the referee only ADJUDICATES — the dog owns its health.  A
+``resolve_shot`` verdict becomes a ``register_hit`` command on the target's
+command topic (:func:`register_hit_command`); the dog applies the damage
+with its own ``HealthTracker``, publishes a ``HitReport`` on
+``tritium/{site}/robots/{id}/hit``, and embeds ``HealthStatus`` in its
+telemetry.  That reported health is AUTHORITATIVE: the referee pins its
+book to it via :meth:`MatchReferee.sync_health`, and KO resolves on the
+dog-reported health, not the referee's internal ledger.  Hits the referee
+never saw (physical hit sensor, camera impact) enter the book through
+:meth:`MatchReferee.register_external_hit`.
+
 This is Tritium stand-in logic (basic video-game-style scoring support), NOT
 Graphling cognition — the referee arbitrates outcomes; it never decides for
 a machine.
@@ -57,6 +70,7 @@ from tritium_lib.models.fire_control import (
     TILT_MAX_DEG,
     TILT_MIN_DEG,
 )
+from tritium_lib.models.hits import RegisterHitCommand
 
 from .combat import HIT_RADIUS, dispersion_sigma
 from .weapons import _DEFAULT_WEAPONS, Weapon
@@ -323,6 +337,64 @@ class MatchReferee:
         )
 
     # ------------------------------------------------------------------
+    # Hit feedback — the dog owns its health, the referee mirrors it
+    # ------------------------------------------------------------------
+
+    def sync_health(
+        self,
+        combatant_id: str,
+        hp: float,
+        alive: bool | None = None,
+    ) -> None:
+        """Pin the referee's book to a dog's AUTHORITATIVE reported health.
+
+        Wire matches: the dog's own health telemetry (its ``HealthTracker``
+        -> ``HealthStatus`` block) is the ground truth; the referee's ledger
+        is a mirror.  ``hp`` is clamped ``>= 0``.  ``alive=False`` forces
+        the book to 0 hp even if the reported hp is positive — a dog
+        declaring itself dead is dead; ``alive=True`` / ``None`` leaves the
+        clamped hp authoritative (``MatchCombatant.alive`` derives from it).
+        Unknown *combatant_id* raises ``KeyError``, same contract as
+        :meth:`update_pose`.
+        """
+        c = self._combatants[combatant_id]
+        c.hp = max(0.0, hp)
+        if alive is False:
+            c.hp = 0.0
+
+    def register_external_hit(
+        self,
+        target_id: str,
+        damage: float,
+        shooter_id: str | None = None,
+    ) -> float:
+        """Book a hit the referee did NOT adjudicate — hit sensor / camera.
+
+        A physical dog's hit sensor or a camera-detected foam impact
+        reports damage the referee never rolled for: drain the target's hp
+        (clamped at 0) and count ``hits_taken`` / ``damage_taken``.  If
+        *shooter_id* names a registered combatant, credit its
+        ``hits_landed`` / ``damage_dealt`` — but NOT ``shots_fired``: the
+        trigger pull was already counted when the ammo drained.  Unknown or
+        ``None`` shooters (a camera saw an impact but not who fired) book
+        the target side only.  No rng is involved — the dispersion draw
+        sequence, and therefore golden replays, are untouched.
+
+        Returns the target's hp after the hit.  Unknown *target_id* raises
+        ``KeyError``, same contract as the other methods.
+        """
+        target = self._combatants[target_id]
+        damage = max(0.0, damage)
+        target.hp = max(0.0, target.hp - damage)
+        target.hits_taken += 1
+        target.damage_taken += damage
+        shooter = self._combatants.get(shooter_id) if shooter_id else None
+        if shooter is not None:
+            shooter.hits_landed += 1
+            shooter.damage_dealt += damage
+        return target.hp
+
+    # ------------------------------------------------------------------
     # Match state
     # ------------------------------------------------------------------
 
@@ -362,3 +434,21 @@ class MatchReferee:
                 for cid, c in self._combatants.items()
             },
         }
+
+
+def register_hit_command(outcome: ShotOutcome) -> RegisterHitCommand:
+    """Build the wire command that tells the TARGET dog it was hit.
+
+    Maps a referee verdict onto the hit-feedback wire contract: the command
+    is published on the target's EXISTING command topic
+    (``tritium/{site}/robots/{target_id}/command``) so the dog applies the
+    damage to its own ``HealthTracker`` and closes the loop with a
+    ``HitReport`` + health telemetry.  ``source`` is always ``"referee"``
+    here — this helper is the referee's mouth; sensor and camera paths
+    build their own :class:`~tritium_lib.models.hits.RegisterHitCommand`.
+    """
+    return RegisterHitCommand(
+        shooter_id=outcome.shooter_id,
+        damage=outcome.damage_applied,
+        source="referee",
+    )

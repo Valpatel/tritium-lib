@@ -767,6 +767,16 @@ from .fire_control import (
     WeaponStatus,
     compute_fire_solution,
 )
+from .hits import (
+    DEFAULT_HP,
+    HIT_SOURCES,
+    LIMP_MOBILITY,
+    LIMP_THRESHOLD,
+    HealthStatus,
+    HealthTracker,
+    HitReport,
+    RegisterHitCommand,
+)
 from .quadruped import (
     DEFAULT_GAITS,
     GaitSpec,
@@ -1435,6 +1445,15 @@ __all__ = [
     "TurretAimCommand",
     "WeaponStatus",
     "compute_fire_solution",
+    # Hit feedback (adjudicator -> robot register_hit; dog-owned health)
+    "DEFAULT_HP",
+    "HIT_SOURCES",
+    "LIMP_MOBILITY",
+    "LIMP_THRESHOLD",
+    "HealthStatus",
+    "HealthTracker",
+    "HitReport",
+    "RegisterHitCommand",
     # Quadruped (robot-dog gait profile — sim animation + Go2-class telemetry)
     "DEFAULT_GAITS",
     "GaitSpec",
