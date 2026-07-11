@@ -197,6 +197,15 @@ class TrackedTarget:
     # tactical map / ops surface can render a protected civilian distinctly
     # from an agitator.  See Wave 213.
     crowd_role: str | None = None
+    # Hit-feedback contract (tritium_lib.models.hits): combat hitpoints for
+    # entities that REPORT health — sim combatants and wire robots whose
+    # telemetry carries a ``health`` block (a robot dog's HealthTracker).
+    # ``None`` means "this target does not report health" (most sensors),
+    # NOT "zero hp" — renderers must skip the HP bar, never draw it empty.
+    # Flat floats here (the tactical surface convention: health/max_health),
+    # distilled from the wire block's hp/max_hp by the ingest bridge.
+    health: float | None = None
+    max_health: float | None = None
     # Structured kinematic / detection metadata.  Sources that report rich
     # state (radar range/bearing/speed, RF motion direction hints, etc.)
     # store it here instead of squeezing it into the discrete ``status``
@@ -265,6 +274,8 @@ class TrackedTarget:
             "classification": self.classification,
             "classification_confidence": self.classification_confidence,
             "crowd_role": self.crowd_role,
+            "health": self.health,
+            "max_health": self.max_health,
             "kinematics": dict(self.kinematics) if self.kinematics else None,
         }
         if history is not None:
@@ -430,6 +441,14 @@ class TargetTracker:
                 # the known role" (throttled/partial updates omit it).
                 if "crowd_role" in sim_data:
                     t.crowd_role = sim_data.get("crowd_role")
+                # Health (hit-feedback contract): same absent-key rule — a
+                # telemetry frame without health is "no opinion", not "heal
+                # to unknown".  A frame WITH it is authoritative (the robot
+                # owns its own health; see tritium_lib.models.hits).
+                if "health" in sim_data:
+                    t.health = sim_data.get("health")
+                if "max_health" in sim_data:
+                    t.max_health = sim_data.get("max_health")
                 t.last_seen = time.monotonic()
                 t.signal_count += 1
                 self._add_confirming_source(t, "simulation")
@@ -461,6 +480,9 @@ class TargetTracker:
                     confirming_sources=set(),
                     # Civil-unrest crowd sub-role (None for non-crowd units).
                     crowd_role=sim_data.get("crowd_role"),
+                    # Hit-feedback health (None = does not report health).
+                    health=sim_data.get("health"),
+                    max_health=sim_data.get("max_health"),
                 )
         self.history.record(tid, position)
         self._check_geofence(tid, position[0], position[1])
