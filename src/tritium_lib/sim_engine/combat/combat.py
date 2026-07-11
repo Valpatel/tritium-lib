@@ -144,6 +144,27 @@ def weather_spread_factor(accuracy_modifier: float) -> float:
     return 1.0 / m
 
 
+def dispersion_sigma(accuracy: float) -> float:
+    """Lateral dispersion sigma (world units) calibrated so that
+    ``P(|N(0, sigma)| < HIT_RADIUS) == accuracy``.
+
+    Uses the standard-normal quantile ``z = inv_cdf((1 + accuracy) / 2)``
+    (the value with ``P(|Z| < z) = accuracy``) so ``sigma = HIT_RADIUS / z``.
+    Accuracy is clamped to ``[0, _MAX_ACCURACY]``; an accuracy near 0
+    (``z -> 0``) yields an enormous spread rather than dividing by zero.
+
+    This is the single calibration shared by :class:`CombatSystem` (full
+    projectile-flight sim) and the transport-agnostic
+    :class:`~tritium_lib.sim_engine.combat.match.MatchReferee` (instant-resolve
+    duel scoring) — one accuracy model for sim units and wire robots alike.
+    """
+    a = max(0.0, min(accuracy, _MAX_ACCURACY))
+    z = statistics.NormalDist().inv_cdf((1.0 + a) / 2.0)
+    if z <= 1e-9:
+        return HIT_RADIUS * 1e3
+    return HIT_RADIUS / z
+
+
 # Weapon class whose projectiles home (track the target's live position).
 _MISSILE_WEAPON_CLASS = "missile"
 
@@ -314,19 +335,10 @@ class CombatSystem:
 
     @staticmethod
     def _dispersion_sigma(accuracy: float) -> float:
-        """Lateral dispersion sigma (world units) calibrated so that
-        ``P(|N(0, sigma)| < HIT_RADIUS) == accuracy``.
-
-        Uses the standard-normal quantile ``z = inv_cdf((1 + accuracy) / 2)``
-        (the value with ``P(|Z| < z) = accuracy``) so ``sigma = HIT_RADIUS / z``.
-        Accuracy is clamped to ``[0, _MAX_ACCURACY]``; an accuracy near 0
-        (``z -> 0``) yields an enormous spread rather than dividing by zero.
-        """
-        a = max(0.0, min(accuracy, _MAX_ACCURACY))
-        z = statistics.NormalDist().inv_cdf((1.0 + a) / 2.0)
-        if z <= 1e-9:
-            return HIT_RADIUS * 1e3
-        return HIT_RADIUS / z
+        """Delegate to the module-level :func:`dispersion_sigma` (same math,
+        same clamps — kept as a staticmethod so existing callers and the
+        golden-replay RNG draw sequence stay byte-identical)."""
+        return dispersion_sigma(accuracy)
 
     def fire(
         self,
