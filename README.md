@@ -119,9 +119,9 @@ tritium-lib/
 │   ├── signals/               RF signal processing
 │   ├── protocols/             Radio protocol parsers (ADS-B, AIS, BLE, WiFi)
 │   ├── inference/             Local LLM fleet client (llama-server)
-│   ├── ...                    Plus: alerting, evidence, fleet, indoor, mission,
+│   ├── ...                    Plus: alerting, fleet, indoor, mission,
 │   │                          monitoring, notifications, pipeline, privacy,
-│   │                          recording, reporting, rules, scenarios, tactical,
+│   │                          recording, reporting, rules, scenarios,
 │   │                          synthetic, and more
 │   └── data/                  JSON lookup databases (BLE, WiFi, OUI fingerprints)
 ├── web/                       Shared JS/CSS frontend library
