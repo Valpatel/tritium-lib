@@ -8,6 +8,21 @@ The foundation library for the entire Tritium ecosystem. Models, target tracking
 
 SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 
+## What belongs here (the bin boundary)
+
+**Belongs in lib:** reusable models, algorithms, wire contracts, protocols, the
+sim engine, geometry, planners, the addon SDK, shared JS — anything a *second*
+caller reuses. **Litmus: it must import cleanly on a bare aarch64 Jetson with
+only light deps (numpy / pydantic / opencv).**
+
+**Never belongs in lib** — this is a hard invariant, not a preference:
+`import isaacsim` / `pxr` / `rospy`, anything that *requires* torch or a
+framework runtime, FastAPI routers, on-robot code. Those poison the "imports on
+the robot brain" guarantee. Heavy simulator/tool runtimes → a **`tritium-addons`**
+addon (e.g. Isaac Sim → `tritium-addons/isaac_sim`); on-robot ROS2 → **`tritium-edge/ros2`**.
+When unsure where a file goes, see the copper-roof rule in
+[`../CLAUDE.md`](../CLAUDE.md) → `docs/ARCHITECTURE.md` (parent repo).
+
 **Parent context:** See [../CLAUDE.md](../CLAUDE.md) for full system architecture and conventions.
 
 ## Git Conventions
