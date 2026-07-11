@@ -141,9 +141,10 @@ def test_get_status_exact_key_contract():
     assert set(status.keys()) == {
         "squad_state", "formation_type", "commanded_tactic",
         "agitation", "corridor", "target_faction", "arrests",
-        "tactic_source",
+        "tactic_source", "kettle_formed",
     }
     assert status["squad_state"] == "hold"
+    assert status["kettle_formed"] is False
     assert status["formation_type"] is None
     assert status["commanded_tactic"] == "auto"
     assert status["agitation"] == pytest.approx(_INITIAL_AGITATION)

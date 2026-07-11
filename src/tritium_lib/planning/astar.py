@@ -28,7 +28,7 @@ import itertools
 import math
 from dataclasses import dataclass, field
 
-__all__ = ["RouteResult", "plan_route"]
+__all__ = ["RouteResult", "plan_route", "segment_clear", "validate_slot"]
 
 _SQRT2 = math.sqrt(2.0)
 
@@ -485,6 +485,93 @@ def segment_clear(
     lethal/out-of-bounds test.
     """
     return not _crosses_blocked(costmap, p0, p1, clearance_m)
+
+
+# Default outward-search bound for :func:`validate_slot` (in cells): a
+# commanded slot that lands in an obstacle is nudged to the nearest clear cell
+# within this many rings.  Cordon / formation slots that clip a building only
+# ever fall a few metres inside its edge, so a modest radius always escapes;
+# the raw slot is returned untouched if nothing clear is found (never breaks
+# the caller).
+_SLOT_SEARCH_CELLS: int = 12
+
+
+def validate_slot(
+    costmap,
+    from_pt: tuple[float, float],
+    slot: tuple[float, float],
+    clearance_m: float = 0.0,
+    max_search_m: float | None = None,
+) -> tuple[float, float]:
+    """Return a reachable, non-lethal waypoint near ``slot``.
+
+    Terrain-aware position validation for a commanded formation / kettle-cordon
+    slot.  When the straight segment ``from_pt -> slot`` is clear (:func:`
+    segment_clear` True) the slot is returned **unchanged** — a slot in the open
+    is never moved, so an obstacle-free field is a pure identity.  Otherwise the
+    slot lands in (or behind) a wall / lethal cell and a unit that beelines to it
+    would jam against the obstacle; this searches **outward from the slot** for
+    the nearest cell whose center is both non-lethal and reachable in a straight
+    line from ``from_pt``, and returns that cell center — so a cordon actually
+    CLOSES on real terrain instead of officers stacking up on a wall.
+
+    The search is deterministic (candidate cells ordered by squared distance to
+    the slot, then column, then row — no RNG).  If no clear, reachable cell is
+    found within ``max_search_m`` (default :data:`_SLOT_SEARCH_CELLS` cells), or
+    ``costmap`` is ``None`` / degenerate, the raw ``slot`` is returned — the
+    validator never raises and never strands a caller.  ``clearance_m`` is the
+    unit-radius standoff (0.0 for a person; wider for a vehicle), passed through
+    to both the reachability test and the candidate-cell filter.
+    """
+    if costmap is None:
+        return slot
+    res = float(getattr(costmap, "resolution", 0.0) or 0.0)
+    if res <= 0.0:
+        return slot
+    # Fast path: the slot is directly reachable and non-lethal -> leave it be.
+    if segment_clear(costmap, from_pt, slot, clearance_m):
+        return slot
+
+    if max_search_m is None:
+        max_search_m = _SLOT_SEARCH_CELLS * res
+    max_ring = max(1, int(math.ceil(max_search_m / res)))
+
+    width = int(getattr(costmap, "width", 0))
+    height = int(getattr(costmap, "height", 0))
+    if width <= 0 or height <= 0:
+        return slot
+
+    # Anchor the outward search on the slot's cell; clamp an out-of-bounds slot
+    # into the grid so a slot just past the edge still searches inward.
+    cell = costmap.world_to_grid(slot[0], slot[1])
+    if cell is None:
+        col0 = min(width - 1, max(0, int(
+            math.floor((slot[0] - costmap.origin_x) / res))))
+        row0 = min(height - 1, max(0, int(
+            math.floor((slot[1] - costmap.origin_y) / res))))
+    else:
+        col0, row0 = cell
+
+    # Deterministic nearest-first ring scan.
+    candidates = sorted(
+        (
+            (dc * dc + dr * dr, dc, dr)
+            for dr in range(-max_ring, max_ring + 1)
+            for dc in range(-max_ring, max_ring + 1)
+            if dc or dr
+        )
+    )
+    for _d2, dc, dr in candidates:
+        col = col0 + dc
+        row = row0 + dr
+        if not costmap.in_bounds(col, row):
+            continue
+        if _cell_blocked(costmap, col, row, clearance_m):
+            continue
+        center = costmap.grid_to_world(col, row)
+        if segment_clear(costmap, from_pt, center, clearance_m):
+            return center
+    return slot
 
 
 def _cost_max(costmap, p, q) -> float:

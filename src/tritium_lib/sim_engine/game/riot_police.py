@@ -114,8 +114,9 @@ per-tick spam:
   * ``arrest_surge``  on every 3rd arrest,
   * ``crowd_broken``  once when the violent count first drops below 25 % of
                       its observed peak while engaged,
-  * ``kettle_formed`` once (per kettle command) when >= 75 % of the roster has
-                      reached its ARC cordon slot,
+  * ``kettle_formed`` once (per kettle command) when >= 75 % of the ARC cordon
+                      slots are manned by DISTINCT officers (within the
+                      arc-segment tolerance) — the ring has CLOSED,
   * ``corridor_flow`` once (per kettle command) when >= 3 distinct rioters have
                       been driven out through the dispersal gap.
 
@@ -226,8 +227,33 @@ _KETTLE_START_RADIUS: float = 10.0     # minimum initial ring radius (m)
 _KETTLE_MIN_RADIUS: float = 7.0        # floor the ring never shrinks past (m)
 _KETTLE_SHRINK_RATE: float = 0.3       # ring tighten speed (m/s)
 _KETTLE_SPREAD_MARGIN: float = 4.0     # extra radius over the cluster spread (m)
+# A kettle is GEOGRAPHIC: once engaged, the cordon center follows the crowd
+# still inside the ring at most this fast (m/s) — slower than an officer's
+# walk, so the ring never outruns its own cordon.  It NEVER re-targets a
+# different cluster mid-kettle (the seed-14 probe showed the per-tick
+# nearest-cluster objective teleporting ~70 m to a fresh wave spawn, dragging
+# the half-closed ring off the officers — manned 4/8 -> 0/8 in five seconds).
+_KETTLE_CENTER_DRIFT: float = 1.0
+# Rioters this far beyond the current ring radius no longer drag the center
+# (they escaped or were shoved out the gap); when NOBODY violent remains
+# inside, the cordon's work here is done and the squad disbands it.
+_KETTLE_CONTAIN_MARGIN: float = 6.0
+# REACH gate for the autonomous doctrine: only CALL a kettle when the target
+# bloc's nearest violent cluster is within this range of the squad — a cordon
+# the officers can actually close before the crowd walks out of it.  Out of
+# reach, the FSM line keeps advancing (which is what closes the distance) and
+# the doctrine re-evaluates every tick.  (Seed-14 probe: kettles called on
+# clusters 70-180 m out spent their whole hold window marching, ring never
+# manned, kettle_formed 0/10 seeds.)
+_AUTO_KETTLE_ENGAGE_RANGE: float = 35.0
 _KETTLE_GAP_ANGLE: float = 75.0        # open corridor width (degrees)
-_KETTLE_ARRIVE_DIST: float = 3.0       # officer "on its slot" tolerance (m)
+# Officer "on its slot" tolerance (m).  5.0 ~= the inter-slot spacing of the
+# ARC ring (2*pi*8m * 285/360 / 8 slots), i.e. an officer within tolerance is
+# holding the arc SEGMENT its slot anchors.  Engine officers halt in firing
+# posture at pepper-ball range (8 m >= the 7-10 m ring), typically 3.5-5 m off
+# the slot point (seed-14 probe: median officer->slot stalled at 4.4-4.6 m
+# under the old 3.0 m tolerance while the cordon was visibly closed).
+_KETTLE_ARRIVE_DIST: float = 5.0
 _KETTLE_FORMED_FRACTION: float = 0.75  # roster fraction on-slot -> kettle_formed
 
 # Corridor drive: a still-violent target inside the ring is shoved out the gap
@@ -548,6 +574,19 @@ class PoliceTacticsController:
         if min_hold is not None:
             self._auto_kettle_min_hold = float(min_hold)
 
+    def set_slot_validator(self, validator: Any) -> None:
+        """Inject (or clear) the terrain-aware slot validator.
+
+        ``validator(from_pt, slot) -> (x, y)`` returns a reachable, non-lethal
+        waypoint for a commanded formation / kettle-cordon slot, nudging one that
+        lands in a wall / lethal cell to the nearest clear cell so the cordon
+        closes on real terrain.  ``None`` restores the identity pass-through (the
+        default, and every costmap-free sim map — so goldens stay byte-identical).
+        The engine wires one built over ``tritium_lib.planning.validate_slot`` +
+        the live costmap only when a real AO / obstacle terrain is loaded.
+        """
+        self._slot_validator = validator
+
     def get_status(self) -> dict:
         """Operator-facing squad status snapshot (stable API contract).
 
@@ -555,10 +594,14 @@ class PoliceTacticsController:
         or None), ``commanded_tactic``, ``agitation``, ``corridor``
         ({"x","y"} or None), ``target_faction`` (bloc id or None), ``arrests``,
         ``tactic_source`` (auto / autonomous / operator — who set the tactic, so
-        the operator can SEE when the stand-in commander is acting on its own).
+        the operator can SEE when the stand-in commander is acting on its own),
+        ``kettle_formed`` (bool — the cordon ring has CLOSED: >=75% of the arc
+        slots manned; False whenever not kettling.  Lets the operator — and the
+        headed proof — see closure without scraping the event bus).
         """
         return {
             "squad_state": self._squad_state,
+            "kettle_formed": self._kettle_formed_announced,
             "formation_type": (
                 self._formation_type.value
                 if self._formation_type is not None else None
@@ -670,7 +713,7 @@ class PoliceTacticsController:
         # strength and may auto-issue a kettle of a dominant bloc (or release
         # one), updating _commanded_tactic below.  No-op for single-faction
         # riots and while an operator holds manual control.
-        self._auto_kettle_decision(violent)
+        self._auto_kettle_decision(violent, squad_centroid)
 
         # -- Operator override: kettle cordon ----------------------------------
         # A commanded kettle replaces the advance/engage flow entirely: cordon
@@ -819,7 +862,30 @@ class PoliceTacticsController:
             and a_n - b_n >= self._auto_kettle_margin
         )
 
-    def _auto_kettle_decision(self, violent: list) -> None:
+    def _bloc_in_reach(
+        self,
+        bloc: str,
+        violent: list,
+        squad_centroid: tuple[float, float],
+    ) -> bool:
+        """True when ``bloc``'s nearest violent cluster is close enough to
+        cordon (within ``_AUTO_KETTLE_ENGAGE_RANGE`` of the squad) — the
+        commander only calls a kettle its officers can actually CLOSE."""
+        members = [
+            v for v in violent if getattr(v, "faction", None) == bloc
+        ]
+        if not members:
+            return False
+        frontline, _cluster, _objective = self._nearest_cluster(
+            squad_centroid, members
+        )
+        return frontline <= _AUTO_KETTLE_ENGAGE_RANGE
+
+    def _auto_kettle_decision(
+        self,
+        violent: list,
+        squad_centroid: tuple[float, float],
+    ) -> None:
         """Autonomously kettle a bloc that is overwhelming its rival.
 
         The production-half essence: the stand-in commander reads the live
@@ -828,6 +894,11 @@ class PoliceTacticsController:
         flips, or release it when dominance decays.  Hysteresis (a lower release
         ratio) plus a minimum hold stop it thrashing.  Deterministic (integer
         counts, id-stable tiebreaks; no RNG).
+
+        Strength picks the TARGET; reach picks the MOMENT: a dominant bloc out
+        of ``_AUTO_KETTLE_ENGAGE_RANGE`` is not kettled yet — the FSM line keeps
+        advancing toward it and the doctrine re-evaluates every tick, calling
+        the cordon when the squad is close enough to close it.
 
         No-op unless the doctrine is armed for a rival-faction riot AND the
         operator has not taken manual control (an operator command hard-locks
@@ -844,30 +915,53 @@ class PoliceTacticsController:
         (a_id, a_n), (b_id, b_n) = ordered[0], ordered[1]
 
         if self._auto_kettle_target is None:
-            # Not currently auto-kettling: ARM on a decisively dominant bloc.
-            if self._is_dominant(a_n, b_n):
+            # Not currently auto-kettling: ARM on a decisively dominant bloc,
+            # once it is in reach.
+            if self._is_dominant(a_n, b_n) and self._bloc_in_reach(
+                a_id, violent, squad_centroid
+            ):
                 self._auto_kettle_target = a_id
                 self._auto_kettle_since = self._sim_clock
                 self.command_tactic("kettle", faction=a_id, _source="autonomous")
             return
 
-        # Already auto-kettling a bloc: hold it for at least the min-hold floor
-        # before re-deciding (anti-thrash), then switch / release as the street
-        # balance shifts.
+        # Already auto-kettling a bloc.  REACH is re-checked EVERY tick — even
+        # inside the min-hold window: a bloc that broke contact (fled beyond
+        # closing range, or its local cluster dissolved) invalidates the hold,
+        # because a cordon that cannot close is a march, not a kettle.  Release
+        # to auto so the FSM line pursues; the doctrine re-arms the moment a
+        # dominant bloc is back in reach.  (Seed-14 probe: gating this behind
+        # min_hold let the persisting kettle command chase clusters 70-180 m
+        # out for the whole hold window and the ring never manned.)
+        tgt = self._auto_kettle_target
+        if not self._bloc_in_reach(tgt, violent, squad_centroid):
+            self._auto_kettle_target = None
+            self.command_tactic("auto", _source="autonomous")
+            return
+
+        # Strength re-decisions (switch / release) wait out the min-hold floor
+        # (anti-thrash).
         if self._sim_clock - self._auto_kettle_since < self._auto_kettle_min_hold:
             return
 
-        tgt = self._auto_kettle_target
         tgt_n = counts.get(tgt, 0)
         others = [(fid, n) for fid, n in ordered if fid != tgt]
         rival_id, rival_n = others[0] if others else (b_id, b_n)
 
         if self._is_dominant(rival_n, tgt_n):
             # The balance FLIPPED: the rival now decisively dominates the bloc
-            # we were kettling — switch the cordon to the new dominant bloc.
-            self._auto_kettle_target = rival_id
-            self._auto_kettle_since = self._sim_clock
-            self.command_tactic("kettle", faction=rival_id, _source="autonomous")
+            # we were kettling.  Switch the cordon if the new bloc is in reach;
+            # otherwise RELEASE — the line advances toward it and the doctrine
+            # re-arms once it can actually close the new cordon.
+            if self._bloc_in_reach(rival_id, violent, squad_centroid):
+                self._auto_kettle_target = rival_id
+                self._auto_kettle_since = self._sim_clock
+                self.command_tactic(
+                    "kettle", faction=rival_id, _source="autonomous"
+                )
+            else:
+                self._auto_kettle_target = None
+                self.command_tactic("auto", _source="autonomous")
         elif (
             tgt_n < self._auto_kettle_min_strength
             or tgt_n < rival_n * self._auto_kettle_release_ratio
@@ -987,6 +1081,14 @@ class PoliceTacticsController:
         the ring tightens each tick; once formed, rioters still inside the ring
         are shoved out through the gap.  Arrests / routs keep running inside the
         cordon.  The gap direction is fixed at command time (deterministic).
+
+        The cordon is GEOGRAPHIC: engaged on the cluster handed in, then
+        anchored — the center drifts after the rioters still INSIDE the ring at
+        most ``_KETTLE_CENTER_DRIFT`` m/s and never re-targets a different
+        cluster (a fresh wave spawning across the map must not teleport a
+        half-closed ring off its officers).  When no violent rioter remains
+        inside the ring the cordon is DONE here: disband, and the FSM (or the
+        autonomous doctrine) re-evaluates from fresh state next tick.
         """
         self._squad_state = "kettle"
         center = objective
@@ -1014,6 +1116,37 @@ class PoliceTacticsController:
                 _KETTLE_START_RADIUS, spread + _KETTLE_SPREAD_MARGIN
             )
         else:
+            # ANCHORED center: follow only the rioters still inside the ring,
+            # rate-limited — ignore the handed-in objective entirely (it is the
+            # per-tick nearest cluster and teleports when a new wave spawns).
+            kc = self._kettle_center if self._kettle_center is not None else center
+            contain = self._kettle_radius + _KETTLE_CONTAIN_MARGIN
+            inside = [
+                v for v in violent
+                if math.hypot(v.position[0] - kc[0],
+                              v.position[1] - kc[1]) <= contain
+            ]
+            if not inside:
+                # Nobody violent left inside the cordon (arrested, routed, or
+                # shoved out the gap): this kettle's work is done.  Disband and
+                # stand easy; the doctrine / operator command re-evaluates on
+                # fresh state next tick (a persisting "kettle" command simply
+                # engages the next cluster as a NEW geographic cordon).
+                self._squad_state = "hold"
+                self._anchor = None
+                self._slots = None
+                self._formation_type = None
+                self._exit_kettle()
+                return
+            tx = sum(v.position[0] for v in inside) / len(inside)
+            ty = sum(v.position[1] for v in inside) / len(inside)
+            dx, dy = tx - kc[0], ty - kc[1]
+            d = math.hypot(dx, dy)
+            if d > 1e-9:
+                step = min(_KETTLE_CENTER_DRIFT * dt, d)
+                center = (kc[0] + dx / d * step, kc[1] + dy / d * step)
+            else:
+                center = kc
             # Tighten the ring toward the floor to squeeze the crowd out.
             self._kettle_radius = max(
                 _KETTLE_MIN_RADIUS,
@@ -1030,16 +1163,29 @@ class PoliceTacticsController:
             self._replan_accum = 0.0
             self._plan_kettle_formation(roster, center, facing)
 
-        # kettle_formed beat: >= 75% of the roster on its cordon slot.
+        # kettle_formed beat: >= 75% of the cordon RING is manned.  Counting
+        # MANNED SLOTS, not each officer's sorted-assignment slot, is what "the
+        # ring closed" means and is invariant to the officer<->slot churn a
+        # moving cluster + tightening ring produce (officers settle on the
+        # NEAREST slot, not their assigned one).  Matching is greedy and
+        # DISTINCT — each officer mans at most ONE slot (slot order, nearest
+        # unclaimed officer; deterministic) — so the ~5 m tolerance (~= the
+        # inter-slot spacing) can never let one officer double-count.
         if not self._kettle_formed_announced and self._slots:
-            ordered = sorted(roster, key=lambda o: o.target_id)
-            arrived = sum(
-                1
-                for officer, slot in zip(ordered, self._slots)
-                if math.hypot(officer.position[0] - slot[0],
-                              officer.position[1] - slot[1]) <= _KETTLE_ARRIVE_DIST
-            )
-            if roster and arrived >= _KETTLE_FORMED_FRACTION * len(roster):
+            unclaimed = list(roster)
+            manned = 0
+            for slot in self._slots:
+                best = None
+                best_d = _KETTLE_ARRIVE_DIST
+                for o in unclaimed:
+                    d = math.hypot(o.position[0] - slot[0],
+                                   o.position[1] - slot[1])
+                    if d <= best_d:
+                        best, best_d = o, d
+                if best is not None:
+                    unclaimed.remove(best)
+                    manned += 1
+            if roster and manned >= _KETTLE_FORMED_FRACTION * len(self._slots):
                 self._kettle_formed_announced = True
                 self._publish("crowd_event",
                               {"beat": "kettle_formed", "officers": len(roster)})
@@ -1090,14 +1236,37 @@ class PoliceTacticsController:
             radius=self._kettle_radius,
         )
         slots = get_formation_positions(config)
-        self._slots = slots
         self._formation_type = FormationType.ARC
 
-        ordered = sorted(roster, key=lambda o: o.target_id)
-        for officer, slot in zip(ordered, slots):
-            # Nudge a cordon slot off a wall / lethal cell so the ARC actually
-            # closes on real terrain (identity pass-through when unwired).
-            officer.waypoints = [self._validate_slot(center, slot)]
+        # Store the VALIDATED (as-commanded) cordon positions, not the raw ring
+        # slots: a slot nudged off a wall is where the officer is actually sent,
+        # so the kettle_formed arrival check must measure against it (otherwise a
+        # nudged officer never counts as "on its slot" and the cordon can never
+        # be reported closed on real terrain).  Identity pass-through when the
+        # validator is unwired => byte-identical for costmap-free sim maps.
+        #
+        # Assignment is PROXIMITY-GREEDY (slot takes the nearest unassigned
+        # officer; ties broken by target_id — deterministic, no RNG), not a
+        # sorted-id zip: id-order sent near officers across the ring to far
+        # slots and vice versa, roughly doubling closure time — and a cordon
+        # that cannot close before the crowd walks out never closes at all.
+        validated: list[tuple[float, float]] = []
+        remaining = sorted(roster, key=lambda o: o.target_id)
+        for slot in slots:
+            v = self._validate_slot(center, slot)
+            validated.append(v)
+            if not remaining:
+                continue
+            officer = min(
+                remaining,
+                key=lambda o: (
+                    math.hypot(o.position[0] - v[0], o.position[1] - v[1]),
+                    o.target_id,
+                ),
+            )
+            remaining.remove(officer)
+            officer.waypoints = [v]
+        self._slots = validated
 
     def _exit_kettle(self) -> None:
         """Clear all kettle-cordon transient state (FSM resumes at ``form``)."""
