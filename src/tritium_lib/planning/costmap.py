@@ -33,6 +33,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from tritium_lib.geo import point_in_polygon
 
@@ -106,6 +107,14 @@ NOAA_SEVERITY_MULT: dict[str, float] = {
     "Severe": 3.0,
     "Extreme": 6.0,
 }
+
+
+# NHD hydrography flowline default HALF-width (meters) for a lethal river
+# corridor when a feature carries no ``properties.width_m``.  ~8 m each side =>
+# a ~16 m impassable band, wide enough that the planner routes AROUND a river
+# and OVER road bridges rather than fording it.  Waterbody polygons stamp their
+# own footprint and ignore this.
+NHD_RIVER_HALF_WIDTH_M: float = 8.0
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +481,20 @@ class CostmapBuilder:
                     )
         return self
 
-    def _stamp_line(self, line: list[tuple[float, float]], half: float) -> None:
-        """Mark cells within ``half`` meters of any segment of ``line``."""
+    def _stamp_line(
+        self,
+        line: list[tuple[float, float]],
+        half: float,
+        mark: Callable[[int, int], None] | None = None,
+    ) -> None:
+        """Mark cells within ``half`` meters of any segment of ``line``.
+
+        ``mark`` receives ``(row, col)`` for each covered cell; it defaults to
+        adding the cell to the road (discount) layer.  Water/river corridors
+        pass a mark that stamps a lethal obstacle instead.
+        """
+        if mark is None:
+            mark = lambda row, col: self._road_cells.add((row, col))  # noqa: E731
         if len(line) < 2:
             if line:
                 # Degenerate single point — stamp its cell if in bounds.
@@ -485,7 +506,7 @@ class CostmapBuilder:
                     for col in range(col_lo, col_hi + 1):
                         cx, cy = self._cell_center(col, row)
                         if math.hypot(cx - line[0][0], cy - line[0][1]) <= half:
-                            self._road_cells.add((row, col))
+                            mark(row, col)
             return
         for (x0, y0), (x1, y1) in zip(line, line[1:]):
             seg_min_x = min(x0, x1) - half
@@ -499,7 +520,7 @@ class CostmapBuilder:
                 for col in range(col_lo, col_hi + 1):
                     cx, cy = self._cell_center(col, row)
                     if _point_segment_distance(cx, cy, x0, y0, x1, y1) <= half:
-                        self._road_cells.add((row, col))
+                        mark(row, col)
 
     def add_dem(self, elevation: LocalElevationGrid) -> "CostmapBuilder":
         """Attach a DEM used for per-cell slope cost at :meth:`build`.
@@ -624,6 +645,203 @@ class CostmapBuilder:
                     summary["ignored"] += 1
             else:
                 summary["ignored"] += 1
+        return summary
+
+    # -- Real-terrain mobility (NLCD land cover + NHD hydrography) ----------
+
+    def add_land_cover(
+        self,
+        land_grid: Any,
+        to_local: Callable[[float, float], tuple[float, float]] | None = None,
+        *,
+        mobility_fn: Callable[[Any, float], float] | None = None,
+        protect_roads: bool = True,
+    ) -> dict:
+        """Stamp NLCD land-cover mobility into the costmap.
+
+        ``land_grid`` is a duck-typed land-cover raster (the GIS lane's
+        :class:`tritium_lib.geo.gis.LandCoverGrid`): it must expose ``ncols`` /
+        ``nrows`` / ``west`` / ``south`` / ``east`` / ``north`` and a
+        ``tactical_field()`` returning per-cell tactical-profile dicts
+        (row-major, **row 0 = NORTH edge**) with ``mobility_cost`` /
+        ``passable`` / ``category`` keys.  Consuming the tactical field keeps
+        this method decoupled from the GIS fetchers — it never imports
+        ``geo.gis``.
+
+        Each land-cover cell tiles a lon/lat footprint over the grid bbox; that
+        footprint, projected to local via ``to_local``, stamps every covered
+        costmap cell:
+
+        * ``passable`` with ``mobility_cost > 1`` -> a **soft-cost zone** whose
+          multiplier is the mobility cost (forest ~3x, wetland ~4-6x): the
+          planner still crosses but prefers to route around -> slower routes
+          through forest (MAX-combined with weather zones, never lethal).
+        * NOT ``passable`` (OPEN WATER, NLCD code 11) -> a **lethal** cell
+          tagged ``"water"`` (routes go AROUND it), UNLESS a road already
+          covers the cell and ``protect_roads`` is set (a road over water is a
+          bridge and stays passable).
+        * ``mobility_cost <= 1`` (open / developed / grass) -> normal cost.
+
+        ``mobility_fn`` is the SEASONAL SEAM: an optional
+        ``(category, mobility_cost) -> float`` the environment lane passes to
+        modulate the per-category multiplier (e.g. snow accumulation raising
+        open-ground and forest cost).  It only sees passable cells; water stays
+        lethal regardless.  Default: identity.
+
+        Returns ``{"water", "slow", "bridges", "cells"}`` (cells stamped).
+        """
+        empty = {"water": 0, "slow": 0, "bridges": 0, "cells": 0}
+        ncols = int(getattr(land_grid, "ncols", 0) or 0)
+        nrows = int(getattr(land_grid, "nrows", 0) or 0)
+        if ncols <= 0 or nrows <= 0:
+            return dict(empty)
+        try:
+            field_cells = land_grid.tactical_field()
+        except Exception:  # noqa: BLE001 - defensive; a bad grid never raises
+            return dict(empty)
+        if not field_cells or len(field_cells) < ncols * nrows:
+            return dict(empty)
+
+        try:
+            west = float(land_grid.west)
+            east = float(land_grid.east)
+            south = float(land_grid.south)
+            north = float(land_grid.north)
+        except Exception:  # noqa: BLE001
+            return dict(empty)
+        dlon = (east - west) / ncols
+        dlat = (north - south) / nrows
+        if dlon <= 0 or dlat <= 0:
+            return dict(empty)
+
+        proj = to_local if callable(to_local) else (lambda lon, lat: (lon, lat))
+        summary = dict(empty)
+
+        for iy in range(nrows):
+            # row 0 = NORTH edge: this cell row spans [lat_lo, lat_hi].
+            lat_hi = north - iy * dlat
+            lat_lo = north - (iy + 1) * dlat
+            for ix in range(ncols):
+                profile = field_cells[iy * ncols + ix]
+                if not isinstance(profile, dict):
+                    continue
+                passable = bool(profile.get("passable", True))
+                mobility = float(profile.get("mobility_cost", 1.0) or 1.0)
+                category = profile.get("category")
+                lon_lo = west + ix * dlon
+                lon_hi = west + (ix + 1) * dlon
+                try:
+                    ring = [
+                        (float(proj(lon_lo, lat_lo)[0]), float(proj(lon_lo, lat_lo)[1])),
+                        (float(proj(lon_hi, lat_lo)[0]), float(proj(lon_hi, lat_lo)[1])),
+                        (float(proj(lon_hi, lat_hi)[0]), float(proj(lon_hi, lat_hi)[1])),
+                        (float(proj(lon_lo, lat_hi)[0]), float(proj(lon_lo, lat_hi)[1])),
+                    ]
+                except Exception:  # noqa: BLE001 - skip a cell with a bad projection
+                    continue
+
+                if not passable:
+                    counters = {"water": 0, "bridge": 0}
+
+                    def _mark(col, row, _c=counters):
+                        if protect_roads and (row, col) in self._road_cells:
+                            _c["bridge"] += 1
+                            return
+                        self._obstacle_cells[(row, col)] = "water"
+                        _c["water"] += 1
+
+                    self._stamp_polygon(ring, _mark)
+                    summary["water"] += counters["water"]
+                    summary["bridges"] += counters["bridge"]
+                    summary["cells"] += counters["water"]
+                    continue
+
+                mult = mobility
+                if mobility_fn is not None:
+                    try:
+                        mult = float(mobility_fn(category, mobility))
+                    except Exception:  # noqa: BLE001 - season hook never breaks apply
+                        mult = mobility
+                if mult > 1.0:
+                    counters = {"n": 0}
+
+                    def _mark(col, row, m=mult, _c=counters):
+                        self._mark_zone(row, col, m)
+                        _c["n"] += 1
+
+                    self._stamp_polygon(ring, _mark)
+                    summary["slow"] += counters["n"]
+                    summary["cells"] += counters["n"]
+        return summary
+
+    def add_water_obstacles(
+        self,
+        feature_collection: dict,
+        to_local: Callable[[float, float], tuple[float, float]] | None = None,
+        *,
+        impassable_kinds: frozenset[str] = frozenset({"river"}),
+        river_half_width_m: float | None = None,
+        protect_roads: bool = True,
+    ) -> dict:
+        """Stamp NHD hydrography water as lethal cells (route AROUND / OVER it).
+
+        Consumes the GIS lane's normalized NHD ``FeatureCollection`` (each
+        feature ``properties.source == "nhd"`` with a ``kind``):
+
+        * ``waterbody`` polygons (lakes / reservoirs) -> **lethal** cells tagged
+          ``"water"``.
+        * flowline ``LineString`` features whose ``kind`` is in
+          ``impassable_kinds`` (default: the wide perennial ``"river"`` only;
+          narrow ``"stream"`` / man-made ``"canal"`` stay traversable so the map
+          is not fragmented) -> a lethal corridor of half-width
+          ``river_half_width_m`` (a feature's own ``properties.width_m`` wins,
+          else :data:`NHD_RIVER_HALF_WIDTH_M`).
+
+        BRIDGE SEAM: a water cell already covered by a road stays passable when
+        ``protect_roads`` is set -- a road crossing water is a bridge.  This is
+        the simple self-contained rule; the GIS lane separately computes
+        explicit road x flowline chokepoints that can later refine which
+        crossings are truly bridged.  This method never reaches into the GIS
+        fetchers -- it only reads the normalized feature contract.
+
+        Returns ``{"waterbody", "river", "cells", "bridges"}``.
+        """
+        summary = {"waterbody": 0, "river": 0, "cells": 0, "bridges": 0}
+        counters = {"water": 0, "bridge": 0}
+
+        def _mark_poly(col, row):  # _stamp_polygon convention: (col, row)
+            if protect_roads and (row, col) in self._road_cells:
+                counters["bridge"] += 1
+                return
+            self._obstacle_cells[(row, col)] = "water"
+            counters["water"] += 1
+
+        def _mark_line(row, col):  # _stamp_line convention: (row, col)
+            if protect_roads and (row, col) in self._road_cells:
+                counters["bridge"] += 1
+                return
+            self._obstacle_cells[(row, col)] = "water"
+            counters["water"] += 1
+
+        for gtype, seqs, props in iter_features(feature_collection, to_local):
+            kind = props.get("kind")
+            if gtype in POLYGON_TYPES and kind == "waterbody":
+                for ring in seqs:
+                    self._stamp_polygon(ring, _mark_poly)
+                summary["waterbody"] += 1
+            elif gtype in LINE_TYPES and kind in impassable_kinds:
+                width_m = props.get("width_m")
+                if width_m is not None and float(width_m) > 0:
+                    half = float(width_m) / 2.0
+                elif river_half_width_m is not None:
+                    half = float(river_half_width_m)
+                else:
+                    half = NHD_RIVER_HALF_WIDTH_M
+                for line in seqs:
+                    self._stamp_line(line, half, mark=_mark_line)
+                summary["river"] += 1
+        summary["cells"] = counters["water"]
+        summary["bridges"] = counters["bridge"]
         return summary
 
     # -- Build --------------------------------------------------------------
