@@ -2,7 +2,7 @@
 
 **Where you are:** `tritium-lib/src/tritium_lib/` — the shared Python packages for the Tritium ecosystem.
 
-**Parent:** [../../CLAUDE.md](../../CLAUDE.md) | [../../../CLAUDE.md](../../../CLAUDE.md) (tritium root)
+**Parent:** [../../CLAUDE.md](../../CLAUDE.md) — for the tritium root see `CLAUDE.md` in the parent repo
 
 ## Packages
 
@@ -13,7 +13,7 @@
 | `events/` | Pub/sub event bus | `EventBus`, `AsyncEventBus`, `Event` |
 | `auth/` | JWT and API keys | `create_token()`, `decode_token()`, `generate_api_key()` |
 | `config/` | Base settings | `TritiumBaseSettings` (Pydantic BaseSettings) |
-| `store/` | Data persistence | `BleStore` (SQLite-backed) |
+| `store/` | Persistence layer — [own README](store/README.md) | `BaseStore` + 8 SQLite stores (`BleStore`, `TargetStore`, `DossierStore`, ...), `EmbodimentRegistry` |
 | `cot/` | Cursor on Target codec | `device_to_cot()`, `sensor_to_cot()`, `parse_cot()` |
 | `web/` | HTML theme engine | `TritiumTheme`, `DashboardPage`, UI components |
 | `testing/` | Visual regression | `VisualCheck`, `DeviceAPI`, `FlickerAnalyzer` |

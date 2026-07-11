@@ -1,47 +1,40 @@
-# Tritium-Lib Status
+# Tritium-Lib Status — snapshot 2026-07-11
 
-Current state of the shared library as of Wave 186.
+Dated snapshot of the shared library, re-measured against `dev`
+(`f77dbf2`). The wave cadence that produced earlier snapshots ended;
+counts below were measured on the date above, commands given so the
+next sweep reproduces rather than re-litigates.
 
-## Wave 186 Baselines
+## Baselines (measured 2026-07-11)
 
-| Metric | Count |
-|--------|-------|
-| Test files | 227 |
-| Tests passing | 2,569 (Wave 165 baseline; full suite not re-run this wave) |
-| Python source files (`src/`) | 343 |
-| Sim engine Python files | 146 |
-| Branch | `dev` |
+| Metric | Count | How measured |
+|--------|------:|--------------|
+| Test files | 497 | `find tests -name 'test_*.py' \| wc -l` |
+| Collectible tests | 17,111 | `pytest tests/ --collect-only -q` (29.7 s, 0 errors) |
+| Python source files (`src/`) | 569 | `find src -name '*.py' \| wc -l` |
+| Sim engine Python files | 188 | `find src/tritium_lib/sim_engine -name '*.py' \| wc -l` |
+| Model files / Pydantic classes | 107 / 297 | `ls src/tritium_lib/models/*.py`; `grep -rE "^class .*BaseModel"` |
+| Store package | 12 files | 8 SQLite stores + `BaseStore` + in-memory `EmbodimentRegistry` + `sweep_dir` — see [`store/README.md`](../src/tritium_lib/store/README.md) |
+| Data JSON databases | 10 | `ls src/tritium_lib/data/*.json` (933 BLE company IDs in `ble_fingerprints.json`) |
 
-## Sim Engine
-
-146 Python files across `sim_engine/` covering:
-- `ai/` — steering (pure Python + NumPy vectorized), pathfinding, combat AI, formations, behavior trees, squad tactics
-- `behavior/` — NPC routines, unit missions, unit states
-- `combat/` — combat loop, squads, weapons
-- `core/` — entity, movement, spatial, state machine, NPC thinker
-- `game/` — game modes, morale, difficulty, crowd density, ambient, stats
-- `physics/` — collision, vehicle physics
-- `world/` — cover, grid pathfinder, sensors, vision
-- `effects/` — particles, weapons FX
-- `audio/` — spatial audio
-- `debug/` — debug streams
-- `demos/` — game_server, city3d, perf tests, 30+ standalone test scripts
-
-## Key Packages
+## Key packages
 
 | Package | Purpose |
 |---------|---------|
-| `models/` | 262+ Pydantic classes across 97+ files — canonical data contracts |
-| `sim_engine/` | Full tactical simulation (146 files) |
-| `store/` | 9 persistent data stores (all inherit BaseStore) |
+| `models/` | 297 Pydantic classes across 107 files — canonical data contracts (incl. the 2026-07 robotics set: `quadruped.py`, `fire_control.py`, `hits.py`) |
+| `sim_engine/` | Full tactical simulation, 188 files — `ai/`, `unit_types/`, `world/`, `game/`, `combat/`, `behavior/`, `physics/`, plus 46 demo scripts |
+| `store/` | The persistence layer — [own README](../src/tritium_lib/store/README.md) |
+| `tracking/` | Live read model: `TargetTracker` (now with health/max_health), `DossierManager` (extracted from SC 2026-07) |
 | `intelligence/` | RL metrics, fusion metrics, position estimator |
 | `classifier/` | Multi-signal BLE/WiFi device classifier |
-| `data/` | 11 JSON fingerprint/lookup databases (933 BLE company IDs) |
 | `sdk/` | Addon SDK — AddonBase, BaseRunner, GeoJSON layers |
-| `graph/` | KuzuDB entity/relationship graph |
+| `graph/` | KuzuDB graph — **SHELFWARE, do not build against** (`graph/store.py:4-6`); not wired to any live API |
 
-## Redundancy Notes (Wave 186 audit)
+For the full package map see [`src/tritium_lib/README.md`](../src/tritium_lib/README.md)
+(owed a refresh — it lists 9 of ~55 packages as of this snapshot).
 
-- `ai/steering.py` vs `ai/steering_np.py`: intentional split — pure Python for composable forces, NumPy variant for 500+ agents at 10Hz. Not redundant.
-- No TODO/FIXME/HACK comments found anywhere in `sim_engine/`.
-- `game_server.py`: clean, no dead code markers.
+## Standing notes (carried forward, still true)
+
+- `ai/steering.py` vs `ai/steering_np.py`: intentional split — pure Python
+  for composable forces, NumPy variant for 500+ agents at 10 Hz. Not
+  redundant.

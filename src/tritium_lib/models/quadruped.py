@@ -11,7 +11,7 @@ pitch at twice stride frequency), pick a gait for a requested speed with
 :meth:`QuadrupedProfile.drain_pct_per_s`.  A real dog reports the same
 vocabulary in its telemetry to::
 
-    tritium/{site}/robots/{device_id}/telemetry   (QoS 1, retain False)
+    tritium/{site}/robots/{device_id}/telemetry   (QoS 0, retain False)
 
 ``asset_type`` is what the dog publishes in that MQTT telemetry; SC renders
 the dog glyph off this.  Because sim and hardware share the identical gait
