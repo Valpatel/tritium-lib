@@ -4,7 +4,6 @@
 """Tests for tritium_lib.sim_engine.game.stats — StatsTracker, UnitStats, WaveStats."""
 
 import math
-import time
 import pytest
 from types import SimpleNamespace
 
@@ -164,8 +163,10 @@ class TestStatsTrackerCombat:
         st.register_unit("attacker_a", "A", "friendly", "rover")
         st.register_unit("attacker_b", "B", "friendly", "rover")
         st.register_unit("victim", "V", "hostile", "person")
-        # A damages the victim
-        now = time.monotonic()
+        # A damages the victim.  The timestamp override must be in the tracker's
+        # own clock domain (self._now()) so it is comparable to on_kill's
+        # assist-window check; standalone that falls back to wall-clock.
+        now = st._now()
         st.on_shot_hit("attacker_a", "victim", 20.0, timestamp=now)
         # B kills the victim
         st.on_kill("attacker_b", "victim")

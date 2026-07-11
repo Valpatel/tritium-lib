@@ -36,9 +36,10 @@ Time tracking:
 from __future__ import annotations
 
 import math
-import time
 from collections import deque
 from dataclasses import dataclass, field
+
+from tritium_lib.sim_engine.core.sim_clock import SimClockMixin
 
 
 @dataclass
@@ -149,12 +150,17 @@ class WaveStats:
         }
 
 
-class StatsTracker:
+class StatsTracker(SimClockMixin):
     """Tracks all combat and game statistics.
 
     Designed to be called from the engine tick loop (10Hz) and from
     combat event handlers.  Lightweight: no threads, no EventBus
     subscription (the engine wires events directly).
+
+    Assist-window and wave-duration timing run on **sim time** via
+    SimClockMixin (attach the engine with ``attach_clock``) so the AAR stats
+    surface is deterministic in a headless golden replay.  Standalone instances
+    fall back to wall-clock so bare-unit tests are unaffected.
     """
 
     def __init__(self, event_bus: object | None = None) -> None:
@@ -226,10 +232,10 @@ class StatsTracker:
         target's damage_taken.  Stores recent damage for assist tracking.
 
         Args:
-            timestamp: Override for assist-window calculation (monotonic).
-                       Defaults to time.monotonic() if not provided.
+            timestamp: Override for assist-window calculation (sim seconds).
+                       Defaults to the attached sim clock (self._now()).
         """
-        ts = timestamp if timestamp is not None else time.monotonic()
+        ts = timestamp if timestamp is not None else self._now()
         self._recent_damage.append((ts, shooter_id, target_id, damage))
 
         shooter_stats = self._unit_stats.get(shooter_id)
@@ -262,7 +268,7 @@ class StatsTracker:
             self._current_wave.hostiles_eliminated += 1
 
         # Check assists: who damaged the victim recently (excluding killer)?
-        now = time.monotonic()
+        now = self._now()
         assisters: set[str] = set()
         for ts, attacker_id, target_id, damage in self._recent_damage:
             if target_id != victim_id:
@@ -300,14 +306,14 @@ class StatsTracker:
         )
         self._current_wave = wave
         self._wave_stats.append(wave)
-        self._wave_start_time = time.monotonic()
+        self._wave_start_time = self._now()
 
     def on_wave_complete(self, score: int) -> None:
         """Finalize current wave stats."""
         if self._current_wave is None:
             return
         self._current_wave.score_earned = score
-        self._current_wave.duration = time.monotonic() - self._wave_start_time
+        self._current_wave.duration = self._now() - self._wave_start_time
         self._current_wave = None
 
     def on_hostile_escaped(self) -> None:

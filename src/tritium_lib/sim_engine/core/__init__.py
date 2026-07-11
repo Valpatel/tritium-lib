@@ -11,6 +11,7 @@ for reuse by addons, runners, and other consumers.
 from .entity import SimulationTarget, UnitIdentity
 from .inventory import UnitInventory, InventoryItem
 from .movement import MovementController
+from .sim_clock import SimClockMixin
 from .state_machine import StateMachine, State, Transition
 from .spatial import SpatialGrid
 
@@ -20,6 +21,7 @@ __all__ = [
     "UnitInventory",
     "InventoryItem",
     "MovementController",
+    "SimClockMixin",
     "StateMachine",
     "State",
     "Transition",
