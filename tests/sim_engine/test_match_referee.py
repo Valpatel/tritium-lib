@@ -26,12 +26,14 @@ import random
 import pytest
 
 from tritium_lib.models.fire_control import PAN_MAX_DEG
+from tritium_lib.models.hits import RegisterHitCommand
 from tritium_lib.sim_engine.combat import (
     CombatSystem,
     HIT_RADIUS,
     MatchReferee,
     Weapon,
     dispersion_sigma,
+    register_hit_command,
     relative_fire_solution,
 )
 
@@ -283,3 +285,168 @@ def test_default_loadout_is_robot_dog() -> None:
     assert a.weapon.damage == 8.0
     assert a.weapon.weapon_range == 9.0
     assert a.weapon is not b.weapon  # fresh copies, no shared state
+
+
+# ---------------------------------------------------------------------------
+# Hit feedback — sync_health: the dog's reported health is authoritative
+# ---------------------------------------------------------------------------
+
+def test_sync_health_pins_referee_book_to_reported_hp() -> None:
+    """Dog health telemetry overrides referee bookkeeping (wire matches)."""
+    ref = _duel(random.Random(0))
+    ref.sync_health("dog_b", 4.0)
+    b = ref.get_combatant("dog_b")
+    assert b.hp == 4.0
+    assert b.alive is True
+    ref.sync_health("dog_b", -3.0)  # nonsense negative report clamps to 0
+    assert b.hp == 0.0
+    assert b.alive is False
+
+
+def test_sync_health_ko_resolves_on_reported_health() -> None:
+    """A dog reporting hp 0 flips alive and decides the match."""
+    ref = _duel(random.Random(0))
+    assert ref.active() is True
+    ref.sync_health("dog_b", 0.0)
+    assert ref.get_combatant("dog_b").alive is False
+    assert ref.winner() == "dog_a"
+    assert ref.active() is False
+    assert ref.scoreboard()["winner"] == "dog_a"
+
+
+def test_sync_health_alive_false_forces_death() -> None:
+    """A dog declaring itself dead is dead, whatever hp it claims."""
+    ref = _duel(random.Random(0))
+    ref.sync_health("dog_b", 12.0, alive=False)
+    b = ref.get_combatant("dog_b")
+    assert b.hp == 0.0
+    assert b.alive is False
+
+
+def test_sync_health_alive_true_leaves_hp_authoritative() -> None:
+    ref = _duel(random.Random(0))
+    ref.sync_health("dog_b", 7.5, alive=True)
+    assert ref.get_combatant("dog_b").hp == 7.5
+
+
+def test_sync_health_unknown_combatant_raises() -> None:
+    ref = _duel(random.Random(0))
+    with pytest.raises(KeyError):
+        ref.sync_health("dog_zz", 10.0)
+
+
+# ---------------------------------------------------------------------------
+# Hit feedback — register_external_hit: hits the referee never adjudicated
+# ---------------------------------------------------------------------------
+
+def test_register_external_hit_books_both_sides() -> None:
+    """Physical-sensor hit: target drained, shooter credited — but the
+    trigger pull was already counted from ammo drain, so NO shots_fired."""
+    ref = _duel(random.Random(0))
+    hp_after = ref.register_external_hit("dog_b", 8.0, shooter_id="dog_a")
+    assert hp_after == 32.0
+    a = ref.get_combatant("dog_a")
+    b = ref.get_combatant("dog_b")
+    assert b.hp == 32.0
+    assert b.hits_taken == 1
+    assert b.damage_taken == 8.0
+    assert a.hits_landed == 1
+    assert a.damage_dealt == 8.0
+    assert a.shots_fired == 0  # NOT incremented — already counted at fire time
+
+
+def test_register_external_hit_unknown_or_none_shooter_safe() -> None:
+    """A camera saw an impact but not who fired: target side books alone."""
+    ref = _duel(random.Random(0))
+    assert ref.register_external_hit("dog_b", 5.0, shooter_id="cam_ghost") == 35.0
+    assert ref.register_external_hit("dog_b", 5.0, shooter_id=None) == 30.0
+    b = ref.get_combatant("dog_b")
+    assert b.hits_taken == 2
+    assert b.damage_taken == 10.0
+    a = ref.get_combatant("dog_a")
+    assert a.hits_landed == 0
+    assert a.damage_dealt == 0.0
+
+
+def test_register_external_hit_clamps_at_zero_and_kos() -> None:
+    ref = _duel(random.Random(0))
+    hp_after = ref.register_external_hit("dog_b", 1000.0, shooter_id="dog_a")
+    assert hp_after == 0.0
+    assert ref.get_combatant("dog_b").alive is False
+    assert ref.winner() == "dog_a"
+
+
+def test_register_external_hit_unknown_target_raises() -> None:
+    ref = _duel(random.Random(0))
+    with pytest.raises(KeyError):
+        ref.register_external_hit("dog_zz", 8.0)
+
+
+# ---------------------------------------------------------------------------
+# Hit feedback — register_hit_command: referee verdict -> wire command
+# ---------------------------------------------------------------------------
+
+def test_register_hit_command_from_resolved_outcome() -> None:
+    """A seeded referee hit maps onto the exact wire command the target
+    dog's brain keys on."""
+    ref = _duel(random.Random(42), weapon_a=_perfect_weapon(damage=8.0))
+    out = ref.resolve_shot("dog_a", "dog_b")
+    assert out.hit is True  # deterministic under seed 42 (perfect weapon)
+    cmd = register_hit_command(out)
+    assert isinstance(cmd, RegisterHitCommand)
+    assert cmd.command == "register_hit"
+    assert cmd.shooter_id == "dog_a"
+    assert cmd.damage == out.damage_applied == 8.0
+    assert cmd.source == "referee"
+    assert len(cmd.hit_id) == 12
+    assert cmd.model_dump()["command"] == "register_hit"  # wire keyable
+
+
+# ---------------------------------------------------------------------------
+# Regression — the hit-feedback additions must not shift the rng sequence
+# ---------------------------------------------------------------------------
+
+def test_seeded_shot_script_pinned_values() -> None:
+    """Fixed pose + shot script under seed 4242: every number below was
+    pinned by running once and must stay byte-stable across runs — proof
+    the additive hit-feedback methods leave resolve_shot's draw sequence
+    untouched (golden-replay contract)."""
+    ref = MatchReferee(rng=random.Random(4242))
+    ref.add_combatant("dog_a")  # default robot_dog nerf_blaster
+    ref.add_combatant("dog_b")
+    ref.update_pose("dog_a", 0.0, 0.0, 0.0, turret_pan_deg=0.0)
+    ref.update_pose("dog_b", 0.0, 5.0, 180.0, turret_pan_deg=0.0)
+
+    outcomes = []
+    for _ in range(10):
+        outcomes.append(ref.resolve_shot("dog_a", "dog_b"))
+        outcomes.append(ref.resolve_shot("dog_b", "dog_a"))
+
+    assert [o.reason for o in outcomes] == [
+        "hit", "hit", "hit", "hit", "hit", "hit",
+        "dispersion_miss", "hit", "hit", "hit",
+        "hit", "hit", "hit", "hit", "hit", "hit",
+        "hit", "dispersion_miss", "hit", "hit",
+    ]
+    assert [o.target_hp_after for o in outcomes] == [
+        32.0, 32.0, 24.0, 24.0, 16.0, 16.0, 16.0, 8.0, 8.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+    assert outcomes[0].lateral_offset_m == pytest.approx(
+        2.62576998717928, abs=1e-12)
+    assert outcomes[1].lateral_offset_m == pytest.approx(
+        -3.0763062233690426, abs=1e-12)
+    assert outcomes[2].lateral_offset_m == pytest.approx(
+        3.819054888004615, abs=1e-12)
+    assert outcomes[3].lateral_offset_m == pytest.approx(
+        0.6900804233353119, abs=1e-12)
+
+    for cid in ("dog_a", "dog_b"):
+        c = ref.get_combatant(cid)
+        assert c.hp == 0.0
+        assert c.shots_fired == 10
+        assert c.hits_landed == 9
+        assert c.hits_taken == 9
+        assert c.damage_dealt == 72.0
+        assert c.damage_taken == 72.0
+        assert c.alive is False

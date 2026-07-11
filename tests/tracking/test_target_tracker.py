@@ -609,3 +609,79 @@ class TestCrowdRole:
             "position": {"x": 0.1, "y": 0.1},
         })
         assert tracker.get_target("npc_5").crowd_role == "rioter"
+
+
+class TestHealthReporting:
+    """Hit-feedback health on tracks (tritium_lib.models.hits contract).
+
+    A wire robot's telemetry ``health`` block is distilled by the ingest
+    bridge into flat ``health``/``max_health`` floats on the track.  ``None``
+    means "does not report health" — never "zero hp".
+    """
+
+    def test_default_health_is_none(self):
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "mqtt_dog-rex",
+            "asset_type": "robot_dog",
+            "position": {"x": 0.0, "y": 0.0},
+        })
+        t = tracker.get_target("mqtt_dog-rex")
+        assert t.health is None
+        assert t.max_health is None
+        d = t.to_dict(geo_converter=lambda x, y: {"lat": 0, "lng": 0, "alt": 0})
+        assert d["health"] is None
+        assert d["max_health"] is None
+
+    def test_health_set_on_create_and_serialized(self):
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "mqtt_dog-rex",
+            "asset_type": "robot_dog",
+            "position": {"x": 0.0, "y": 0.0},
+            "health": 30.0,
+            "max_health": 40.0,
+        })
+        t = tracker.get_target("mqtt_dog-rex")
+        assert t.health == 30.0
+        assert t.max_health == 40.0
+        d = t.to_dict(geo_converter=lambda x, y: {"lat": 0, "lng": 0, "alt": 0})
+        assert d["health"] == 30.0
+        assert d["max_health"] == 40.0
+
+    def test_health_updates_are_authoritative(self):
+        """A frame WITH health pins the track — the robot owns its health."""
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "mqtt_dog-vex",
+            "asset_type": "robot_dog",
+            "position": {"x": 0.0, "y": 0.0},
+            "health": 40.0,
+            "max_health": 40.0,
+        })
+        tracker.update_from_simulation({
+            "target_id": "mqtt_dog-vex",
+            "position": {"x": 0.5, "y": 0.0},
+            "health": 0.0,
+        })
+        t = tracker.get_target("mqtt_dog-vex")
+        assert t.health == 0.0          # KO'd — authoritative
+        assert t.max_health == 40.0     # absent key untouched
+
+    def test_missing_health_key_leaves_existing_unchanged(self):
+        """Absent health key is "no opinion", not "heal to unknown"."""
+        tracker = TargetTracker()
+        tracker.update_from_simulation({
+            "target_id": "mqtt_dog-rex",
+            "asset_type": "robot_dog",
+            "position": {"x": 0.0, "y": 0.0},
+            "health": 20.0,
+            "max_health": 40.0,
+        })
+        tracker.update_from_simulation({
+            "target_id": "mqtt_dog-rex",
+            "position": {"x": 1.0, "y": 0.0},
+        })
+        t = tracker.get_target("mqtt_dog-rex")
+        assert t.health == 20.0
+        assert t.max_health == 40.0
