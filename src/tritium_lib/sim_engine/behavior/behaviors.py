@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 from tritium_lib.models.target_status import is_terminal
 from tritium_lib.sim_engine.behavior.doctrine import find_peek_position
+from tritium_lib.sim_engine.perception import detectability_multiplier
 
 if TYPE_CHECKING:
     from tritium_lib.sim_engine.combat.combat import CombatSystem
@@ -230,6 +231,18 @@ class UnitBehaviors:
         # weather-off drive (all 6 canonical goldens) stays byte-identical.
         self._detection_modifier: float = 1.0
 
+        # Per-TARGET seasonal concealment (the GIS/environment integration
+        # seam). Optional callable(target)->float in 0..1: how well a target is
+        # hidden RIGHT NOW given where it stands and the season (summer forest
+        # canopy ~0.81, bare winter ~0.12). When set, a candidate's own
+        # acquisition range shrinks by (1 - concealment) ON TOP OF the global
+        # weather _detection_modifier — so a hostile in a summer treeline is
+        # acquired only when a unit closes much nearer than the same hostile in
+        # winter. None (default) => the acquisition path is byte-identical to
+        # before this feature; no canonical scenario attaches a field, so all
+        # goldens stay byte-identical. See sim_engine.perception.ConcealmentField.
+        self._concealment_fn = None
+
         # Focus-fire spread (civil_unrest riot line): per-tick claim map,
         # target_id -> number of officers that have already picked it THIS tick.
         # Cleared at the top of tick(); police prefer the least-claimed nearby
@@ -252,6 +265,18 @@ class UnitBehaviors:
         never fully blinded.
         """
         self._detection_modifier = max(0.05, float(mod))
+
+    def set_concealment_provider(self, fn) -> None:
+        """Attach (or clear) the per-target seasonal concealment provider.
+
+        ``fn`` is any ``callable(target) -> float`` returning concealment in
+        0..1 for that target's current position and season — in practice a
+        :class:`tritium_lib.sim_engine.perception.ConcealmentField` bound to a
+        GIS land-cover grid + the environment's live ``foliage_state``. Pass
+        ``None`` to disable (the default): the acquisition path then runs its
+        original byte-identical code, so no land-cover grid == no effect.
+        """
+        self._concealment_fn = fn
 
     def set_obstacles(self, obstacles) -> None:
         """Set obstacle geometry for cover-seeking behavior.
@@ -1293,6 +1318,13 @@ class UnitBehaviors:
         # when the modifier is 1.0 (weather off) => byte-identical goldens.
         eff_range = unit.weapon_range * self._detection_modifier
 
+        # Seasonal concealment (GIS integration): each candidate has its OWN
+        # acquisition range = eff_range * (1 - its concealment). Only entered
+        # when a concealment field is attached; the default path below is
+        # untouched (byte-identical), and no canonical scenario attaches one.
+        if self._concealment_fn is not None:
+            return self._nearest_concealed(unit, enemies, eff_range)
+
         best: SimulationTarget | None = None
         best_dist = float("inf")
 
@@ -1320,6 +1352,46 @@ class UnitBehaviors:
                     best = enemy
         return best
 
+    def _nearest_concealed(
+        self,
+        unit: SimulationTarget,
+        enemies: dict[str, SimulationTarget],
+        eff_range: float,
+    ) -> SimulationTarget | None:
+        """Concealment-aware nearest-acquirable lookup.
+
+        Each candidate's acquisition range is ``eff_range`` shrunk by its own
+        seasonal concealment, so a nearer but well-hidden hostile can be
+        *un-acquirable* while a farther exposed one is engaged. Among the
+        candidates a unit CAN acquire, the physically-nearest wins.
+
+        The grid query uses the un-shrunk ``eff_range`` as an upper bound —
+        concealment only shrinks each candidate's range (multiplier <= 1.0), so
+        the grid's radius still returns a superset and no acquirable target is
+        missed. Runs only when a concealment field is attached.
+        """
+        best: SimulationTarget | None = None
+        best_dist = float("inf")
+        if self._spatial_grid is not None:
+            candidates = [
+                c for c in self._spatial_grid.query_radius(unit.position, eff_range)
+                if c.target_id in enemies
+            ]
+        else:
+            candidates = list(enemies.values())
+        for candidate in candidates:
+            dx = candidate.position[0] - unit.position[0]
+            dy = candidate.position[1] - unit.position[1]
+            dist = dx * dx + dy * dy
+            if dist >= best_dist:
+                continue
+            cand_range = eff_range * detectability_multiplier(
+                self._concealment_fn(candidate))
+            if dist <= cand_range * cand_range:
+                best_dist = dist
+                best = candidate
+        return best
+
     def _candidates_in_range(
         self,
         unit: SimulationTarget,
@@ -1343,6 +1415,11 @@ class UnitBehaviors:
         # Weather acquisition-range degradation (mirror nearest exactly).
         eff_range = unit.weapon_range * self._detection_modifier
 
+        # Seasonal concealment (mirror _nearest_in_range): each candidate must
+        # clear its OWN concealment-shrunk range to enter the fire-spread set.
+        # Only when a field is attached; default path below is byte-identical.
+        concealed = self._concealment_fn is not None
+
         out: list[tuple[SimulationTarget, float]] = []
         if self._spatial_grid is not None:
             candidates = self._spatial_grid.query_radius(
@@ -1353,15 +1430,27 @@ class UnitBehaviors:
                     continue
                 dx = candidate.position[0] - unit.position[0]
                 dy = candidate.position[1] - unit.position[1]
-                out.append((candidate, dx * dx + dy * dy))
+                dist = dx * dx + dy * dy
+                if concealed:
+                    cand_range = eff_range * detectability_multiplier(
+                        self._concealment_fn(candidate))
+                    if dist > cand_range * cand_range:
+                        continue
+                out.append((candidate, dist))
         else:
             wr2 = eff_range * eff_range
             for enemy in enemies.values():
                 dx = enemy.position[0] - unit.position[0]
                 dy = enemy.position[1] - unit.position[1]
                 dist = dx * dx + dy * dy
-                if dist <= wr2:
-                    out.append((enemy, dist))
+                if concealed:
+                    cand_range = eff_range * detectability_multiplier(
+                        self._concealment_fn(enemy))
+                    if dist > cand_range * cand_range:
+                        continue
+                elif dist > wr2:
+                    continue
+                out.append((enemy, dist))
         return out
 
     def _pursue_nearest_hostile(
