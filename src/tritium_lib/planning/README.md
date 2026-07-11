@@ -97,7 +97,7 @@ takes the max cost).
 
 ## Planning a route
 
-`plan_route(costmap, start, goal, *, smooth=True, max_expansions=None, snap_radius_m=None)`
+`plan_route(costmap, start, goal, *, smooth=True, max_expansions=None, snap_radius_m=None, clearance_m=0.0, strategy="auto")`
 
 Deterministic 8-connected A* (octile heuristic × `min_traversable_cost`, so it
 stays admissible with road discounts). No diagonal corner-cutting. A lethal
@@ -106,7 +106,37 @@ start/goal snaps to the nearest free cell within `snap_radius_m` (default
 reason)`; on success `path[0]` is the exact start and `path[-1]` the exact goal.
 Smoothing greedily shortcuts while preserving road preference (a shortcut can
 never cross costlier cells than the subpath it replaces, and never crosses a
-lethal cell).
+lethal cell). `clearance_m > 0` treats any cell within that distance of a lethal
+cell as blocked (a wide unit keeps more wall standoff), relaxing to 0 rather
+than failing a routable dispatch.
+
+## Scaling to large AOs — hierarchical planning
+
+Flat A* is optimal and cheap on simulator-scale maps but does not scale: on a
+city-scale AO (600²+ cells, >9 km² at 5 m) with a continuous soft-cost field
+(slope/weather), the octile heuristic is a weak lower bound and a single flat
+solve blows the 200k-expansion cap and returns no path. `strategy` picks the
+planner:
+
+- `"flat"` — force the flat baseline above.
+- `"hierarchical"` — force `plan_route_hierarchical`: coarsen the costmap by
+  `DEFAULT_COARSE_FACTOR` (8×; a coarse cell is lethal only when *every* fine
+  cell in its block is, so narrow corridors survive, and its soft cost is the
+  block mean plus a mild congestion term), plan a tiny coarse A* first, then run
+  the SAME flat A* restricted to a dilated corridor around the coarse route.
+  Fine expansions are bounded by the corridor size, not the whole grid.
+  Obstacle avoidance, clearance and road precedence are byte-for-byte the flat
+  planner's (the fine solve runs the real costs + real obstacle-distance
+  clearance inside the band). Completeness backstop: widen the corridor, then
+  fall back to full flat A* — never `no_path` where flat would succeed.
+- `"auto"` (default) — flat below `_AUTO_HIERARCHICAL_MIN_CELLS` (250k cells ≈
+  500²; every simulator map, so `auto` is byte-for-byte flat there) and
+  hierarchical at or above it. Existing callers (`engine.route_path`,
+  `/api/route/plan`) upgrade automatically with no code change.
+
+Measured (soft-cost field): flat **fails** at 600² (`max_expansions`, ~200k exp,
+~2 s) where hierarchical **succeeds** (~61k exp, ~0.6 s) at an **identical route
+cost** (corridor contains the optimum).
 
 ### Example
 
