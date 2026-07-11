@@ -43,6 +43,7 @@ __all__ = [
     "TigerRoadsFetcher",
     "FemaFloodFetcher",
     "NoaaAlertsFetcher",
+    "NhdHydrographyFetcher",
     "OverpassBuildingsFetcher",
     "NlcdLandCoverFetcher",
     "filter_features_bbox",
@@ -442,6 +443,217 @@ class NoaaAlertsFetcher(_VectorFetcher):
         return {"type": "FeatureCollection", "features": features}
 
     _parse = parse_alerts
+
+
+#: NHDFlowline FType (integer) -> normalized ``kind`` string.  The residual
+#: (any code not listed, incl. StreamRiver 460) is a plain ``"stream"``; the
+#: named kinds let the SC style weight rivers/canals/artificial paths apart.
+_NHD_FLOWLINE_FTYPE_KIND: dict[int, str] = {
+    460: "river",       # StreamRiver — a named/perennial watercourse
+    336: "canal",       # CanalDitch
+    558: "artificial",  # ArtificialPath (through a waterbody)
+    334: "connector",   # Connector
+    420: "conduit",     # UndergroundConduit / pipeline
+    566: "coastline",   # Coastline
+}
+
+
+def _ci_get(props: dict, *names, default=None):
+    """Case-insensitive lookup of the first present key in ``names``.
+
+    ArcGIS field casing varies across service revisions (``GNIS_NAME`` vs
+    ``GNIS_Name``, ``FTYPE`` vs ``FType``); this reads them without pinning a
+    single casing.  Returns ``default`` when none of ``names`` is present.
+    """
+    if not isinstance(props, dict):
+        return default
+    lower = {str(k).lower(): v for k, v in props.items()}
+    for name in names:
+        val = lower.get(str(name).lower())
+        if val is not None:
+            return val
+    return default
+
+
+def _to_int(value, default=None):
+    """Best-effort int coercion (NHD FType arrives as int, str, or float)."""
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+class NhdHydrographyFetcher(_VectorFetcher):
+    """USGS National Hydrography Dataset — the real surface-water NETWORK.
+
+    Complements NLCD's water *class* and FEMA's flood *zones* with the actual
+    hydrography: stream/river centerlines (NHDFlowline, LineStrings) plus lake /
+    pond / reservoir footprints (NHDWaterbody, Polygons), from the USGS
+    ``NHDPlus_HR`` ArcGIS MapServer.
+
+    Unlike the single-layer vector fetchers, the live step queries **two** layers
+    (flowline + waterbody) and merges them into one normalized
+    ``FeatureCollection`` — so the layer toggles as a single "hydrography" layer.
+    Everything else (disk cache, multi-AO packaged fixtures with bbox clipping,
+    empty fallback) reuses the shared ``_VectorFetcher`` machinery.
+
+    Normalized ``properties`` (style props are added by the SC provider, never
+    here):
+        * ``source`` = ``"nhd"``
+        * ``kind``   = ``"river"``/``"canal"``/``"artificial"``/``"connector"``/
+          ``"conduit"``/``"coastline"``/``"stream"`` (flowlines, by FType) or
+          ``"waterbody"`` (polygons)
+        * ``name``   = GNIS name (may be empty)
+        * ``ftype``  = raw NHD FType integer (or ``None``)
+        * ``area_sqkm`` = waterbody area (waterbodies only)
+    """
+
+    SOURCE = "nhd"
+    FIXTURE_NAME = "nhd_hydro_ao.json"
+    FIXTURE_NAMES = ("nhd_hydro_ao.json", "nhd_hydro_boulder.json")
+    BASE_URL = (
+        "https://hydro.nationalmap.gov/arcgis/rest/services/NHDPlus_HR/MapServer"
+    )
+    FLOWLINE_LAYER = 3   # NetworkNHDFlowline (polyline)
+    WATERBODY_LAYER = 9  # NHDWaterbody (polygon)
+
+    #: Cap live records per layer so a dense metro AO cannot pull thousands of
+    #: features (politeness + a renderable overlay). Fixtures are pre-trimmed.
+    MAX_RECORDS = 800
+
+    def _layer_url(self, bbox: GeoBBox, layer_id: int, out_fields: str) -> str:
+        params = {
+            "where": "1=1",
+            "geometry": bbox.to_string(),
+            "geometryType": "esriGeometryEnvelope",
+            "inSR": "4326",
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": out_fields,
+            "returnGeometry": "true",
+            "outSR": "4326",
+            "resultRecordCount": str(self.MAX_RECORDS),
+            "f": "geojson",
+        }
+        return f"{self.BASE_URL}/{layer_id}/query?{urllib.parse.urlencode(params)}"
+
+    # _VectorFetcher declares _build_url abstract; NHD queries two layers so it
+    # overrides fetch() directly. Keep a concrete stub so the class is not
+    # accidentally used through the single-URL base path.
+    def _build_url(self, bbox: GeoBBox) -> str:  # pragma: no cover - unused
+        return self._layer_url(bbox, self.FLOWLINE_LAYER, "GNIS_NAME,FType,FCode")
+
+    @staticmethod
+    def parse_flowlines(raw: dict) -> list:
+        """Normalize NHDFlowline features (LineStrings). Geometryless dropped."""
+        features = []
+        for feat in (raw or {}).get("features", []) or []:
+            geom = feat.get("geometry")
+            if not geom:
+                continue
+            props = feat.get("properties") or {}
+            ftype = _to_int(_ci_get(props, "FType", "FTYPE"))
+            kind = _NHD_FLOWLINE_FTYPE_KIND.get(ftype or -1, "stream")
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": geom,
+                    "properties": {
+                        "source": "nhd",
+                        "kind": kind,
+                        "name": _ci_get(props, "GNIS_NAME", "GNIS_Name", default="") or "",
+                        "ftype": ftype,
+                    },
+                }
+            )
+        return features
+
+    @staticmethod
+    def parse_waterbodies(raw: dict) -> list:
+        """Normalize NHDWaterbody features (Polygons). Geometryless dropped."""
+        features = []
+        for feat in (raw or {}).get("features", []) or []:
+            geom = feat.get("geometry")
+            if not geom:
+                continue
+            props = feat.get("properties") or {}
+            ftype = _to_int(_ci_get(props, "FType", "FTYPE"))
+            area = _ci_get(props, "AreaSqKm", "AREASQKM")
+            try:
+                area = round(float(area), 4) if area is not None else None
+            except (TypeError, ValueError):
+                area = None
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": geom,
+                    "properties": {
+                        "source": "nhd",
+                        "kind": "waterbody",
+                        "name": _ci_get(props, "GNIS_NAME", "GNIS_Name", default="") or "",
+                        "ftype": ftype,
+                        "area_sqkm": area,
+                    },
+                }
+            )
+        return features
+
+    def _fetch_live(self, box: GeoBBox) -> dict:
+        """Query both NHD layers and merge into one normalized FeatureCollection.
+
+        Raises on any transport error so ``fetch`` degrades to cache/fixture.
+        """
+        flow_raw = _http_json(
+            self._layer_url(box, self.FLOWLINE_LAYER, "GNIS_NAME,FType,FCode"),
+            timeout=self.timeout_s,
+        )
+        wb_raw = _http_json(
+            self._layer_url(box, self.WATERBODY_LAYER, "GNIS_NAME,FType,AreaSqKm"),
+            timeout=self.timeout_s,
+        )
+        features = self.parse_flowlines(flow_raw) + self.parse_waterbodies(wb_raw)
+        return {"type": "FeatureCollection", "features": features}
+
+    def fetch(self, bbox) -> dict:
+        """Return merged NHD hydrography via the standard degradation chain.
+
+        Mirrors ``_VectorFetcher.fetch`` (live -> cache -> packaged fixture ->
+        empty) but the live step merges two NHD layers (see :meth:`_fetch_live`).
+        """
+        box = _as_bbox(bbox)
+        key = self.cache.key(self.SOURCE, box) if self.cache else None
+
+        # 1. Live (two-layer merge).
+        try:
+            result = self._fetch_live(box)
+            if self.cache and key is not None:
+                self.cache.put(key, result)
+            return result
+        except Exception as exc:  # noqa: BLE001 - any failure => degrade
+            logger.info("%s live fetch failed, degrading: %s", self.SOURCE, exc)
+
+        # 2. Cache (no age limit; bbox-rounded key).
+        if self.cache and key is not None:
+            cached = self.cache.get(key, max_age_s=None)
+            if cached is not None:
+                return cached
+
+        # 3. Packaged fixtures — clipped to the requested bbox, first non-empty.
+        last_empty = None
+        for fixture_name in self._fixture_names():
+            fixture = _load_fixture(fixture_name)
+            if fixture is None:
+                continue
+            clipped = filter_features_bbox(fixture, box)
+            if clipped.get("features"):
+                return clipped
+            last_empty = clipped
+        if last_empty is not None:
+            return last_empty
+
+        # 4. Empty but valid.
+        return _empty_fc()
 
 
 def _building_height(tags: dict) -> float:
