@@ -460,6 +460,33 @@ def _crosses_blocked(costmap, p, q, clearance_m: float) -> bool:
     return False
 
 
+def segment_clear(
+    costmap, p0: tuple[float, float], p1: tuple[float, float],
+    clearance_m: float = 0.0,
+) -> bool:
+    """True iff the straight segment ``p0 -> p1`` stays passable end to end.
+
+    Corner-safe Amanatides & Woo supercover: returns ``False`` the moment the
+    segment touches a **lethal** cell, an **out-of-bounds** cell (``is_lethal``
+    reports both), or — when ``clearance_m > 0`` — a cell whose distance to the
+    nearest lethal cell is below ``clearance_m`` (the unit-radius standoff).
+    ``True`` means a unit may traverse the segment directly with no detour.
+
+    This is the public line-of-sight gate the shortcut smoother uses
+    internally (:func:`_smooth_path`); it is exposed so consumers outside the
+    planner can make the same "is the direct path clear?" decision without an
+    A* run — e.g. gating an expensive re-plan (only route when the straight
+    approach is blocked) or validating that a commanded position/formation slot
+    is reachable in a straight line before committing a unit to it.  ``O(cells
+    crossed)`` — microseconds next to a full plan.
+
+    A zero-length segment tests only the containing cell.  ``clearance_m ==
+    0.0`` (the default) computes no distance field, so it is a pure
+    lethal/out-of-bounds test.
+    """
+    return not _crosses_blocked(costmap, p0, p1, clearance_m)
+
+
 def _cost_max(costmap, p, q) -> float:
     """Max non-lethal cell cost along the interior of segment ``p -> q``.
 

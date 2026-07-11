@@ -22,7 +22,7 @@ reimplemented here.  Pure stdlib — no third-party dependencies.
 
 from __future__ import annotations
 
-from .astar import RouteResult, plan_route
+from .astar import RouteResult, plan_route, segment_clear
 from .contours import iso_cost_contours
 from .costmap import (
     MTFCC_WIDTHS_M,
@@ -52,6 +52,7 @@ __all__ = [
     "iso_cost_contours",
     "plan_route",
     "plan_route_hierarchical",
+    "segment_clear",
     "coarsen_costmap",
     "DEFAULT_COARSE_FACTOR",
     "DEFAULT_CORRIDOR_RADIUS_CELLS",
