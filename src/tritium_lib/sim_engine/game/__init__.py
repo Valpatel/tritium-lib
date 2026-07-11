@@ -10,6 +10,7 @@ runners, and other consumers.
 
 from .game_mode import GameMode, WaveConfig, WAVE_CONFIGS, InfiniteWaveMode, InstigatorDetector
 from .riot_police import PoliceTacticsController
+from .bloc_dynamics import BlocDynamicsTracker
 from .ambient import (
     AmbientSpawner,
     _generate_street_grid,
@@ -34,6 +35,7 @@ __all__ = [
     "InfiniteWaveMode",
     "InstigatorDetector",
     "PoliceTacticsController",
+    "BlocDynamicsTracker",
     # ambient
     "AmbientSpawner",
     # crowd_density

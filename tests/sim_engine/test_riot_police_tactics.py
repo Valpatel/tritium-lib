@@ -121,7 +121,7 @@ def test_command_tactic_valid_publishes_once():
     assert ctrl.commanded_tactic == "line"
     evts = bus.topic("police_tactic_commanded")
     assert len(evts) == 1
-    assert evts[0] == {"tactic": "line", "corridor": None}
+    assert evts[0] == {"tactic": "line", "corridor": None, "faction": None}
 
 
 def test_command_tactic_kettle_carries_corridor():
@@ -140,13 +140,14 @@ def test_get_status_exact_key_contract():
     status = ctrl.get_status()
     assert set(status.keys()) == {
         "squad_state", "formation_type", "commanded_tactic",
-        "agitation", "corridor", "arrests",
+        "agitation", "corridor", "target_faction", "arrests",
     }
     assert status["squad_state"] == "hold"
     assert status["formation_type"] is None
     assert status["commanded_tactic"] == "auto"
     assert status["agitation"] == pytest.approx(_INITIAL_AGITATION)
     assert status["corridor"] is None
+    assert status["target_faction"] is None
     assert status["arrests"] == 0
 
 
@@ -371,6 +372,175 @@ def test_remove_unit_clears_corridor_throttle():
     ctrl._corridor_pushed["r0"] = 5.0
     ctrl.remove_unit("r0")
     assert "r0" not in ctrl._corridor_pushed
+
+
+# ===========================================================================
+# Faction-aware kettle — cordon ONE bloc, leave the rival be
+# ===========================================================================
+#
+# The three-way headline: with two rival blocs on the street, an operator can
+# command "kettle the RED bloc" and the cordon forms around the RED cluster
+# only.  The CYAN bloc — massed elsewhere — is never cordoned, never pushed
+# out the corridor, and never arrested by this command.  Deterministic
+# geometry (no RNG in the kettle path): red bloc massed in the WEST, cyan bloc
+# massed in the EAST, officers south of the red cluster.
+
+
+def _two_bloc_field():
+    """8 officers + a 4-strong RED bloc (west) + a 4-strong CYAN bloc (east)."""
+    officers = [_officer(f"off_{i}", (-40.0 + (i - 3.5) * 0.6, -13.0))
+                for i in range(8)]
+    reds = [_rioter(f"red_{i}", (-40.0 + math.cos(i * 1.3) * 1.5,
+                                 math.sin(i * 1.3) * 1.5), faction="red_bloc")
+            for i in range(4)]
+    cyans = [_rioter(f"cyan_{i}", (40.0 + math.cos(i * 1.3) * 1.5,
+                                   math.sin(i * 1.3) * 1.5), faction="cyan_bloc")
+             for i in range(4)]
+    return officers, reds, cyans
+
+
+def test_command_tactic_kettle_carries_faction():
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    assert ctrl.command_tactic("kettle", faction="red_bloc") is True
+    assert ctrl.target_faction == "red_bloc"
+    assert ctrl.get_status()["target_faction"] == "red_bloc"
+    evt = bus.topic("police_tactic_commanded")[-1]
+    assert evt["tactic"] == "kettle"
+    assert evt["faction"] == "red_bloc"
+
+
+def test_faction_target_cleared_by_non_kettle_command():
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    ctrl.command_tactic("kettle", faction="red_bloc")
+    assert ctrl.target_faction == "red_bloc"
+    # Any non-kettle tactic drops the faction scope.
+    ctrl.command_tactic("line")
+    assert ctrl.target_faction is None
+    assert ctrl.get_status()["target_faction"] is None
+
+
+def test_faction_target_ignored_for_non_kettle_tactic():
+    # A faction handed to line/wedge/auto is meaningless and dropped.
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    ctrl.command_tactic("line", faction="red_bloc")
+    assert ctrl.target_faction is None
+
+
+def test_faction_kettle_cordons_targeted_bloc_not_the_rival():
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    officers, reds, cyans = _two_bloc_field()
+    targets = _as_dict(officers + reds + cyans)
+
+    ctrl.command_tactic("kettle", faction="red_bloc")
+    ctrl.tick(0.1, targets, "civil_unrest")
+
+    assert ctrl.squad_state == "kettle"
+    assert ctrl.formation_type == FormationType.ARC
+    center = ctrl._kettle_center
+    radius = ctrl._kettle_radius
+    # The cordon centres on the RED cluster (west, x ~ -40), NOT the cyan
+    # cluster (east, x ~ +40): the operator kettled the bloc they named.
+    assert center[0] < -30.0, f"kettle centred at {center}, not on the red bloc"
+
+    # Officers ring the RED cluster centre.
+    for o in officers:
+        d = math.hypot(o.waypoints[-1][0] - center[0],
+                       o.waypoints[-1][1] - center[1])
+        assert d == pytest.approx(radius, abs=1e-6)
+
+    # The CYAN bloc is nowhere near the cordon — every cyan is far outside the
+    # ring, so it is structurally NOT contained by this command.
+    for c in cyans:
+        d = math.hypot(c.position[0] - center[0], c.position[1] - center[1])
+        assert d > radius * 3, "the untargeted cyan bloc must not be cordoned"
+
+
+def test_faction_kettle_corridor_pushes_only_targeted_bloc():
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    officers, reds, cyans = _two_bloc_field()
+    targets = _as_dict(officers + reds + cyans)
+
+    ctrl.command_tactic("kettle", faction="red_bloc")
+    # Snap officers onto their ARC slots and re-tick so the cordon is "formed"
+    # and the corridor drive runs.
+    ctrl.tick(0.1, targets, "civil_unrest")
+    for o in sorted(officers, key=lambda x: x.target_id):
+        if o.waypoints:
+            o.position = o.waypoints[-1]
+    ctrl.tick(0.1, targets, "civil_unrest")
+
+    # Only RED members were ever handed a corridor-exit waypoint; the CYAN
+    # bloc's throttle map stays empty — the rival is never pushed.
+    pushed = set(ctrl._corridor_pushed.keys())
+    assert pushed, "the targeted bloc should be driven out the corridor"
+    assert all(tid.startswith("red_") for tid in pushed), pushed
+    assert not any(tid.startswith("cyan_") for tid in pushed)
+
+
+def test_faction_kettle_arrests_only_targeted_bloc():
+    bus = _FakeBus()
+    gm = _FakeGameMode()
+    ctrl = PoliceTacticsController(bus, game_mode=gm)
+    officers, reds, cyans = _two_bloc_field()
+    targets = _as_dict(officers + reds + cyans)
+
+    # Wear BOTH blocs down below arrest health, and overwhelm ONE red and ONE
+    # cyan with a 2-officer detain pair each.  Only the RED arrest may land —
+    # the command is scoped to the red bloc, so cyan is never a candidate.
+    for r in reds + cyans:
+        r.health = 20.0
+    officers[0].position = officers[1].position = reds[0].position
+    officers[2].position = officers[3].position = cyans[0].position
+
+    ctrl.command_tactic("kettle", faction="red_bloc")
+    ctrl.tick(0.1, targets, "civil_unrest")
+
+    assert reds[0].crowd_role == "calmed", "the targeted red bloc member arrested"
+    assert cyans[0].crowd_role == "rioter", "the untargeted cyan bloc untouched"
+    calmed_factions = {t.faction for t in targets.values()
+                       if t.crowd_role == "calmed"}
+    assert calmed_factions == {"red_bloc"}, calmed_factions
+
+
+def test_faction_kettle_disbands_when_target_bloc_cleared():
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    officers, reds, cyans = _two_bloc_field()
+    targets = _as_dict(officers + reds + cyans)
+
+    ctrl.command_tactic("kettle", faction="red_bloc")
+    ctrl.tick(0.1, targets, "civil_unrest")
+    assert ctrl.squad_state == "kettle"
+
+    # The whole red bloc is calmed (contained) — but cyan still riots in the
+    # east.  The command was to kettle RED, so the squad now stands easy; it
+    # does not silently re-target the rival bloc.
+    for r in reds:
+        r.crowd_role = "calmed"
+    ctrl.tick(0.1, targets, "civil_unrest")
+    assert ctrl.squad_state == "hold"
+    assert ctrl._kettle_gap_dir is None  # cordon transient state cleared
+
+
+def test_legacy_kettle_without_faction_takes_nearest_bloc():
+    # No faction => the cordon forms on whatever violent cluster is nearest,
+    # regardless of bloc (backward-compatible with the pre-faction kettle).
+    bus = _FakeBus()
+    ctrl = PoliceTacticsController(bus)
+    officers, reds, cyans = _two_bloc_field()  # officers sit by the RED cluster
+    targets = _as_dict(officers + reds + cyans)
+
+    ctrl.command_tactic("kettle")  # no faction
+    ctrl.tick(0.1, targets, "civil_unrest")
+    assert ctrl.target_faction is None
+    # Nearest cluster to the squad is red (west) — the legacy kettle centres
+    # there, but purely by distance, not by faction scoping.
+    assert ctrl._kettle_center[0] < -30.0
 
 
 # ===========================================================================
