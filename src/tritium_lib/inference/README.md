@@ -1,5 +1,8 @@
 # tritium_lib.inference
 
+**Where you are:** `tritium-lib/src/tritium_lib/inference/`
+**Parent:** [../README.md](../README.md)
+
 Shared LLM inference for the whole platform — Amy's cognition, robot
 thinking, sitrep narration, classification, anomaly detection. One fleet
 abstraction, three backend tiers, graceful degradation.
