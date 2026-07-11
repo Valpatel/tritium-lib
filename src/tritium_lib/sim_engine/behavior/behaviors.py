@@ -93,6 +93,12 @@ _NO_DOCTRINE_TYPES = frozenset({
 # civilian or an already-calmed (arrested) crowd member.
 _PROTECTED_CROWD_ROLES: frozenset[str] = frozenset({"civilian", "calmed"})
 
+# Rival-faction riots (lane/riot tick 3): the ONLY crowd roles that are ever
+# a valid inter-faction engagement target.  Complements the protected set
+# above — a civilian or calmed crowd member is never engageable regardless of
+# the faction it carries, so faction warfare can't erode the ROE guard.
+_FACTION_VIOLENT_ROLES: frozenset[str] = frozenset({"rioter", "instigator"})
+
 # Weapon projectile type by asset_type (matches weapons.py loadouts)
 # A rioter that spots a friendly unit within this range CHARGES it (the
 # violent minority attacks the line pushing into the crowd — the core riot
@@ -193,6 +199,11 @@ class UnitBehaviors:
 
         # Upgrade system reference (for EMP stun checks)
         self._upgrade_system = None
+        # Optional faction-hostility oracle for rival-faction riots: any
+        # object exposing are_hostile(faction_a, faction_b) -> bool (the
+        # DiplomacyEngine satisfies this directly).  None = single-faction
+        # behavior, bit-for-bit identical to before the faction feature.
+        self._diplomacy = None
         # Optional callable(target_id)->bool: True when an embodiment slot is
         # OCCUPIED by an external agent (Graphling). Occupied units skip the
         # stand-in AI entirely — Tritium never puppets the occupant.
@@ -269,6 +280,71 @@ class UnitBehaviors:
             return False
         return self._upgrade_system.is_emp_stunned(target_id)
 
+    def set_diplomacy(self, diplomacy) -> None:
+        """Wire an optional faction-hostility oracle for rival-faction riots.
+
+        *diplomacy* is any object exposing
+        ``are_hostile(faction_a: str, faction_b: str) -> bool`` — the
+        :class:`~tritium_lib.sim_engine.factions.DiplomacyEngine` satisfies
+        this directly.  When wired, a factioned rioter's candidate enemy set
+        grows to include violent crowd members (rioter/instigator) of any
+        faction the oracle reports as hostile/at-war with its own.
+
+        No-op when unset (backward compatible): factionless riots and riots
+        without a diplomacy handle behave exactly as before.
+        """
+        self._diplomacy = diplomacy
+
+    def _factions_hostile(self, faction_a: str | None, faction_b: str | None) -> bool:
+        """True when the wired diplomacy oracle says the two factions fight.
+
+        Graceful degradation: no oracle, a missing faction on either side,
+        same faction, or an oracle error all mean NOT hostile — the stand-in
+        AI never invents a war on its own.
+        """
+        if self._diplomacy is None or faction_a is None or faction_b is None:
+            return False
+        if faction_a == faction_b:
+            return False
+        try:
+            return bool(self._diplomacy.are_hostile(faction_a, faction_b))
+        except Exception:
+            return False
+
+    def _build_rival_crowd(
+        self, hostiles: dict[str, SimulationTarget],
+    ) -> dict[str, dict[str, SimulationTarget]]:
+        """Precompute faction_id -> rival-faction crowd members, once per tick.
+
+        Returns {} (zero downstream work) when no diplomacy oracle is wired,
+        when fewer than two factions have violent crowd members on the field,
+        or when no pair of present factions is hostile — so today's
+        single-faction riot pays nothing beyond this guard.
+
+        Only violent crowd roles (:data:`_FACTION_VIOLENT_ROLES`) are ever
+        engageable: civilians and calmed (arrested) members stay protected
+        regardless of the faction they carry.
+        """
+        if self._diplomacy is None:
+            return {}
+        members: dict[str, dict[str, SimulationTarget]] = {}
+        for tid, t in hostiles.items():
+            fac = getattr(t, "faction", None)
+            if fac is not None and t.crowd_role in _FACTION_VIOLENT_ROLES:
+                members.setdefault(fac, {})[tid] = t
+        if len(members) < 2:
+            return {}
+        rivals: dict[str, dict[str, SimulationTarget]] = {}
+        factions = list(members.keys())
+        for fac_a in factions:
+            merged: dict[str, SimulationTarget] = {}
+            for fac_b in factions:
+                if fac_a != fac_b and self._factions_hostile(fac_a, fac_b):
+                    merged.update(members[fac_b])
+            if merged:
+                rivals[fac_a] = merged
+        return rivals
+
     def set_occupancy_check(self, fn) -> None:
         """Wire a callable(target_id)->bool that reports embodiment occupancy.
 
@@ -344,6 +420,12 @@ class UnitBehaviors:
         # Detect group rushes before individual hostile ticks
         self._detect_group_rush(hostiles)
 
+        # Rival-faction riots: faction_id -> engageable rival crowd members.
+        # {} unless a diplomacy oracle is wired AND >= 2 hostile factions
+        # have violent crowd members on the field (single-faction riots are
+        # untouched).
+        rival_crowd = self._build_rival_crowd(hostiles)
+
         for tid, t in hostiles.items():
             # EMP-stunned hostiles cannot act (no movement, no firing)
             if self._is_emp_stunned(tid):
@@ -359,7 +441,11 @@ class UnitBehaviors:
             elif t.crowd_role == "instigator":
                 self._instigator_behavior(t, friendlies, dt=dt)
             elif t.crowd_role == "rioter":
-                self._rioter_behavior(t, friendlies)
+                rivals = (
+                    rival_crowd.get(getattr(t, "faction", None))
+                    if rival_crowd else None
+                )
+                self._rioter_behavior(t, friendlies, rivals=rivals)
             elif t.drone_variant == "bomber_swarm":
                 self._bomber_behavior(t, friendlies, dt=dt)
             elif t.drone_variant == "scout_swarm":
@@ -1726,8 +1812,9 @@ class UnitBehaviors:
         self,
         rioter: SimulationTarget,
         friendlies: dict[str, SimulationTarget],
+        rivals: dict[str, SimulationTarget] | None = None,
     ) -> None:
-        """Rioter: charge nearby friendlies, melee-strike at 3m.
+        """Rioter: charge nearby enemies, melee-strike at 3m.
 
         AGGRO (ESIM riot dynamic, lane/riot 2026-07-10): a violent rioter
         that spots a friendly unit within _RIOTER_AGGRO_RANGE converges on
@@ -1737,6 +1824,15 @@ class UnitBehaviors:
         charges, melee erupts at the shield wall, and arrests happen at
         contact.  Beyond aggro range the rioter keeps its street routine.
 
+        RIVAL FACTIONS (lane/riot tick 3): when *rivals* is given (a
+        factioned rioter whose faction is at war, per the wired diplomacy
+        oracle), the candidate enemy set is friendlies PLUS those rival
+        crowd members — same nearest-enemy aggro, same melee combat path,
+        so red-vs-blue street fights use the exact weapons/projectile
+        systems as rioter-vs-police.  ``rivals=None`` (factionless rioter,
+        no diplomacy wired, or no war) keeps the legacy friendlies-only
+        set, byte-identical to the single-faction riot.
+
         Rioters can only attack targets within 3m range (melee_strike).
         """
         if not can_fire_degraded(rioter):
@@ -1745,10 +1841,19 @@ class UnitBehaviors:
         if rioter.ammo_count == 0:
             return
 
-        # Charge the nearest friendly within aggro range (movement).
+        # Candidate enemy set: police/friendlies, plus rival-faction crowd
+        # members when at war.  Protected roles (civilian/calmed) can never
+        # appear in rivals — _build_rival_crowd filters on violent roles.
+        if rivals:
+            enemies: dict[str, SimulationTarget] = dict(friendlies)
+            enemies.update(rivals)
+        else:
+            enemies = friendlies
+
+        # Charge the nearest enemy within aggro range (movement).
         nearest = None
         nearest_d = _RIOTER_AGGRO_RANGE
-        for f in friendlies.values():
+        for f in enemies.values():
             d = math.hypot(f.position[0] - rioter.position[0],
                            f.position[1] - rioter.position[1])
             if d <= nearest_d:
@@ -1764,7 +1869,7 @@ class UnitBehaviors:
             if (not wp or math.hypot(wp[-1][0] - tx, wp[-1][1] - ty) > 1.0):
                 rioter.waypoints = [(tx, ty)]
 
-        target = self._nearest_in_range(rioter, friendlies)
+        target = self._nearest_in_range(rioter, enemies)
         if target is not None:
             ptype = _WEAPON_TYPES.get("rioter", "melee_strike")
             if ptype is not None:
