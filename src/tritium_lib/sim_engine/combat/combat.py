@@ -115,6 +115,35 @@ _MAX_ACCURACY = 0.999
 # target-level accuracy attribute is available.
 _DEFAULT_ACCURACY = 0.85
 
+# Weather accuracy modifier floor.  An Environment.accuracy_modifier() is
+# already clamped to [0.1, 1.0] (1.0 == clear/no-wind), but combat clamps
+# again defensively so a pathological modifier can neither divide by zero
+# nor blow the dispersion sigma up without bound.  0.1 -> spread x10.
+_MIN_ACCURACY_MODIFIER = 0.1
+
+
+def weather_spread_factor(accuracy_modifier: float) -> float:
+    """Map a weather *accuracy modifier* to a dispersion spread multiplier.
+
+    ``accuracy_modifier`` is a value in ``(0, 1]`` where ``1.0`` means clear
+    conditions (no degradation) and smaller values mean wind/rain are pulling
+    shots wide.  The returned factor multiplies the angular-dispersion sigma:
+
+        sigma_effective = base_sigma * weather_spread_factor(mod)
+
+    so worse weather (lower modifier) -> larger factor -> wider spread ->
+    more rounds fly wide of the aim point -> a measurably lower hit rate.
+
+    A clear modifier of ``1.0`` returns exactly ``1.0`` (byte-identical no-op),
+    which is what keeps the weather-off path and the canonical goldens
+    unchanged.  The modifier is clamped to ``[_MIN_ACCURACY_MODIFIER, 1.0]``
+    so the factor is always finite and >= 1.0.  This is the reusable clamp
+    lib owns; the engine just supplies the live modifier.
+    """
+    m = max(_MIN_ACCURACY_MODIFIER, min(1.0, float(accuracy_modifier)))
+    return 1.0 / m
+
+
 # Weapon class whose projectiles home (track the target's live position).
 _MISSILE_WEAPON_CLASS = "missile"
 
@@ -238,6 +267,13 @@ class CombatSystem:
         # Projectile created_at / flight expiry use this clock so flight
         # lifetimes scale with replay speed exactly like movement does.
         self._sim_time: float = 0.0
+        # Environmental weather layer (duck-typed: exposes accuracy_modifier()
+        # -> float in (0, 1]).  None == weather OFF == no accuracy degradation,
+        # so the spread factor is exactly 1.0 and every fire() draw is
+        # byte-identical to the pre-weather path (goldens run weather-off).
+        # The engine attaches the live Environment only when weather is
+        # explicitly enabled, mirroring VisionSystem.environment.
+        self._weather_env = None
 
     @property
     def projectile_count(self) -> int:
@@ -252,6 +288,29 @@ class CombatSystem:
     def set_rng(self, rng: random.Random) -> None:
         """Set the RNG used for dispersion (seedable determinism)."""
         self._rng = rng
+
+    def set_weather_environment(self, environment) -> None:
+        """Attach (or clear) the environmental weather layer.
+
+        Pass the live :class:`Environment` when weather is enabled, or ``None``
+        to disable weather-driven accuracy degradation.  Only the duck-typed
+        ``accuracy_modifier() -> float`` is used, read fresh at each ``fire()``
+        so a battle whose weather evolves mid-fight tracks the change.  ``None``
+        restores the byte-identical clear-weather dispersion.
+        """
+        self._weather_env = environment
+
+    def _weather_spread_factor(self) -> float:
+        """Dispersion multiplier from the current weather (1.0 when off).
+
+        Reads the live ``accuracy_modifier()`` and maps it through the reusable
+        :func:`weather_spread_factor` clamp.  Returns exactly ``1.0`` when no
+        environment is attached — the no-op that keeps weather-off identical.
+        """
+        env = self._weather_env
+        if env is None:
+            return 1.0
+        return weather_spread_factor(env.accuracy_modifier())
 
     @staticmethod
     def _dispersion_sigma(accuracy: float) -> float:
@@ -411,7 +470,12 @@ class CombatSystem:
         angle_error = 0.0
         target_point = intended
         if accuracy < _MAX_ACCURACY and aim_dist > 1e-9:
-            lateral = self._rng.gauss(0.0, self._dispersion_sigma(accuracy))
+            # Weather widens the angular dispersion: worse accuracy_modifier
+            # -> larger spread factor -> the same seeded gauss draw lands the
+            # round further off the aim bearing.  Clear weather (or weather
+            # OFF) -> factor 1.0 -> the sigma and the draw are byte-identical.
+            sigma = self._dispersion_sigma(accuracy) * self._weather_spread_factor()
+            lateral = self._rng.gauss(0.0, sigma)
             angle_error = math.atan2(lateral, aim_dist)
             cos_e = math.cos(angle_error)
             sin_e = math.sin(angle_error)

@@ -7,7 +7,13 @@ Moved from tritium-sc/src/engine/simulation/ during Phase 3 of sim engine
 unification.
 """
 
-from .combat import CombatSystem, Projectile, HIT_RADIUS, MISS_OVERSHOOT
+from .combat import (
+    CombatSystem,
+    Projectile,
+    HIT_RADIUS,
+    MISS_OVERSHOOT,
+    weather_spread_factor,
+)
 from .weapons import Weapon, WeaponSystem, WEAPON_CATALOG
 from .squads import (
     Squad,
@@ -21,6 +27,7 @@ __all__ = [
     "Projectile",
     "HIT_RADIUS",
     "MISS_OVERSHOOT",
+    "weather_spread_factor",
     "Weapon",
     "WeaponSystem",
     "WEAPON_CATALOG",

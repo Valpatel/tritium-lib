@@ -35,6 +35,7 @@ from tritium_lib.sim_engine.combat import (
     Projectile,
     Weapon,
     WeaponSystem,
+    weather_spread_factor,
 )
 from tritium_lib.sim_engine.world.terrain_map import TerrainMap
 
@@ -227,6 +228,139 @@ class TestDispersionCalibration:
             cs.clear()
         frac = hits / trials
         assert 0.35 <= frac <= 0.65, f"hit fraction {frac} outside calibrated band"
+
+
+# ===================================================================
+# (d2) weather degrades accuracy — wider dispersion, lower hit rate
+# ===================================================================
+
+
+class _ConstEnv:
+    """Duck-typed environment stub with a constant accuracy_modifier.
+
+    Mirrors the only method CombatSystem reads off the live Environment
+    (``accuracy_modifier() -> float``).  ``1.0`` == clear (no degradation).
+    """
+
+    def __init__(self, modifier: float) -> None:
+        self._m = float(modifier)
+
+    def accuracy_modifier(self) -> float:
+        return self._m
+
+
+class TestWeatherSpreadFactor:
+    """The reusable lib clamp: weather modifier -> dispersion multiplier."""
+
+    def test_clear_is_identity(self):
+        assert weather_spread_factor(1.0) == 1.0
+
+    def test_worse_weather_widens(self):
+        assert weather_spread_factor(0.5) == pytest.approx(2.0)
+        assert weather_spread_factor(0.25) == pytest.approx(4.0)
+
+    def test_clamped_finite(self):
+        # Below the 0.1 floor -> capped at x10, never divide-by-zero/inf.
+        assert weather_spread_factor(0.0) == pytest.approx(10.0)
+        assert weather_spread_factor(-5.0) == pytest.approx(10.0)
+        # Above 1.0 (nonsensical "better than clear") clamps to identity.
+        assert weather_spread_factor(1.7) == 1.0
+
+
+class TestWeatherDegradesCombat:
+    """Weather-ON widens angular dispersion and lowers the hit rate, while
+    weather-OFF stays byte-identical to the pre-weather path.  Fully
+    deterministic: all randomness flows through the seeded combat rng."""
+
+    _AIM = 30.0        # target down-range distance (m)
+    _TRIALS = 500
+    _SEED = 20260710
+
+    @classmethod
+    def _measure(cls, env) -> tuple[float, float]:
+        """Fire ``_TRIALS`` shots at a stationary target under environment
+        ``env`` (None == weather off).  Returns (hit_fraction, mean_|lateral|).
+        The committed aim point's cross-range offset is the realised lateral
+        miss; at ``_AIM`` metres it is ~ the dispersion draw itself."""
+        bus = _RecordingBus()
+        ws = WeaponSystem()
+        ws.assign_weapon("s", Weapon(
+            name="rifle", accuracy=0.85, damage=1.0,
+            weapon_range=100.0, ammo=10_000_000, max_ammo=10_000_000,
+        ))
+        cs = CombatSystem(event_bus=bus, weapon_system=ws,
+                          rng=random.Random(cls._SEED))
+        cs.set_weather_environment(env)
+        hits = 0
+        lateral = []
+        for _ in range(cls._TRIALS):
+            src = _FakeTarget(target_id="s", position=(0.0, 0.0))
+            tgt = _FakeTarget(
+                target_id="t", position=(cls._AIM, 0.0),
+                alliance="hostile", speed=0.0, health=1e9,
+            )
+            proj = cs.fire(src, tgt)
+            assert proj is not None
+            lateral.append(abs(proj.target_pos[1]))
+            _tick_to_resolution(cs, proj, {"s": src, "t": tgt})
+            if proj.hit:
+                hits += 1
+            cs.clear()
+        return hits / cls._TRIALS, statistics.mean(lateral)
+
+    def test_weather_widens_spread_and_lowers_hitrate(self):
+        hit_off, spread_off = self._measure(None)
+        # Storm: accuracy_modifier 0.4 -> spread factor 2.5x.
+        hit_on, spread_on = self._measure(_ConstEnv(0.4))
+
+        # Spread genuinely widens (factor 2.5; allow sampling slack).
+        assert spread_on > spread_off * 2.0, (
+            f"weather did not widen spread: off={spread_off:.2f} "
+            f"on={spread_on:.2f}")
+        # And that translates to a measurably lower hit rate.
+        assert hit_on < hit_off - 0.15, (
+            f"weather did not lower hit rate: off={hit_off:.3f} "
+            f"on={hit_on:.3f}")
+        # Sanity: clear-weather rifle (acc 0.85) hits most of the time.
+        assert hit_off > 0.7, f"baseline hit rate too low: {hit_off:.3f}"
+
+    def test_clear_env_is_noop(self):
+        # An attached environment reporting a 1.0 modifier must behave EXACTLY
+        # like weather-off (gating: only real degradation changes anything).
+        hit_off, spread_off = self._measure(None)
+        hit_clear, spread_clear = self._measure(_ConstEnv(1.0))
+        assert (hit_off, spread_off) == (hit_clear, spread_clear)
+
+    def test_weather_on_is_deterministic(self):
+        # Same seed + same weather -> identical outcome, run to run.
+        a = self._measure(_ConstEnv(0.4))
+        b = self._measure(_ConstEnv(0.4))
+        assert a == b
+
+    def test_weather_off_matches_pre_weather_path(self):
+        """Gating proof at the projectile level: a CombatSystem that never
+        touched weather and one explicitly set to weather-off produce the
+        IDENTICAL committed-aim sequence (byte-for-byte).  This is why the
+        canonical goldens (which never enable weather) stay unchanged."""
+        def _aim_points(set_off: bool) -> list[tuple[float, float]]:
+            cs = CombatSystem(event_bus=_RecordingBus(),
+                              rng=random.Random(self._SEED))
+            if set_off:
+                cs.set_weather_environment(None)
+            out = []
+            for _ in range(50):
+                src = _FakeTarget(target_id="s", position=(0.0, 0.0))
+                tgt = _FakeTarget(
+                    target_id="t", position=(self._AIM, 4.0),
+                    alliance="hostile", speed=3.0, heading=90.0,
+                )
+                proj = cs.fire(src, tgt)
+                assert proj is not None
+                out.append(proj.target_pos)
+                cs.clear()
+            return out
+
+        assert _aim_points(set_off=False) == _aim_points(set_off=True)
 
 
 # ===================================================================
