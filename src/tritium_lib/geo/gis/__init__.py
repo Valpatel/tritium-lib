@@ -13,6 +13,8 @@ Sources:
     * US Census TIGERweb roads  (``TigerRoadsFetcher``)
     * FEMA National Flood Hazard Layer  (``FemaFloodFetcher``)
     * NOAA / NWS active weather alerts  (``NoaaAlertsFetcher``)
+    * USGS National Hydrography Dataset  (``NhdHydrographyFetcher`` — rivers,
+      streams and waterbodies, the real surface-water network)
 
 Stdlib only (``urllib.request``) — no new hard dependencies.  See ``README.md``
 for the raster (row 0 = north) and vector (``source``/``kind`` properties)
@@ -29,6 +31,7 @@ from .fetchers import (
     USER_AGENT,
     USGS_HILLSHADE_TILE_URL,
     FemaFloodFetcher,
+    NhdHydrographyFetcher,
     NlcdLandCoverFetcher,
     NoaaAlertsFetcher,
     OverpassBuildingsFetcher,
@@ -57,6 +60,7 @@ __all__ = [
     "TigerRoadsFetcher",
     "FemaFloodFetcher",
     "NoaaAlertsFetcher",
+    "NhdHydrographyFetcher",
     "OverpassBuildingsFetcher",
     "NlcdLandCoverFetcher",
     "LandCoverClass",

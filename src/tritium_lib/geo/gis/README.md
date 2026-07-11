@@ -26,6 +26,7 @@ below (a second real pack, Boulder, CO, ships too) and the
 | US Census TIGERweb roads (layer 8) | `TigerRoadsFetcher.fetch(bbox)` | FeatureCollection |
 | FEMA National Flood Hazard Layer (layer 28) | `FemaFloodFetcher.fetch(bbox)` | FeatureCollection |
 | NOAA / NWS active weather alerts | `NoaaAlertsFetcher.fetch(bbox)` | FeatureCollection |
+| USGS National Hydrography Dataset (NHDPlus HR — flowlines layer 3 + waterbodies layer 9) | `NhdHydrographyFetcher.fetch(bbox)` | FeatureCollection |
 | OpenStreetMap building footprints (Overpass) | `OverpassBuildingsFetcher.fetch(bbox)` | FeatureCollection |
 
 Plus a derived layer computed from the DEM (no network of its own):
@@ -72,6 +73,7 @@ Every normalized feature is WGS-84 lon/lat GeoJSON, and **every feature's
 | roads | `"tiger"` | MTFCC code, e.g. `"S1400"` | `name` (street name, may be `""`) |
 | flood | `"fema"` | FLD_ZONE, e.g. `"A"`,`"AE"`,`"X"` | `subtype` (ZONE_SUBTY, may be `""`), `sfha` (bool — Special Flood Hazard Area) |
 | alerts | `"noaa"` | NWS event, e.g. `"Heat Advisory"` | `severity`, `headline`, `expires` |
+| hydrography | `"nhd"` | flowline: `"river"`/`"stream"`/`"canal"`/`"artificial"`/`"connector"`/`"conduit"`/`"coastline"` (by FType); polygon: `"waterbody"` | `name` (GNIS, may be `""`), `ftype` (int), `area_sqkm` (waterbodies only) |
 | buildings | `"osm"` | `building` tag, e.g. `"house"`,`"retail"` (`"yes"` when untyped) | `name` (may be `""`), `height_m` (float), `levels` (int) |
 | contours | `"usgs"` | `"contour"` | `elevation_m` (level, 1 dp), `level_index` (int) |
 
@@ -196,6 +198,7 @@ first, then Boulder).
 | `tiger_roads_ao.json` | 60 road features (coords 6 dp; keeps S1630/S1730 for style variety) |
 | `fema_flood_ao.json` | 17 flood-zone polygons (coords 6 dp; A/AE/X, 11 SFHA) |
 | `noaa_alerts_ao.json` | 4 alert polygons (coords 4 dp) |
+| `nhd_hydro_ao.json` | 12 NHD features (6 river / 2 canal / 1 artificial / 1 connector flowlines + 2 waterbody polygons; ~20 KB) |
 | `osm_buildings_ao.json` | 120 building `Polygon`s (coords 6 dp; 71 named, 17 `building` kinds, 5–40 vertices; ~45 KB) |
 
 **Boulder, CO** (`*_boulder.json`, bbox `-105.30,39.98,-105.26,40.02`; captured
@@ -207,6 +210,7 @@ live with `capture_ao_pack`; total ~309 KB; every file carries a top-level
 | `usgs_dem_boulder.json` | 32×32 `ElevationGrid`, `source="usgs-fixture"` (elev 1611–2402 m — mountains-to-plains relief; 24 NoData; ~8 KB) |
 | `tiger_roads_boulder.json` | 150 road features (coords 6 dp; ~84 KB) |
 | `fema_flood_boulder.json` | 40 flood-zone polygons (coords 6 dp; AE/X/AH/AO/A, 37 SFHA; ~137 KB) |
+| `nhd_hydro_boulder.json` | 40 NHD features (13 river / 15 canal / 7 stream flowlines + 5 waterbody polygons; named creeks & ditches — Boulder & Left Hand Ditch, Farmers Ditch; ~81 KB) |
 | `osm_buildings_boulder.json` | 150 building `Polygon`s (coords 6 dp; ~86 KB) |
 
 > **No `noaa_alerts_boulder.json`.** There were no active NWS alerts over the
