@@ -33,17 +33,29 @@ the squad splits a massed crowd instead of stalling against it.
 
 Operator command path
 ---------------------
-``command_tactic(tactic, corridor=None)`` is the same interface a real squad
-lead drives the stand-in with: ``"auto"`` (the FSM above), ``"line"`` /
-``"wedge"`` (force that formation), or ``"kettle"``.  Under **kettle** the FSM
+``command_tactic(tactic, corridor=None, faction=None)`` is the same interface a
+real squad lead drives the stand-in with: ``"auto"`` (the FSM above), ``"line"``
+/ ``"wedge"`` (force that formation), or ``"kettle"``.  Under **kettle** the FSM
 is replaced by a fifth state ``kettle``: officers form an ARC cordon around
 the local violent cluster with a single open corridor (facing an
 operator-supplied point, or auto-set to the far side away from the line), the
 ring tightens each tick, and rioters still inside the ring are shoved out
-through the gap.  ``get_status()`` exposes the live squad state / formation /
-commanded tactic / agitation / corridor / arrests for the operator UI.
+through the gap.
+
+**Faction-aware kettling** (the three-way headline): pass ``faction`` with a
+kettle command ("kettle the RED bloc") and the cordon is built ONLY around
+that faction's nearest violent cluster — the centre, ring, corridor drive, and
+arrests all scope to targeted-faction members.  The untargeted bloc is never
+cordoned (it is left to the autonomous line, dispersal, or a second command).
+When the targeted faction is fully contained/arrested/gone the cordon disbands
+and the squad stands easy even while a rival bloc is still violent elsewhere.
+``faction=None`` keeps the legacy behaviour (kettle whatever violent cluster is
+nearest, regardless of bloc).
+
+``get_status()`` exposes the live squad state / formation / commanded tactic /
+agitation / corridor / target_faction / arrests for the operator UI.
 Switching back to ``auto``/``line``/``wedge`` cleanly resumes the FSM at
-``form``.  ``reset()`` restores ``auto``.
+``form`` and clears any faction target.  ``reset()`` restores ``auto``.
 
 Arrests / routs
 ---------------
@@ -298,6 +310,10 @@ class PoliceTacticsController:
         # Operator command override (the production squad-lead command path).
         self._commanded_tactic: str = "auto"
         self._corridor: tuple[float, float] | None = None
+        # Faction-aware kettle target: when set, a kettle command cordons ONLY
+        # this bloc's nearest violent cluster (the untargeted bloc is left be).
+        # None => legacy kettle (nearest violent cluster of any faction).
+        self._kettle_faction: str | None = None
 
         # Kettle-cordon transient state (cleared on exit / reset).
         self._kettle_gap_dir: tuple[float, float] | None = None
@@ -350,12 +366,18 @@ class PoliceTacticsController:
         """Operator-supplied dispersal-corridor point, or None (auto gap)."""
         return self._corridor
 
+    @property
+    def target_faction(self) -> str | None:
+        """The bloc a kettle is targeting, or None (legacy nearest-cluster)."""
+        return self._kettle_faction
+
     # -- Operator command path --------------------------------------------------
 
     def command_tactic(
         self,
         tactic: str,
         corridor: tuple[float, float] | None = None,
+        faction: str | None = None,
     ) -> bool:
         """Command a squad tactic (the production squad-lead interface).
 
@@ -365,7 +387,10 @@ class PoliceTacticsController:
         ``police_tactic_commanded`` event, and returns True.  ``corridor`` (a
         world point) only matters for ``kettle`` — it aims the dispersal gap
         from the kettle centre toward that point; omit it to auto-aim the gap
-        away from the squad.
+        away from the squad.  ``faction`` also only matters for ``kettle`` —
+        name a bloc ("kettle the RED bloc") to cordon ONLY that faction's
+        nearest violent cluster; omit it (or command any non-kettle tactic) to
+        kettle the nearest violent cluster of any faction.
         """
         if tactic not in _VALID_TACTICS:
             return False
@@ -375,6 +400,11 @@ class PoliceTacticsController:
         self._corridor = (
             (float(corridor[0]), float(corridor[1]))
             if corridor is not None else None
+        )
+        # A faction target is only meaningful for a kettle; any other tactic
+        # clears it so the FSM / forced formation never scopes to one bloc.
+        self._kettle_faction = (
+            str(faction) if (tactic == "kettle" and faction) else None
         )
         # Leaving kettle (or re-entering it fresh) clears the cordon transient
         # state so the FSM resumes cleanly from "form".
@@ -387,6 +417,7 @@ class PoliceTacticsController:
                 {"x": self._corridor[0], "y": self._corridor[1]}
                 if self._corridor is not None else None
             ),
+            "faction": self._kettle_faction,
         })
         return True
 
@@ -395,7 +426,7 @@ class PoliceTacticsController:
 
         Exactly these keys: ``squad_state``, ``formation_type`` (string value
         or None), ``commanded_tactic``, ``agitation``, ``corridor``
-        ({"x","y"} or None), ``arrests``.
+        ({"x","y"} or None), ``target_faction`` (bloc id or None), ``arrests``.
         """
         return {
             "squad_state": self._squad_state,
@@ -409,6 +440,7 @@ class PoliceTacticsController:
                 {"x": self._corridor[0], "y": self._corridor[1]}
                 if self._corridor is not None else None
             ),
+            "target_faction": self._kettle_faction,
             "arrests": self._arrest_total,
         }
 
@@ -474,26 +506,38 @@ class PoliceTacticsController:
         # Instead: walk to the violent target nearest the line, treat every
         # violent within _WEDGE_CLUSTER_RADIUS of it as the local cluster,
         # and push at the cluster's centroid.  Clear it, then the next.
-        nearest_v = min(
-            violent,
-            key=lambda v: math.hypot(v.position[0] - self._anchor[0],
-                                     v.position[1] - self._anchor[1]),
-        )
-        frontline = math.hypot(nearest_v.position[0] - self._anchor[0],
-                               nearest_v.position[1] - self._anchor[1])
-        cluster = [
-            v for v in violent
-            if math.hypot(v.position[0] - nearest_v.position[0],
-                          v.position[1] - nearest_v.position[1])
-            <= _WEDGE_CLUSTER_RADIUS
-        ]
-        objective = _centroid([tuple(v.position[:2]) for v in cluster])
+        frontline, cluster, objective = self._nearest_cluster(self._anchor, violent)
 
         # -- Operator override: kettle cordon ----------------------------------
         # A commanded kettle replaces the advance/engage flow entirely: cordon
         # the local cluster in an ARC, tighten the ring, and push rioters out
         # the gap.  Arrests / routs still run inside the cordon.
         if self._commanded_tactic == "kettle":
+            # Faction-aware kettle: with a bloc targeted, cordon ONLY that
+            # bloc's nearest violent cluster; the untargeted bloc is left be.
+            if self._kettle_faction is not None:
+                kettle_violent = [
+                    v for v in violent
+                    if getattr(v, "faction", None) == self._kettle_faction
+                ]
+                if not kettle_violent:
+                    # Targeted bloc fully contained / absent: disband the
+                    # cordon and stand easy even if a rival bloc still riots
+                    # elsewhere (that is a separate command's problem).
+                    self._squad_state = "hold"
+                    self._anchor = None
+                    self._slots = None
+                    self._formation_type = None
+                    self._exit_kettle()
+                    return
+                _fl, k_cluster, k_objective = self._nearest_cluster(
+                    self._anchor, kettle_violent
+                )
+                self._tick_kettle(
+                    dt, roster, kettle_violent, all_targets, squad_centroid,
+                    k_cluster, k_objective,
+                )
+                return
             self._tick_kettle(
                 dt, roster, violent, all_targets, squad_centroid, cluster, objective,
             )
@@ -559,6 +603,38 @@ class PoliceTacticsController:
             ):
                 self._crowd_broken_announced = True
                 self._publish("crowd_event", {"beat": "crowd_broken", "rioters": cur_violent})
+
+    # -- Cluster targeting ------------------------------------------------------
+
+    def _nearest_cluster(
+        self,
+        anchor: tuple[float, float],
+        violent: list,
+    ) -> tuple[float, list, tuple[float, float]]:
+        """Local violent cluster nearest ``anchor``.
+
+        Returns ``(frontline, cluster, objective)``: the distance to the
+        nearest violent target, every violent target within
+        ``_WEDGE_CLUSTER_RADIUS`` of it (the local knot), and that knot's
+        centroid.  ``violent`` must be non-empty (callers guarantee it).  The
+        faction-aware kettle passes a bloc-scoped violent list so the cordon
+        centres on one faction; the autonomous FSM passes the full list.
+        """
+        nearest_v = min(
+            violent,
+            key=lambda v: math.hypot(v.position[0] - anchor[0],
+                                     v.position[1] - anchor[1]),
+        )
+        frontline = math.hypot(nearest_v.position[0] - anchor[0],
+                               nearest_v.position[1] - anchor[1])
+        cluster = [
+            v for v in violent
+            if math.hypot(v.position[0] - nearest_v.position[0],
+                          v.position[1] - nearest_v.position[1])
+            <= _WEDGE_CLUSTER_RADIUS
+        ]
+        objective = _centroid([tuple(v.position[:2]) for v in cluster])
+        return frontline, cluster, objective
 
     # -- Shared arrest / rout loop ---------------------------------------------
 
@@ -928,4 +1004,5 @@ class PoliceTacticsController:
         # Operator override + kettle cordon back to defaults ("auto").
         self._commanded_tactic = "auto"
         self._corridor = None
+        self._kettle_faction = None
         self._exit_kettle()
