@@ -357,12 +357,33 @@ class TestAddGisFeatures:
         b = CostmapBuilder((0, 0, 100, 100), resolution=10.0)
         summary = b.add_gis_features(fc)
         cm = b.build()
-        # Severe cell -> base 1.0 * 2.0 = 2.0.
-        assert cm.cost_at(*cm.world_to_grid(25, 25)) == pytest.approx(2.0)
+        # Severe cell -> base 1.0 * 3.0 = 3.0 (deterrent-strength detour).
+        assert cm.cost_at(*cm.world_to_grid(25, 25)) == pytest.approx(3.0)
         # Minor cell untouched -> base 1.0.
         assert cm.cost_at(*cm.world_to_grid(75, 75)) == pytest.approx(1.0)
         assert summary["zones"] == 1
         assert summary["ignored"] == 1
+
+    def test_noaa_severity_multiplier_mapping(self):
+        # The storm-lane contract: Severe -> x3.0, Extreme -> x6.0, and any
+        # sub-warning severity (Moderate) is traversable and IGNORED (no zone).
+        b = CostmapBuilder((0, 0, 150, 150), resolution=10.0)
+        summary = b.add_gis_features(_fc([
+            _noaa_poly(_square(25, 25, 8), severity="Severe"),
+            _noaa_poly(_square(75, 75, 8), severity="Extreme"),
+            _noaa_poly(_square(125, 125, 8), severity="Moderate"),
+        ]))
+        cm = b.build()
+        assert cm.cost_at(*cm.world_to_grid(25, 25)) == pytest.approx(3.0)
+        assert cm.cost_at(*cm.world_to_grid(75, 75)) == pytest.approx(6.0)
+        # Moderate -> untouched baseline, not a zone.
+        assert cm.cost_at(*cm.world_to_grid(125, 125)) == pytest.approx(1.0)
+        assert summary["zones"] == 2
+        assert summary["ignored"] == 1
+        # Extreme must deter strictly harder than Severe.
+        assert cm.cost_at(*cm.world_to_grid(75, 75)) > cm.cost_at(
+            *cm.world_to_grid(25, 25)
+        )
 
     def test_summary_counts_and_unknown_ignored(self):
         fc = _fc([
@@ -388,9 +409,9 @@ class TestAddGisFeatures:
         b.add_gis_features(fc)
         cm = b.build()
         col, row = cm.world_to_grid(25, 25)
-        # Road (0.5) inside a severe zone (x2) -> 1.0 * 0.5 * 2.0 = 1.0.
-        assert cm.cost_at(col, row) == pytest.approx(1.0)
-        # And it's cheaper than an off-road severe-zone cell (1.0 * 2.0 = 2.0).
+        # Road (0.5) inside a severe zone (x3) -> 1.0 * 0.5 * 3.0 = 1.5.
+        assert cm.cost_at(col, row) == pytest.approx(1.5)
+        # And it's cheaper than an off-road severe-zone cell (1.0 * 3.0 = 3.0).
         assert cm.cost_at(col, row) < cm.cost_at(*cm.world_to_grid(5, 5))
 
 
