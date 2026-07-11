@@ -105,7 +105,10 @@ class TestStatsTracker:
         tracker.register_unit("r2", "Rover 2", "friendly", "rover")
         tracker.register_unit("h1", "Hostile", "hostile", "person")
 
-        now = time.monotonic()
+        # Timestamp override in the tracker's clock domain (self._now()) so it
+        # matches on_kill's assist-window check (sim clock when attached,
+        # wall-clock fallback standalone).
+        now = tracker._now()
         # r1 damages h1
         tracker.on_shot_hit("r1", "h1", 10.0, timestamp=now)
         # r2 kills h1 within 5s

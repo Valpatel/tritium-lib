@@ -6,7 +6,6 @@ stats, difficulty, and morale systems."""
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -482,7 +481,10 @@ class TestStatsTracker:
         st.register_unit("u1", "Alpha", "friendly", "rover")
         st.register_unit("u2", "Beta", "friendly", "rover")
         st.register_unit("h1", "Hostile", "hostile", "person")
-        ts = time.monotonic()
+        # Timestamp override in the tracker's clock domain (self._now()) so it
+        # matches on_kill's assist-window check (sim clock when attached,
+        # wall-clock fallback standalone).
+        ts = st._now()
         st.on_shot_hit("u2", "h1", 10.0, timestamp=ts)
         st.on_kill("u1", "h1")
         u1 = st.get_unit_stats("u1")

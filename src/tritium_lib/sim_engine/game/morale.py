@@ -16,10 +16,10 @@ For friendly units, morale < 0.3 reduces engagement range by 30%.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from tritium_lib.models.target_status import is_terminal
+from tritium_lib.sim_engine.core.sim_clock import SimClockMixin
 
 # Default starting morale for all units
 DEFAULT_MORALE = 0.7
@@ -42,8 +42,16 @@ SUPPRESSED_THRESHOLD = 0.3
 EMBOLDENED_THRESHOLD = 0.9
 
 
-class MoraleSystem:
-    """Tracks per-unit morale values and applies morale effects."""
+class MoraleSystem(SimClockMixin):
+    """Tracks per-unit morale values and applies morale effects.
+
+    Timing (the "3 seconds since last hit" recovery window) runs on **sim
+    time** via SimClockMixin so headless golden replays are bit-identical
+    run-to-run; wall-clock coupling here was the swarm_attack determinism leak
+    (recovery crossed the 3s window on different ticks under CPU load).  Attach
+    the engine with ``attach_clock(engine)``; standalone instances fall back to
+    wall-clock so bare-unit tests are unaffected.
+    """
 
     def __init__(self) -> None:
         self._morale: dict[str, float] = {}
@@ -68,7 +76,7 @@ class MoraleSystem:
         current = self.get_morale(target_id)
         loss = damage * _DAMAGE_MORALE_LOSS
         self.set_morale(target_id, current - loss)
-        self._last_hit_time[target_id] = time.time()
+        self._last_hit_time[target_id] = self._now()
 
     def on_ally_eliminated(self, target_id: str) -> None:
         """Reduce morale when a nearby ally is eliminated."""
@@ -88,7 +96,7 @@ class MoraleSystem:
             targets: Dict of target_id to target objects.  Each target
                      must have a ``status`` attribute.
         """
-        now = time.time()
+        now = self._now()
         for tid, t in targets.items():
             if is_terminal(t.status):
                 continue
