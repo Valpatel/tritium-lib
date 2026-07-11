@@ -257,6 +257,8 @@ def test_release_to_auto_when_dominance_decays():
 
 
 def test_balance_flip_switches_the_cordon():
+    """A flip SWITCHES the cordon only when the new bloc is IN REACH;
+    out of reach it RELEASES to auto (the line advances, then re-arms)."""
     ctrl = _armed_ctrl(min_hold=0.0)
     officers, reds, cyans = _field(6, 6)
     for c in cyans[2:]:
@@ -266,18 +268,29 @@ def test_balance_flip_switches_the_cordon():
     ctrl.tick(0.1, targets, "civil_unrest")  # red 6 vs cyan 2 -> arm red
     assert ctrl.auto_kettle_target == "red_bloc"
 
-    # The street flips: red collapses, cyan surges.
+    # The street flips: red collapses, cyan surges — but cyan masses ~80 m
+    # east, far beyond _AUTO_KETTLE_ENGAGE_RANGE.  Calling that cordon would
+    # strand the ring (it can never close), so the doctrine RELEASES to auto
+    # and lets the FSM line advance toward the new threat.
     for r in reds[2:]:
         r.crowd_role = "calmed"              # red violent -> 2
     for c in cyans[2:]:
         c.crowd_role = "rioter"             # cyan violent -> 6
-    ctrl.tick(0.1, targets, "civil_unrest")  # cyan 6 vs red 2 -> switch to cyan
+    ctrl.tick(0.1, targets, "civil_unrest")
+    assert ctrl.auto_kettle_target is None
+    assert ctrl.commanded_tactic == "auto"
+
+    # The squad closes the distance (redeployed among the cyan mass): the
+    # doctrine re-arms on the NOW-IN-REACH dominant bloc on its own.
+    for i, o in enumerate(officers):
+        o.position = [40.0 + (i - 3.5) * 0.6, -13.0]
+    ctrl.tick(0.1, targets, "civil_unrest")
     assert ctrl.auto_kettle_target == "cyan_bloc"
     assert ctrl.target_faction == "cyan_bloc"
-    # Two auto-issued commands: the initial red kettle + the switch to cyan.
+    # Three auto-issued commands: red kettle -> release (auto) -> cyan kettle.
     factions = [e["faction"]
                 for e in ctrl._event_bus.topic("police_tactic_commanded")]
-    assert factions == ["red_bloc", "cyan_bloc"], factions
+    assert factions == ["red_bloc", None, "cyan_bloc"], factions
 
 
 # ===========================================================================
