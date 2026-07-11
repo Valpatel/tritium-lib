@@ -1,15 +1,18 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Perception pipeline — frame analysis and conversational fact extraction.
+"""Perception pipeline — frame analysis, object detection, fact extraction.
 
 L0: Quality gate (sharpness, brightness)
 L1: Complexity (edge density)
 L2: Motion (frame diff)
+L3: Object detection (frame -> bounding-box detections -> world position)
 Plus: LLM chat API client, regex fact extraction from conversation.
 
 Framework-free: pure OpenCV/numpy/stdlib. The LLM host is injected via
-set_ollama_host(); the PTZ pose estimator accepts any PTZPosition.
+set_ollama_host(); the PTZ pose estimator accepts any PTZPosition; the
+object detector has a graceful YOLO backend and an always-available
+classical (motion) backend.
 """
 
 from tritium_lib.perception.perception import (
@@ -19,6 +22,17 @@ from tritium_lib.perception.perception import (
     PoseEstimator,
     PTZPosition,
 )
+from tritium_lib.perception.detector import (
+    RELEVANT_CLASSES,
+    BackgroundMotionDetector,
+    FrameObjectDetector,
+    YoloObjectDetector,
+    available_backends,
+    build_frame_detector,
+    yolo_available,
+)
+from tritium_lib.perception.projection import GroundCameraModel
+from tritium_lib.perception.pipeline import FrameDetectionPipeline
 from tritium_lib.perception.extraction import extract_facts, extract_person_name
 from tritium_lib.perception.vision import (
     check_radio_detection,
@@ -32,6 +46,15 @@ __all__ = [
     "FrameMetrics",
     "PoseEstimator",
     "PTZPosition",
+    "RELEVANT_CLASSES",
+    "BackgroundMotionDetector",
+    "FrameObjectDetector",
+    "YoloObjectDetector",
+    "GroundCameraModel",
+    "FrameDetectionPipeline",
+    "available_backends",
+    "build_frame_detector",
+    "yolo_available",
     "check_radio_detection",
     "extract_facts",
     "extract_person_name",
