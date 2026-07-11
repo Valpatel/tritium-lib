@@ -141,6 +141,7 @@ def test_get_status_exact_key_contract():
     assert set(status.keys()) == {
         "squad_state", "formation_type", "commanded_tactic",
         "agitation", "corridor", "target_faction", "arrests",
+        "tactic_source",
     }
     assert status["squad_state"] == "hold"
     assert status["formation_type"] is None
@@ -149,6 +150,7 @@ def test_get_status_exact_key_contract():
     assert status["corridor"] is None
     assert status["target_faction"] is None
     assert status["arrests"] == 0
+    assert status["tactic_source"] == "auto"
 
 
 def test_get_status_reflects_live_formation_string():
