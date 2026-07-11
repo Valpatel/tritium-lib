@@ -12,7 +12,14 @@ from .combat import (
     Projectile,
     HIT_RADIUS,
     MISS_OVERSHOOT,
+    dispersion_sigma,
     weather_spread_factor,
+)
+from .match import (
+    MatchCombatant,
+    MatchReferee,
+    ShotOutcome,
+    relative_fire_solution,
 )
 from .weapons import Weapon, WeaponSystem, WEAPON_CATALOG
 from .squads import (
@@ -27,7 +34,12 @@ __all__ = [
     "Projectile",
     "HIT_RADIUS",
     "MISS_OVERSHOOT",
+    "dispersion_sigma",
     "weather_spread_factor",
+    "MatchCombatant",
+    "MatchReferee",
+    "ShotOutcome",
+    "relative_fire_solution",
     "Weapon",
     "WeaponSystem",
     "WEAPON_CATALOG",
