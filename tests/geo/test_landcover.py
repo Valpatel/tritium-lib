@@ -145,6 +145,100 @@ class TestTacticalProfile:
 
 
 # ---------------------------------------------------------------------------
+# tactical_profile — SEASONAL concealment (foliage modifier)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestSeasonalConcealment:
+    """Forest/shrub concealment scales with the environment foliage factor.
+
+    Ties the GIS land-cover pillar to the weather+seasons pillar: a bare winter
+    forest gives little concealment; a summer forest gives full concealment.
+    ``foliage=1.0`` (default) is byte-identical to the static doctrine so the
+    costmap and every golden are unaffected.
+    """
+
+    def test_default_foliage_is_byte_identical(self):
+        # No foliage arg and foliage=1.0 must both equal the static table.
+        for code in NLCD_CLASSES:
+            base = tactical_profile(code)
+            assert tactical_profile(code, foliage=1.0) == base
+            # foliage >= 1.0 never boosts above full canopy.
+            assert tactical_profile(code, foliage=1.5)["concealment"] == \
+                base["concealment"]
+
+    def test_forest_concealment_scales_with_foliage(self):
+        # Evergreen forest base concealment 0.9.
+        base = tactical_profile(42)["concealment"]
+        assert base == 0.9
+        # Summer-lush ~0.9 canopy -> ~0.81; bare-winter ~0.13 -> ~0.117.
+        summer = tactical_profile(42, foliage=0.9)["concealment"]
+        winter = tactical_profile(42, foliage=0.13)["concealment"]
+        assert summer == pytest.approx(0.9 * 0.9)
+        assert winter == pytest.approx(0.9 * 0.13)
+        assert winter < summer < base
+
+    def test_shrub_concealment_scales_with_foliage(self):
+        base = tactical_profile(52)["concealment"]  # Shrub/Scrub 0.5
+        assert base == 0.5
+        assert tactical_profile(52, foliage=0.2)["concealment"] == pytest.approx(0.1)
+        assert tactical_profile(51, foliage=0.2)["concealment"] == pytest.approx(0.1)
+
+    def test_foliage_never_touches_cover_mobility_passable(self):
+        # The costmap reads these; they must be season-invariant.
+        for code in (41, 42, 43, 51, 52):
+            bare = tactical_profile(code, foliage=0.05)
+            full = tactical_profile(code)
+            assert bare["cover"] == full["cover"]
+            assert bare["mobility_cost"] == full["mobility_cost"]
+            assert bare["passable"] == full["passable"]
+            assert bare["category"] == full["category"]
+
+    def test_non_vegetation_unaffected_by_foliage(self):
+        # Water, developed, barren, snow, herbaceous, cultivated, wetland keep a
+        # STATIC concealment regardless of the season.
+        for code in (11, 12, 21, 22, 23, 24, 31, 71, 72, 81, 82, 90, 95):
+            base = tactical_profile(code)["concealment"]
+            for f in (0.05, 0.5, 0.9):
+                assert tactical_profile(code, foliage=f)["concealment"] == base
+
+    def test_forest_summer_vs_winter_via_seasonal_cycle(self):
+        # Drive the real environment foliage_state at a temperate latitude.
+        from tritium_lib.sim_engine.environment import SeasonalCycle
+        lat = 40.0  # Boulder foothills
+        summer = SeasonalCycle(day_of_year=172, latitude=lat).foliage_state()   # ~Jun 21
+        winter = SeasonalCycle(day_of_year=355, latitude=lat).foliage_state()   # ~Dec 21
+        assert winter < summer                       # bare winter, lush summer
+        c_summer = tactical_profile(42, foliage=summer)["concealment"]
+        c_winter = tactical_profile(42, foliage=winter)["concealment"]
+        assert c_winter < c_summer
+        # Winter forest gives markedly LESS concealment than summer.
+        assert c_winter < 0.5 * c_summer
+
+    def test_evergreen_tropical_unchanged_between_seasons(self):
+        # Latitude-damped foliage keeps the tropics ~evergreen: forest
+        # concealment barely swings near the equator but swings hard at
+        # temperate latitude.  At the equator it is EXACTLY constant.
+        from tritium_lib.sim_engine.environment import SeasonalCycle
+
+        def swing(lat):
+            s = SeasonalCycle(day_of_year=172, latitude=lat).foliage_state()
+            w = SeasonalCycle(day_of_year=355, latitude=lat).foliage_state()
+            cs = tactical_profile(42, foliage=s)["concealment"]
+            cw = tactical_profile(42, foliage=w)["concealment"]
+            return cs - cw
+
+        # Equator: evergreen, zero seasonal swing.
+        assert swing(0.0) == pytest.approx(0.0, abs=1e-9)
+        # Tropical swing << temperate swing (Boulder 40deg).
+        assert swing(5.0) < 0.3 * swing(40.0)
+
+    def test_foliage_clamped_below_zero(self):
+        # Defensive: a negative foliage clamps to 0 (fully bare), never negative.
+        assert tactical_profile(42, foliage=-1.0)["concealment"] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # LandCoverGrid — geometry, round-trip, rollups
 # ---------------------------------------------------------------------------
 
@@ -217,6 +311,52 @@ class TestLandCoverGrid:
         assert field[0]["category"] == "forest"
         assert field[3]["category"] == "unknown"  # NoData -> neutral
         assert field[8]["passable"] is False       # water cell
+
+    def test_tactical_field_default_byte_identical(self):
+        lc = _grid()
+        assert lc.tactical_field(foliage=1.0) == lc.tactical_field()
+
+    def test_tactical_field_seasonal_thins_forest_only(self):
+        lc = _grid()
+        summer = lc.tactical_field()               # foliage 1.0
+        winter = lc.tactical_field(foliage=0.13)
+        # Forest cell 0 concealment drops; costmap keys unchanged.
+        assert winter[0]["concealment"] < summer[0]["concealment"]
+        assert winter[0]["mobility_cost"] == summer[0]["mobility_cost"]
+        assert winter[0]["passable"] == summer[0]["passable"]
+        # Developed cell 4 (code 23) is unaffected.
+        assert winter[4]["concealment"] == summer[4]["concealment"]
+        # Water cell 8 (code 11) unaffected + still impassable.
+        assert winter[8]["concealment"] == summer[8]["concealment"]
+        assert winter[8]["passable"] is False
+
+    def test_concealment_at_samples_nearest_cell_and_scales(self):
+        lc = _grid()
+        # Cell (0,0) is evergreen forest (42), near the NW corner.
+        c_summer = lc.concealment_at(lc.north, lc.west, foliage=1.0)
+        c_winter = lc.concealment_at(lc.north, lc.west, foliage=0.13)
+        assert c_summer == pytest.approx(0.9)
+        assert c_winter == pytest.approx(0.9 * 0.13)
+        assert c_winter < c_summer
+        # A developed cell (row 1) is season-invariant.
+        dev_lat = lc.cell_lat(1)
+        assert lc.concealment_at(dev_lat, lc.west, foliage=0.13) == \
+            lc.concealment_at(dev_lat, lc.west, foliage=1.0)
+
+    def test_concealment_at_out_of_grid_is_exposed(self):
+        lc = _grid()
+        # Far outside the bbox clamps to an edge cell (never raises); a degenerate
+        # empty grid returns 0.0.
+        empty = LandCoverGrid(west=0, south=0, east=1, north=1, ncols=0, nrows=0)
+        assert empty.concealment_at(0.5, 0.5) == 0.0
+
+    def test_mean_concealment_thins_in_winter(self):
+        lc = _grid()
+        summer = lc.mean_concealment(foliage=1.0)
+        winter = lc.mean_concealment(foliage=0.13)
+        assert winter < summer
+        # Default equals summer (byte-identical path).
+        assert lc.mean_concealment() == summer
 
 
 # ---------------------------------------------------------------------------

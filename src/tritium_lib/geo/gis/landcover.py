@@ -126,6 +126,14 @@ _NEUTRAL_PROFILE: dict = {
     "category": "unknown",
 }
 
+#: Land-cover categories whose CONCEALMENT is seasonal — driven by a leaf /
+#: needle canopy that thins to bare in winter and fills in summer.  Everything
+#: else keeps a *static* concealment: a wall, a lake, bare rock or a snowfield
+#: hides you the same in January as in July.  This is the ONLY set the seasonal
+#: ``foliage`` factor touches; ``cover`` / ``mobility_cost`` / ``passable`` are
+#: never modulated (a costmap reads those and must stay season-invariant).
+_FOLIAGE_CATEGORIES: frozenset = frozenset({"forest", "shrub"})
+
 
 def classify_rgb(r: int, g: int, b: int) -> int:
     """Return the NLCD class code whose canonical colour is nearest ``(r,g,b)``.
@@ -146,19 +154,41 @@ def classify_rgb(r: int, g: int, b: int) -> int:
     return best_code
 
 
-def tactical_profile(code) -> dict:
+def tactical_profile(code, *, foliage: float = 1.0) -> dict:
     """Return the tactical doctrine dict for an NLCD class code.
 
     Keys: ``cover``/``concealment``/``mobility_cost``/``passable``/``name``/
     ``category``.  An unknown code (or ``None``) yields the neutral profile
     (no cover, no concealment, cost 1.0, passable) so a costmap degrades safely.
+
+    ``foliage`` is the SEASONAL modifier — the environment lane's
+    :meth:`tritium_lib.sim_engine.environment.Environment.foliage_state`:
+    ``1.0`` = full summer canopy, ``~0.13`` bare winter, latitude-damped so the
+    tropics stay ~evergreen.  It scales the ``concealment`` of leaf/needle
+    categories only (:data:`_FOLIAGE_CATEGORIES` — forest, shrub):
+    ``concealment = base_concealment * clamp(foliage, 0, 1)``.  So a Boulder
+    conifer stand hides a unit fully in July and barely at all in a bare
+    January; a lake, a wall, bare rock and a snowfield are untouched (their
+    concealment is not made of leaves).  ``cover`` / ``mobility_cost`` /
+    ``passable`` and every non-foliage category are NEVER modulated.
+
+    ``foliage=1.0`` (the default) returns a profile **byte-identical** to the
+    static doctrine table — golden-safe, and the costmap (which reads
+    ``mobility_cost`` / ``passable`` / ``category`` from :meth:`tactical_field`,
+    never ``concealment``) is unaffected at any foliage value.
     """
     cls = NLCD_CLASSES.get(code)
     if cls is None:
         return dict(_NEUTRAL_PROFILE)
+    concealment = cls.concealment
+    if cls.category in _FOLIAGE_CATEGORIES:
+        # Clamp to [0, 1]; foliage >= 1.0 leaves the base value byte-identical.
+        f = 0.0 if foliage < 0.0 else (1.0 if foliage > 1.0 else foliage)
+        if f < 1.0:
+            concealment = cls.concealment * f
     return {
         "cover": cls.cover,
-        "concealment": cls.concealment,
+        "concealment": concealment,
         "mobility_cost": cls.mobility_cost,
         "passable": cls.passable,
         "name": cls.name,
@@ -222,13 +252,62 @@ class LandCoverGrid:
             return None
         return Counter(cats).most_common(1)[0][0]
 
-    def tactical_field(self) -> list:
+    def tactical_field(self, *, foliage: float = 1.0) -> list:
         """Per-cell tactical profile dicts, row-major (parallel to ``codes``).
 
         A NoData cell yields the neutral profile — the same safe default a
         costmap would apply, so the field is always dense.
+
+        ``foliage`` (default ``1.0``) is the seasonal modifier applied to each
+        cell via :func:`tactical_profile`: it thins forest/shrub concealment in
+        winter.  At ``foliage=1.0`` the field is **byte-identical** to the
+        static doctrine — the costmap consumes this method and depends on that
+        (it reads ``mobility_cost`` / ``passable`` / ``category``, which are
+        never modulated, so any ``foliage`` leaves its routing unchanged).
         """
-        return [tactical_profile(code) for code in self.codes]
+        return [tactical_profile(code, foliage=foliage) for code in self.codes]
+
+    def concealment_at(self, lat: float, lon: float, foliage: float = 1.0) -> float:
+        """Seasonal concealment (0..1) at a WGS-84 point — the perception seam.
+
+        Samples the nearest cell and returns its foliage-scaled concealment.
+        A perception / combat model reads this to reason about how well a target
+        is hidden **right now**: a bare-winter forest (low ``foliage``) yields
+        little concealment → a hostile in the treeline is easier to detect; the
+        same stand in summer (``foliage`` near 1.0) hides it fully.  Non-vegetation
+        (water, developed, barren) is season-invariant.  Out-of-grid or NoData
+        points return ``0.0`` (fully exposed — the safe default).
+        """
+        if self.ncols <= 0 or self.nrows <= 0:
+            return 0.0
+        if self.ncols == 1 or self.east == self.west:
+            ix = 0
+        else:
+            fx = (lon - self.west) / (self.east - self.west) * (self.ncols - 1)
+            ix = int(round(fx))
+            ix = 0 if ix < 0 else (self.ncols - 1 if ix >= self.ncols else ix)
+        if self.nrows == 1 or self.north == self.south:
+            iy = 0
+        else:
+            fy = (self.north - lat) / (self.north - self.south) * (self.nrows - 1)
+            iy = int(round(fy))
+            iy = 0 if iy < 0 else (self.nrows - 1 if iy >= self.nrows else iy)
+        code = self.code_at(ix, iy)
+        return tactical_profile(code, foliage=foliage)["concealment"]
+
+    def mean_concealment(self, foliage: float = 1.0) -> float:
+        """Mean concealment over non-NoData cells at the given ``foliage``.
+
+        The operator-facing rollup: how hidden the AO is *as a whole* right now.
+        Drops from a lush-summer value to a bare-winter one as forest/shrub
+        cells thin.  Returns ``0.0`` for an all-NoData grid.
+        """
+        vals = [
+            tactical_profile(code, foliage=foliage)["concealment"]
+            for code in self.codes
+            if code is not None
+        ]
+        return sum(vals) / len(vals) if vals else 0.0
 
     def to_dict(self) -> dict:
         """JSON-serializable dict; round-trips exactly through ``from_dict``."""
