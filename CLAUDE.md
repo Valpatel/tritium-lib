@@ -83,7 +83,7 @@ When unsure where a file goes, see the copper-roof rule in
 | `scenarios` | Pre-built simulation scenarios |
 
 ### JS Simulation (web/sim/)
-Browser-side city simulation: IDM, MOBIL, vehicles, pedestrians, road networks, traffic control, procedural city, protest engine, daily routines, weather, spatial grid, identity system. A distribution copy ships inside the Python tree at `src/tritium_lib/js/` (sim + render) so pip installs carry the JS modules.
+Browser-side city simulation: IDM, MOBIL, vehicles, pedestrians, road networks, traffic control, procedural city, protest engine, daily routines, weather, spatial grid, identity system. (`src/tritium_lib/js/` holds an ORPHANED, diverged second copy of some of these modules — it has no `__init__.py` and no `package-data` entry, so wheels exclude it, and nothing imports or serves it; the live tree is `web/`. Pending ruling: delete or actually wire it.)
 
 ### JS UI & Map Framework (web/)
 Shared frontend: layout manager, command palette, event bus, reactive store, WebSocket, plus panel system and tactical map (MapLibre GL, effects, asset types, 3D units, providers)

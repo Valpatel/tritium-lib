@@ -152,7 +152,7 @@ class WeaponStatus(BaseModel):
     its own live ammo / reload / servo / fault state.  The robot publishes it
     to::
 
-        tritium/{site}/robots/{device_id}/telemetry   (QoS 1, retain False)
+        tritium/{site}/robots/{device_id}/telemetry   (QoS 0, retain False)
 
     as a message of type ``"weapon_status"``, so SC can render magazine level,
     reload countdown, and fault indicators for a real Nerf-class turret.

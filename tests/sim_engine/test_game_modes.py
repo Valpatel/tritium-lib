@@ -1279,3 +1279,87 @@ class TestDiveBomberStalemateExemption:
         gm.tick(0.1)
 
         assert bomber.status == "eliminated", "hard timeout culls even a bomber"
+
+
+class TestAnnihilationDefeatArming:
+    """The all-friendlies-eliminated defeat only fires once a friendly
+    combatant has EVER existed.  A scenario that deliberately fields no
+    defenders (the stress_test render scenario; an operator who starts the
+    war before deploying) has nothing to annihilate -- before this guard,
+    "all friendlies eliminated" was VACUOUSLY true on the first active tick
+    and the stress_test golden pinned defeat at t=5.2s with 0 of 3 waves
+    completed.  Deploying the first defender arms the rule from then on."""
+
+    def _build_no_friendlies(self):
+        """GameMode with stub deps and NO friendly combatants at all."""
+        bus = _FakeEventBus()
+        engine = _FakeEngine()
+        gm = GameMode(event_bus=bus, engine=engine,
+                      combat_system=_FakeCombat(), infinite=False)
+        return gm, bus, engine
+
+    def _add_wave_hostile(self, gm, engine, tid):
+        t = _FakeTarget(target_id=tid, alliance="hostile", status="active")
+        engine.add_target(t)
+        gm._wave_hostile_ids.add(tid)
+        return t
+
+    def test_no_friendly_ever_no_vacuous_defeat(self):
+        gm, bus, engine = self._build_no_friendlies()
+        gm.begin_war()
+        gm.state = "active"
+        self._add_wave_hostile(gm, engine, "h1")
+
+        gm.tick(0.1)
+
+        assert gm.state != "defeat", (
+            "a game where no friendly combatant ever existed must not "
+            "insta-defeat on the vacuous all-friendlies-eliminated check")
+        assert not any(name == "game_over" for name, _ in bus.events)
+
+    def test_first_deploy_arms_the_defeat_rule(self):
+        gm, bus, engine = self._build_no_friendlies()
+        gm.begin_war()
+        gm.state = "active"
+        self._add_wave_hostile(gm, engine, "h1")
+
+        gm.tick(0.1)  # no friendlies ever -> still active
+        assert gm.state == "active"
+
+        turret = engine.add_friendly()
+        gm.tick(0.1)  # friendly alive -> rule arms, no defeat
+        assert gm.state == "active"
+
+        turret.status = "eliminated"
+        gm.tick(0.1)  # armed + annihilated -> real defeat
+        assert gm.state == "defeat"
+        overs = [d for name, d in bus.events if name == "game_over"]
+        assert overs and overs[-1]["reason"] == "all_friendlies_eliminated"
+
+    def test_preplaced_friendlies_defeat_unchanged(self):
+        """Regression guard: the classic path (defenders placed before the
+        war, then wiped) still defeats exactly as before."""
+        gm, bus, engine = _build_game_mode()  # 3 friendlies pre-placed
+        gm.begin_war()
+        gm.state = "active"
+        self._add_wave_hostile(gm, engine, "h1")
+
+        gm.tick(0.1)
+        assert gm.state == "active"
+
+        for t in engine.get_targets():
+            if t.alliance == "friendly":
+                t.status = "eliminated"
+        gm.tick(0.1)
+        assert gm.state == "defeat"
+        overs = [d for name, d in bus.events if name == "game_over"]
+        assert overs and overs[-1]["reason"] == "all_friendlies_eliminated"
+
+    def test_reset_disarms_for_next_game(self):
+        gm, bus, engine = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        gm.tick(0.1)  # friendlies alive -> armed
+        assert gm._had_friendly_combatant is True
+        gm.reset()
+        assert gm._had_friendly_combatant is False

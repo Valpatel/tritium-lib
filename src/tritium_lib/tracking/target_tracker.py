@@ -158,6 +158,27 @@ def _shared_ble_classifier():
     return _SHARED_BLE_CLASSIFIER
 
 
+# ---------------------------------------------------------------------------
+# Alliance authority
+# ---------------------------------------------------------------------------
+# The canonical alliance vocabulary.  The tracker is the ONE authority for a
+# target's *effective* alliance; every consumer (live map WS batches, REST
+# /api/targets*, CoT/TAK affiliation, fusion) reads it from here.  Values a
+# writer proposes are validated against this set — junk never clobbers a
+# known alliance.
+VALID_ALLIANCES = frozenset({"friendly", "hostile", "neutral", "unknown", "vip"})
+
+# Precedence order for alliance writes (highest wins, 2026-07-11 ruling):
+#   1. "operator"  — an explicit human tag (set_operator_alliance).  Pinned:
+#                    telemetry can never clobber a human's decision.
+#   2. "auto"      — declared telemetry (a frame that carries an "alliance"
+#                    key: a red-team robot re-declaring itself, an NPC
+#                    turning hostile).  Applied only while not pinned.
+#   3. creation default — whatever the ingest path stamped at first sight
+#                    (sim default / _resolve_alliance fallback); simply the
+#                    value that holds until tier 1 or 2 writes.
+
+
 @dataclass
 class TrackedTarget:
     """A target Amy is aware of — real or virtual."""
@@ -197,6 +218,21 @@ class TrackedTarget:
     # tactical map / ops surface can render a protected civilian distinctly
     # from an agitator.  See Wave 213.
     crowd_role: str | None = None
+    # Hit-feedback contract (tritium_lib.models.hits): combat hitpoints for
+    # entities that REPORT health — sim combatants and wire robots whose
+    # telemetry carries a ``health`` block (a robot dog's HealthTracker).
+    # ``None`` means "this target does not report health" (most sensors),
+    # NOT "zero hp" — renderers must skip the HP bar, never draw it empty.
+    # Flat floats here (the tactical surface convention: health/max_health),
+    # distilled from the wire block's hp/max_hp by the ingest bridge.
+    health: float | None = None
+    max_health: float | None = None
+    # Who last wrote ``alliance`` — the alliance-authority precedence tier
+    # (see module docstring above the class).  "auto" = the tracker follows
+    # declared telemetry; "operator" = a human tagged this target and the
+    # value is PINNED (update_from_simulation and every other telemetry
+    # ingest must leave ``alliance`` alone until re-tagged).
+    alliance_source: str = "auto"  # "auto" | "operator"
     # Structured kinematic / detection metadata.  Sources that report rich
     # state (radar range/bearing/speed, RF motion direction hints, etc.)
     # store it here instead of squeezing it into the discrete ``status``
@@ -239,6 +275,7 @@ class TrackedTarget:
             "target_id": self.target_id,
             "name": self.name,
             "alliance": self.alliance,
+            "alliance_source": self.alliance_source,
             "asset_type": self.asset_type,
             "position": {"x": self.position[0], "y": self.position[1]},
             "lat": geo["lat"],
@@ -265,6 +302,8 @@ class TrackedTarget:
             "classification": self.classification,
             "classification_confidence": self.classification_confidence,
             "crowd_role": self.crowd_role,
+            "health": self.health,
+            "max_health": self.max_health,
             "kinematics": dict(self.kinematics) if self.kinematics else None,
         }
         if history is not None:
@@ -430,6 +469,30 @@ class TargetTracker:
                 # the known role" (throttled/partial updates omit it).
                 if "crowd_role" in sim_data:
                     t.crowd_role = sim_data.get("crowd_role")
+                # Health (hit-feedback contract): same absent-key rule — a
+                # telemetry frame without health is "no opinion", not "heal
+                # to unknown".  A frame WITH it is authoritative (the robot
+                # owns its own health; see tritium_lib.models.hits).
+                if "health" in sim_data:
+                    t.health = sim_data.get("health")
+                if "max_health" in sim_data:
+                    t.max_health = sim_data.get("max_health")
+                # Alliance (declared-telemetry tier): a unit CAN change sides
+                # mid-run — a red-team robot re-declares itself, an NPC turns
+                # hostile.  Same absent-key rule as crowd_role/health: a frame
+                # without the key is "no opinion", never a reset.  Junk values
+                # never clobber (VALID_ALLIANCES whitelist).  An operator tag
+                # outranks the wire: once alliance_source == "operator" the
+                # declared claim is ignored until the operator re-tags
+                # (set_operator_alliance is the only writer that pins).
+                if "alliance" in sim_data and t.alliance_source != "operator":
+                    declared = sim_data.get("alliance")
+                    if declared in VALID_ALLIANCES and declared != t.alliance:
+                        t.alliance = declared
+                        # Alliance is identity-grade state (map glyph color,
+                        # hostiles/friendlies REST, CoT affiliation): bump the
+                        # version counter so /api/targets ETag caches refresh.
+                        self._membership_count += 1
                 t.last_seen = time.monotonic()
                 t.signal_count += 1
                 self._add_confirming_source(t, "simulation")
@@ -461,6 +524,9 @@ class TargetTracker:
                     confirming_sources=set(),
                     # Civil-unrest crowd sub-role (None for non-crowd units).
                     crowd_role=sim_data.get("crowd_role"),
+                    # Hit-feedback health (None = does not report health).
+                    health=sim_data.get("health"),
+                    max_health=sim_data.get("max_health"),
                 )
         self.history.record(tid, position)
         self._check_geofence(tid, position[0], position[1])
@@ -1220,6 +1286,11 @@ class TargetTracker:
         """Monotonic membership counter — bumps when targets are added or
         removed, but **not** on per-target position/state updates.
 
+        Exception: *alliance* changes (operator tag or a declared mid-run
+        side-switch) also bump, because alliance is identity-grade state a
+        reconciling client must not 304 past — see set_operator_alliance
+        and update_from_simulation's alliance handling.
+
         Used by /api/targets ETag/304 to short-circuit unchanged polls
         (Wave 201).  The reconciliation poll only cares about set
         membership: positions/state stream over WebSocket telemetry and
@@ -1255,6 +1326,33 @@ class TargetTracker:
         """Get a specific target by ID."""
         with self._lock:
             return self._targets.get(target_id)
+
+    def set_operator_alliance(self, target_id: str, alliance: str) -> TrackedTarget | None:
+        """Apply an explicit operator alliance tag — the TOP precedence tier.
+
+        This is the ONLY writer that sets ``alliance_source = "operator"``.
+        Once pinned, declared telemetry (update_from_simulation's alliance
+        handling, wire re-declarations) can never clobber the human's
+        decision; only a subsequent operator tag changes it.  SC's
+        POST /api/targets/{id}/tag and the classification-override route
+        both come through here so map == REST == CoT == fusion.
+
+        Returns the updated target, or ``None`` when the alliance value is
+        not in :data:`VALID_ALLIANCES` or the target is unknown.
+        """
+        if alliance not in VALID_ALLIANCES:
+            return None
+        with self._lock:
+            t = self._targets.get(target_id)
+            if t is None:
+                return None
+            t.alliance = alliance
+            t.alliance_source = "operator"
+            # Identity-grade change: invalidate /api/targets ETag caches so a
+            # reconciling client refreshes immediately instead of 304-ing on
+            # a stale alliance.
+            self._membership_count += 1
+            return t
 
     def remove(self, target_id: str) -> bool:
         """Remove a target from tracking."""
