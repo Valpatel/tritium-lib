@@ -26,6 +26,12 @@ from __future__ import annotations
 from .ao_packs import AOPack, active_ao_id, get_ao_pack, list_ao_packs
 from .cache import GISCache
 from .capture import capture_ao_pack
+from .chokepoints import (
+    chokepoint_tactical_object,
+    find_water_crossings,
+    infer_crossing_kind,
+    segment_intersection,
+)
 from .contours import auto_levels, contour_lines
 from .fetchers import (
     USER_AGENT,
@@ -74,4 +80,8 @@ __all__ = [
     "contour_lines",
     "filter_features_bbox",
     "capture_ao_pack",
+    "find_water_crossings",
+    "infer_crossing_kind",
+    "segment_intersection",
+    "chokepoint_tactical_object",
 ]
