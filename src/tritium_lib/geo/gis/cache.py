@@ -101,6 +101,53 @@ class GISCache:
             logger.debug("GIS cache write failed for %s: %s", key, exc)
             return False
 
+    def find_containing(self, source: str, bbox, *, max_scan: int = 512):
+        """Return the payload of the smallest cached ``source`` entry whose bbox
+        CONTAINS ``bbox``, or ``None``.
+
+        Cache keys encode their bbox in the filename
+        (``{source}_{w}_{s}_{e}_{n}.json``), so a previously fetched WIDE window
+        (e.g. an Area-of-Operations warm) can serve any narrower viewport after
+        clipping — without a live round trip.  Entries carrying extra params
+        (``..._ncols-32...``) and unparseable names are skipped; the smallest
+        containing area wins (least over-fetch for the caller's clip).  Purely
+        best-effort: any IO/parse problem yields ``None``, never raises.
+
+        The caller is responsible for clipping the returned collection to its
+        requested bbox (see ``fetchers.filter_features_bbox``).
+        """
+        try:
+            w, s, e, n = self._bbox_tuple(bbox)
+            candidates = sorted(self.cache_dir.glob(f"{source}_*.json"))
+        except (OSError, TypeError, ValueError):
+            return None
+        best_path = None
+        best_area = None
+        for i, path in enumerate(candidates):
+            if i >= max_scan:
+                break
+            parts = path.stem[len(source) + 1:].split("_")
+            if len(parts) != 4:
+                continue  # params-bearing or foreign key shape
+            try:
+                cw, cs, ce, cn = (float(p) for p in parts)
+            except ValueError:
+                continue
+            if not (cw <= w and cs <= s and ce >= e and cn >= n):
+                continue
+            area = max(ce - cw, 0.0) * max(cn - cs, 0.0)
+            if best_area is None or area < best_area:
+                best_area = area
+                best_path = path
+        if best_path is None:
+            return None
+        try:
+            with best_path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError) as exc:
+            logger.debug("GIS cache containing-read failed for %s: %s", best_path, exc)
+            return None
+
     # -- retention ----------------------------------------------------------
     def sweep(
         self,

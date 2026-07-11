@@ -99,6 +99,24 @@ def _http_json(url: str, *, data: bytes | None = None, timeout: float = 20.0) ->
     return json.loads(raw)
 
 
+def _raise_on_error_payload(raw, source: str) -> None:
+    """Reject an upstream *error-as-200* JSON body so the fetch chain degrades.
+
+    ArcGIS servers (TIGERweb, NHDPlus_HR, FEMA NFHL) return HTTP 200 with an
+    ``{"error": {...}}`` body when throttled or failing.  Without this guard
+    that body parses to an EMPTY FeatureCollection which then gets **cached** —
+    poisoning the disk cache with a durable empty for that bbox (observed
+    hazard behind the Phase-A "chokepoints return 0" defect).  Raising here
+    routes the fetch into the normal degradation chain (cache -> fixture)
+    instead of caching an empty lie.
+    """
+    if isinstance(raw, dict) and raw.get("error"):
+        raise RuntimeError(
+            f"{source} upstream returned an error payload: "
+            f"{str(raw.get('error'))[:200]}"
+        )
+
+
 def _http_bytes(url: str, *, timeout: float = 20.0) -> bytes:
     """GET ``url`` and return the raw response body. Raises on any transport error.
 
@@ -250,22 +268,80 @@ class _VectorFetcher:
         raise NotImplementedError
 
     # -- public API ---------------------------------------------------------
-    def fetch(self, bbox) -> dict:
-        """Return a normalized FeatureCollection via the degradation chain."""
-        box = _as_bbox(bbox)
+    def _live_fetch(self, box: GeoBBox) -> dict:
+        """One live round trip -> parsed FeatureCollection. Raises to degrade.
+
+        Rejects ArcGIS *error-as-200* bodies (see
+        :func:`_raise_on_error_payload`) so an upstream failure disguised as a
+        success can never be parsed to — and cached as — an empty collection.
+        """
+        raw = _http_json(
+            self._build_url(box), data=self._build_body(box), timeout=self.timeout_s
+        )
+        _raise_on_error_payload(raw, self.SOURCE)
+        return self._parse(raw)
+
+    def fetch(
+        self,
+        bbox,
+        *,
+        allow_live: bool = True,
+        prefer_cache_s: float | None = None,
+    ) -> dict:
+        """Return a normalized FeatureCollection via the degradation chain.
+
+        Args:
+            bbox: The query window (``GeoBBox``, string, or 4-tuple).
+            allow_live: ``False`` skips the live stage entirely — the answer
+                comes from cache / containing-entry clip / fixtures only.
+                Derived layers (e.g. water-crossing chokepoints) use this for
+                an instant first answer, then upgrade via a background warm.
+            prefer_cache_s: When set, a cache entry younger than this many
+                seconds is returned WITHOUT a live attempt.  Roads and
+                hydrography are static on operational timescales, so derived
+                consumers opt in to avoid paying a gov-API round trip per
+                query.  ``None`` (default) preserves the live-first contract.
+        """
+        return self._fetch_chain(
+            _as_bbox(bbox),
+            self._live_fetch,
+            allow_live=allow_live,
+            prefer_cache_s=prefer_cache_s,
+        )
+
+    def _fetch_chain(
+        self,
+        box: GeoBBox,
+        live_fn,
+        *,
+        allow_live: bool = True,
+        prefer_cache_s: float | None = None,
+    ) -> dict:
+        """Shared degradation chain (see class docstring + ``fetch``).
+
+        Stages: fresh-cache preference (opt-in) -> live -> exact cache ->
+        containing-entry clip -> packaged fixtures -> empty.  ``live_fn(box)``
+        performs the live stage and raises on any failure (including
+        error-as-200 bodies) so the chain degrades instead of caching a lie.
+        """
         key = self.cache.key(self.SOURCE, box) if self.cache else None
 
+        # 0. Fresh-cache preference (opt-in): a recent-enough entry answers
+        #    without a live round trip.
+        if prefer_cache_s is not None and self.cache and key is not None:
+            cached = self.cache.get(key, max_age_s=prefer_cache_s)
+            if cached is not None:
+                return cached
+
         # 1. Live.
-        try:
-            raw = _http_json(
-                self._build_url(box), data=self._build_body(box), timeout=self.timeout_s
-            )
-            result = self._parse(raw)
-            if self.cache and key is not None:
-                self.cache.put(key, result)
-            return result
-        except Exception as exc:  # noqa: BLE001 - any failure => degrade
-            logger.info("%s live fetch failed, degrading: %s", self.SOURCE, exc)
+        if allow_live:
+            try:
+                result = live_fn(box)
+                if self.cache and key is not None:
+                    self.cache.put(key, result)
+                return result
+            except Exception as exc:  # noqa: BLE001 - any failure => degrade
+                logger.info("%s live fetch failed, degrading: %s", self.SOURCE, exc)
 
         # 2. Cache (no age limit).  Cache keys are bbox-rounded, so cached
         #    entries are already scoped to the requested window.
@@ -273,6 +349,18 @@ class _VectorFetcher:
             cached = self.cache.get(key, max_age_s=None)
             if cached is not None:
                 return cached
+
+        # 2.5 Containing-entry clip: a previously cached WIDER window (e.g. an
+        #     AO warm) that contains this bbox, clipped down.  Cached entries
+        #     are live-fetched data, so this never surfaces fixture content.
+        if self.cache is not None:
+            finder = getattr(self.cache, "find_containing", None)
+            if callable(finder):
+                containing = finder(self.SOURCE, box)
+                if isinstance(containing, dict):
+                    clipped = filter_features_bbox(containing, box)
+                    if clipped.get("features"):
+                        return clipped
 
         # 3. Packaged fixtures — clipped to the requested bbox (a pack covers a
         #    whole AO, so a distant window must not get the lot).  Multi-AO:
@@ -602,58 +690,42 @@ class NhdHydrographyFetcher(_VectorFetcher):
     def _fetch_live(self, box: GeoBBox) -> dict:
         """Query both NHD layers and merge into one normalized FeatureCollection.
 
-        Raises on any transport error so ``fetch`` degrades to cache/fixture.
+        Raises on any transport error — and on either sub-query returning an
+        ArcGIS *error-as-200* body — so ``fetch`` degrades to cache/fixture
+        instead of caching a partial or empty lie.
         """
         flow_raw = _http_json(
             self._layer_url(box, self.FLOWLINE_LAYER, "GNIS_NAME,FType,FCode"),
             timeout=self.timeout_s,
         )
+        _raise_on_error_payload(flow_raw, f"{self.SOURCE} flowline")
         wb_raw = _http_json(
             self._layer_url(box, self.WATERBODY_LAYER, "GNIS_NAME,FType,AreaSqKm"),
             timeout=self.timeout_s,
         )
+        _raise_on_error_payload(wb_raw, f"{self.SOURCE} waterbody")
         features = self.parse_flowlines(flow_raw) + self.parse_waterbodies(wb_raw)
         return {"type": "FeatureCollection", "features": features}
 
-    def fetch(self, bbox) -> dict:
+    def fetch(
+        self,
+        bbox,
+        *,
+        allow_live: bool = True,
+        prefer_cache_s: float | None = None,
+    ) -> dict:
         """Return merged NHD hydrography via the standard degradation chain.
 
-        Mirrors ``_VectorFetcher.fetch`` (live -> cache -> packaged fixture ->
-        empty) but the live step merges two NHD layers (see :meth:`_fetch_live`).
+        Same contract as ``_VectorFetcher.fetch`` (including ``allow_live`` /
+        ``prefer_cache_s``) — only the live step differs, merging two NHD
+        layers (see :meth:`_fetch_live`).
         """
-        box = _as_bbox(bbox)
-        key = self.cache.key(self.SOURCE, box) if self.cache else None
-
-        # 1. Live (two-layer merge).
-        try:
-            result = self._fetch_live(box)
-            if self.cache and key is not None:
-                self.cache.put(key, result)
-            return result
-        except Exception as exc:  # noqa: BLE001 - any failure => degrade
-            logger.info("%s live fetch failed, degrading: %s", self.SOURCE, exc)
-
-        # 2. Cache (no age limit; bbox-rounded key).
-        if self.cache and key is not None:
-            cached = self.cache.get(key, max_age_s=None)
-            if cached is not None:
-                return cached
-
-        # 3. Packaged fixtures — clipped to the requested bbox, first non-empty.
-        last_empty = None
-        for fixture_name in self._fixture_names():
-            fixture = _load_fixture(fixture_name)
-            if fixture is None:
-                continue
-            clipped = filter_features_bbox(fixture, box)
-            if clipped.get("features"):
-                return clipped
-            last_empty = clipped
-        if last_empty is not None:
-            return last_empty
-
-        # 4. Empty but valid.
-        return _empty_fc()
+        return self._fetch_chain(
+            _as_bbox(bbox),
+            self._fetch_live,
+            allow_live=allow_live,
+            prefer_cache_s=prefer_cache_s,
+        )
 
 
 def _building_height(tags: dict) -> float:

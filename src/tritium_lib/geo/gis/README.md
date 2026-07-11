@@ -148,13 +148,40 @@ later unification with `sweep_recordings` should be mechanical.
 Every fetcher degrades so a packaged AO always works:
 
 ```
+fresh cache (opt-in, prefer_cache_s)  --hit-->  return (no live round trip)
+  --miss/off-->
 live HTTP  --success-->  parse, cache.put, return
            --failure-->  cache.get (no age limit)
-                            --miss-->  packaged fixtures (fixtures/, multi-AO)
-                                          --miss-->  empty result
+                            --miss-->  containing cached entry, clipped
+                                         (GISCache.find_containing)
+                                          --miss-->  packaged fixtures
+                                                     (fixtures/, multi-AO)
+                                                       --miss-->  empty result
                                                      ( {FeatureCollection:[]} or
                                                        an all-NoData grid )
 ```
+
+**`fetch(bbox, *, allow_live=True, prefer_cache_s=None)`** (vector fetchers,
+2026-07-11): `allow_live=False` skips the live stage entirely — cache →
+containing-clip → fixture only, sub-second, zero network. Derived layers (the
+SC water-crossing chokepoints) use it for an instant cold answer, then upgrade
+via a background warm. `prefer_cache_s=S` returns a cache entry younger than
+`S` seconds *without* a live attempt — roads/hydrography are static on
+operational timescales, so derived consumers skip the per-query gov-API round
+trip. Defaults preserve the original live-first contract exactly.
+
+**Error-as-200 guard.** ArcGIS services (TIGERweb, NHDPlus_HR, FEMA NFHL)
+return HTTP 200 with an `{"error": {...}}` body when throttled or failing.
+The live stage now rejects such bodies (both NHD sub-queries individually) and
+degrades down the chain — previously they parsed to an empty collection which
+was then **cached**, poisoning the disk cache with a durable empty for that
+bbox (the hazard behind Phase-A defect #2, "chokepoints return 0").
+
+**Containing-entry clip.** A cache miss for a narrow viewport can be served by
+clipping a previously cached *wider* window of the same source (e.g. an
+AO-switch warm) — `GISCache.find_containing(source, bbox)` picks the smallest
+containing entry; the clip uses `filter_features_bbox`. Cached entries are
+live-fetched data, so this stage never surfaces fixture content.
 
 **Multi-AO fixtures.** Each fetcher declares an ordered `FIXTURE_NAMES` tuple
 (the legacy single `FIXTURE_NAME` still works — resolution is `FIXTURE_NAMES`
