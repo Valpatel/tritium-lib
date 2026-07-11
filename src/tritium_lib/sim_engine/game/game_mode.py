@@ -247,6 +247,16 @@ class GameMode:
         self._last_combat_progress_time: float = 0.0
         self._last_wave_hostile_health: float = 0.0
         self._wave_active_since: float = 0.0  # sim_time the wave went active
+        # Annihilation-defeat arming: "all friendlies eliminated" is only a
+        # real defeat if a friendly combatant EVER existed.  A scenario that
+        # deliberately fields no defenders (e.g. the stress_test render
+        # scenario) must run its waves to a real terminal state instead of
+        # insta-defeating on the first active tick — before this guard the
+        # stress_test golden pinned a VACUOUS defeat at t=5.2s with 0 of 3
+        # waves completed.  The moment the first friendly combatant appears
+        # (pre-placed or deployed mid-game), the defeat rule arms for the
+        # rest of the game.
+        self._had_friendly_combatant: bool = False
         # Dedup guard: target_ids already counted as eliminations.  The
         # stalemate force-eliminator increments counters directly AND
         # publishes target_eliminated, which the engine listener echoes
@@ -323,13 +333,19 @@ class GameMode:
         """Transition from setup to countdown. Starts the war."""
         if self.state != "setup":
             return
-        # Reset all friendly units to full readiness
+        # Reset all friendly units to full readiness.  Seeing one here also
+        # arms the annihilation defeat (see _had_friendly_combatant): a force
+        # fielded at war start that gets wiped is a REAL defeat, while a
+        # deliberately defender-less run (stress_test render scenario) stays
+        # exempt from the vacuous all-friendlies-eliminated check.
+        self._had_friendly_combatant = False
         for t in self._engine.get_targets():
             if t.alliance == "friendly" and t.is_combatant:
                 t.battery = 1.0
                 t.health = t.max_health
                 if t.status in ("low_battery", "idle", "stationary"):
                     t.status = "active"
+                self._had_friendly_combatant = True
         self.state = "countdown"
         self.end_reason = None
         self._countdown_remaining = _COUNTDOWN_DURATION
@@ -396,6 +412,7 @@ class GameMode:
         self.breach_radius = 30.0
         self.perimeter_breached = False
         self._waves_exhausted = False
+        self._had_friendly_combatant = False
         self.difficulty.reset()
         self._publish_state_change()
 
@@ -640,15 +657,25 @@ class GameMode:
         # Spawn pacing (G-1): pop due spawns from the queue in sim time.
         self._drain_spawn_queue()
 
-        # Check defeat: all friendly combatants eliminated
-        # low_battery units are still alive (reduced capability, not dead)
+        # Check defeat: all friendly combatants eliminated.
+        # low_battery units are still alive (reduced capability, not dead).
+        # ARMED only once a friendly combatant has EVER existed: a scenario
+        # that fields no defenders at all (stress_test render run, or an
+        # operator who starts the battle before deploying) has nothing to
+        # annihilate — "all friendlies eliminated" would be vacuously true
+        # from the first active tick and end the game at t≈5s.  Such a run
+        # instead proceeds to a real terminal state (waves resolve via
+        # leaks / stalemate cull / hard timeout).  Deploying the first
+        # defender mid-game arms the rule from that moment on.
         _ALIVE_STATUSES = ("active", "idle", "stationary", "low_battery", "arrived")
         friendlies_alive = [
             t for t in self._engine.get_targets()
             if t.alliance == "friendly" and t.is_combatant
             and t.status in _ALIVE_STATUSES
         ]
-        if not friendlies_alive:
+        if friendlies_alive:
+            self._had_friendly_combatant = True
+        elif self._had_friendly_combatant:
             self.state = "defeat"
             self._event_bus.publish("game_over", self._build_game_over_data(
                 "defeat", reason="all_friendlies_eliminated",
