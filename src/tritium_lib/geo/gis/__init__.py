@@ -29,11 +29,19 @@ from .fetchers import (
     USER_AGENT,
     USGS_HILLSHADE_TILE_URL,
     FemaFloodFetcher,
+    NlcdLandCoverFetcher,
     NoaaAlertsFetcher,
     OverpassBuildingsFetcher,
     TigerRoadsFetcher,
     UsgsElevationFetcher,
     filter_features_bbox,
+)
+from .landcover import (
+    NLCD_CLASSES,
+    LandCoverClass,
+    LandCoverGrid,
+    classify_rgb,
+    tactical_profile,
 )
 from .models import ElevationGrid, GeoBBox
 
@@ -50,6 +58,12 @@ __all__ = [
     "FemaFloodFetcher",
     "NoaaAlertsFetcher",
     "OverpassBuildingsFetcher",
+    "NlcdLandCoverFetcher",
+    "LandCoverClass",
+    "LandCoverGrid",
+    "NLCD_CLASSES",
+    "classify_rgb",
+    "tactical_profile",
     "USGS_HILLSHADE_TILE_URL",
     "USER_AGENT",
     "auto_levels",
