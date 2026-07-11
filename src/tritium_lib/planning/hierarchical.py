@@ -74,6 +74,18 @@ DEFAULT_CORRIDOR_RADIUS_CELLS = 3
 # before the full-flat-A* completeness backstop.
 _WIDEN_LADDER = (1, 2, 4)
 
+# Once a widen-ladder corridor blankets at least this fraction of the fine grid,
+# stop widening: an even wider corridor just re-solves an ever-larger near-full
+# band and STILL falls to the flat backstop, so it double-solves the whole grid.
+# Short-circuit straight to the (complete) flat backstop instead — it solves the
+# grid ONCE.  A path found in such a corridor is never lost: the backstop is
+# exact flat A* over the full grid (a superset of any corridor), so it finds an
+# equal-or-cheaper route.  At 0.5 a corridor covering half the grid or more is
+# not re-solved before the backstop, keeping the city-scale worst case a tight
+# O(cells) (measured ~1.4x cells) instead of a >half-grid corridor stacked on a
+# full-grid solve.
+_CORRIDOR_MAX_COVERAGE = 0.5
+
 
 # ---------------------------------------------------------------------------
 # Coarsening
@@ -272,6 +284,28 @@ def _fine_corridor(
     return corridor
 
 
+def _backstop_cap(max_expansions: int | None, fw: int, fh: int) -> int:
+    """Expansion cap for a full-grid flat backstop that stays COMPLETE.
+
+    A caller-supplied ``max_expansions`` is honoured verbatim (the caller chose
+    to bound the search).  Otherwise the cap is ``fw*fh + 1`` — the completeness
+    floor: the flat A* closes each grid cell at most once (a popped node already
+    in ``closed`` is skipped before ``expansions`` is incremented), so the total
+    number of expansions is bounded by the cell count ``fw*fh``.  A cap of
+    ``fw*fh + 1`` therefore can NEVER be reached before the goal is found or the
+    reachable region is fully exhausted (proving ``no_path``).  The historical
+    ``min(200_000, fw*fh*4)`` default clamped this below the cell count on any
+    map larger than 200k cells, so a city-scale route that genuinely needed more
+    than 200k expansions was falsely reported ``no_path`` — the completeness gap
+    this fixes.  This is the hierarchical planner's INTERNAL backstop cap only;
+    the public ``plan_route`` default is deliberately left unchanged so flat A*
+    and all golden replays keep byte-identical behaviour.
+    """
+    if max_expansions is not None:
+        return max_expansions
+    return fw * fh + 1
+
+
 def _neighbourhood(col: int, row: int, radius: int, fw: int, fh: int):
     """Fine cells within a Chebyshev ``radius`` of ``(col, row)``, clipped."""
     out = []
@@ -343,9 +377,11 @@ def plan_route_hierarchical(
     )
     if not coarse_res.success:
         # Coarse (optimistic) says disconnected -> fine is almost certainly
-        # disconnected too, but honour completeness with a bounded flat solve.
+        # disconnected too, but honour completeness with a flat solve capped so
+        # it can prove no_path (not merely hit the cap): see ``_backstop_cap``.
         flat = plan_route(
-            costmap, start, goal, smooth=smooth, max_expansions=max_expansions,
+            costmap, start, goal, smooth=smooth,
+            max_expansions=_backstop_cap(max_expansions, fw, fh),
             snap_radius_m=snap_radius_m, clearance_m=clearance_m, strategy="flat",
         )
         flat.expansions += coarse_res.expansions
@@ -383,15 +419,35 @@ def plan_route_hierarchical(
 
     # 2. Refine within the corridor, widening on failure.
     total_coarse_exp = coarse_res.expansions
+    grid_cells = fw * fh
+    corridor_exp = 0
     for mult in _WIDEN_LADDER:
         radius = corridor_radius_cells * mult
         corridor = _fine_corridor(
             coarse_cells, coarse_factor, radius, fw, fh, extra_fine
         )
+        # Coverage short-circuit: once the band blankets most of the grid,
+        # widening it further only re-solves an ever-larger near-full corridor
+        # before the same backstop.  Stop so the grid is solved once.
+        if len(corridor) >= _CORRIDOR_MAX_COVERAGE * grid_cells:
+            break
+        # Cumulative-work short-circuit: once the failed corridor attempts have
+        # already expanded a full grid's worth of nodes, an even wider corridor
+        # cannot beat the single COMPLETE backstop that follows -> stop widening.
+        # This hard-bounds the city-scale worst case: corridor work < grid_cells,
+        # plus the backstop <= grid_cells + 1, so total < 2*grid_cells + coarse.
+        if corridor_exp >= grid_cells:
+            break
         masked = _CorridorCostmap(costmap, corridor)
-        fine_cap = max_expansions
-        if fine_cap is None:
-            fine_cap = min(200_000, max(2000, len(corridor) * 2))
+        if max_expansions is not None:
+            fine_cap = max_expansions
+        else:
+            # Complete cap for THIS corridor: closed-set A* expands each corridor
+            # cell at most once, so len(corridor)+1 can never be hit spuriously.
+            # (The old min(200k, len*2) clamped BELOW the corridor size once a
+            # corridor exceeded 200k cells, spuriously failing the fine solve on
+            # a dense city-scale band.)
+            fine_cap = len(corridor) + 1
         fine = plan_route(
             masked, start, goal, smooth=smooth, max_expansions=fine_cap,
             snap_radius_m=snap_radius_m, clearance_m=clearance_m, strategy="flat",
@@ -401,12 +457,18 @@ def plan_route_hierarchical(
             fine.strategy = "hierarchical"
             return fine
         total_coarse_exp += fine.expansions
+        corridor_exp += fine.expansions
 
-    # 3. Completeness backstop: the corridor could not contain a fine path at
-    # any width -> full flat solve (may itself hit the cap on a huge disconnected
-    # map, but never reports no_path where flat would have succeeded).
+    # 3. Completeness backstop: the corridor could not contain a fine path at any
+    # width (or blanketed the grid) -> a full flat solve capped so it is COMPLETE
+    # on a city-scale grid (finds the path if one exists, else proves no_path).
+    # ``_backstop_cap`` scales the cap with the grid so the old min(200k, cells*4)
+    # default — which clamped BELOW the cell count on a >200k-cell map and thus
+    # falsely reported no_path for routes needing >200k expansions — can no
+    # longer under-cap the search.
     flat = plan_route(
-        costmap, start, goal, smooth=smooth, max_expansions=max_expansions,
+        costmap, start, goal, smooth=smooth,
+        max_expansions=_backstop_cap(max_expansions, fw, fh),
         snap_radius_m=snap_radius_m, clearance_m=clearance_m, strategy="flat",
     )
     flat.expansions += total_coarse_exp

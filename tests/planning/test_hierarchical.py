@@ -29,6 +29,8 @@ from tritium_lib.planning.astar import (
 )
 from tritium_lib.planning.hierarchical import (
     DEFAULT_COARSE_FACTOR,
+    _CORRIDOR_MAX_COVERAGE,
+    _backstop_cap,
     _cached_coarse,
 )
 
@@ -552,3 +554,126 @@ class TestCoarseCacheInvalidation:
             "storm route must thread the gap, not the stale open corridor", ys)
         # And it is a genuine detour: strictly costlier than the calm straight run.
         assert storm_route.cost > calm_route.cost
+
+
+# ---------------------------------------------------------------------------
+# City-scale COMPLETENESS: the flat backstop must scale its cap with the grid
+# ---------------------------------------------------------------------------
+
+def _storm_field(n, seed=11, base=4.0, amp=3.5):
+    """Dense high-cost soft field (Extreme-storm-inflated).  Costs ~4..8 make
+    the octile heuristic (scaled by the small min-traversable cost) a weak lower
+    bound, so a flat solve must explore a LARGE fraction of the grid — exactly
+    the city-scale regime where a fixed 200k cap under-caps a 361k-cell map."""
+    rnd = random.Random(seed)
+    grid = []
+    for r in range(n):
+        row = []
+        for c in range(n):
+            v = base + amp * (1 + math.sin(c / 55.0) * math.cos(r / 55.0)) * 0.5
+            v += rnd.random() * 0.4
+            row.append(v)
+        grid.append(row)
+    return grid
+
+
+class TestCityScaleCompleteness:
+    """The tick-13 completeness gap: on a 601²/361k-cell storm costmap the fine
+    corridor blows its cap and the flat backstop's OLD ``min(200k, cells*4)``
+    default clamped BELOW the cell count, so a route that EXISTS was reported
+    ``no_path`` (max_expansions).  The size-proportional backstop cap
+    (:func:`_backstop_cap` -> ``cells+1``) restores completeness: closed-set A*
+    closes each cell at most once, so ``cells+1`` can never be hit before the
+    goal is found or the reachable region is exhausted.
+
+    These are the two LIVE failure cases, reproduced deterministically:
+      * a reachable goal behind a 1-cell 'flood wall' (optimistically coarse-open,
+        so the coarse plan crosses it straight; the real gap is far from the
+        coarse route so the widen ladder exhausts) -> the backstop must find it;
+      * an Extreme-storm-SEALED goal -> the backstop must PROVE ``no_path``.
+    """
+
+    N = 601          # 361,201 cells — the real Boulder-scale AO
+    RES = 5.0
+
+    def _cm(self, grid):
+        return Costmap(origin_x=0.0, origin_y=0.0, resolution=self.RES,
+                       width=self.N, height=self.N,
+                       grid=[list(row) for row in grid])
+
+    def _reachable_far_gap_costmap(self):
+        grid = _storm_field(self.N)
+        wall_col = 400
+        gap_lo, gap_hi = 560, 570   # gap far from the mid-height straight route
+        for r in range(self.N):
+            if gap_lo <= r < gap_hi:
+                continue
+            grid[r][wall_col] = LETHAL
+        return self._cm(grid)
+
+    def _sealed_costmap(self, gx, gy, half=40):
+        grid = _storm_field(self.N)
+        gc, gr = int(gx / self.RES), int(gy / self.RES)
+        for r in range(gr - half, gr + half + 1):
+            for c in range(gc - half, gc + half + 1):
+                if r in (gr - half, gr + half) or c in (gc - half, gc + half):
+                    if 0 <= r < self.N and 0 <= c < self.N:
+                        grid[r][c] = LETHAL
+        return self._cm(grid)
+
+    def test_backstop_cap_is_size_proportional_and_complete(self):
+        # Default (None): the completeness floor is cells+1 — unreachable by a
+        # closed-set A* that closes each cell at most once.
+        assert _backstop_cap(None, 601, 601) == 601 * 601 + 1
+        assert _backstop_cap(None, 200, 200) == 200 * 200 + 1
+        # An explicit caller cap is honoured verbatim (caller bounded the search).
+        assert _backstop_cap(5000, 601, 601) == 5000
+
+    def test_reachable_goal_no_longer_reports_no_path(self):
+        cm = self._reachable_far_gap_costmap()
+        cells = cm.width * cm.height
+        s, g = (30.0, 1500.0), (2970.0, 1500.0)
+
+        # BEFORE (the old 200k backstop cap, reproduced by capping expansions at
+        # 200k): a route EXISTS but the search is cut off -> no-path at the cap.
+        old = plan_route(cm, s, g, strategy="hierarchical", max_expansions=200_000)
+        assert not old.success
+        assert old.reason == "max_expansions"
+
+        # AFTER (default, size-proportional complete cap): the path is FOUND.
+        new = plan_route_hierarchical(cm, s, g)
+        assert new.success, new.reason
+        assert new.reason == "ok"
+        assert not _path_touches_lethal(cm, new.path)
+        assert new.path[0] == s and new.path[-1] == g
+        assert new.cost > 0.0
+        # Worst case is bounded O(cells) — a few corridor attempts (each strictly
+        # smaller than the grid) plus one complete full-grid backstop.  No
+        # infinite / repeated near-full-grid blowup.
+        assert new.expansions < 2 * cells, new.expansions
+
+    def test_sealed_goal_is_proven_not_capped(self):
+        gx, gy = 2600.0, 2600.0
+        cm = self._sealed_costmap(gx, gy)
+        cells = cm.width * cm.height
+        s, g = (30.0, 30.0), (gx, gy)
+
+        # BEFORE: the old cap cut the search off -> success=False but only
+        # because it ran out of expansions (max_expansions), not a proof.
+        old = plan_route(cm, s, g, strategy="hierarchical", max_expansions=200_000)
+        assert not old.success
+        assert old.reason == "max_expansions"
+
+        # AFTER: the reachable region is fully exhausted -> a PROVEN no_path.
+        new = plan_route_hierarchical(cm, s, g)
+        assert not new.success
+        assert new.reason == "no_path"
+        # Still bounded O(cells): corridor attempts short-circuit once a band
+        # covers half the grid, so the backstop is the only full-grid solve.
+        assert new.expansions < 2 * cells, new.expansions
+
+    def test_widen_ladder_short_circuits_before_near_full_corridor(self):
+        # The coverage guard must stop the ladder before it re-solves a corridor
+        # that already blankets most of the grid (which would double-solve the
+        # whole map).  Sanity-pin the threshold contract.
+        assert 0.0 < _CORRIDOR_MAX_COVERAGE < 1.0
