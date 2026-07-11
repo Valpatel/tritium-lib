@@ -3,7 +3,9 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """AuditTrail — high-level audit interface for compliance and forensics.
 
-Wraps the low-level ``AuditStore`` with:
+A parallel, self-contained SQLite log (its own ``audit_trail`` table — the
+``store.audit_log`` schema plus a UUID ``entry_id`` column; it does NOT wrap
+or share ``tritium_lib.store.AuditStore``).  Adds:
   - Predefined compliance action helpers (target_accessed, zone_modified, etc.)
   - Fluent ``AuditQuery`` integration
   - Automatic rotation (oldest records pruned on a configurable schedule)

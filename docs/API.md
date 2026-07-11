@@ -524,7 +524,7 @@ from tritium_lib.config import TritiumBaseSettings
 
 ## JS Modules
 
-Located at `web/` (served by SC at `/lib/`). Additional JS sim modules at `src/tritium_lib/js/`.
+Located at `web/` (served by SC at `/lib/`). (`src/tritium_lib/js/` is an orphaned, diverged second copy — not packaged, not served, no consumers; see `src/tritium_lib/README.md` honesty notes.)
 
 ### web/sim/
 
