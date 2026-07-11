@@ -91,6 +91,22 @@ class TestListAOPacks:
         assert "noaa_alerts" in dublin.layers
         assert "usgs_dem" in dublin.layers
 
+    def test_reports_nlcd_and_nhd_layers_when_shipped(self):
+        # Regression: the registry must report EVERY packaged layer, not just
+        # the original five.  Dev added NLCD land cover + NHD hydrography
+        # fixtures for both AOs; a stale _LAYER_STEMS silently dropped them and
+        # the AO switcher under-reported each battlefield.
+        for pack in (get_ao_pack("dublin"), get_ao_pack("boulder")):
+            assert "nlcd" in pack.layers, f"{pack.id} missing nlcd"
+            assert "nhd_hydro" in pack.layers, f"{pack.id} missing nhd_hydro"
+
+    def test_layers_are_registry_ordered(self):
+        # layers preserve _LAYER_STEMS (sensor-priority) order for a stable UI.
+        from tritium_lib.geo.gis.ao_packs import _LAYER_STEMS
+        for pack in list_ao_packs():
+            idxs = [_LAYER_STEMS.index(s) for s in pack.layers]
+            assert idxs == sorted(idxs)
+
 
 @pytest.mark.unit
 class TestActiveAndContainment:

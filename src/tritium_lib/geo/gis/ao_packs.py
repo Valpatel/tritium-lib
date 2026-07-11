@@ -52,11 +52,16 @@ _AO_DEFS: tuple[tuple[str, str, str], ...] = (
 
 #: Fixture data-layer stems, in roughly sensor-priority order.  ``layers``
 #: reports which of these packs exist for an AO (so Boulder legitimately omits
-#: ``noaa_alerts``).  The DEM stem is also the AO bounding-box source.
+#: ``noaa_alerts`` — there were no active NWS alerts over the AO at capture
+#: time).  The DEM stem is also the AO bounding-box source.  Keep this list in
+#: sync with the fixtures the capture tool writes: every ``{stem}_{suffix}.json``
+#: layer a build ships must appear here or the AO under-reports its battlefield.
 _LAYER_STEMS: tuple[str, ...] = (
     "usgs_dem",
     "tiger_roads",
+    "nhd_hydro",
     "fema_flood",
+    "nlcd",
     "osm_buildings",
     "noaa_alerts",
 )
