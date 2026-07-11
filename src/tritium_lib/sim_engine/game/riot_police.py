@@ -52,6 +52,26 @@ and the squad stands easy even while a rival bloc is still violent elsewhere.
 ``faction=None`` keeps the legacy behaviour (kettle whatever violent cluster is
 nearest, regardless of bloc).
 
+Autonomous faction-kettle doctrine
+----------------------------------
+For a **rival-faction** riot (2+ declared blocs) the stand-in commander does
+not wait for an operator: ``enable_auto_kettle(blocs)`` arms a doctrine that
+reads the LIVE per-bloc violent strength each tick and, when one bloc is
+decisively overwhelming its rival (a strength ``ratio`` AND absolute
+``margin`` lead, with the dominant bloc massed past ``min_strength``),
+AUTONOMOUSLY issues ``command_tactic("kettle", faction=<dominant>)`` on its own
+— the production-half essence of a squad AI making the tactical decision a real
+commander would.  Hysteresis (a lower ``release_ratio``) plus a ``min_hold``
+floor stop it thrashing; if the balance FLIPS the doctrine switches the cordon
+to the newly dominant bloc; when dominance decays it releases back to the FSM.
+It is deterministic (integer count thresholds, no RNG) and seedable.
+
+An OPERATOR command hard-overrides the autonomous choice: any specific
+``command_tactic`` from the operator (source ``"operator"``) locks the doctrine
+out until the operator returns to ``"auto"`` (or ``reset()``).  With fewer than
+two declared blocs the doctrine stays disabled, so a single-faction riot is
+byte-identical (the doctrine is never armed).
+
 ``get_status()`` exposes the live squad state / formation / commanded tactic /
 agitation / corridor / target_faction / arrests for the operator UI.
 Switching back to ``auto``/``line``/``wedge`` cleanly resumes the FSM at
@@ -216,6 +236,18 @@ _CORRIDOR_EXIT_DIST: float = 25.0      # push waypoint distance past the ring (m
 _CORRIDOR_PUSH_INTERVAL: float = 5.0   # min seconds between pushes of one target
 _CORRIDOR_FLOW_MIN: int = 3            # distinct pushes -> corridor_flow beat
 
+# --- Autonomous faction-kettle doctrine (rival-faction riots only) ----------
+# The stand-in commander reads the live per-bloc violent strength and cordons a
+# bloc that is decisively overwhelming its rival WITHOUT an operator command.
+# Deterministic integer-count thresholds (no RNG); hysteresis + a minimum hold
+# stop it thrashing.  Only armed when 2+ blocs are declared (enable_auto_kettle)
+# so single-faction riots are byte-identical.  An operator command overrides.
+_AUTO_KETTLE_MIN_STRENGTH: int = 5     # dominant bloc must have >= this violent
+_AUTO_KETTLE_RATIO: float = 1.5        # dominant/rival strength ratio to ARM
+_AUTO_KETTLE_MARGIN: int = 3           # AND absolute strength lead to ARM
+_AUTO_KETTLE_RELEASE_RATIO: float = 1.15  # hold while >= this, else release
+_AUTO_KETTLE_MIN_HOLD: float = 12.0    # min sim-seconds a kettle holds (anti-thrash)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -286,6 +318,7 @@ class PoliceTacticsController:
         rout_health: float = 15.0,
         replan_interval: float = 1.0,
         occupancy_check: Any = None,
+        slot_validator: Any = None,
     ) -> None:
         self._event_bus = event_bus
         self._game_mode = game_mode
@@ -296,6 +329,17 @@ class PoliceTacticsController:
         self._rout_health = rout_health
         self._replan_interval = replan_interval
         self._occupancy_check = occupancy_check
+        # Optional terrain-aware slot validator (the SAME injected-callable
+        # pattern as occupancy_check).  ``slot_validator(from_pt, slot) -> pt``
+        # returns a non-lethal, reachable waypoint for a commanded slot, nudging
+        # one that lands in a wall / lethal cell to the nearest clear cell so a
+        # formation / kettle-ARC cordon actually CLOSES on real AO terrain
+        # (buildings / flood) instead of officers beelining into an obstacle.
+        # ``None`` (the default, and every current sim-battle map — no costmap)
+        # is an identity pass-through, so goldens stay byte-identical.  The
+        # engine builds one over ``tritium_lib.planning.segment_clear`` + the
+        # live costmap when a real AO is loaded.
+        self._slot_validator = slot_validator
 
         # Squad FSM state.
         self._squad_state: str = "hold"
@@ -314,6 +358,24 @@ class PoliceTacticsController:
         # this bloc's nearest violent cluster (the untargeted bloc is left be).
         # None => legacy kettle (nearest violent cluster of any faction).
         self._kettle_faction: str | None = None
+        # Source of the current commanded tactic: "auto" (FSM, AI free to act),
+        # "autonomous" (the doctrine auto-issued this kettle), or "operator" (a
+        # human command; the autonomous doctrine must NOT override it).
+        self._tactic_source: str = "auto"
+
+        # Autonomous faction-kettle doctrine (rival-faction riots only).
+        # Disabled by default => single-faction riots are byte-identical; the
+        # engine arms it via enable_auto_kettle() only when 2+ blocs are wired.
+        self._auto_kettle_enabled: bool = False
+        self._auto_kettle_blocs: frozenset[str] = frozenset()
+        self._auto_kettle_ratio: float = _AUTO_KETTLE_RATIO
+        self._auto_kettle_margin: int = _AUTO_KETTLE_MARGIN
+        self._auto_kettle_min_strength: int = _AUTO_KETTLE_MIN_STRENGTH
+        self._auto_kettle_release_ratio: float = _AUTO_KETTLE_RELEASE_RATIO
+        self._auto_kettle_min_hold: float = _AUTO_KETTLE_MIN_HOLD
+        # The bloc the doctrine is currently kettling (None => not auto-kettling).
+        self._auto_kettle_target: str | None = None
+        self._auto_kettle_since: float = -1e9
 
         # Kettle-cordon transient state (cleared on exit / reset).
         self._kettle_gap_dir: tuple[float, float] | None = None
@@ -371,6 +433,16 @@ class PoliceTacticsController:
         """The bloc a kettle is targeting, or None (legacy nearest-cluster)."""
         return self._kettle_faction
 
+    @property
+    def tactic_source(self) -> str:
+        """Who set the current tactic: auto / autonomous / operator."""
+        return self._tactic_source
+
+    @property
+    def auto_kettle_target(self) -> str | None:
+        """Bloc the autonomous doctrine is kettling, or None (not auto-kettling)."""
+        return self._auto_kettle_target
+
     # -- Operator command path --------------------------------------------------
 
     def command_tactic(
@@ -378,6 +450,8 @@ class PoliceTacticsController:
         tactic: str,
         corridor: tuple[float, float] | None = None,
         faction: str | None = None,
+        *,
+        _source: str = "operator",
     ) -> bool:
         """Command a squad tactic (the production squad-lead interface).
 
@@ -391,11 +465,18 @@ class PoliceTacticsController:
         name a bloc ("kettle the RED bloc") to cordon ONLY that faction's
         nearest violent cluster; omit it (or command any non-kettle tactic) to
         kettle the nearest violent cluster of any faction.
+
+        ``_source`` is the internal command origin (default ``"operator"``): the
+        autonomous doctrine passes ``"autonomous"``.  A ``"operator"`` command
+        for any specific tactic hard-locks out the doctrine; commanding
+        ``"auto"`` always returns control to the automatic AI (the doctrine may
+        resume) regardless of source.
         """
         if tactic not in _VALID_TACTICS:
             return False
 
         prev = self._commanded_tactic
+        prev_faction = self._kettle_faction
         self._commanded_tactic = tactic
         self._corridor = (
             (float(corridor[0]), float(corridor[1]))
@@ -406,9 +487,18 @@ class PoliceTacticsController:
         self._kettle_faction = (
             str(faction) if (tactic == "kettle" and faction) else None
         )
-        # Leaving kettle (or re-entering it fresh) clears the cordon transient
-        # state so the FSM resumes cleanly from "form".
-        if tactic != "kettle" or prev != "kettle":
+        # Commanding "auto" (from anyone) returns control to the automatic AI;
+        # any other specific command records its source so an OPERATOR override
+        # locks the autonomous doctrine out until it returns to auto / reset().
+        self._tactic_source = "auto" if tactic == "auto" else _source
+        # Leaving kettle, re-entering it fresh, or SWITCHING the kettled bloc
+        # clears the cordon transient state so the ring re-forms on the new
+        # target (or the FSM resumes cleanly from "form").
+        if (
+            tactic != "kettle"
+            or prev != "kettle"
+            or self._kettle_faction != prev_faction
+        ):
             self._exit_kettle()
 
         self._publish("police_tactic_commanded", {
@@ -421,12 +511,51 @@ class PoliceTacticsController:
         })
         return True
 
+    def enable_auto_kettle(
+        self,
+        blocs: Any,
+        *,
+        ratio: float | None = None,
+        margin: int | None = None,
+        min_strength: int | None = None,
+        release_ratio: float | None = None,
+        min_hold: float | None = None,
+    ) -> None:
+        """Arm the autonomous faction-kettle doctrine for a rival-faction riot.
+
+        ``blocs`` is the set of declared bloc faction ids.  With fewer than two
+        distinct blocs the doctrine stays DISABLED (a single-faction riot is
+        byte-identical — the engine only calls this when it wires 2+ factions).
+        Thresholds default to the module constants; override for tuning/tests.
+        Deterministic (integer count thresholds, no RNG); operator commands
+        still override the doctrine's choice.
+        """
+        blocs = frozenset(str(b) for b in (blocs or []) if b)
+        if len(blocs) < 2:
+            self._auto_kettle_enabled = False
+            self._auto_kettle_blocs = frozenset()
+            return
+        self._auto_kettle_enabled = True
+        self._auto_kettle_blocs = blocs
+        if ratio is not None:
+            self._auto_kettle_ratio = float(ratio)
+        if margin is not None:
+            self._auto_kettle_margin = int(margin)
+        if min_strength is not None:
+            self._auto_kettle_min_strength = int(min_strength)
+        if release_ratio is not None:
+            self._auto_kettle_release_ratio = float(release_ratio)
+        if min_hold is not None:
+            self._auto_kettle_min_hold = float(min_hold)
+
     def get_status(self) -> dict:
         """Operator-facing squad status snapshot (stable API contract).
 
         Exactly these keys: ``squad_state``, ``formation_type`` (string value
         or None), ``commanded_tactic``, ``agitation``, ``corridor``
-        ({"x","y"} or None), ``target_faction`` (bloc id or None), ``arrests``.
+        ({"x","y"} or None), ``target_faction`` (bloc id or None), ``arrests``,
+        ``tactic_source`` (auto / autonomous / operator — who set the tactic, so
+        the operator can SEE when the stand-in commander is acting on its own).
         """
         return {
             "squad_state": self._squad_state,
@@ -442,6 +571,7 @@ class PoliceTacticsController:
             ),
             "target_faction": self._kettle_faction,
             "arrests": self._arrest_total,
+            "tactic_source": self._tactic_source,
         }
 
     # -- Occupancy (Graphling boundary) -----------------------------------------
@@ -453,6 +583,32 @@ class PoliceTacticsController:
             return bool(self._occupancy_check(target_id))
         except Exception:
             return False
+
+    # -- Terrain-aware slot validation (optional injected seam) -----------------
+
+    def _validate_slot(
+        self,
+        from_pt: tuple[float, float],
+        slot: tuple[float, float],
+    ) -> tuple[float, float]:
+        """Return a reachable, non-lethal waypoint for ``slot``.
+
+        Identity pass-through when no ``slot_validator`` was injected (the
+        default, and every sim-battle map — so goldens are byte-identical).  A
+        wired validator (built over the live costmap + ``segment_clear``) nudges
+        a slot that lands in a wall / lethal cell to the nearest clear cell so
+        the cordon actually closes on real terrain.  Any validator error falls
+        back to the raw slot (never breaks the tick).
+        """
+        if self._slot_validator is None:
+            return slot
+        try:
+            v = self._slot_validator(from_pt, slot)
+            if v is not None:
+                return (float(v[0]), float(v[1]))
+        except Exception:
+            pass
+        return slot
 
     # -- Tick -------------------------------------------------------------------
 
@@ -507,6 +663,14 @@ class PoliceTacticsController:
         # violent within _WEDGE_CLUSTER_RADIUS of it as the local cluster,
         # and push at the cluster's centroid.  Clear it, then the next.
         frontline, cluster, objective = self._nearest_cluster(self._anchor, violent)
+
+        # -- Autonomous faction-kettle doctrine --------------------------------
+        # Before acting on the commanded tactic, let the stand-in commander make
+        # its OWN call: for a rival-faction riot it reads the live per-bloc
+        # strength and may auto-issue a kettle of a dominant bloc (or release
+        # one), updating _commanded_tactic below.  No-op for single-faction
+        # riots and while an operator holds manual control.
+        self._auto_kettle_decision(violent)
 
         # -- Operator override: kettle cordon ----------------------------------
         # A commanded kettle replaces the advance/engage flow entirely: cordon
@@ -636,6 +800,84 @@ class PoliceTacticsController:
         objective = _centroid([tuple(v.position[:2]) for v in cluster])
         return frontline, cluster, objective
 
+    # -- Autonomous faction-kettle doctrine ------------------------------------
+
+    def _bloc_violent_counts(self, violent: list) -> dict[str, int]:
+        """Per-declared-bloc violent count from ``violent`` (deterministic)."""
+        counts: dict[str, int] = {b: 0 for b in self._auto_kettle_blocs}
+        for v in violent:
+            fac = getattr(v, "faction", None)
+            if fac in counts:
+                counts[fac] += 1
+        return counts
+
+    def _is_dominant(self, a_n: int, b_n: int) -> bool:
+        """True when strength ``a_n`` decisively overwhelms rival ``b_n``."""
+        return (
+            a_n >= self._auto_kettle_min_strength
+            and a_n >= b_n * self._auto_kettle_ratio
+            and a_n - b_n >= self._auto_kettle_margin
+        )
+
+    def _auto_kettle_decision(self, violent: list) -> None:
+        """Autonomously kettle a bloc that is overwhelming its rival.
+
+        The production-half essence: the stand-in commander reads the live
+        per-bloc violent strength and decides ON ITS OWN — no operator command —
+        to cordon a decisively dominant bloc, switch the cordon if the balance
+        flips, or release it when dominance decays.  Hysteresis (a lower release
+        ratio) plus a minimum hold stop it thrashing.  Deterministic (integer
+        counts, id-stable tiebreaks; no RNG).
+
+        No-op unless the doctrine is armed for a rival-faction riot AND the
+        operator has not taken manual control (an operator command hard-locks
+        the doctrine out until it returns to "auto" / reset()).
+        """
+        if not self._auto_kettle_enabled:
+            return
+        if self._tactic_source == "operator":
+            return  # a human command overrides the autonomous choice
+
+        counts = self._bloc_violent_counts(violent)
+        # Two strongest blocs (deterministic tiebreak by faction id).
+        ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        (a_id, a_n), (b_id, b_n) = ordered[0], ordered[1]
+
+        if self._auto_kettle_target is None:
+            # Not currently auto-kettling: ARM on a decisively dominant bloc.
+            if self._is_dominant(a_n, b_n):
+                self._auto_kettle_target = a_id
+                self._auto_kettle_since = self._sim_clock
+                self.command_tactic("kettle", faction=a_id, _source="autonomous")
+            return
+
+        # Already auto-kettling a bloc: hold it for at least the min-hold floor
+        # before re-deciding (anti-thrash), then switch / release as the street
+        # balance shifts.
+        if self._sim_clock - self._auto_kettle_since < self._auto_kettle_min_hold:
+            return
+
+        tgt = self._auto_kettle_target
+        tgt_n = counts.get(tgt, 0)
+        others = [(fid, n) for fid, n in ordered if fid != tgt]
+        rival_id, rival_n = others[0] if others else (b_id, b_n)
+
+        if self._is_dominant(rival_n, tgt_n):
+            # The balance FLIPPED: the rival now decisively dominates the bloc
+            # we were kettling — switch the cordon to the new dominant bloc.
+            self._auto_kettle_target = rival_id
+            self._auto_kettle_since = self._sim_clock
+            self.command_tactic("kettle", faction=rival_id, _source="autonomous")
+        elif (
+            tgt_n < self._auto_kettle_min_strength
+            or tgt_n < rival_n * self._auto_kettle_release_ratio
+        ):
+            # Dominance decayed (target contained, or the rival caught up past
+            # the hysteresis floor): release the cordon back to the FSM.
+            self._auto_kettle_target = None
+            self.command_tactic("auto", _source="autonomous")
+        # else: still dominant enough — HOLD the current cordon (no re-issue).
+
     # -- Shared arrest / rout loop ---------------------------------------------
 
     def _process_arrests_routs(
@@ -723,8 +965,9 @@ class PoliceTacticsController:
         ordered = sorted(roster, key=lambda o: o.target_id)
         for officer, slot in zip(ordered, slots):
             # Replace the list object (not mutate) so the entity re-syncs its
-            # movement controller to the new slot.
-            officer.waypoints = [slot]
+            # movement controller to the new slot.  A wired slot_validator nudges
+            # a slot off a wall / lethal cell (identity pass-through by default).
+            officer.waypoints = [self._validate_slot(anchor, slot)]
 
     # -- Kettle cordon ----------------------------------------------------------
 
@@ -852,7 +1095,9 @@ class PoliceTacticsController:
 
         ordered = sorted(roster, key=lambda o: o.target_id)
         for officer, slot in zip(ordered, slots):
-            officer.waypoints = [slot]
+            # Nudge a cordon slot off a wall / lethal cell so the ARC actually
+            # closes on real terrain (identity pass-through when unwired).
+            officer.waypoints = [self._validate_slot(center, slot)]
 
     def _exit_kettle(self) -> None:
         """Clear all kettle-cordon transient state (FSM resumes at ``form``)."""
@@ -1005,4 +1250,9 @@ class PoliceTacticsController:
         self._commanded_tactic = "auto"
         self._corridor = None
         self._kettle_faction = None
+        self._tactic_source = "auto"
+        # Autonomous doctrine target clears; its ARMED config (blocs/thresholds)
+        # persists across a reset so a re-run of the same rival riot keeps it.
+        self._auto_kettle_target = None
+        self._auto_kettle_since = -1e9
         self._exit_kettle()
