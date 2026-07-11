@@ -969,12 +969,22 @@ class GameMode:
         def _make(group):
             def _spawn() -> None:
                 role = getattr(group, "crowd_role", None)
+                # Rival-faction riots: a group may pin a spawn SECTOR so the two
+                # blocs mass on opposite sides. Passed only when set, so
+                # factionless scenarios call exactly as before (and engines
+                # whose spawn_hostile_typed predates the direction arg are
+                # unaffected).
+                extra: dict[str, Any] = {}
+                spawn_dir = getattr(group, "spawn_direction", None)
+                if spawn_dir:
+                    extra["direction"] = spawn_dir
                 hostile = self._engine.spawn_hostile_typed(
                     asset_type=group.asset_type,
                     speed=group.speed * wave_def.speed_mult,
                     health=group.health * wave_def.health_mult,
                     drone_variant=group.drone_variant,
                     crowd_role=role,
+                    **extra,
                 )
                 # Apply scenario overrides if available
                 if self._scenario is not None:

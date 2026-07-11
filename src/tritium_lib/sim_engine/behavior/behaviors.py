@@ -105,6 +105,15 @@ _FACTION_VIOLENT_ROLES: frozenset[str] = frozenset({"rioter", "instigator"})
 # contact dynamic).  Beyond it, rioters keep their street routine.
 _RIOTER_AGGRO_RANGE: float = 25.0
 
+# Rival-faction riots ONLY: a factioned rioter/instigator ADVANCES on the
+# nearest rival across the plaza (the two mobs seek each other and collide,
+# instead of both drifting to the police line and ignoring one another).  A
+# rioter in a riot always knows roughly where the enemy bloc is, so the seek
+# range effectively spans the map — set larger than the map diagonal so the
+# blocs converge no matter how far apart they spawn.  Gated on `rivals` being
+# set, so single-faction riots never pay it and stay byte-identical.
+_RIVAL_SEEK_RANGE: float = 2000.0
+
 _WEAPON_TYPES: dict[str, str | None] = {
     "turret": "nerf_turret_gun",
     "heavy_turret": "nerf_heavy_turret",
@@ -439,7 +448,11 @@ class UnitBehaviors:
             if t.crowd_role == "civilian":
                 self._civilian_behavior(t, friendlies)
             elif t.crowd_role == "instigator":
-                self._instigator_behavior(t, friendlies, dt=dt)
+                rivals = (
+                    rival_crowd.get(getattr(t, "faction", None))
+                    if rival_crowd else None
+                )
+                self._instigator_behavior(t, friendlies, dt=dt, rivals=rivals)
             elif t.crowd_role == "rioter":
                 rivals = (
                     rival_crowd.get(getattr(t, "faction", None))
@@ -1647,11 +1660,21 @@ class UnitBehaviors:
         instigator: SimulationTarget,
         friendlies: dict[str, SimulationTarget],
         dt: float = 0.1,
+        rivals: dict[str, SimulationTarget] | None = None,
     ) -> None:
         """Instigator activation cycle: hidden(8s)->activating(2s)->active(5s)->hidden.
 
-        During 'active': fires thrown_object projectiles at nearest friendly.
-        During 'hidden' and 'activating': acts like civilian, no combat.
+        During 'active': hurls thrown_object projectiles (15m reach) at the
+        nearest enemy.  During 'hidden' and 'activating': acts like civilian,
+        no combat.
+
+        RIVAL FACTIONS (lane/riot tick 4): when *rivals* is given (a factioned
+        instigator whose bloc is at war), the candidate target set is
+        friendlies PLUS rival crowd members — so blocs hurl objects at EACH
+        OTHER across the plaza (the reliable RANGED half of a three-way riot,
+        complementing the rioters' melee brawl).  ``rivals=None`` (factionless
+        instigator / no diplomacy wired) keeps the legacy friendlies-only set,
+        byte-identical to the single-faction riot.
         """
         state = instigator.instigator_state
         instigator.instigator_timer += dt
@@ -1676,14 +1699,37 @@ class UnitBehaviors:
                 instigator.instigator_timer = 0.0
                 return
 
-            # During active: fire thrown_object at nearest friendly (range 15m, cooldown 3s)
+            # During active: hurl thrown_object at the nearest enemy (range 15m,
+            # cooldown 3s).  Rival-faction riots add the enemy bloc to the set.
             if instigator.ammo_count == 0:
                 return
-            target = self._nearest_in_range(instigator, friendlies)
+            if rivals:
+                enemies: dict[str, SimulationTarget] = dict(friendlies)
+                enemies.update(rivals)
+            else:
+                enemies = friendlies
+            target = self._nearest_in_range(instigator, enemies)
             if target is not None:
                 ptype = _WEAPON_TYPES.get("instigator", "thrown_object")
                 if ptype is not None:
                     self._engage_or_reposition(instigator, target, ptype)
+            elif rivals:
+                # No enemy in throwing range — ADVANCE on the enemy bloc so the
+                # factions actually meet (mirrors the rioter bloc-seek). Only
+                # rival-faction riots reach this branch.
+                nearest = None
+                seek_d = _RIVAL_SEEK_RANGE
+                for f in rivals.values():
+                    d = math.hypot(f.position[0] - instigator.position[0],
+                                   f.position[1] - instigator.position[1])
+                    if d <= seek_d:
+                        nearest = f
+                        seek_d = d
+                if nearest is not None:
+                    wp = instigator.waypoints
+                    tx, ty = nearest.position[0], nearest.position[1]
+                    if (not wp or math.hypot(wp[-1][0] - tx, wp[-1][1] - ty) > 1.0):
+                        instigator.waypoints = [(tx, ty)]
 
     def _bomber_behavior(
         self,
@@ -1850,15 +1896,31 @@ class UnitBehaviors:
         else:
             enemies = friendlies
 
-        # Charge the nearest enemy within aggro range (movement).
+        # MOVEMENT objective.  A RIVAL-FACTION rioter's primary drive is the
+        # ENEMY BLOC: it marches on the nearest rival across the plaza (seek
+        # range) so the two factions actually converge and brawl in the middle
+        # instead of both drifting to the police line and ignoring each other.
+        # A factionless rioter (single-faction riot, rivals=None) keeps the
+        # legacy behavior — charge the nearest friendly within aggro range —
+        # so that path stays byte-identical.
         nearest = None
-        nearest_d = _RIOTER_AGGRO_RANGE
-        for f in enemies.values():
-            d = math.hypot(f.position[0] - rioter.position[0],
-                           f.position[1] - rioter.position[1])
-            if d <= nearest_d:
-                nearest = f
-                nearest_d = d
+        if rivals:
+            seek_d = _RIVAL_SEEK_RANGE
+            for f in rivals.values():
+                d = math.hypot(f.position[0] - rioter.position[0],
+                               f.position[1] - rioter.position[1])
+                if d <= seek_d:
+                    nearest = f
+                    seek_d = d
+        if nearest is None:
+            nearest_d = _RIOTER_AGGRO_RANGE
+            for f in enemies.values():
+                d = math.hypot(f.position[0] - rioter.position[0],
+                               f.position[1] - rioter.position[1])
+                if d <= nearest_d:
+                    nearest = f
+                    nearest_d = d
+
         if nearest is not None:
             wp = rioter.waypoints
             tx, ty = nearest.position[0], nearest.position[1]
