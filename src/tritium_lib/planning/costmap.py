@@ -33,7 +33,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from tritium_lib.geo import point_in_polygon
 
@@ -843,6 +843,55 @@ class CostmapBuilder:
         summary["cells"] = counters["water"]
         summary["bridges"] = counters["bridge"]
         return summary
+
+    def sever_crossings(
+        self,
+        points: Iterable[tuple[float, float]] | None,
+        *,
+        radius_m: float = 0.0,
+    ) -> dict:
+        """Mark specific water crossings (bridges / fords) as SEVERED — lethal.
+
+        A blown span denies that crossing.  Where :meth:`add_water_obstacles`
+        and :meth:`add_land_cover` KEEP a road-over-water cell passable (a
+        bridge), severing forces that exact cell lethal, so the planner re-plans
+        AROUND it — or reports ``no_path`` when it was the only span.  This is
+        the costmap half of a mission / combat "blow the bridge" event and of
+        the GIS lane's chokepoint ``sever`` flag: feed the crossing's world
+        ``(x, y)`` here and the shared costmap denies it.
+
+        ``points`` are world ``(x, y)`` crossing locations in the costmap frame
+        (e.g. a ``/api/gis/chokepoints/tactical`` feature's
+        ``geometry.coordinates`` projected to local).  ``radius_m`` widens each
+        sever to a disk (``0`` = just the covering cell) so a multi-cell span is
+        fully cut.
+
+        Marks ``_obstacle_cells`` with the ``"severed"`` tag, which
+        :meth:`build` renders lethal regardless of road discount — so call it
+        LAST (after roads / water / land cover) for it to win.  Idempotent and
+        order-independent.  Returns ``{"severed": <cells marked lethal>}``.
+        """
+        severed = 0
+        r_cells = int(math.ceil(radius_m / self.resolution)) if radius_m > 0 else 0
+        for pt in points or ():
+            try:
+                x, y = float(pt[0]), float(pt[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            col0 = int(math.floor((x - self.origin_x) / self.resolution))
+            row0 = int(math.floor((y - self.origin_y) / self.resolution))
+            for dr in range(-r_cells, r_cells + 1):
+                for dc in range(-r_cells, r_cells + 1):
+                    if r_cells and math.hypot(dr, dc) * self.resolution > radius_m:
+                        continue
+                    row, col = row0 + dr, col0 + dc
+                    if not (0 <= col < self.width and 0 <= row < self.height):
+                        continue
+                    if self._obstacle_cells.get((row, col)) == "severed":
+                        continue
+                    self._obstacle_cells[(row, col)] = "severed"
+                    severed += 1
+        return {"severed": severed}
 
     # -- Build --------------------------------------------------------------
 
