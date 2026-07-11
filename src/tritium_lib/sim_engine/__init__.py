@@ -247,6 +247,8 @@ try:
         WeatherEffects,
         WeatherSimulator,
         Environment,
+        Season,
+        SeasonalCycle,
     )
 except ImportError as _e:  # pragma: no cover
     import warnings as _w; _w.warn(f"sim_engine.environment not available: {_e}")
@@ -852,7 +854,7 @@ __all__ = [
     "HeightMap", "LineOfSight", "CoverMap", "MovementCost",
     # --- Environment ---
     "TimeOfDay", "Weather", "WeatherState", "WeatherEffects",
-    "WeatherSimulator", "Environment",
+    "WeatherSimulator", "Environment", "Season", "SeasonalCycle",
     # --- Crowd ---
     "CrowdMood", "CrowdMember", "CrowdEvent",
     "CrowdSimulator", "CROWD_SCENARIOS",
