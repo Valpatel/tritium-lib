@@ -479,7 +479,7 @@ class TargetTracker:
     contact population, so matching treats them as one regime: a camera
     detection refreshes a yolo track instead of spawning a duplicate id."""
 
-    def update_from_detection(self, detection: dict) -> None:
+    def update_from_detection(self, detection: dict) -> str | None:
         """Update or create a tracked target from a vision detection.
 
         Match logic chooses the *closest* existing target within a
@@ -495,9 +495,14 @@ class TargetTracker:
         and the camera identity/geometry (``camera_id``, ``bearing_deg``,
         ``distance_m``, ``bbox``) is stamped into ``kinematics`` so the
         dossier and map can answer *which camera saw this target*.
+
+        Returns:
+            The ``det_*`` target id this detection matched or created, so
+            callers (dossier signals, fusion) can link follow-on records
+            to the exact track — or None if the detection was rejected.
         """
         if detection.get("confidence", 0) < 0.4:
-            return
+            return None
 
         class_name = detection.get("class_name", "unknown")
         cx = detection.get("center_x", 0.0)
@@ -575,6 +580,7 @@ class TargetTracker:
                     self._stamp_camera_provenance(target, camera_id, detection)
                 self._targets[tid] = target
         self.history.record(tid, (cx, cy))
+        return tid
 
     @staticmethod
     def _stamp_camera_provenance(
@@ -605,7 +611,7 @@ class TargetTracker:
         camera_lng: float,
         latlng_to_local_fn=None,
         camera_id: str = "",
-    ) -> None:
+    ) -> str | None:
         """Update or create a target from a camera detection, positioned near the camera.
 
         Args:
@@ -663,7 +669,7 @@ class TargetTracker:
             payload["source_camera"] = cam_id
         if isinstance(bbox, dict):
             payload["bbox"] = bbox
-        self.update_from_detection(payload)
+        return self.update_from_detection(payload)
 
     # BLE sightings have longer stale timeout — devices can be stationary
     BLE_STALE_TIMEOUT = 120.0

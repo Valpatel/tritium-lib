@@ -1432,7 +1432,17 @@ class DossierManager:
                 if entity_type == "unknown" and target.asset_type in (
                         "person", "vehicle"):
                     entity_type = target.asset_type
-                tags.extend(["yolo", target.classification or target.asset_type])
+                # Tag by the track's actual vision source — a camera-seen
+                # contact reads "camera" in the dossier, not the algorithm
+                # name.  (camera_id itself arrives via visual_detection
+                # signals, not identity tags.)
+                vision_tag = (
+                    target.source
+                    if target.source in ("yolo", "camera") else "yolo"
+                )
+                tags.extend(
+                    [vision_tag, target.classification or target.asset_type]
+                )
             elif tid.startswith("mesh_"):
                 entity_type = "mesh_radio"
                 identifiers["node_id"] = tid[5:]
