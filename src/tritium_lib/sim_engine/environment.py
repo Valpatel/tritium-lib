@@ -9,6 +9,7 @@ effects on visibility, movement, accuracy, and sound propagation.
 
 from __future__ import annotations
 
+import datetime as _datetime
 import math
 import random
 from dataclasses import dataclass, field
@@ -260,6 +261,25 @@ class SeasonalCycle:
         self.day_of_year: int = ((int(day_of_year) - 1) % 365) + 1
         self.latitude: float = float(latitude)
 
+    @classmethod
+    def for_date(
+        cls,
+        when: _datetime.date | _datetime.datetime | None,
+        latitude: float,
+    ) -> "SeasonalCycle":
+        """Build a cycle from a real calendar date + latitude.
+
+        The site-standup derivation: flying the AO to a new latitude on a real
+        date yields that place's *actual* season/daylight/foliage.  ``when``
+        may be a ``date`` or ``datetime`` (defaults to today, UTC) — its
+        day-of-year drives the cycle.  Pure/offline: no network, no clock read
+        beyond ``when``.
+        """
+        if when is None:
+            when = _datetime.datetime.now(_datetime.timezone.utc)
+        doy = when.timetuple().tm_yday
+        return cls(day_of_year=doy, latitude=latitude)
+
     # -- helpers --
 
     def _eff_day(self) -> int:
@@ -439,6 +459,17 @@ class WeatherSimulator:
         self._rng = random.Random(seed)
         self._storm_remaining: float = 0.0  # hours of storm left
 
+    def reseed(self, seed: int | None) -> None:
+        """Reset the stochastic RNG to a fixed seed.
+
+        A scenario that opts into *fixed* weather seeds the simulator so its
+        evolution is bit-identical run to run — the admission rule for a
+        deterministic weather golden.  Over a short battle the seeded random
+        walks barely move the state, so fixed weather stays effectively fixed
+        while remaining reproducible.
+        """
+        self._rng = random.Random(seed)
+
     def update(self, dt_hours: float) -> None:
         """Advance weather simulation by *dt_hours*."""
         if dt_hours <= 0:
@@ -522,6 +553,56 @@ class Environment:
         if seasonal is not None:
             self.time.set_daylight(seasonal.sunrise_hour(), seasonal.sunset_hour())
 
+        # -- lightning (VFX only; never touches gameplay metrics) --
+        # A LightningSystem generates branching bolts + physically-correct
+        # thunder delay; the live 3D renderer draws them and flashes the scene.
+        # Lazily built on first strike so the base import stays cheap and the
+        # default (no-storm) snapshot is byte-identical (no `lightning` key).
+        self._lightning = None                 # LightningSystem, lazy
+        self._lightning_rng = random.Random()  # strike scheduling (VFX only)
+        self._active_strike: dict | None = None
+        self._strike_counter: int = 0
+
+    # -- lightning --
+
+    # Storm strike scheduling / lifetime (seconds).
+    _STRIKE_LIFETIME_S: float = 1.2
+
+    def strike(
+        self,
+        center: tuple[float, float] = (0.0, 0.0),
+        radius: float = 100.0,
+        cloud_height: float = 110.0,
+        observer: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict:
+        """Fire ONE lightning bolt near *center* (x, z metres) and latch it.
+
+        Returns the strike dict (also stored as the active strike, exposed via
+        :meth:`snapshot`).  Pure VFX — combat/mobility metrics never read it.
+        The bolt terminates on the ground plane; ``cloud_height`` sits it over
+        the live city scale so the renderer draws a sky-to-ground streak.
+        """
+        if self._lightning is None:
+            from tritium_lib.sim_engine.weather_fx import LightningSystem
+            self._lightning = LightningSystem()
+        gx = center[0] + self._lightning_rng.uniform(-radius, radius)
+        gz = center[1] + self._lightning_rng.uniform(-radius, radius)
+        s = self._lightning.strike(
+            position=(gx, 0.0, gz), observer=observer, cloud_height=cloud_height,
+        )
+        self._strike_counter += 1
+        self._active_strike = {
+            "strike_id": self._strike_counter,
+            "segments": s["bolt"]["segments"],
+            "branch_count": s["bolt"]["branch_count"],
+            "flash_intensity": round(float(s["flash_intensity"]), 3),
+            "thunder_delay_s": s["thunder_delay_s"],
+            "rumble_duration_s": s["rumble_duration_s"],
+            "position": [round(gx, 2), 0.0, round(gz, 2)],
+            "age_s": 0.0,
+        }
+        return self._active_strike
+
     def update(self, dt_seconds: float) -> None:
         """Advance both time and weather by *dt_seconds*."""
         dt_hours = dt_seconds / 3600.0
@@ -533,6 +614,20 @@ class Environment:
             self.snow_depth_cm += self.weather.state.intensity * 0.5 * dt_hours
         elif self.weather.state.temperature > 2.0:
             self.snow_depth_cm = max(0.0, self.snow_depth_cm - 0.3 * dt_hours)
+
+        # -- lightning (VFX only) --
+        # Age out the latched strike, then schedule new ones during storms.
+        if self._active_strike is not None:
+            self._active_strike["age_s"] = round(
+                self._active_strike["age_s"] + dt_seconds, 3)
+            if self._active_strike["age_s"] >= self._STRIKE_LIFETIME_S:
+                self._active_strike = None
+        if (self._active_strike is None
+                and self.weather.state.current == Weather.STORM):
+            # ~1 strike / 6s at full intensity, scaled down at low intensity.
+            rate = 0.16 * max(0.0, min(1.0, self.weather.state.intensity))
+            if self._lightning_rng.random() < rate * dt_seconds:
+                self.strike()
 
     # -- combined modifiers --
 
@@ -602,6 +697,10 @@ class Environment:
             snap["sunrise"] = round(self.seasonal.sunrise_hour(), 2)
             snap["sunset"] = round(self.seasonal.sunset_hour(), 2)
             snap["is_snow_season"] = self.seasonal.precip_is_snow()
+        # Lightning appears ONLY while a strike is latched, so the default
+        # (no-storm) snapshot stays byte-identical for the golden gate.
+        if self._active_strike is not None:
+            snap["lightning"] = self._active_strike
         return snap
 
     def describe(self) -> str:
