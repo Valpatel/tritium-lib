@@ -32,6 +32,12 @@ from .costmap import (
     builder_from_terrain_map,
     costmap_from_terrain_map,
 )
+from .hierarchical import (
+    DEFAULT_COARSE_FACTOR,
+    DEFAULT_CORRIDOR_RADIUS_CELLS,
+    coarsen_costmap,
+    plan_route_hierarchical,
+)
 from .layers import LocalElevationGrid, local_grid_from_gis, wgs84_to_local
 
 __all__ = [
@@ -45,6 +51,10 @@ __all__ = [
     "costmap_from_terrain_map",
     "iso_cost_contours",
     "plan_route",
+    "plan_route_hierarchical",
+    "coarsen_costmap",
+    "DEFAULT_COARSE_FACTOR",
+    "DEFAULT_CORRIDOR_RADIUS_CELLS",
     "RouteResult",
     "wgs84_to_local",
 ]

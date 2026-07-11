@@ -32,6 +32,14 @@ __all__ = ["RouteResult", "plan_route"]
 
 _SQRT2 = math.sqrt(2.0)
 
+# ``strategy="auto"`` switches to the hierarchical (coarse-to-fine) planner at
+# or above this many grid cells.  Flat A* is optimal and cheap below it; above
+# it a single flat solve blows the expansion cap, so the corridor planner keeps
+# global planning in bounded time.  250k cells ≈ a 500² grid — comfortably above
+# every simulator map (≤ ~201²/40k cells), so ``auto`` is byte-for-byte flat A*
+# for all existing callers and only engages hierarchical on large real AOs.
+_AUTO_HIERARCHICAL_MIN_CELLS = 250_000
+
 # Cap the shortcut lookahead in :func:`_smooth_path` to this many waypoints
 # ahead of the current index.  Bounds the smoother at O(n * w^2) instead of
 # O(n^3) on very long paths.  Chosen large enough that ordinary routes (well
@@ -143,6 +151,7 @@ def plan_route(
     max_expansions: int | None = None,
     snap_radius_m: float | None = None,
     clearance_m: float = 0.0,
+    strategy: str = "auto",
 ) -> RouteResult:
     """Plan a route from ``start`` to ``goal`` over ``costmap``.
 
@@ -163,6 +172,14 @@ def plan_route(
             wide unit (an APC) keeps more wall clearance than a person.  A value
             of ``0.0`` (the default) is EXACTLY the historical behavior (the
             distance field is never computed), which golden replays depend on.
+        strategy: ``"flat"`` forces the flat 8-connected A* below (the classic,
+            optimal baseline).  ``"hierarchical"`` forces the coarse-to-fine
+            corridor planner (:func:`~tritium_lib.planning.hierarchical.plan_route_hierarchical`),
+            which keeps global planning in bounded time on large AOs.  ``"auto"``
+            (the default) uses flat A* for maps under
+            :data:`_AUTO_HIERARCHICAL_MIN_CELLS` cells and hierarchical at or
+            above it — so every simulator-scale map is byte-for-byte flat A* and
+            only large real AOs pay for the hierarchy.
 
     Graceful fallback:
         A positive ``clearance_m`` never makes a previously-routable dispatch
@@ -173,6 +190,19 @@ def plan_route(
     Returns:
         A :class:`RouteResult`.
     """
+    if strategy == "hierarchical" or (
+        strategy == "auto"
+        and costmap.width * costmap.height >= _AUTO_HIERARCHICAL_MIN_CELLS
+    ):
+        # Lazy import breaks the astar <-> hierarchical import cycle; the
+        # hierarchical planner calls back into this function with strategy="flat".
+        from .hierarchical import plan_route_hierarchical
+
+        return plan_route_hierarchical(
+            costmap, start, goal, smooth=smooth, max_expansions=max_expansions,
+            snap_radius_m=snap_radius_m, clearance_m=clearance_m,
+        )
+
     res = costmap.resolution
     if snap_radius_m is None:
         snap_radius_m = 3.0 * res
