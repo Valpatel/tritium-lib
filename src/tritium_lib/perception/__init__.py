@@ -11,8 +11,8 @@ Plus: LLM chat API client, regex fact extraction from conversation.
 
 Framework-free: pure OpenCV/numpy/stdlib. The LLM host is injected via
 set_ollama_host(); the PTZ pose estimator accepts any PTZPosition; the
-object detector has a graceful YOLO backend and an always-available
-classical (motion) backend.
+object detector has graceful YOLO backends (ultralytics, or ONNX via
+onnxruntime CPU) and an always-available classical (motion) backend.
 """
 
 from tritium_lib.perception.perception import (
@@ -23,12 +23,18 @@ from tritium_lib.perception.perception import (
     PTZPosition,
 )
 from tritium_lib.perception.detector import (
+    COCO80_NAMES,
     RELEVANT_CLASSES,
     BackgroundMotionDetector,
     FrameObjectDetector,
+    OnnxYoloDetector,
     YoloObjectDetector,
     available_backends,
     build_frame_detector,
+    decode_yolo_predictions,
+    letterbox_frame,
+    onnx_available,
+    resolve_onnx_model,
     yolo_available,
 )
 from tritium_lib.perception.projection import GroundCameraModel
@@ -46,14 +52,20 @@ __all__ = [
     "FrameMetrics",
     "PoseEstimator",
     "PTZPosition",
+    "COCO80_NAMES",
     "RELEVANT_CLASSES",
     "BackgroundMotionDetector",
     "FrameObjectDetector",
+    "OnnxYoloDetector",
     "YoloObjectDetector",
     "GroundCameraModel",
     "FrameDetectionPipeline",
     "available_backends",
     "build_frame_detector",
+    "decode_yolo_predictions",
+    "letterbox_frame",
+    "onnx_available",
+    "resolve_onnx_model",
     "yolo_available",
     "check_radio_detection",
     "extract_facts",

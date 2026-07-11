@@ -116,8 +116,14 @@ def test_empty_frame_is_safe():
 
 def test_build_frame_detector_falls_back_to_motion_when_no_yolo():
     # On a box without ultralytics/torch this must degrade, never raise.
+    # "auto" may legitimately land on ultralytics, ONNX (if TRITIUM_YOLO_ONNX
+    # resolves in this environment), or motion — but never crash.
     det = build_frame_detector(prefer="auto")
-    assert det.backend_name in ("motion",) or det.backend_name.startswith("yolo:")
+    assert (
+        det.backend_name == "motion"
+        or det.backend_name.startswith("yolo:")
+        or det.backend_name.startswith("onnx:")
+    )
     # Forcing motion always yields the classical backend.
     assert build_frame_detector(prefer="motion").backend_name == "motion"
 
