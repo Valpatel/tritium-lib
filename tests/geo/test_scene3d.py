@@ -22,7 +22,9 @@ from tritium_lib.geo.scene3d import (
     buildings_from_geojson,
     extrude_footprint,
     make_elevation_sampler,
+    roads_from_geojson,
     terrain_heightfield_mesh,
+    water_from_geojson,
 )
 
 
@@ -226,3 +228,137 @@ def test_build_scene3d_flat_without_dem():
     assert len(scene.by_kind("building")) == 2
     for m in scene.by_kind("building"):
         assert min(v[2] for v in m.vertices) == pytest.approx(0.0)
+
+
+# ------------------------------------------------------------------ roads
+
+def _geojson_roads():
+    # Two TIGER-style LineStrings + one MultiLineString.
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature",
+             "geometry": {"type": "LineString", "coordinates": [
+                 [-121.900, 37.710], [-121.890, 37.710], [-121.885, 37.712]]},
+             "properties": {"kind": "S1400", "name": "Main St"}},
+            {"type": "Feature",  # ramp -> narrower class
+             "geometry": {"type": "LineString", "coordinates": [
+                 [-121.895, 37.705], [-121.895, 37.715]]},
+             "properties": {"kind": "S1630", "name": "Ramp"}},
+            {"type": "Feature",
+             "geometry": {"type": "MultiLineString", "coordinates": [
+                 [[-121.898, 37.708], [-121.892, 37.708]],
+                 [[-121.892, 37.708], [-121.888, 37.706]]]},
+             "properties": {"kind": "residential", "name": "Loop"}},
+        ],
+    }
+
+
+def test_roads_from_geojson_counts_and_kind():
+    proj = LocalProjection(37.710, -121.892)
+    meshes = roads_from_geojson(_geojson_roads(), proj)
+    # 2 LineStrings + 2 sub-lines of the MultiLineString = 4 ribbons.
+    assert len(meshes) == 4
+    assert all(m.kind == "road" for m in meshes)
+    # Every ribbon is a valid strip: even vertex count, >=1 quad (2 tris).
+    for m in meshes:
+        assert m.vertex_count >= 4 and m.vertex_count % 2 == 0
+        assert m.face_count == (m.vertex_count // 2 - 1) * 2
+
+
+def test_roads_ribbon_width_scales_with_class():
+    proj = LocalProjection(37.710, -121.892)
+    meshes = roads_from_geojson(_geojson_roads(), proj)
+    main = next(m for m in meshes if m.name == "Main St")     # S1400 -> 6 m
+    ramp = next(m for m in meshes if m.name == "Ramp")        # S1630 -> 5 m
+    # Ribbon half-width = perpendicular spread of a left/right vertex pair.
+    def half_width(m):
+        (lx, ly, _), (rx, ry, _) = m.vertices[0], m.vertices[1]
+        return math.hypot(lx - rx, ly - ry) / 2.0
+    assert half_width(main) > half_width(ramp)
+
+
+def test_roads_drape_on_terrain():
+    grid = _ramp_grid(6, 6)
+    proj = LocalProjection(37.71, -121.89)
+    sampler = make_elevation_sampler(grid, proj)
+    meshes = roads_from_geojson(_geojson_roads(), proj, sampler)
+    # Non-flat DEM -> a road spanning the ramp has varying Z (it drapes).
+    main = next(m for m in meshes if m.name == "Main St")
+    zs = {round(v[2], 2) for v in main.vertices}
+    assert len(zs) > 1
+
+
+# ------------------------------------------------------------------ water
+
+def _geojson_water():
+    # One NHD flowline (river) + one waterbody Polygon.
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature",
+             "geometry": {"type": "LineString", "coordinates": [
+                 [-121.900, 37.712], [-121.895, 37.711], [-121.890, 37.713]]},
+             "properties": {"kind": "river", "name": "Creek"}},
+            {"type": "Feature",
+             "geometry": {"type": "Polygon", "coordinates": [[
+                 [-121.894, 37.706], [-121.891, 37.706],
+                 [-121.891, 37.708], [-121.894, 37.708], [-121.894, 37.706]]]},
+             "properties": {"kind": "waterbody", "name": "Pond"}},
+        ],
+    }
+
+
+def test_water_from_geojson_polygon_and_flowline():
+    proj = LocalProjection(37.710, -121.892)
+    meshes = water_from_geojson(_geojson_water(), proj)
+    assert len(meshes) == 2
+    assert all(m.kind == "water" for m in meshes)
+    pond = next(m for m in meshes if m.name == "Pond")     # polygon fill
+    creek = next(m for m in meshes if m.name == "Creek")   # ribbon
+    # Polygon fill is a single flat surface (one Z), fan-triangulated.
+    assert len({round(v[2], 3) for v in pond.vertices}) == 1
+    assert pond.face_count == pond.vertex_count - 2  # fan
+    # Ribbon is a strip.
+    assert creek.vertex_count % 2 == 0 and creek.face_count >= 2
+
+
+def test_water_sits_below_terrain():
+    grid = _ramp_grid(6, 6)
+    proj = LocalProjection(37.71, -121.89)
+    sampler = make_elevation_sampler(grid, proj)
+    meshes = water_from_geojson(_geojson_water(), proj, sampler)
+    pond = next(m for m in meshes if m.name == "Pond")
+    # Fill Z is ground-at-centroid minus the epsilon -> strictly below sample.
+    cx = sum(v[0] for v in pond.vertices) / pond.vertex_count
+    cy = sum(v[1] for v in pond.vertices) / pond.vertex_count
+    assert pond.vertices[0][2] < sampler(cx, cy)
+
+
+# ------------------------------------------------------------------ scene + roads/water
+
+def test_build_scene3d_with_roads_and_water():
+    grid = _ramp_grid(6, 6)
+    scene = build_scene3d(
+        ao="rw", bbox=(-121.90, 37.70, -121.88, 37.72),
+        elevation_grid=grid, buildings_geojson=_geojson_two_buildings(),
+        terrain_subsample=1,
+        roads_geojson=_geojson_roads(), water_geojson=_geojson_water(),
+    )
+    assert len(scene.by_kind("terrain")) == 1
+    assert len(scene.by_kind("building")) == 2
+    assert len(scene.by_kind("road")) == 4
+    assert len(scene.by_kind("water")) == 2
+    assert scene.stats()["by_kind"]["road"] == 4
+    assert scene.stats()["by_kind"]["water"] == 2
+
+
+def test_build_scene3d_none_roads_water_is_unchanged():
+    # Byte-identical to omitting the new params entirely (backward compat).
+    args = dict(ao="t", bbox=(-121.90, 37.70, -121.88, 37.72),
+                elevation_grid=_ramp_grid(5, 5),
+                buildings_geojson=_geojson_two_buildings())
+    base = build_scene3d(**args)
+    with_none = build_scene3d(**args, roads_geojson=None, water_geojson=None)
+    assert base.to_dict() == with_none.to_dict()
+    assert with_none.by_kind("road") == [] and with_none.by_kind("water") == []
