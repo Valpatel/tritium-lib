@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import urllib.parse
 import urllib.request
 from importlib import resources
 
 from .cache import GISCache
+from .landcover import LandCoverGrid, classify_rgb
 from .models import ElevationGrid, GeoBBox
 
 __all__ = [
@@ -42,8 +44,26 @@ __all__ = [
     "FemaFloodFetcher",
     "NoaaAlertsFetcher",
     "OverpassBuildingsFetcher",
+    "NlcdLandCoverFetcher",
     "filter_features_bbox",
 ]
+
+#: Web-Mercator (EPSG:3857) sphere radius — WGS-84 semi-major axis.
+_WEB_MERCATOR_R = 6378137.0
+#: Web-Mercator latitude clamp (the projection is undefined at the poles).
+_WEB_MERCATOR_LAT_LIMIT = 85.05112878
+
+
+def lonlat_to_web_mercator(lon: float, lat: float) -> tuple:
+    """Project WGS-84 ``(lon, lat)`` degrees to EPSG:3857 ``(x, y)`` metres.
+
+    Latitude is clamped to +/-85.0511 deg (the standard Web-Mercator limit) so a
+    caller cannot blow up the ``log(tan(...))`` at the poles.
+    """
+    lat = max(min(lat, _WEB_MERCATOR_LAT_LIMIT), -_WEB_MERCATOR_LAT_LIMIT)
+    x = _WEB_MERCATOR_R * math.radians(lon)
+    y = _WEB_MERCATOR_R * math.log(math.tan(math.pi / 4.0 + math.radians(lat) / 2.0))
+    return (x, y)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +96,17 @@ def _http_json(url: str, *, data: bytes | None = None, timeout: float = 20.0) ->
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
     return json.loads(raw)
+
+
+def _http_bytes(url: str, *, timeout: float = 20.0) -> bytes:
+    """GET ``url`` and return the raw response body. Raises on any transport error.
+
+    Used for binary payloads (the NLCD WMS GetMap PNG) — the JSON helper cannot
+    decode an image.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (fixed hosts)
+        return resp.read()
 
 
 def _load_fixture(name: str):
@@ -668,4 +699,157 @@ class UsgsElevationFetcher:
             values=[None] * (ncols * nrows),
             source="usgs-empty",
             resolution_m=None,
+        )
+
+
+class NlcdLandCoverFetcher:
+    """USGS / MRLC NLCD 2021 land cover, sampled as a classified grid via WMS.
+
+    Mirrors :class:`UsgsElevationFetcher` shape-for-shape (same 4-stage
+    degradation chain, same fixture-intersect gating, same cache usage) but the
+    live payload is an image, not JSON:
+
+        1. **Live** — a WMS ``GetMap`` PNG at ``ncols x nrows`` (EPSG:3857),
+           decoded with Pillow and classified nearest-colour per cell.  The
+           Pillow import is deferred to call time and wrapped: on
+           ``ImportError`` (Pillow is *not* a lib dependency) the live step is
+           skipped and the chain falls through to cache/fixture — the pure-lib
+           install still serves the packaged AO offline.
+        2. **Cache** — last good grid dict (no age limit).
+        3. **Packaged fixture** whose AO bbox *intersects* the requested bbox.
+        4. **Empty** all-NoData grid (``source="nlcd-empty"``) — a request
+           outside every packaged AO offline.  Consumers must treat this as
+           "no land-cover data here", not as open ground.
+    """
+
+    SOURCE = "nlcd"
+    FIXTURE_NAME = "nlcd_ao.json"                       # legacy single fixture
+    FIXTURE_NAMES = ("nlcd_ao.json", "nlcd_boulder.json")  # multi-AO, in order
+    WMS_URL = "https://www.mrlc.gov/geoserver/mrlc_display/wms"
+    LAYER = "NLCD_2021_Land_Cover_L48"
+
+    def __init__(self, cache: GISCache | None = None, timeout_s: float = 20.0):
+        self.cache = cache
+        self.timeout_s = timeout_s
+
+    def _fixture_names(self) -> tuple:
+        """Ordered packaged NLCD fixtures (see :func:`_resolve_fixture_names`)."""
+        return _resolve_fixture_names(self.FIXTURE_NAMES, self.FIXTURE_NAME)
+
+    @staticmethod
+    def _fixture_bbox(fixture: dict):
+        """AO bbox ``(w, s, e, n)`` of a packaged NLCD fixture, or ``None``.
+
+        Same marker convention as the DEM fixtures — delegates to
+        :meth:`UsgsElevationFetcher._fixture_bbox` so the ``"bbox"`` /
+        ``west/south/east/north`` fallback logic lives in exactly one place.
+        """
+        return UsgsElevationFetcher._fixture_bbox(fixture)
+
+    def _build_url(self, bbox: GeoBBox, ncols: int, nrows: int) -> str:
+        """Build the MRLC WMS GetMap URL (v1.1.1, EPSG:3857, x/y mercator bbox)."""
+        minx, miny = lonlat_to_web_mercator(bbox.west, bbox.south)
+        maxx, maxy = lonlat_to_web_mercator(bbox.east, bbox.north)
+        params = {
+            "service": "WMS",
+            "version": "1.1.1",
+            "request": "GetMap",
+            "layers": self.LAYER,
+            "srs": "EPSG:3857",
+            "bbox": f"{minx},{miny},{maxx},{maxy}",
+            "width": str(int(ncols)),
+            "height": str(int(nrows)),
+            "format": "image/png",
+        }
+        return f"{self.WMS_URL}?{urllib.parse.urlencode(params)}"
+
+    @staticmethod
+    def parse_png_grid(
+        png_bytes: bytes, bbox: GeoBBox, ncols: int, nrows: int, source: str = "nlcd"
+    ) -> LandCoverGrid:
+        """Decode a WMS PNG into a :class:`LandCoverGrid` (row 0 = north).
+
+        Resamples the image to ``ncols x nrows`` with **nearest-neighbour** (so a
+        class colour is never blended into a spurious intermediate) and runs
+        :func:`~tritium_lib.geo.gis.landcover.classify_rgb` on each cell.  A
+        fully-transparent pixel (the WMS's NoData/background) becomes ``None``.
+
+        Requires Pillow — the caller (``fetch_grid``) guards the import; this
+        raises ``ImportError`` if Pillow is absent so the guard can degrade.
+        """
+        import io
+
+        from PIL import Image  # noqa: F401 - optional dep, guarded by caller
+
+        with Image.open(io.BytesIO(png_bytes)) as im:
+            rgba = im.convert("RGBA")
+            if rgba.size != (ncols, nrows):
+                rgba = rgba.resize((ncols, nrows), Image.NEAREST)
+            pixels = rgba.load()
+            codes: list = []
+            for iy in range(nrows):
+                for ix in range(ncols):
+                    r, g, b, a = pixels[ix, iy]
+                    codes.append(None if a == 0 else classify_rgb(r, g, b))
+        return LandCoverGrid(
+            west=bbox.west,
+            south=bbox.south,
+            east=bbox.east,
+            north=bbox.north,
+            ncols=ncols,
+            nrows=nrows,
+            codes=codes,
+            source=source,
+        )
+
+    def fetch_grid(self, bbox, ncols: int = 32, nrows: int = 32) -> LandCoverGrid:
+        """Return a :class:`LandCoverGrid` via the 4-stage degradation chain.
+
+        See the class docstring.  The live step is skipped cleanly when Pillow is
+        unavailable (``ImportError`` is caught by the broad guard), so a pure-lib
+        install degrades straight to cache/fixture.
+        """
+        box = _as_bbox(bbox)
+        key = (
+            self.cache.key(self.SOURCE, box, ncols=ncols, nrows=nrows)
+            if self.cache
+            else None
+        )
+
+        # 1. Live (needs Pillow — import is deferred + guarded).
+        try:
+            png = _http_bytes(self._build_url(box, ncols, nrows), timeout=self.timeout_s)
+            grid = self.parse_png_grid(png, box, ncols, nrows)
+            if self.cache and key is not None:
+                self.cache.put(key, grid.to_dict())
+            return grid
+        except Exception as exc:  # noqa: BLE001 - ImportError / network => degrade
+            logger.info("nlcd live fetch failed, degrading: %s", exc)
+
+        # 2. Cache.
+        if self.cache and key is not None:
+            cached = self.cache.get(key, max_age_s=None)
+            if cached is not None:
+                return LandCoverGrid.from_dict(cached)
+
+        # 3. Fixtures — first packaged pack whose AO bbox INTERSECTS the request.
+        target = (box.west, box.south, box.east, box.north)
+        for fixture_name in self._fixture_names():
+            fixture = _load_fixture(fixture_name)
+            if fixture is None:
+                continue
+            fbox = self._fixture_bbox(fixture)
+            if fbox is not None and _bbox_intersects(fbox, target):
+                return LandCoverGrid.from_dict(fixture)
+
+        # 4. Empty grid (all NoData over the requested window).
+        return LandCoverGrid(
+            west=box.west,
+            south=box.south,
+            east=box.east,
+            north=box.north,
+            ncols=ncols,
+            nrows=nrows,
+            codes=[None] * (ncols * nrows),
+            source="nlcd-empty",
         )
