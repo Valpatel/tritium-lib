@@ -8,7 +8,7 @@ Kalman predictor, geofence engine, trilateration, heatmaps, movement pattern
 analysis, and dwell tracking.
 """
 
-from .target_tracker import TargetTracker, TrackedTarget
+from .target_tracker import VALID_ALLIANCES, TargetTracker, TrackedTarget
 from .correlator import TargetCorrelator, CorrelationRecord, start_correlator, stop_correlator
 from .geofence import GeofenceEngine, GeoZone, GeoEvent
 from .trilateration import TrilaterationEngine, PositionResult
@@ -87,6 +87,7 @@ __all__ = [
     # Core tracker
     "TargetTracker",
     "TrackedTarget",
+    "VALID_ALLIANCES",
     # Correlator
     "TargetCorrelator",
     "CorrelationRecord",
