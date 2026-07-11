@@ -335,6 +335,37 @@ def test_sync_health_unknown_combatant_raises() -> None:
         ref.sync_health("dog_zz", 10.0)
 
 
+def test_sync_health_mirrors_reported_max_hp() -> None:
+    """A dog whose own pool differs from the match seed corrects the book.
+
+    The referee was seeded at the duel's default pool; a dog reporting its
+    OWN max_hp (its config's hitpoints) should make the scoreboard show that
+    pool, not the driver's guess — the dog owns its body.
+    """
+    ref = _duel(random.Random(0))
+    ref.sync_health("dog_b", 8.0, max_hp=16.0)
+    b = ref.get_combatant("dog_b")
+    assert b.hp == 8.0
+    assert b.max_hp == 16.0
+    assert ref.scoreboard()["combatants"]["dog_b"]["max_hp"] == 16.0
+
+
+def test_sync_health_max_hp_never_below_hp() -> None:
+    """A nonsense max_hp below the reported hp is clamped up to hp."""
+    ref = _duel(random.Random(0))
+    ref.sync_health("dog_b", 20.0, max_hp=5.0)
+    b = ref.get_combatant("dog_b")
+    assert b.max_hp == 20.0  # clamped to hp, never shows less pool than hp
+
+
+def test_sync_health_max_hp_none_leaves_seed() -> None:
+    """Omitting max_hp leaves the seeded pool untouched (back-compat)."""
+    ref = _duel(random.Random(0))
+    seeded = ref.get_combatant("dog_b").max_hp
+    ref.sync_health("dog_b", 7.0)
+    assert ref.get_combatant("dog_b").max_hp == seeded
+
+
 # ---------------------------------------------------------------------------
 # Hit feedback — register_external_hit: hits the referee never adjudicated
 # ---------------------------------------------------------------------------

@@ -345,6 +345,7 @@ class MatchReferee:
         combatant_id: str,
         hp: float,
         alive: bool | None = None,
+        max_hp: float | None = None,
     ) -> None:
         """Pin the referee's book to a dog's AUTHORITATIVE reported health.
 
@@ -354,13 +355,22 @@ class MatchReferee:
         the book to 0 hp even if the reported hp is positive — a dog
         declaring itself dead is dead; ``alive=True`` / ``None`` leaves the
         clamped hp authoritative (``MatchCombatant.alive`` derives from it).
-        Unknown *combatant_id* raises ``KeyError``, same contract as
-        :meth:`update_pose`.
+
+        ``max_hp`` mirrors the dog's OWN pool when its reported ``max_hp``
+        differs from the seed the referee was constructed with (a dog whose
+        config sets a different hitpoint pool than the match's ``--hp``).
+        The dog owns its body: when it reports a ``max_hp`` the scoreboard
+        should reflect that, not the driver's guess.  ``None`` leaves the
+        seeded pool untouched; a supplied value is clamped ``>= hp`` so the
+        book never shows more hp than pool.  Unknown *combatant_id* raises
+        ``KeyError``, same contract as :meth:`update_pose`.
         """
         c = self._combatants[combatant_id]
         c.hp = max(0.0, hp)
         if alive is False:
             c.hp = 0.0
+        if max_hp is not None:
+            c.max_hp = max(c.hp, float(max_hp))
 
     def register_external_hit(
         self,
