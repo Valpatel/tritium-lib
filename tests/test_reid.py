@@ -152,6 +152,29 @@ class TestReIDStore:
         assert len(results) == 2
         assert all(r["target_id"] == "t1" for r in results)
 
+    def test_get_embeddings_by_camera(self, store: ReIDStore) -> None:
+        store.store_embedding("t1", [1.0, 0.0], "cam_a", embedding_id="e1")
+        store.store_embedding("t2", [0.0, 1.0], "cam_a", embedding_id="e2")
+        store.store_embedding("t3", [1.0, 1.0], "cam_b", embedding_id="e3")
+
+        results = store.get_embeddings_by_camera("cam_a")
+        assert len(results) == 2
+        assert all(r["source_camera"] == "cam_a" for r in results)
+        # Embeddings are deserialized to float vectors.
+        assert all(isinstance(r["embedding"], list) for r in results)
+        assert results[0]["embedding"] == pytest.approx([0.0, 1.0]) or \
+            results[0]["embedding"] == pytest.approx([1.0, 0.0])
+
+    def test_get_embeddings_by_camera_limit(self, store: ReIDStore) -> None:
+        for i in range(6):
+            store.store_embedding(f"t{i}", [float(i), 0.0], "cam_a",
+                                  embedding_id=f"e{i}")
+        results = store.get_embeddings_by_camera("cam_a", limit=3)
+        assert len(results) == 3
+
+    def test_get_embeddings_by_camera_empty(self, store: ReIDStore) -> None:
+        assert store.get_embeddings_by_camera("nonexistent") == []
+
     def test_find_similar_exact_match(self, store: ReIDStore) -> None:
         vec = [1.0, 0.0, 0.0, 0.0]
         store.store_embedding("t1", vec, "cam_a", embedding_id="e1")
