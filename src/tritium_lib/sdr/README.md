@@ -77,12 +77,13 @@ S decoder can run **end-to-end in CI without a radio**. This is the RF twin of
 `SimulatedSDR`: a test/demo signal source for the decode path, not a
 production transmitter.
 
-> **`SpectrumAnalyzer` name collision.** This package's `SpectrumAnalyzer`
-> (`analyzer.py`) **detects and classifies** signals over SDR sweeps
-> (waterfall, `KNOWN_BANDS` matching, `DetectedSignal`s). The identically
-> named `tritium_lib.signals.SpectrumAnalyzer` does **pure-math** peak/entropy
-> analysis on a spectrum array you already have. Different jobs — import the
-> one you mean. See [`../signals/`](../signals/README.md).
+> **`SpectrumAnalyzer` — no longer a name collision (fixed 2026-07-11).** This
+> package's `SpectrumAnalyzer` (`analyzer.py`) **detects and classifies** signals
+> over SDR sweeps (waterfall, `KNOWN_BANDS` matching, `DetectedSignal`s). The
+> pure-math analyser it used to collide with was renamed
+> `tritium_lib.signals.SpectrumAnalyzer` → **`SignalSpectrumAnalyzer`**, so the
+> bare name `SpectrumAnalyzer` now unambiguously means *this* device-backed one.
+> Different jobs — see [`../signals/`](../signals/README.md).
 
 ## How it's consumed (grep 2026-07-11)
 
@@ -107,8 +108,9 @@ The operator surface is the **SIM Lab SDR router**, `/api/sim/sdr`
 ```mermaid
 flowchart TD
     ABC["SDRDevice (async ABC)<br/>detect / sweep / tune / stop"]
-    SIM["SimulatedSDR<br/>(only in-repo subclass)"] -->|implements| ABC
-    HACK["hackrf addon HackRFDevice<br/>(standalone — does NOT inherit)"] -.->|intended seam| ABC
+    SIM["SimulatedSDR<br/>(in-repo lib subclass)"] -->|implements| ABC
+    HACKSDR["hackrf addon HackRFSDRDevice<br/>(real-hardware subclass)"] -->|implements| ABC
+    HACK["hackrf addon HackRFDevice<br/>(control plane — detect/flash/clock)"] -.->|composed by| HACKSDR
     SIM --> SW["SweepResult"]
     SW --> AN["SpectrumAnalyzer.detect_signals"]
     AN --> DET["DetectedSignal + waterfall"]
@@ -121,5 +123,8 @@ flowchart TD
 - [`../signals/`](../signals/README.md) — pure-math spectrum analysis + the
   other `SpectrumAnalyzer` (note the collision above).
 - `tritium-addons/hackrf` — the real HackRF backend + rtl_433 ISM decoding
-  (functional addon; does not currently inherit `SDRDevice`).
+  (functional addon). Its `HackRFSDRDevice` (`hackrf_addon/sdr_device.py`)
+  implements this `SDRDevice` ABC over `hackrf_sweep` / `hackrf_transfer`,
+  composing the control-plane `HackRFDevice` for detection — so a real device,
+  not just `SimulatedSDR`, now satisfies the contract.
 - `sdr/demos/sdr_demo.py` — a runnable end-to-end demo of the simulated stack.
