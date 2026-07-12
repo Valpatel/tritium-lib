@@ -48,7 +48,6 @@ When unsure where a file goes, see the copper-roof rule in
 | `config` | Pydantic base settings for service configuration |
 | `store` | Persistent data stores (BLE, targets, async, time-series) |
 | `sdk` | Addon SDK: AddonBase, AddonContext, DeviceRegistry, protocols, BaseRunner, GeoJSON layers |
-| `utils` | Shared helpers |
 
 ### Intelligence & Fusion
 | Package | Purpose |
