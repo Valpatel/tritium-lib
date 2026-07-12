@@ -98,7 +98,7 @@ lives in `tracking/`, not here.
 | [`testing/`](testing/README.md) | OpenCV screenshot analysis, flicker/blank detection, ESP32 `DeviceAPI` automation | edge `tools/ui_test.py`, lib tests |
 | [`data/`](data/README.md) | 11 static JSON fingerprint tables (OUI, BLE company IDs, Apple Continuity) | `classifier/` (lib-internal) |
 | `conf/` | One example config: `llm-fleet.conf.example` (no code) | reference only |
-| `nodes/` | Abstract `SensorNode` hardware interface (camera/PTZ/mic/speaker) | no consumer found |
+| [`nodes/`](nodes/README.md) | Abstract `SensorNode` hardware interface (camera/PTZ/mic/speaker) | no consumer (SC has a near-identical twin it subclasses) |
 | `utils/` | Amy-persona `Memory` (JSON-file store) + regex fact extraction — not generic utilities | no external consumer found |
 | `js/` | **Orphaned** second copy of the browser city-sim JS — see honesty notes below | none |
 
@@ -121,9 +121,9 @@ Kalman prediction, geofencing, dossiers. Recently landed:
 | [`classifier/`](classifier/README.md) | BLE/WiFi device-type classification from fingerprints; MAC-randomization detection | sc (2) + `tracking/` |
 | [`inference/`](inference/README.md) | `LLMFleet`/`OllamaFleet` host pools, llama-server/ollama chat clients, `ModelRouter` | sc (12), e.g. `app/main.py:245` |
 | [`ontology/`](ontology/README.md) | In-memory `OntologyRegistry` + `TRITIUM_ONTOLOGY` schema — pure pydantic, **zero graph-db dependency** | sc `/api/v1/ontology` router |
-| `perception/` | Camera frame pipeline: quality/motion gates, YOLO (ultralytics or ONNX) with classical fallback, ground-plane projection | sc (17) |
+| [`perception/`](perception/README.md) | Camera frame pipeline: quality/motion gates, YOLO (ultralytics or ONNX) with classical fallback, ground-plane projection | **LIVE** — sc `frame_detection.py` + Amy + edge ROS2 |
 | `analytics/` | Sliding-window statistics over tracking events (rates, trends, top-N) | `sitaware/` (lib-internal) |
-| `pipeline/` | Config-driven stage chaining (Ingest→Tracking→Fusion→Alerting→Reporting) wrapping the real engines | no external consumer |
+| [`pipeline/`](pipeline/README.md) | Config-driven stage chaining (Ingest→Tracking→Fusion→Alerting→Reporting) wrapping the real engines | no consumer (shelfware; tests only) |
 
 ## Simulation (Simulation family)
 
@@ -169,13 +169,13 @@ composition and the SIM Lab routers — the table is candid about which.
 | [`notifications/`](notifications/README.md) | Thread-safe in-memory notification manager with broadcast callback | `alerting/` (lib-internal) |
 | [`mission/`](mission/README.md) | `MissionPlanner` lifecycle (planning→active→completed), objectives, briefs; `defense.py` key-terrain placement | `sitaware/` (lib-internal) |
 | [`rules/`](rules/README.md) | JSON-serializable IF-THEN engine over tracking state with combinators | sc `sim_rules` router |
-| `incident/` | Incident state machines (detected→…→resolved) with timelines | `sitaware/` (lib-internal) |
+| [`incident/`](incident/README.md) | Incident state machines (detected→…→resolved) with timelines, resources, alert auto-create | `sitaware/` (transitive to prod; no CRUD UI) |
 | [`scheduler/`](scheduler/README.md) | Thread-based interval/cron/one-shot scheduler + task queue; 4 builtin operator tasks (disabled by default) | sc `sim_scheduler` (7 routes) |
 | [`reporting/`](reporting/README.md) | `SitRepGenerator` — situation/daily/incident reports from tracker+events (text/HTML/JSON) | sc `sim_reporting` (3 routes) |
 | [`threat_intel/`](threat_intel/README.md) | Minimal STIX 2.1: indicator feeds, watchlist matching, `to_stix`/`from_stix` | sc `sim_threat_intel` (7 routes) |
 | `audit/` | Standalone SQLite compliance trail (deliberately separate from `store.AuditStore`) | `visualization/` (lib-internal) |
 | `privacy/` | GDPR tooling: retention purges, anonymization, consent, privacy zones | no external consumer |
-| `federation/` | Multi-site trust levels + share policies (transport explicitly NOT included); sc's federation *plugin* does not use it | no external consumer |
+| [`federation/`](federation/README.md) | Multi-site trust levels + share policies (transport explicitly NOT included) | dormant hook — sc `federation_status.py` reads a manager nothing sets |
 | `comms/` | Piper TTS `Speaker` via PipeWire — despite the name, TTS only | sc Amy voice (`amy/`, `routers/tts.py`) |
 | `actions/` | Regex parser extracting Lua-style action calls from LLM output (Amy embodied actions) + formation math | no external consumer found |
 | `visualization/` | Renderer-agnostic chart/timeline/heatmap structures → Vega-Lite JSON or SVG strings | no external consumer |
