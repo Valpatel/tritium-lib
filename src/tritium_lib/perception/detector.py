@@ -129,6 +129,7 @@ class BackgroundMotionDetector(FrameObjectDetector):
         self,
         min_area: int = 250,
         max_detections: int = 20,
+        max_area_ratio: float = 0.85,
         history: int = 120,
         var_threshold: float = 24.0,
         learning_rate: float = -1.0,
@@ -139,6 +140,9 @@ class BackgroundMotionDetector(FrameObjectDetector):
         Args:
             min_area: Minimum blob area in pixels to report (rejects noise).
             max_detections: Cap on detections per frame (largest kept).
+            max_area_ratio: Reject a blob whose bbox covers more than this
+                fraction of the frame (rejects the MOG2 warmup full-frame
+                artifact and lighting-flood false positives).
             history: MOG2 background history length (frames).
             var_threshold: MOG2 Mahalanobis variance threshold.
             learning_rate: MOG2 apply() learning rate (-1 = auto).
@@ -147,6 +151,7 @@ class BackgroundMotionDetector(FrameObjectDetector):
         """
         self.min_area = int(min_area)
         self.max_detections = int(max_detections)
+        self.max_area_ratio = float(max_area_ratio)
         self.learning_rate = float(learning_rate)
         self.person_aspect = float(person_aspect)
         self.vehicle_aspect = float(vehicle_aspect)
@@ -172,6 +177,7 @@ class BackgroundMotionDetector(FrameObjectDetector):
             return []
         if frame.ndim == 2:  # grayscale in -> fake a 3rd axis for MOG2
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        frame_area = float(frame.shape[0] * frame.shape[1]) or 1.0
 
         fgmask = self._bg.apply(frame, learningRate=self.learning_rate)
         # Binarize (MOG2 with detectShadows=False is already 0/255, but be safe)
@@ -192,6 +198,12 @@ class BackgroundMotionDetector(FrameObjectDetector):
                 continue
             x, y, w, h = cv2.boundingRect(cnt)
             if w <= 0 or h <= 0:
+                continue
+            # Reject implausibly-large blobs: no real object fills ~the whole
+            # frame. This drops the MOG2 warmup artifact (the first frame after
+            # start / reset() marks the entire frame as foreground -> a spurious
+            # full-frame "person") and lighting-flood false positives.
+            if float(w * h) / frame_area > self.max_area_ratio:
                 continue
             class_name = self._classify(w, h)
             # Fill ratio: how solid the blob is inside its box (a real object
