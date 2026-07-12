@@ -53,7 +53,21 @@ graph TD
 | `geo_layer.py` | `AddonGeoLayer` -- GeoJSON layer definition for tactical map integration |
 | `subprocess_manager.py` | `SubprocessManager` -- tracks child processes per addon, prevents orphans |
 
-## Usage
+## Adoption (DATED 2026-07-11)
+
+Unlike the rest of the CORE family, this SDK is **live and widely
+consumed**: a DATED grep of `from tritium_lib.sdk` finds **17 call sites in
+tritium-addons** (the real audience), **3 in tritium-sc** (the loader/host
+side), 0 in tritium-edge, 0 lib-internal. The functional addons —
+`hackrf`, `meshtastic` — are built on it.
+
+## Emitting targets — read this (corrected 2026-07-11)
+
+The **runtime never polls `SensorAddon.gather()`.** A DATED grep for
+`.gather()` finds callers only in this package's own `weather_station`
+example (`sdk/examples/weather_station/__init__.py`) and a meshtastic addon
+test — no loader in tritium-sc drives it. Functional addons emit targets by
+**pushing directly to the tracker** through the injected `AddonContext`:
 
 ```python
 from tritium_lib.sdk import AddonBase, AddonInfo, SensorAddon
@@ -63,10 +77,26 @@ class MyScanner(SensorAddon):
 
     async def register(self, app=None, *, context=None):
         await super().register(app, context=context)
-        # subscribe to events, start hardware
-
-    async def gather(self) -> list[dict]:
-        return [{"target_id": "ble_aabb", "source": "ble", "rssi": -60}]
+        self.tracker = context.target_tracker      # ITargetTracker
+        # start hardware; on each observation, push:
+        self.tracker.update_target("ble_aabb", {"source": "ble", "rssi": -60})
 ```
+
+`ITargetTracker` (the structural `Protocol` in `protocols.py:16-22`)
+guarantees exactly `update_target` / `get_target` / `get_all_targets` /
+`remove_target`. The richer `update_from_adsb` / `update_from_mesh` methods
+are **optional extensions** the concrete `TargetTracker` provides; addons
+feature-detect them — `hackrf` does
+`getattr(self.target_tracker, 'update_from_adsb', None)` with a fallback
+(`decoders/adsb.py:830-833`), and `meshtastic` calls `update_from_mesh`
+(`node_manager.py:83`). `gather()` remains a convenient shape for a
+self-driven poll loop you own, but nothing calls it for you.
+
+## Canonical guide
+
+The full manifest → `AddonBase` → loader lifecycle → `AddonContext` DI →
+target-emission → panels/layers → headless `BaseRunner` walkthrough (every
+claim file:line-cited) is **[`tritium-addons/DEVELOPER-GUIDE.md`]** — that is
+the canonical addon-authoring document; this README is the package reference.
 
 **Parent:** [../README.md](../README.md)
