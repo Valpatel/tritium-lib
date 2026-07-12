@@ -5,6 +5,7 @@
 
 from .base import BaseStore
 from .ble import BleStore
+from .memory import Memory
 from .config_store import ConfigStore
 from .dossiers import DossierStore
 from .reid import ReIDStore
@@ -30,6 +31,7 @@ from .embodiment_registry import (
 __all__ = [
     "BaseStore",
     "BleStore",
+    "Memory",
     "ConfigStore",
     "DossierStore",
     "EventStore",
