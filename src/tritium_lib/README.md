@@ -97,9 +97,9 @@ lives in `tracking/`, not here.
 | [`web/`](web/README.md) | Server-side HTML/CSS string generation (cyberpunk theme, dashboard components), framework-free | no external consumer found |
 | [`testing/`](testing/README.md) | OpenCV screenshot analysis, flicker/blank detection, ESP32 `DeviceAPI` automation | edge `tools/ui_test.py`, lib tests |
 | [`data/`](data/README.md) | 11 static JSON fingerprint tables (OUI, BLE company IDs, Apple Continuity) | `classifier/` (lib-internal) |
-| `conf/` | One example config: `llm-fleet.conf.example` (no code) | reference only |
+| [`conf/`](conf/README.md) | One example config: `llm-fleet.conf.example` (no code) | reference only |
 | [`nodes/`](nodes/README.md) | Abstract `SensorNode` hardware interface (camera/PTZ/mic/speaker) | no consumer (SC has a near-identical twin it subclasses) |
-| `utils/` | Amy-persona `Memory` (JSON-file store) + regex fact extraction — not generic utilities | no external consumer found |
+| [`utils/`](utils/README.md) | Amy-persona `Memory` (JSON-file store) + regex fact extraction — not generic utilities | no external consumer (SC's `amy/brain/memory.py` is the live twin) |
 | `js/` | **Orphaned** second copy of the browser city-sim JS — see honesty notes below | none |
 
 ## Tracking, fusion, and intelligence (Intelligence family)
@@ -122,7 +122,7 @@ Kalman prediction, geofencing, dossiers. Recently landed:
 | [`inference/`](inference/README.md) | `LLMFleet`/`OllamaFleet` host pools, llama-server/ollama chat clients, `ModelRouter` | sc (12), e.g. `app/main.py:245` |
 | [`ontology/`](ontology/README.md) | In-memory `OntologyRegistry` + `TRITIUM_ONTOLOGY` schema — pure pydantic, **zero graph-db dependency** | sc `/api/v1/ontology` router |
 | [`perception/`](perception/README.md) | Camera frame pipeline: quality/motion gates, YOLO (ultralytics or ONNX) with classical fallback, ground-plane projection | **LIVE** — sc `frame_detection.py` + Amy + edge ROS2 |
-| `analytics/` | Sliding-window statistics over tracking events (rates, trends, top-N) | `sitaware/` (lib-internal) |
+| [`analytics/`](analytics/README.md) | Sliding-window statistics over tracking events (rates, trends, top-N) | `sitaware/` (lib-internal → transitively live) |
 | [`pipeline/`](pipeline/README.md) | Config-driven stage chaining (Ingest→Tracking→Fusion→Alerting→Reporting) wrapping the real engines | no consumer (shelfware; tests only) |
 
 ## Simulation (Simulation family)
@@ -173,19 +173,19 @@ composition and the SIM Lab routers — the table is candid about which.
 | [`scheduler/`](scheduler/README.md) | Thread-based interval/cron/one-shot scheduler + task queue; 4 builtin operator tasks (disabled by default) | sc `sim_scheduler` (7 routes) |
 | [`reporting/`](reporting/README.md) | `SitRepGenerator` — situation/daily/incident reports from tracker+events (text/HTML/JSON) | sc `sim_reporting` (3 routes) |
 | [`threat_intel/`](threat_intel/README.md) | Minimal STIX 2.1: indicator feeds, watchlist matching, `to_stix`/`from_stix` | sc `sim_threat_intel` (7 routes) |
-| `audit/` | Standalone SQLite compliance trail (deliberately separate from `store.AuditStore`) | `visualization/` (lib-internal) |
-| `privacy/` | GDPR tooling: retention purges, anonymization, consent, privacy zones | no external consumer |
+| [`audit/`](audit/README.md) | Standalone SQLite compliance trail (deliberately separate from `store.AuditStore`) | no runtime consumer — SC audits via `store.AuditStore`; the one `visualization/` ref is `TYPE_CHECKING`-only |
+| [`privacy/`](privacy/README.md) | GDPR tooling: retention purges, anonymization, consent, privacy zones | no external consumer (shelfware) |
 | [`federation/`](federation/README.md) | Multi-site trust levels + share policies (transport explicitly NOT included) | dormant hook — sc `federation_status.py` reads a manager nothing sets |
-| `comms/` | Piper TTS `Speaker` via PipeWire — despite the name, TTS only | sc Amy voice (`amy/`, `routers/tts.py`) |
-| `actions/` | Regex parser extracting Lua-style action calls from LLM output (Amy embodied actions) + formation math | no external consumer found |
-| `visualization/` | Renderer-agnostic chart/timeline/heatmap structures → Vega-Lite JSON or SVG strings | no external consumer |
+| [`comms/`](comms/README.md) | Piper TTS `Speaker` via PipeWire — despite the name, TTS only | **LIVE** — sc Amy voice (`amy/router.py:252`, `commander.py:1916`, `routers/tts.py:22`) |
+| [`actions/`](actions/README.md) | Regex parser extracting Lua-style action calls from LLM output (Amy embodied actions) + formation math | no external consumer (SC's `engine/actions/` is the live twin) |
+| [`visualization/`](visualization/README.md) | Renderer-agnostic chart/timeline/heatmap structures → Vega-Lite JSON or SVG strings | no external consumer (shelfware) |
 
 ## Shelfware & deprecated (Aspirational family)
 
 | Package | Status |
 |---------|--------|
 | [`graph/`](graph/README.md) | **SHELFWARE — DO NOT BUILD AGAINST** (its own docstring, `graph/__init__.py:3-7`). Embedded KuzuDB property graph; not wired to any live API. `/api/v1/ontology/*` is served by the in-memory `ontology/` package, not this. |
-| `data_exchange/` | **DEPRECATED** by its own docstring (`__init__.py:7-16`) — JSON/CSV/GeoJSON import/export kept only until integration tests are rewritten. |
+| [`data_exchange/`](data_exchange/README.md) | **DEPRECATED** by its own docstring (`__init__.py:7-16`) — JSON/CSV/GeoJSON import/export kept only until integration tests are rewritten. |
 
 ## Honesty notes (measured 2026-07-11)
 
