@@ -187,3 +187,109 @@ class TestZoneAlerts:
 
         occupants = engine.get_zone_occupants("z1")
         assert set(occupants) == {"t1", "t2"}
+
+
+class TestZoneBrief:
+    """Tests for the cognition-grounding zone_brief() inventory."""
+
+    def _square(self, zid, name, ztype="monitored"):
+        return GeoZone(
+            zone_id=zid,
+            name=name,
+            polygon=[(0, 0), (10, 0), (10, 10), (0, 10)],
+            zone_type=ztype,
+        )
+
+    def _far_square(self, zid, name, ztype="monitored"):
+        return GeoZone(
+            zone_id=zid,
+            name=name,
+            polygon=[(100, 100), (110, 100), (110, 110), (100, 110)],
+            zone_type=ztype,
+        )
+
+    def test_empty_when_no_zones(self):
+        """No zones defined -> empty string (no noise in grounding)."""
+        engine = GeofenceEngine()
+        assert engine.zone_brief() == ""
+
+    def test_lists_zone_and_occupancy(self):
+        """Brief reports zone count, occupancy, and per-zone inside counts."""
+        engine = GeofenceEngine()
+        engine.add_zone(self._square("z1", "North Gate"))
+        engine.check("t1", (5.0, 5.0))
+        engine.check("t2", (3.0, 3.0))
+
+        brief = engine.zone_brief()
+        assert "ZONES: 1 defined" in brief
+        assert "1 occupied" in brief
+        assert "2 target(s) inside" in brief
+        assert "NORTH GATE".title().upper() in brief.upper()
+        assert "2 inside" in brief
+
+    def test_empty_zone_marked_empty(self):
+        """A zone with no occupants is explicitly labelled empty."""
+        engine = GeofenceEngine()
+        engine.add_zone(self._square("z1", "Plaza"))
+        brief = engine.zone_brief()
+        assert "0 occupied" in brief
+        assert "empty" in brief
+
+    def test_alliance_breakdown_with_resolver(self):
+        """With a resolver, occupants are broken down by alliance."""
+        engine = GeofenceEngine()
+        engine.add_zone(self._square("z1", "Plaza"))
+        engine.check("hostile_1", (5.0, 5.0))
+        engine.check("civ_1", (4.0, 4.0))
+
+        roles = {"hostile_1": "hostile", "civ_1": "neutral"}
+        brief = engine.zone_brief(
+            occupant_resolver=lambda tid: {"alliance": roles.get(tid, "unknown")}
+        )
+        assert "1 hostile" in brief
+        assert "1 neutral" in brief
+
+    def test_hostile_in_restricted_zone_is_breach(self):
+        """A hostile inside a RESTRICTED zone is flagged as a BREACH."""
+        engine = GeofenceEngine()
+        engine.add_zone(self._square("z1", "Vault", ztype="restricted"))
+        engine.check("hostile_1", (5.0, 5.0))
+
+        brief = engine.zone_brief(
+            occupant_resolver=lambda tid: {"alliance": "hostile"}
+        )
+        assert "BREACH" in brief
+        assert "RESTRICTED 'Vault'" in brief
+
+    def test_neutral_in_restricted_is_not_breach(self):
+        """A neutral in a restricted zone is reported but not a breach."""
+        engine = GeofenceEngine()
+        engine.add_zone(self._square("z1", "Vault", ztype="restricted"))
+        engine.check("civ_1", (5.0, 5.0))
+
+        brief = engine.zone_brief(
+            occupant_resolver=lambda tid: {"alliance": "neutral"}
+        )
+        assert "BREACH" not in brief
+
+    def test_max_zones_cap(self):
+        """Lists at most max_zones, noting how many more exist."""
+        engine = GeofenceEngine()
+        for i in range(9):
+            engine.add_zone(self._square(f"z{i}", f"Zone {i}"))
+        brief = engine.zone_brief(max_zones=6)
+        assert "ZONES: 9 defined" in brief
+        assert "more zone(s)" in brief
+
+    def test_occupied_zones_ranked_first(self):
+        """An occupied zone sorts above an empty one within the cap."""
+        engine = GeofenceEngine()
+        # Many empty zones + one occupied far zone; the occupied one must show.
+        for i in range(6):
+            engine.add_zone(self._square(f"empty{i}", f"Empty {i}"))
+        engine.add_zone(self._far_square("hot", "Hot Zone"))
+        engine.check("t1", (105.0, 105.0))
+
+        brief = engine.zone_brief(max_zones=6)
+        assert "HOT ZONE" in brief.upper()
+        assert "1 inside" in brief

@@ -3,7 +3,9 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """AuditTrail — high-level audit interface for compliance and forensics.
 
-Wraps the low-level ``AuditStore`` with:
+A parallel, self-contained SQLite log (its own ``audit_trail`` table — the
+``store.audit_log`` schema plus a UUID ``entry_id`` column; it does NOT wrap
+or share ``tritium_lib.store.AuditStore``).  Adds:
   - Predefined compliance action helpers (target_accessed, zone_modified, etc.)
   - Fluent ``AuditQuery`` integration
   - Automatic rotation (oldest records pruned on a configurable schedule)
@@ -89,6 +91,9 @@ class AuditTrail:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # Bound the -wal file (12 GB WAL incident, 2026-07-10 — see
+        # tritium_lib.store.base for the full story).
+        self._conn.execute("PRAGMA journal_size_limit=67108864")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 

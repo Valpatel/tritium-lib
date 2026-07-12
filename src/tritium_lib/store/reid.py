@@ -241,6 +241,37 @@ class ReIDStore(BaseStore):
             for r in rows
         ]
 
+    def get_embeddings_by_camera(
+        self, source_camera: str, limit: int = 5,
+    ) -> list[dict]:
+        """Get the most recent embeddings captured by a specific camera.
+
+        Returns up to *limit* embeddings for ``source_camera``, newest first,
+        each shaped like :meth:`get_embedding`.  This is the public API for
+        cross-camera re-identification callers that need a camera's recent
+        appearance descriptors without reaching into the SQLite connection.
+        """
+        rows = self._conn.execute(
+            """SELECT embedding_id, target_id, embedding, source_camera,
+                      timestamp, confidence
+               FROM reid_embeddings
+               WHERE source_camera = ?
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (source_camera, limit),
+        ).fetchall()
+        return [
+            {
+                "embedding_id": r["embedding_id"],
+                "target_id": r["target_id"],
+                "embedding": _blob_to_vector(r["embedding"]),
+                "source_camera": r["source_camera"],
+                "timestamp": r["timestamp"],
+                "confidence": r["confidence"],
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------
     # Similarity search
     # ------------------------------------------------------------------

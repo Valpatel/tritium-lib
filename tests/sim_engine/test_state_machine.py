@@ -122,6 +122,38 @@ class TestStateMachineBuilder:
         sm.tick(0.5, {})  # Exceeds max_duration
         assert sm.current_state == "alert"
 
+    def test_max_duration_guard_blocks_when_false(self):
+        """A guarded max_duration only auto-transitions when the guard passes.
+
+        This is what lets a civilian flee/evade state stay put while danger is
+        live and resume only once it clears.  An unguarded state (every combat
+        state) is unaffected by this branch.
+        """
+        sm = StateMachine("fleeing")
+        sm.add_state(State(
+            "fleeing", max_duration=0.5, max_duration_target="walking",
+            max_duration_guard=lambda ctx: not ctx.get("danger", False),
+        ))
+        sm.add_state(State("walking"))
+        sm.tick(0.1, {"danger": True})
+        # Way past max_duration but danger is live -> guard blocks the return.
+        for _ in range(20):
+            sm.tick(0.5, {"danger": True})
+        assert sm.current_state == "fleeing"
+        # Danger clears -> the ripe timer fires.
+        sm.tick(0.1, {"danger": False})
+        assert sm.current_state == "walking"
+
+    def test_max_duration_unguarded_is_unconditional(self):
+        """Regression: a state WITHOUT a guard auto-transitions unconditionally
+        (combat FSMs rely on this — behavior must stay byte-identical)."""
+        sm = StateMachine("idle")
+        sm.add_state(State("idle", max_duration=0.5, max_duration_target="alert"))
+        sm.add_state(State("alert"))
+        sm.tick(0.1, {"danger": True})  # ctx is ignored — no guard
+        sm.tick(0.5, {"danger": True})
+        assert sm.current_state == "alert"
+
     def test_guard_blocks_transition(self):
         sm = StateMachine("idle")
         sm.add_state(State("idle"))

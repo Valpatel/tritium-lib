@@ -1,226 +1,126 @@
-# Tritium Simulation Engine
+# Tritium Simulation Engine (`sim_engine/`)
+
+**Parent:** [`../README.md`](../README.md) · **Family:** Simulation (the largest live-gameplay surface)
 
 A pure-Python tactical simulation engine that computes the entire
-battlespace -- units, weapons, terrain, weather, crowds, logistics,
-medical, intel, economy, and more -- then streams JSON frames to a
-Three.js frontend over WebSocket. No rendering or game-engine
-dependencies on the backend; the server produces state, the browser
-draws it.
+battlespace — units, weapons, terrain, weather, crowds, logistics, medical,
+intel, economy — and streams JSON frames to a Three.js frontend. No rendering
+or game-engine dependency on the backend: the server produces state, the
+browser draws it.
+
+**This engine *is* the test harness.** Per the North Star, the game validates
+the production stack because they run the same pipeline: perception →
+cognition → action → telemetry. Every unit is driven by default by a
+**stand-in AI** (FSMs, behavior trees, per-type combat) so the simulator and
+the real system both run fully with zero Graphlings on the field. A rare unit
+occupied by a Graphling has its stand-in suppressed — Tritium asks, it never
+puppets (`behavior/behaviors.py:440`).
+
+## Two tick surfaces
+
+The one fact that makes the rest of the package legible: there are **two**
+places a simulation is stepped, and they use different combat/AI wiring.
+
+| | Standalone `World` | SC BattleEngine composition |
+|---|---|---|
+| Entry | `world/_world.py:404` `World.tick(dt)` | `tritium-sc/src/engine/simulation/engine.py` |
+| Ballistics | `ProjectileSimulator` (`arsenal.py:202`) | `combat.CombatSystem` (`combat/combat.py:268`) |
+| Per-unit AI | inline `_tick_units` 6-priority ladder (`world/_world.py:561`) | `behavior.UnitBehaviors` (`behavior/behaviors.py:171`) |
+| Rules/mode | (none — free sim) | `game.GameMode` FSM (`game/game_mode.py:167`) |
+| Used by | `demos/game_server.py`, demo scripts | the live battle / riot / civil-unrest game |
+
+`World` is a self-contained sandbox that returns a rendered frame from a
+13-step tick. The **SC BattleEngine** composes the reusable `combat/` +
+`behavior/` + `game/` packages (plus `world/` cover, vision, sensors) into the
+operator-facing game; `GameMode` is duck-typed against the engine so the rules
+travel to any host.
+
+```mermaid
+flowchart TD
+    subgraph tick["one simulation tick"]
+        ENV["environment / weather<br/>advance"] --> PERC["perception:<br/>vision cones, LOS, detection range"]
+        PERC --> COG["cognition (default = stand-in AI):<br/>UnitBehaviors / _tick_units / GameMode rules"]
+        COG -->|occupied slot| GR["Graphling drives this unit<br/>— stand-in yields"]
+        COG --> ACT["action: move, fire()"]
+        GR --> ACT
+        ACT --> COMBAT["combat: projectiles fly,<br/>hits resolve, damage applied"]
+        COMBAT --> TEL["telemetry: EventBus events<br/>+ to_three_js() frame"]
+    end
+    TEL -->|WebSocket JSON| UI["Three.js frontend"]
+    TEL -.same events.-> HARNESS["production validation:<br/>fusion, tracking, dossier"]
+```
 
 ## Subpackages
 
-| Package | Files | Key Classes | Purpose |
+| Package | Files* | Key objects | Purpose |
 |---------|------:|-------------|---------|
-| `core/` | 6 | `SimulationTarget`, `StateMachine`, `SpatialIndex`, `MovementController` | Entity dataclass, state machines, spatial queries, movement |
-| `ai/` | 14 | `SteeringSystem`, `BehaviorTree`, `CombatAI`, `StrategicAI`, `RoadNetwork` | Steering behaviors, pathfinding, behavior trees, squad tactics, formations |
-| `unit_types/` | 18 | `UnitType`, `Drone`, `Rover`, `Tank`, `Person`, `Camera` | Type registry with `CombatStats`, movement category, perception cones |
-| `behavior/` | 5 | `UnitBehaviors`, `UnitMissions`, `UnitStates`, `NPCBehavior` | Per-unit-type combat AI: turret tracking, drone strafing, flanking, cover |
-| `game/` | 6 | `StatsTracker`, `DifficultyScaler`, `GameMode`, `CrowdDensity` | Game-mode rules, difficulty scaling, crowd density, morale |
-| `world/` | 6 | `World`, `WorldBuilder`, `WorldConfig`, `CoverMap`, `VisionSystem` | Top-level tick loop, world presets, cover/vision, grid pathfinding |
-| `combat/` | 3 | `CombatSystem`, `SquadManager`, `WeaponLoadout` | Hit resolution, squad coordination, weapon assignment |
-| `effects/` | 2 | `EffectsManager`, `ParticleSystem` | Explosions, muzzle flash, tracers, smoke, fire, debris, sparks |
-| `physics/` | 2 | `CollisionWorld`, `VehicleDynamics` | 2D collision detection, rigid-body vehicle physics |
-| `audio/` | 1 | `SoundEvent`, `distance_attenuation`, `stereo_pan` | Spatial audio math for Web Audio |
-| `debug/` | 1 | `DebugOverlay` | Frame inspection data streams |
-| `demos/` | 42 | `game_server`, `CitySim`, demo scripts, HTML frontends | Runnable demos and performance tests |
+| [`core/`](core/README.md) | 7 | `SimulationTarget`, `StateMachine`, `SpatialGrid`, `MovementController`, `NPCThinker`, `UnitInventory` | Entity dataclass, FSM engine, spatial queries, movement, inventory |
+| [`ai/`](ai/README.md) | 15 | `SteeringSystem`, behavior-tree `Node` + `make_patrol_tree`, `RoadNetwork`, `StrategicAI` | Steering, pathfinding, behavior trees, squad tactics, formations |
+| [`unit_types/`](unit_types/README.md) | 18 | `UnitType`, `CombatStats`, `MovementCategory` + robot/person/sensor archetypes | Type registry — archetype stats, perception cones |
+| [`behavior/`](behavior/README.md) | 6 | `UnitBehaviors`, `create_fsm_for_type`, `UnitMissionSystem`, `NPCManager` | **Stand-in drivers** — per-type combat AI, missions, civilians |
+| [`game/`](game/README.md) | 8 | `GameMode`, `StatsTracker`, `DifficultyScaler`, `PoliceTacticsController` | **Rules layer** — waves, victory/defeat, scoring, riot doctrine |
+| [`combat/`](combat/README.md) | 4 | `CombatSystem`, `MatchReferee`, `WeaponSystem`, `SquadManager` | **Hit resolution** — projectiles + transport-agnostic nerf-match scoring |
+| [`world/`](world/README.md) | 13 | `World`, `WorldBuilder`, `WorldConfig`, `CoverSystem`, `VisionSystem` | Standalone tick loop, world presets, cover/vision, grid pathfinding |
+| [`effects/`](effects/README.md) | 2 | `EffectsManager`, `ParticleEmitter` | Explosions, muzzle flash, tracers, smoke, fire, debris |
+| [`physics/`](physics/README.md) | 2 | `PhysicsWorld`, `VehiclePhysics` | 2D collision detection, rigid-body vehicle physics |
+| [`audio/`](audio/README.md) | 1 | `SoundEvent`, `distance_attenuation`, `stereo_pan` | Spatial audio math for Web Audio |
+| [`debug/`](debug/README.md) | 1 | `DebugOverlay` | Frame inspection data streams |
+| [`demos/`](demos/README.md) | 44 | `game_server`, `CitySim`, demo scripts + HTML | Runnable demos and performance tests |
 
-There are also **46 top-level modules** covering domain-specific
-subsystems (one file each):
+\* non-`__init__` Python modules per package.
 
-`abilities`, `air_combat`, `animation`, `arsenal`, `artillery`,
-`asymmetric`, `buildings`, `campaign`, `civilian`, `collision`,
-`commander`, `comms`, `crowd`, `cyber`, `damage`, `destruction`,
-`detection`, `economy`, `electronic_warfare`, `environment`,
-`event_bus`, `factions`, `fortifications`, `hud`, `intel`,
+There are also **50 top-level modules** (one file each) covering domain
+subsystems — `air_combat`, `arsenal`, `artillery`, `campaign`, `civilian`,
+`commander`, `crowd`, `cyber`, `destruction`, `detection`, `economy`,
+`electronic_warfare`, `environment`, `event_bus`, `factions`, `hud`, `intel`,
 `logistics`, `mapgen`, `medical`, `morale`, `multiplayer`, `naval`,
-`objectives`, `renderer`, `replay`, `scenario`, `scoring`,
-`soundtrack`, `spawner`, `status_effects`, `supply_routes`,
-`telemetry`, `terrain`, `territory`, `units`, `vehicles`,
-`weather_fx`
+`objectives`, `spawner`, `telemetry`, `terrain`, `territory`, `traffic`,
+`vehicles`, `weather_fx`, and more. **Total: 171 Python modules** (excluding
+`__init__.py`).
 
-**Total: 152 Python modules** (excluding `__init__.py` files).
+## Running the demo
 
-## Running the Demo
-
-The primary demo is `game_server.py` -- a FastAPI app that streams
-frames at 10 fps to a Three.js frontend.
+The primary demo is `demos/game_server.py` — a FastAPI app that streams
+frames to a Three.js frontend.
 
 ```bash
 cd tritium-lib
 PYTHONPATH=src python3 -m tritium_lib.sim_engine.demos.game_server
 ```
 
-Open `http://localhost:8090` in a browser. The server starts a full
-tactical simulation and pushes JSON frames over a WebSocket.
+Open `http://localhost:9090` (override with the `SIM_PORT` env var —
+`demos/game_server.py:4688`). Other demos: `demo_city` (NPC routines),
+`demo_full` (GTA-style city), `demo_steering`, `demo_rf`, `demo_perf`,
+`serve_city3d`. All require `PYTHONPATH=src`; the server demos need `fastapi`
++ `uvicorn`.
 
-### Other demos
+## Frame data format
 
-| Demo | Command | What it does |
-|------|---------|-------------|
-| City life | `python3 -m tritium_lib.sim_engine.demos.demo_city` | NPC daily routines, traffic, pedestrians |
-| Full city | `python3 -m tritium_lib.sim_engine.demos.demo_full` | GTA-style simulation with streets, buildings, traffic |
-| Steering | `python3 -m tritium_lib.sim_engine.demos.demo_steering` | Steering behavior visualization |
-| RF sigs | `python3 -m tritium_lib.sim_engine.demos.demo_rf` | RF signature visualization |
-| Perf bench | `python3 -m tritium_lib.sim_engine.demos.demo_perf` | Performance benchmark for AI subsystems |
-| City 3D | `python3 -m tritium_lib.sim_engine.demos.serve_city3d` | 3D city demo with Three.js |
+Each tick, `World.tick()` returns a JSON dict the frontend renders — core keys
+`tick`, `time`, `units`, `projectiles`, `effects`, `weather`, `time_of_day`,
+`crowd`, `events`. The `game_server.py` layer adds one key per subsystem
+engine, each via a `to_three_js()` method: `destruction`, `detection`,
+`comms`, `medical`, `logistics`, `naval`, `air_combat`, `intel`, `morale`,
+`electronic_warfare`, `artillery`, `abilities`, `status_effects`,
+`objectives`, `economy`, `cyber`, `hud`, `buildings`, `campaign`,
+`fortifications`, `civilians`, and the `narration` from Amy's `BattleNarrator`.
 
-All demos require `PYTHONPATH=src` (or an editable install of
-tritium-lib). The game server and city3d demos need `fastapi` and
-`uvicorn`.
+## Extending
 
-## Frame Data Format
+**Add a unit type:** subclass `UnitType` (`unit_types/base.py:38`) in
+`robots/`, `people/`, or `sensors/`, set its `ClassVar` fields
+(`type_id`, `category`, `speed`, `combat=CombatStats(...)`), and import it in
+`unit_types/__init__.py` so the registry discovers it. The flat
+`SimulationTarget` carries runtime state; the `UnitType` defines the archetype.
 
-Every tick, `game_tick()` returns a JSON dict that the frontend
-renders. The core keys come from `World.tick()`:
-
-```json
-{
-  "tick": 42,
-  "time": 4.2,
-  "units": [
-    {
-      "id": "drone_1",
-      "type": "drone",
-      "x": 120.5,
-      "y": 80.3,
-      "z": 15.0,
-      "heading": 1.57,
-      "health": 0.85,
-      "alliance": "friendly",
-      "icon": "D",
-      "alive": true
-    }
-  ],
-  "projectiles": [
-    { "x": 100, "y": 90, "dx": 1, "dy": 0, "type": "bullet", "color": "#ffaa00" }
-  ],
-  "effects": [
-    { "type": "explosion", "x": 200, "y": 150, "radius": 5, "age": 0.1 }
-  ],
-  "weather": { "wind_speed": 3.2, "wind_direction": 0.8, "rain": 1.0 },
-  "time_of_day": { "hour": 14.5 },
-  "crowd": [ { "x": 50, "y": 60, "mood": "calm", "color": "#05ffa1" } ],
-  "events": [ { "type": "unit_killed", "unit_id": "hostile_3", "killer_id": "turret_1" } ],
-  "formations": [],
-  "vehicles": []
-}
-```
-
-The `game_server.py` layer adds many more keys from the subsystem
-engines. Each subsystem provides a `to_three_js()` method that
-returns its own JSON-serializable dict:
-
-| Frame key | Source | Content |
-|-----------|--------|---------|
-| `destruction` | `DestructionEngine` | Damaged structures, fire, debris |
-| `detection` | `DetectionEngine` | Sensor cones, detection events |
-| `comms` | `CommsSimulator` | Radio channels, jamming zones |
-| `medical` | `MedicalEngine` | Injury status, triage, evacuation |
-| `logistics` | `LogisticsEngine` | Supply caches, routes, consumption |
-| `naval` | `NavalCombatEngine` | Ships, torpedoes, formations |
-| `air_combat` | `AirCombatEngine` | Aircraft, missiles, anti-air |
-| `intel` | `IntelEngine` | Fog of war, recon, intelligence |
-| `morale` | `MoraleEngine` | Unit morale levels, events |
-| `electronic_warfare` | `EWEngine` | Jammers, cyber attacks |
-| `supply_routes` | `SupplyRouteEngine` | Supply lines, convoys |
-| `weather_fx` | `WeatherFXEngine` | Rain, snow, fog particles |
-| `spawner` | `SpawnerEngine` | Wave spawn points, composition |
-| `artillery` | `ArtilleryEngine` | Fire support, impacts |
-| `narration` | `BattleNarrator` | Amy's battle commentary |
-| `abilities` | `AbilityEngine` | Active abilities, cooldowns |
-| `status_effects` | `StatusEffectEngine` | Suppression, burning, healing |
-| `objectives` | `ObjectiveEngine` | Mission goals, progress |
-| `influence` | `InfluenceMap` | Territorial control summary |
-| `economy` | `EconomyEngine` | Resources, build queues, tech |
-| `cyber` | `CyberWarfareEngine` | Cyber assets, attacks |
-| `hud` | `HUDEngine` | Minimap, compass, kill feed |
-| `buildings` | `RoomClearingEngine` | Interior rooms, CQB events |
-| `soundtrack` | `SoundtrackEngine` | Audio cues for Web Audio |
-| `event_timeline` | `SimEventBus` | Last N events for timeline UI |
-| `campaign` | `Campaign` | Campaign progress, missions |
-| `fortifications` | `EngineeringEngine` | Bunkers, barriers, minefields |
-| `civilians` | `CivilianSimulator` | Civilian population state |
-
-## How to Add a New Unit Type
-
-1. Create a file under `unit_types/` in the appropriate category
-   (`robots/`, `people/`, or `sensors/`).
-
-2. Subclass `UnitType` from `unit_types/base.py` and set all
-   `ClassVar` fields:
-
-```python
-# unit_types/robots/my_bot.py
-from tritium_lib.sim_engine.unit_types.base import (
-    CombatStats, MovementCategory, UnitType,
-)
-
-class MyBot(UnitType):
-    type_id = "my_bot"
-    display_name = "My Bot"
-    icon = "B"
-    category = MovementCategory.GROUND
-    speed = 2.5
-    drain_rate = 0.001
-    vision_radius = 40.0
-    placeable = True
-    combat = CombatStats(
-        health=100, max_health=100,
-        weapon_range=30.0, weapon_cooldown=2.0, weapon_damage=15,
-        is_combatant=True,
-    )
-```
-
-3. Import the new class in `unit_types/__init__.py` so the registry
-   discovers it.
-
-4. Optionally add an entry to `behavior/behaviors.py`
-   `_WEAPON_TYPES` dict if the unit needs a specific weapon mapping.
-
-The `UnitType` base provides `MovementCategory` (STATIONARY, GROUND,
-FOOT, AIR), `CombatStats` (health, weapon range/cooldown/damage),
-perception fields (vision radius, cone angle, sweep RPM), and power
-drain rate. The flat `SimulationTarget` entity carries the runtime
-state; the `UnitType` class defines the archetype.
-
-Existing categories and examples:
-- `robots/`: drone, rover, tank, apc, turret, heavy_turret,
-  missile_turret, scout_drone
-- `people/`: person, hostile_person, hostile_leader,
-  hostile_vehicle, animal, vehicle, swarm_drone
-- `sensors/`: camera, motion_sensor
-
-## How to Add a New Behavior
-
-Unit behaviors live in `behavior/behaviors.py`. The `UnitBehaviors`
-class runs each tick and decides what each combatant does based on
-its `asset_type`.
-
-1. Add a new method to `UnitBehaviors` (e.g., `_tick_my_bot()`).
-
-2. Call it from the main `tick()` dispatch, keyed on the unit's
-   `asset_type` string.
-
-3. Behaviors sit ABOVE the waypoint/movement system. They can:
-   - Set temporary engagement headings
-   - Trigger weapon fire through `CombatSystem`
-   - Apply dodge offsets to position
-   - Initiate flanking, group rush, cover-seeking, or retreat
-
-For more complex AI, use the behavior tree system in
-`ai/behavior_tree.py`. Pre-built trees exist for patrol, friendly,
-hostile, and civilian archetypes:
-
-```python
-from tritium_lib.sim_engine.ai.behavior_tree import make_patrol_tree
-
-tree = make_patrol_tree()
-tree.tick(context)  # returns BTStatus.SUCCESS / FAILURE / RUNNING
-```
+**Add a behavior:** add a `_tick_*` handler to `UnitBehaviors`
+(`behavior/behaviors.py`) and dispatch to it by `asset_type` in `tick()`. For
+richer AI, compose behavior-tree nodes via `ai/behavior_tree.py`
+(`make_patrol_tree()` and friends return a tree whose `tick(context)` yields a
+`Status`).
 
 ## Dependencies
 
-- **Required:** None (pure Python, stdlib only)
-- **Optional:** `numpy` for vectorized steering
-  (`SteeringSystem`, `AmbientSimulatorNP`), `fastapi` + `uvicorn`
-  for demo servers
+- **Required:** none (pure Python, stdlib only)
+- **Optional:** `numpy` for vectorized steering (`SteeringSystem`,
+  `AmbientSimulatorNP`); `fastapi` + `uvicorn` for the demo servers.

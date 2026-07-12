@@ -524,7 +524,7 @@ from tritium_lib.config import TritiumBaseSettings
 
 ## JS Modules
 
-Located at `web/` (served by SC at `/lib/`). Additional JS sim modules at `src/tritium_lib/js/`.
+Located at `web/` (served by SC at `/lib/`). (`src/tritium_lib/js/` is a separate, textually-diverged copy — **NOT orphaned**: it is the runtime browser-module tree for the `sim_engine/demos/` city demos via the git-tracked symlink `sim_engine/demos/js -> ../../js`, consumed by `city3d-clean.html` and by `city3d/inspect.js` → `js/sim/identity.js`. Correctly not packaged (browser JS served over HTTP, not Python). **Do NOT delete.** See `src/tritium_lib/README.md` honesty notes. Verified 2026-07-11.)
 
 ### web/sim/
 

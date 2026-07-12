@@ -178,6 +178,126 @@ class SidewalkGraph:
         )
         return self.node_count
 
+    def build_from_street_graph(
+        self,
+        street_graph: object,
+        offset: float = 4.0,
+        sample_interval: float = 12.0,
+        pedestrian_classes: Optional[set] = None,
+    ) -> int:
+        """Derive a pedestrian sidewalk network from a road ``StreetGraph``.
+
+        The geospatial pipeline builds sidewalks from segmented imagery, but
+        the common synthetic / offline sim has only a road StreetGraph (no
+        imagery), so the sidewalk layer was empty and pedestrians beelined
+        straight across car lanes (``pathfinding._sidewalk_path`` was dead).
+        This lays curb-side sidewalk runs parallel to every road edge —
+        offset *offset* metres to each side of the centreline, sampled every
+        *sample_interval* metres — then stitches the runs at intersections.
+        The result is a walkable graph that follows the road corridor without
+        sitting in the car lane, and needs no imagery.
+
+        Pedestrian-class edges (footway / path / pedestrian / cycleway /
+        steps / living_street) are laid on the centreline (offset 0) because
+        they already *are* walkways.
+
+        This is a one-time, spawn/replan-side build (not per-tick), so it
+        reuses the existing A* find_path at runtime with no hot-path cost.
+
+        Args:
+            street_graph: a StreetGraph exposing ``graph`` (networkx, nodes
+                carrying ``x``/``y``) and/or ``_node_positions``
+                {id: (x, y)}; edge data may carry ``road_class``/``highway``.
+            offset: curb offset from the road centreline in metres.
+            sample_interval: spacing of sampled sidewalk nodes along a run (m).
+            pedestrian_classes: road_class values treated as existing footways.
+
+        Returns:
+            Number of sidewalk nodes created (0 if the graph is unusable).
+        """
+        graph = getattr(street_graph, "graph", None)
+        if graph is None:
+            return 0
+        positions = getattr(street_graph, "_node_positions", None) or {}
+
+        if pedestrian_classes is None:
+            pedestrian_classes = {
+                "footway", "path", "pedestrian", "cycleway", "steps",
+                "living_street",
+            }
+
+        def _pos(nid):
+            if nid in positions:
+                return positions[nid]
+            try:
+                data = graph.nodes[nid]
+            except Exception:
+                return None
+            if "x" in data and "y" in data:
+                return (data["x"], data["y"])
+            return None
+
+        # Spatial grid + intersection stitch distance.  Keep the grid cell at
+        # least as large as the stitch distance so the connector's ±1-cell
+        # search reliably covers every pair within range.
+        connect_dist = 2.0 * offset + 1.0
+        self._grid_resolution = max(connect_dist, 10.0)
+
+        created = 0
+        try:
+            edge_iter = graph.edges(data=True)
+        except Exception:
+            return 0
+
+        for n1, n2, data in edge_iter:
+            p1 = _pos(n1)
+            p2 = _pos(n2)
+            if p1 is None or p2 is None:
+                continue
+            ax, ay = p1
+            bx, by = p2
+            dx, dy = bx - ax, by - ay
+            length = math.hypot(dx, dy)
+            if length < 1e-6:
+                continue
+            # Left-hand perpendicular unit vector for the curb offset.
+            px, py = -dy / length, dx / length
+
+            road_class = (data or {}).get("road_class") or (data or {}).get("highway") or "residential"
+            is_walkway = road_class in pedestrian_classes
+            sides = (0.0,) if is_walkway else (offset, -offset)
+
+            steps = max(1, int(round(length / sample_interval)))
+            for side in sides:
+                prev_id = None
+                for s in range(steps + 1):
+                    t = s / steps
+                    cx = ax + dx * t + px * side
+                    cy = ay + dy * t + py * side
+                    nid = self.add_node(cx, cy, TerrainType.SIDEWALK)
+                    created += 1
+                    if prev_id is not None:
+                        self.add_edge(prev_id, nid, TerrainType.SIDEWALK)
+                    prev_id = nid
+
+        if created == 0:
+            return 0
+
+        # Stitch curb runs where roads meet (the two curbs of one edge, and
+        # the curb ends of edges sharing an intersection) so the network is
+        # connected and peds can cross at junctions.  Collinear run samples
+        # are spaced > connect_dist apart, so this only joins junctions and
+        # never duplicates the explicit run edges.
+        self._connect_nearby_nodes(max_distance=connect_dist)
+        # Invalidate any cached main component so the next find_path rebuilds.
+        self._main_component = None
+
+        logger.info(
+            "Built sidewalk graph from street graph: %d nodes, %d edges",
+            self.node_count, self.edge_count,
+        )
+        return self.node_count
+
     def _sample_polygon_edges(
         self,
         coords: list[tuple[float, float]],

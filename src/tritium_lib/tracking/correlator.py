@@ -86,6 +86,16 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "wifi_probe": 0.15,
 }
 
+# Minimum applicable-strategy weight used as the confidence denominator floor.
+# Confidence is the fraction of AVAILABLE judgment weight that voted yes, but a
+# match supported by only a little judgment weight cannot reach full confidence
+# -- this floor preserves skepticism and stops a single applicable strategy from
+# over-correlating (FEATURE-AUDIT 2026-06-14).  Tuned so a clean two-sensor
+# match (spatial 0.30 + signal_pattern 0.14 = 0.44) lands at ~0.73, above the
+# 0.70 "high confidence" bar, while distant/out-of-time pairs -- where spatial
+# and temporal DO vote and score low -- stay well below it.
+_MIN_EVIDENCE_WEIGHT: float = 0.60
+
 
 class TargetCorrelator:
     """Multi-strategy identity resolution engine.
@@ -114,6 +124,7 @@ class TargetCorrelator:
         tracker: TargetTracker,
         *,
         radius: float = 5.0,
+        broad_phase_radius: float = 50.0,
         max_age: float = 30.0,
         interval: float = 5.0,
         confidence_threshold: float = 0.3,
@@ -128,6 +139,13 @@ class TargetCorrelator:
     ) -> None:
         self.tracker = tracker
         self.radius = radius
+        # Broad-phase spatial gate: pairs farther than this are never evaluated.
+        # Correlation requires spatial proximity (the merge radius is small), so
+        # a generous distance gate (>> radius, above realistic cross-sensor
+        # error/lag) cuts the O(n^2) pass to ~O(n*k) AND prevents false merges
+        # of distant co-movers — without changing which co-located pairs fuse.
+        self.broad_phase_radius = broad_phase_radius
+        self._bp_radius_sq = broad_phase_radius * broad_phase_radius
         self.max_age = max_age
         self.interval = interval
         self.confidence_threshold = confidence_threshold
@@ -238,6 +256,35 @@ class TargetCorrelator:
                 if primary.source == secondary.source:
                     continue
 
+                # Broad-phase spatial cull: skip the expensive multi-strategy
+                # evaluation for pairs too far apart to be the same entity.
+                # Cheap (one squared-distance) vs the full _evaluate_pair, and
+                # turns the O(n^2) pass tractable at hundreds of nodes.
+                _dx = primary.position[0] - secondary.position[0]
+                _dy = primary.position[1] - secondary.position[1]
+                _dist_sq = _dx * _dx + _dy * _dy
+                if _dist_sq > self._bp_radius_sq:
+                    continue
+
+                # Fine spatial gate: two LOCALIZED targets farther apart than the
+                # merge radius are different physical entities and must NEVER be
+                # fused, no matter how well their non-spatial features match.
+                # SpatialStrategy is only a 0.30-weight feature, so a low
+                # confidence_threshold can otherwise merge distant targets on
+                # signal/temporal similarity alone -- collapsing distinct entities
+                # and breaking the unique-target-ID guarantee (regression:
+                # test_snapshot_integrity merged a camera 28 units away).
+                # "Localized" = has a real position source/confidence (NOT the
+                # origin heuristic -- (0,0) is a legitimate position). Position-
+                # less targets (source 'unknown', correlated by signal/fingerprint,
+                # not space) skip this gate so signal-only fusion still works.
+                _p_loc = (primary.position_source not in ("unknown", "", None)
+                          or primary.position_confidence > 0.0)
+                _s_loc = (secondary.position_source not in ("unknown", "", None)
+                          or secondary.position_confidence > 0.0)
+                if _p_loc and _s_loc and _dist_sq > self.radius * self.radius:
+                    continue
+
                 scores = self._evaluate_pair(primary, secondary)
                 weighted_confidence = self._weighted_score(scores)
 
@@ -246,12 +293,19 @@ class TargetCorrelator:
                 calibrated_scores = self._calibrate_scores(scores)
                 calibrated_confidence = self._weighted_score(calibrated_scores)
 
+                # Gate on the more-skeptical of raw vs calibrated confidence, so a
+                # trained calibrator that has learned a strategy historically
+                # false-positives can VETO a known-bad fusion (self-audit #15).
+                # Without training data calibrated == raw, so this is a no-op; it
+                # can only make the merge MORE conservative, never inflate one.
+                gate_confidence = min(weighted_confidence, calibrated_confidence)
+
                 self._log_correlation_decision(
                     primary, secondary, scores, weighted_confidence,
-                    correlated=weighted_confidence >= self.confidence_threshold,
+                    correlated=gate_confidence >= self.confidence_threshold,
                 )
 
-                if weighted_confidence < self.confidence_threshold:
+                if gate_confidence < self.confidence_threshold:
                     continue
 
                 contributing = [s for s in scores if s.score > 0]
@@ -385,19 +439,37 @@ class TargetCorrelator:
         return scores
 
     def _weighted_score(self, scores: list[StrategyScore]) -> float:
-        """Compute weighted combination of strategy scores."""
-        total_weight = 0.0
+        """Compute weighted combination of strategy scores.
+
+        ABSTAINING strategies (``applicable=False`` -- no data to judge this
+        pair) are excluded from both numerator and denominator so they cannot
+        penalise a genuine match.  A strategy that judged the pair and scored
+        low (``applicable=True``) stays in the denominator, so distant or
+        out-of-time pairs still score low and cannot over-correlate.  The
+        denominator is floored at ``_MIN_EVIDENCE_WEIGHT`` to keep a match
+        backed by little judgment weight from reaching full confidence
+        (FEATURE-AUDIT 2026-06-14).
+        """
+        applicable_weight = 0.0
         total_score = 0.0
 
         for s in scores:
+            # Definitive negative identity evidence (e.g. known-different
+            # dossiers) vetoes the whole correlation -- proximity must never
+            # override known identity (FEATURE-AUDIT 2026-06-14).
+            if getattr(s, "veto", False) and getattr(s, "applicable", True):
+                return 0.0
+            if not getattr(s, "applicable", True):
+                continue  # abstained: no data, excluded from the average
             w = self.weights.get(s.strategy_name, 0.0)
-            total_weight += w
+            applicable_weight += w
             total_score += w * s.score
 
-        if total_weight <= 0:
+        if applicable_weight <= 0:
             return 0.0
 
-        return min(1.0, total_score / total_weight)
+        denom = max(applicable_weight, _MIN_EVIDENCE_WEIGHT)
+        return min(1.0, total_score / denom)
 
     def _calibrate_scores(self, scores: list[StrategyScore]) -> list[StrategyScore]:
         """Return calibrated copies of strategy scores using the calibrator."""
@@ -409,6 +481,8 @@ class TargetCorrelator:
                     strategy_name=s.strategy_name,
                     score=cal_score,
                     detail=s.detail,
+                    applicable=getattr(s, "applicable", True),
+                    veto=getattr(s, "veto", False),
                 )
             )
         return calibrated
@@ -527,8 +601,18 @@ class TargetCorrelator:
             # the cross-modal confirmation set, even when merged in from a
             # secondary that originated as a sim target. Same-as-primary
             # is also a no-op (the primary already counts itself).
+            # 'camera' and 'yolo' are ONE vision modality (provenance vs
+            # algorithm name): a camera-source secondary merging into a
+            # yolo-source primary is not cross-modal confirmation either —
+            # mirror TargetTracker._add_confirming_source's vision guard.
+            _VISION = ("yolo", "camera")
+
             def _admit(src: str) -> bool:
-                return bool(src) and src != "simulation" and src != primary.source
+                if not src or src == "simulation" or src == primary.source:
+                    return False
+                if src in _VISION and primary.source in _VISION:
+                    return False
+                return True
 
             if _admit(secondary.source):
                 primary.confirming_sources.add(secondary.source)

@@ -35,6 +35,15 @@ graph TD
 | `__init__.py` | Exports `SitAwareEngine`, `OperatingPicture`, `PictureUpdate`, `UpdateType` |
 | `engine.py` | The engine: composes 7 subsystems, produces snapshots and delta updates, thread-safe |
 
+The 7 subsystems are constructed (or dependency-injected) in
+`SitAwareEngine.__init__` at `engine.py:333-347`: `FusionEngine`
+(`tritium_lib.fusion`), `AlertEngine` (`tritium_lib.alerting`),
+`AnomalyEngine` (`tritium_lib.intelligence`), `AnalyticsEngine`
+(`tritium_lib.analytics`), `HealthMonitor` (`tritium_lib.monitoring`),
+`IncidentManager` (`tritium_lib.incident`), and `MissionPlanner`
+(`tritium_lib.mission`). Each is reachable as a read-only
+property (`engine.fusion`, `engine.alerting`, ... — `engine.py:380+`).
+
 ## Key Types
 
 - **`OperatingPicture`** -- full state snapshot: targets, alerts, anomalies, incidents, missions, health, threat level
@@ -52,5 +61,14 @@ engine.fusion.ingest_ble({"mac": "AA:BB:CC:DD:EE:FF", "rssi": -55})
 picture = engine.get_picture()
 print(f"{picture.target_count} targets, threat={picture.threat_level}")
 ```
+
+## Consumed by (dated 2026-07-11, grep `from tritium_lib.sitaware`)
+
+The capstone is a top-level composition point, so it has almost no wrappers.
+
+- **tritium-sc (the app): 1 site** — `src/app/main.py`.
+- **lib-internal: 0 sites** — nothing in lib composes the capstone (it sits at
+  the top of the stack).
+- **tests: 3 sites** — `test_sitaware.py`, `test_sitaware_demo.py`.
 
 **Parent:** [../README.md](../README.md)

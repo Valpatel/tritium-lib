@@ -61,6 +61,16 @@ class CrowdMember:
     has_weapon: bool = False
     is_leader: bool = False
     group_id: str = ""
+    # Organic-movement state (riot-quality rework, 2026-06-14)
+    exit_target: Vec2 | None = None   # sticky flee destination (dispersed exits)
+    dwell: float = 0.0                 # CALM/UNEASY: seconds left standing still (milling)
+    wander: Vec2 = (0.0, 0.0)          # persistent, slowly-turning wander heading
+    # Stable per-cluster sector point seeded at spawn (riot legibility rework,
+    # 2026-06-15). Steering targets this anchor (NOT the live group centroid,
+    # which implodes the crowd to the centre) so clusters hold their distinct
+    # sectors across the full bounds. None for non-riot presets (no behaviour
+    # change there). Consumed by _move_members / _update_group_objectives.
+    anchor: Vec2 | None = None
 
 
 @dataclass
@@ -115,6 +125,15 @@ _LEADER_INFLUENCE_MULT = 2.0
 
 # Event decay rate per second
 _EVENT_DECAY_RATE = 0.15
+
+# Agent-sink "home" radius (riot wind-down, 2026-06-15): a FLEEING member that
+# reaches within this distance of its boundary exit_target has left the scene —
+# it is removed from ``members`` (gone home). This is the standard agent sink at
+# an exit node: without it fled members clamp to the perimeter and mill there
+# forever, so a riot crowd never drains. PANICKED members are NOT sunk (they are
+# still inside the panic, fleeing a live threat) — only the committed FLEEING
+# flight terminates at the exit. Bounded + O(k): one pass over members per tick.
+_EXIT_HOME_RADIUS = 4.0
 
 # Escalation thresholds
 _ESCALATION_AGITATED_RATIO = 0.30
@@ -196,27 +215,80 @@ class CrowdSimulator:
         Hard cap on crowd size.
     """
 
-    def __init__(self, bounds: tuple[float, float, float, float], max_members: int = 500) -> None:
+    def __init__(self, bounds: tuple[float, float, float, float], max_members: int = 500,
+                 obstacles: Any = None, street_nodes: list[Vec2] | None = None,
+                 seed: int | None = None) -> None:
         self.bounds = bounds
         self.max_members = max_members
         self.members: list[CrowdMember] = []
         self.events: list[CrowdEvent] = []
         self.overall_mood: CrowdMood = CrowdMood.CALM
         self._time: float = 0.0
+        # Running count of members that fled all the way to an exit and went home
+        # (riot wind-down, 2026-06-15). Lets a caller / test see the crowd drain
+        # without diffing snapshots; never decremented (monotonic episode total).
+        self.members_gone_home: int = 0
+        # Optional BuildingObstacles (duck-typed: needs point_in_building(x, y)).
+        # When set, members never walk into buildings — the crowd is confined to
+        # streets / open space instead of drifting through footprints.
+        self.obstacles = obstacles
+        # Optional list of (x, y) street-node positions. When set, group gather
+        # points snap to the nearest street node so crowds form on real streets /
+        # junctions instead of collapsing onto an arbitrary centroid, AND fleeing
+        # crowds disperse toward real perimeter streets (set before exits so the
+        # exit zones are street-aware from construction).
+        self.street_nodes = street_nodes
         self._exits: list[Vec2] = self._compute_exits()
         self._grid = _CrowdGrid(cell_size=5.0)
+        # Per-group objective cycle (riot legibility rework, 2026-06-15): each
+        # group marches to a stable sector anchor, holds for a dwell, then
+        # rotates its objective to an ADJACENT sector — so clusters roam the
+        # whole map instead of imploding to the centre. Seeded so occupancy
+        # tests are deterministic. Empty / unused for non-riot presets.
+        self._group_anchors: dict[str, Vec2] = {}
+        self._group_phase: dict[str, str] = {}        # 'march' | 'hold'
+        self._group_hold_until: dict[str, float] = {}
+        self._objective_rng = random.Random(seed)
 
     # -- helpers -------------------------------------------------------------
 
     def _compute_exits(self) -> list[Vec2]:
-        """Compute exit points at midpoints of each boundary edge."""
+        """Exit zones distributed around the boundary so fleeing crowds disperse
+        in many directions instead of streaming onto 4 midpoints (the old
+        4-exit model produced the conspicuous "lines of units").
+
+        When street nodes are loaded, prefer real PERIMETER street nodes — the
+        roads leading out of the area — so a fleeing crowd disperses DOWN actual
+        streets (makes the "scatters down the streets" narration literally true),
+        not toward arbitrary geometric boundary points. Falls back to the
+        geometric ring when there's no road graph or too few perimeter nodes.
+        """
         x0, y0, x1, y1 = self.bounds
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        rx, ry = (x1 - x0) / 2.0, (y1 - y0) / 2.0
+        nodes = self.street_nodes
+        if nodes:
+            rad = max(rx, ry) or 1.0
+            perimeter = [
+                (nx, ny) for (nx, ny) in nodes
+                if math.hypot(nx - cx, ny - cy) >= 0.55 * rad
+            ]
+            if len(perimeter) >= 4:
+                return perimeter
+        n = 12
         return [
-            ((x0 + x1) / 2, y0),  # bottom
-            ((x0 + x1) / 2, y1),  # top
-            (x0, (y0 + y1) / 2),  # left
-            (x1, (y0 + y1) / 2),  # right
+            (cx + rx * math.cos(2 * math.pi * i / n),
+             cy + ry * math.sin(2 * math.pi * i / n))
+            for i in range(n)
         ]
+
+    def set_street_nodes(self, nodes: list[Vec2] | None) -> None:
+        """Set the street-node positions and recompute exit zones so fleeing
+        crowds disperse toward real perimeter streets. Use this (not direct
+        attribute assignment) when street data arrives after construction, e.g.
+        the live crowd worker loading the road graph on an existing sim."""
+        self.street_nodes = nodes
+        self._exits = self._compute_exits()
 
     def _clamp_to_bounds(self, pos: Vec2) -> Vec2:
         x0, y0, x1, y1 = self.bounds
@@ -239,17 +311,37 @@ class CrowdSimulator:
             return CrowdMood.UNEASY
         return CrowdMood.CALM
 
-    def _nearest_exit(self, pos: Vec2) -> Vec2:
-        best = self._exits[0]
-        best_d = distance(pos, best)
-        for ex in self._exits[1:]:
-            d = distance(pos, ex)
-            if d < best_d:
-                best_d = d
-                best = ex
-        return best
+    def _pick_exit(self, pos: Vec2) -> Vec2:
+        """Pick a stochastic exit from the nearest few zones, with jitter, so
+        fleeing members spread into a dispersed cloud instead of collapsing
+        onto the single nearest exit (which produced 4 streaming lines)."""
+        ranked = sorted(self._exits, key=lambda ex: distance(pos, ex))
+        choice = random.choice(ranked[: min(3, len(ranked))])
+        return (choice[0] + random.uniform(-6.0, 6.0),
+                choice[1] + random.uniform(-6.0, 6.0))
 
     # -- public API ----------------------------------------------------------
+
+    # Auto-fan threshold (riot legibility rework B, 2026-06-15): an anchorless
+    # spawn larger than this many members fans into multiple sector sub-clusters
+    # so an operator-spawned riot spreads across the map instead of collapsing
+    # onto one group centroid (the central-pile bug). Below it a single small
+    # cluster reads fine, so we leave behaviour unchanged.
+    _AUTO_FAN_THRESHOLD = 40
+
+    # Auto-fan is VOLATILE-ONLY (round-1 fix, 2026-06-15): the central-pile bug
+    # is specific to a high-aggression crowd that escalates to RIOTING and then
+    # has _assign_objectives seed ONE group anchor (the centroid) that everyone
+    # holds. Calm / uneasy / panicked / fleeing crowds do NOT pile that way, and
+    # auto-fanning them (a) packs them into tight knots that super-linearly raise
+    # the per-tick separation cost (perf regression) and (b) fragments a single
+    # legible gathering / stampede / standoff line into 6 scattered knots
+    # (semantic regression). So only these moods trigger the auto-fan; every
+    # other anchorless crowd keeps the original single-cluster behaviour
+    # regardless of size. Callers that genuinely want a calm crowd fanned can
+    # still pass an explicit ``sectors``; callers that want a volatile crowd kept
+    # as one cluster (e.g. _build_standoff) pass ``sectors=1``.
+    _AUTO_FAN_MOODS = frozenset({CrowdMood.RIOTING, CrowdMood.AGITATED})
 
     def spawn_crowd(
         self,
@@ -258,15 +350,59 @@ class CrowdSimulator:
         radius: float,
         mood: CrowdMood = CrowdMood.CALM,
         leader_ratio: float = 0.05,
+        rng: random.Random | None = None,
+        anchor: Vec2 | None = None,
+        sectors: int | None = None,
     ) -> list[str]:
         """Spawn *count* crowd members around *center* within *radius*.
 
-        Returns list of member IDs created.
+        *rng* — optional seeded ``random.Random`` for deterministic placement
+        (used by the riot preset so occupancy tests are repeatable). Falls back
+        to the module ``random`` when None (unchanged behaviour).
+        *anchor* — optional stable sector point assigned to every member's
+        ``anchor`` field, so the cluster steers toward its seeded sector instead
+        of the live centroid (riot legibility rework, 2026-06-15).
+        *sectors* — optional number of distinct sector sub-clusters to fan the
+        crowd into (cohesion-to-distributed-anchors, the standard fix for
+        centroid collapse). Each sub-cluster gets its OWN group_id + its OWN
+        compass-sector anchor spread across the radius (reusing the ring/angle
+        math from ``_build_riot``), so a large anchorless crowd distributes
+        across the map instead of imploding to one centre. ``sectors=1`` (or 0)
+        is an explicit opt-OUT that forces single-cluster behaviour even for a
+        large volatile crowd. When *sectors* is None and no *anchor* is given, a
+        crowd larger than ``_AUTO_FAN_THRESHOLD`` *and* in a volatile mood
+        (RIOTING / AGITATED — see ``_AUTO_FAN_MOODS``) auto-fans into 6 sectors;
+        calmer / smaller crowds (or any explicit *anchor*) keep the
+        single-cluster behaviour unchanged.
+
+        Returns list of member IDs created (across all sub-clusters).
         """
+        # -- Auto-fan: split a large VOLATILE anchorless crowd into N sector
+        # sub-clusters. An explicit *anchor* means the caller already placed this
+        # cluster in a specific sector (e.g. the seeded _build_riot preset), so
+        # never re-fan. The mood gate (``_AUTO_FAN_MOODS``) keeps calm/panicked/
+        # fleeing crowds as a single cluster — only the volatile moods that
+        # actually pile (escalate to RIOTING -> single centroid anchor) fan out.
+        if anchor is None:
+            if (sectors is None
+                    and count > self._AUTO_FAN_THRESHOLD
+                    and mood in self._AUTO_FAN_MOODS):
+                sectors = 6
+            if sectors is not None and sectors > 1:
+                return self._spawn_fanned(
+                    center, count, radius, sectors,
+                    mood=mood, leader_ratio=leader_ratio, rng=rng,
+                )
+
+        rnd = rng if rng is not None else random
         ids: list[str] = []
         available = self.max_members - len(self.members)
         actual = min(count, available)
-        group_id = uuid.uuid4().hex[:8]
+        # Group id from the seeded RNG when one is supplied, so a seeded preset
+        # is fully deterministic (occupancy tests). Falls back to a uuid for
+        # live, unseeded runs.
+        group_id = (f"g_{rnd.getrandbits(32):08x}" if rng is not None
+                    else uuid.uuid4().hex[:8])
 
         aggression = 0.0
         fear = 0.0
@@ -282,8 +418,8 @@ class CrowdSimulator:
             fear = 0.75
 
         for i in range(actual):
-            angle = random.uniform(0, 2 * math.pi)
-            r = radius * math.sqrt(random.random())
+            angle = rnd.uniform(0, 2 * math.pi)
+            r = radius * math.sqrt(rnd.random())
             px = center[0] + r * math.cos(angle)
             py = center[1] + r * math.sin(angle)
             pos = self._clamp_to_bounds((px, py))
@@ -294,10 +430,11 @@ class CrowdSimulator:
                 member_id=mid,
                 position=pos,
                 mood=mood,
-                aggression=aggression + random.uniform(-0.05, 0.05),
-                fear=fear + random.uniform(-0.05, 0.05),
+                aggression=aggression + rnd.uniform(-0.05, 0.05),
+                fear=fear + rnd.uniform(-0.05, 0.05),
                 is_leader=is_leader,
                 group_id=group_id,
+                anchor=anchor,
             )
             member.aggression = max(0.0, min(1.0, member.aggression))
             member.fear = max(0.0, min(1.0, member.fear))
@@ -306,6 +443,72 @@ class CrowdSimulator:
             ids.append(mid)
 
         return ids
+
+    def _spawn_fanned(
+        self,
+        center: Vec2,
+        count: int,
+        radius: float,
+        sectors: int,
+        mood: CrowdMood = CrowdMood.CALM,
+        leader_ratio: float = 0.05,
+        rng: random.Random | None = None,
+    ) -> list[str]:
+        """Fan *count* members across *sectors* distinct compass-sector
+        sub-clusters around *center* (cohesion-to-distributed-anchors).
+
+        Each sub-cluster is a separate ``spawn_crowd`` call with its OWN
+        group_id and its OWN sector anchor, so the operator-spawned crowd
+        distributes across the map exactly like the seeded ``_build_riot``
+        preset instead of collapsing onto one centroid. Reuses the same
+        ring/angle math as ``_build_riot`` (alternating 0.30 / 0.42-of-span
+        rings, +0.2 rad phase) but scales the ring radius down when the
+        requested spawn *radius* is small, so a tight operator radius still
+        produces visibly distinct knots without flinging members off-map.
+
+        Anchors are clamped to bounds and the per-cluster spawn radius is a
+        fraction of the inter-cluster spacing, keeping clusters legibly
+        separated. The placement RNG (``rng`` or module ``random``) is threaded
+        through unchanged so determinism is preserved.
+        """
+        sectors = max(2, sectors)
+        span = self._span()
+        cx, cy = center
+        # Spread radius: honour the caller's *radius* as the OUTER extent of the
+        # fan, but never less than a fraction of the arena (so a default
+        # operator radius of ~16 m still fans across a meaningful slice of the
+        # map). The seeded preset uses span*0.30..0.42; we mirror that ceiling.
+        spread = max(radius, span * 0.30)
+        # Per-cluster knot radius: small relative to the inter-cluster spacing
+        # so clusters stay distinct. Cap so dense knots don't visually merge.
+        cluster_r = min(radius * 0.5, span * 0.05)
+        if cluster_r <= 0:
+            cluster_r = span * 0.05
+
+        # Distribute members across sectors as evenly as possible (remainder
+        # spread over the first clusters), so total spawned == count.
+        base = count // sectors
+        extra = count % sectors
+
+        all_ids: list[str] = []
+        for i in range(sectors):
+            n_i = base + (1 if i < extra else 0)
+            if n_i <= 0:
+                continue
+            angle = 2 * math.pi * i / sectors + 0.2
+            ring = 0.85 if (i % 2 == 0) else 1.0  # alternate rings -> not an annulus
+            r = spread * ring
+            ax = cx + r * math.cos(angle)
+            ay = cy + r * math.sin(angle)
+            anchor = self._clamp_to_bounds((ax, ay))
+            all_ids.extend(
+                self.spawn_crowd(
+                    anchor, n_i, cluster_r,
+                    mood=mood, leader_ratio=leader_ratio, rng=rng,
+                    anchor=anchor,
+                )
+            )
+        return all_ids
 
     def inject_event(self, event: CrowdEvent) -> None:
         """Inject a crowd event that affects nearby members."""
@@ -332,14 +535,19 @@ class CrowdSimulator:
             m.fear = max(0.0, min(1.0, m.fear + fear_delta * strength))
             m.mood = self._resolve_mood(m)
 
-    def tick(self, dt: float) -> None:
+    def tick(self, dt: float, route_fn: Any = None) -> None:
         """Advance simulation by *dt* seconds.
 
         1. Mood propagation among neighbors
-        2. Movement based on mood
-        3. Collision avoidance + boundary enforcement
-        4. Event decay
-        5. Escalation checks
+        2. Per-group objective cycle (march -> hold -> rotate sector)
+        3. Movement based on mood
+        4. Collision avoidance + boundary enforcement
+        5. Event decay
+        6. Escalation checks
+
+        *route_fn* — optional ``callable(start_xy, end_xy) -> list[xy] | None``
+        (e.g. ``StreetGraph.shortest_path``) so group marches follow roads. Kept
+        as a param to keep this module independent of SC — never imported here.
         """
         self._time += dt
 
@@ -352,8 +560,18 @@ class CrowdSimulator:
         # 1. Mood propagation
         self._propagate_moods(dt)
 
-        # 2 & 3. Movement
+        # 2. Per-group objective cycle (BEFORE movement) — marches clusters to
+        # stable sector anchors and rotates objectives to adjacent sectors so
+        # the crowd roams the whole map instead of imploding to the centre.
+        self._update_group_objectives(route_fn=route_fn)
+
+        # 3 & 4. Movement
         self._move_members(dt)
+
+        # 4b. Agent sink: FLEEING members that reached their boundary exit go
+        # home (removed from the crowd). Drains a fled crowd to empty instead of
+        # milling at the perimeter forever (riot wind-down, 2026-06-15).
+        self._sink_arrived_fleers()
 
         # 4. Event decay
         self._decay_events(dt)
@@ -409,55 +627,363 @@ class CrowdSimulator:
         for m in self.members:
             m.mood = self._resolve_mood(m)
 
+    def _blocked(self, pos: Vec2) -> bool:
+        """True if pos is inside a building footprint (guarded, no-op if no obstacles)."""
+        if self.obstacles is None:
+            return False
+        try:
+            return bool(self.obstacles.point_in_building(pos[0], pos[1]))
+        except Exception:
+            return False
+
+    def _apply_velocity(self, member: CrowdMember, dt: float) -> None:
+        """Advance a member by its velocity, but never INTO a building. If the
+        diagonal move is blocked, SLIDE along the wall — move on whichever axis
+        is still free — so members flow around buildings instead of piling up at
+        the wall (riot-mode rework, 2026-06-14)."""
+        # Already inside a building (spawned/snapped in, or steered to a gather
+        # point that sat on a building node)? Eject to the nearest open space.
+        # Wall-slide only stops members ENTERING; it cannot free one that begins
+        # the tick inside (every slide axis is blocked -> frozen inside forever).
+        if self._blocked(member.position):
+            out = self._nearest_open(member.position)
+            if out is not None:
+                member.position = out
+            member.velocity = (0.0, 0.0)
+            return
+        vx, vy = member.velocity
+        full = self._clamp_to_bounds((member.position[0] + vx * dt, member.position[1] + vy * dt))
+        if not self._blocked(full):
+            member.position = full
+            return
+        # Wall-slide: take whichever single-axis move is unobstructed.
+        slide_x = self._clamp_to_bounds((member.position[0] + vx * dt, member.position[1]))
+        if not self._blocked(slide_x):
+            member.position = slide_x
+            member.velocity = (vx, 0.0)
+            return
+        slide_y = self._clamp_to_bounds((member.position[0], member.position[1] + vy * dt))
+        if not self._blocked(slide_y):
+            member.position = slide_y
+            member.velocity = (0.0, vy)
+            return
+        member.velocity = (0.0, 0.0)   # truly cornered
+
+    def _span(self) -> float:
+        """Smaller side of the world bounds — the spatial scale for sector
+        radii / formation jitter (matches the riot preset's ``span``)."""
+        x0, y0, x1, y1 = self.bounds
+        return min(x1 - x0, y1 - y0)
+
+    def _group_centroid(self, gid: str) -> Vec2 | None:
+        """Raw (un-snapped) centroid of a group's members, or None if empty.
+        Distinct from _group_center (leader-biased + street-snapped) — used only
+        to test arrival at an objective anchor, so it must NOT snap."""
+        sx = sy = 0.0
+        cnt = 0
+        for m in self.members:
+            if m.group_id == gid:
+                sx += m.position[0]
+                sy += m.position[1]
+                cnt += 1
+        if cnt == 0:
+            return None
+        return (sx / cnt, sy / cnt)
+
+    def _update_group_objectives(self, route_fn: Any = None) -> None:
+        """Per-group objective cycle (riot legibility rework, 2026-06-15).
+
+        For each group: seed a stable sector anchor from its members' spawn
+        sector; when the group centroid reaches that anchor, HOLD for an 8-12s
+        dwell, then ROTATE the objective to an adjacent sector (never a
+        diametric centre-crossing) at radius >= span*0.35. On a high-fear event
+        nearby (rank 12) the group flows to the perimeter node farthest from the
+        event; with low probability a group splinters. All RNG is the seeded
+        ``self._objective_rng`` so occupancy tests stay deterministic.
+
+        Only does work for AGITATED / RIOTING members (the riot crowd). PANICKED
+        / FLEEING use the exit logic, CALM / UNEASY mill — untouched here.
+        """
+        if not self.members:
+            return
+        span = self._span()
+        cx = (self.bounds[0] + self.bounds[2]) / 2.0
+        cy = (self.bounds[1] + self.bounds[3]) / 2.0
+        rng = self._objective_rng
+
+        # Group ids that have at least one agitated/rioting member. Sorted so
+        # the objective-update order is deterministic (occupancy tests) — set
+        # iteration order over string keys is process-randomised otherwise.
+        active_gids: set[str] = set()
+        for m in self.members:
+            if m.group_id and m.mood in (CrowdMood.AGITATED, CrowdMood.RIOTING):
+                active_gids.add(m.group_id)
+
+        for gid in sorted(active_gids):
+            # 1. Seed the anchor from the members' spawn sector (their stable
+            #    per-member anchor) the first time we see this group.
+            if gid not in self._group_anchors:
+                seed_anchor = None
+                for m in self.members:
+                    if m.group_id == gid and m.anchor is not None:
+                        seed_anchor = m.anchor
+                        break
+                if seed_anchor is None:
+                    seed_anchor = self._group_centroid(gid)
+                if seed_anchor is None:
+                    continue
+                self._group_anchors[gid] = seed_anchor
+                self._group_phase[gid] = "march"
+
+            anchor = self._group_anchors[gid]
+            centroid = self._group_centroid(gid)
+            if centroid is None:
+                continue
+
+            # 2. High-fear event nearby (rank 12): flow to the perimeter node
+            #    FARTHEST from the event for a short window (down a road away
+            #    from the police line), then regroup.
+            fear_ev = self._nearest_high_fear_event(centroid)
+            if fear_ev is not None and distance(centroid, fear_ev) <= 30.0:
+                self._group_anchors[gid] = self._farthest_exit(fear_ev)
+                self._group_phase[gid] = "march"
+                self._group_hold_until[gid] = 0.0
+                continue
+
+            phase = self._group_phase.get(gid, "march")
+            if phase == "march":
+                # Arrived? -> hold for a seeded dwell.
+                if distance(centroid, anchor) <= 10.0:
+                    self._group_phase[gid] = "hold"
+                    self._group_hold_until[gid] = self._time + rng.uniform(8.0, 12.0)
+            else:  # hold
+                if self._time >= self._group_hold_until.get(gid, 0.0):
+                    # Rotate to an ADJACENT sector and march there.
+                    self._group_anchors[gid] = self._rotate_objective(
+                        anchor, cx, cy, span, route_fn=route_fn,
+                    )
+                    self._group_phase[gid] = "march"
+                    # Low-probability splinter: peel ~30% of the group off with a
+                    # fresh group_id and its own adjacent-sector objective.
+                    if rng.random() < 0.15:
+                        self._splinter_group(gid, cx, cy, span, rng)
+
+    def _rotate_objective(
+        self,
+        anchor: Vec2,
+        cx: float,
+        cy: float,
+        span: float,
+        route_fn: Any = None,
+    ) -> Vec2:
+        """Rotate the group's objective to an ADJACENT compass sector (index
+        +/-1 of 6, never a diametric centre-crossing) at radius >= span*0.35.
+        Snaps to a street node near that bearing (biased toward recent events)
+        when street data exists, else a deterministic ring point. Optionally
+        validates a road route via *route_fn* (recompute only here, on change)."""
+        rng = self._objective_rng
+        cur_angle = math.atan2(anchor[1] - cy, anchor[0] - cx)
+        step = math.pi / 3.0  # 60 deg = one of 6 sectors
+        new_angle = cur_angle + (step if rng.random() < 0.5 else -step)
+        radius = span * (0.35 + rng.uniform(0.0, 0.07))
+        ring_point = self._clamp_to_bounds(
+            (cx + radius * math.cos(new_angle), cy + radius * math.sin(new_angle))
+        )
+        target = ring_point
+        nodes = self.street_nodes
+        if nodes:
+            # Prefer a street node near the new bearing; bias toward nodes close
+            # to a recent event so marches drift toward the action.
+            ev_pos = None
+            if self.events:
+                ev_pos = self.events[-1].position
+            best = None
+            best_score = float("inf")
+            for nx, ny in nodes:
+                if math.hypot(nx - cx, ny - cy) < span * 0.35:
+                    continue
+                score = distance((nx, ny), ring_point)
+                if ev_pos is not None:
+                    score += 0.3 * distance((nx, ny), ev_pos)
+                if score < best_score:
+                    best_score = score
+                    best = (nx, ny)
+            if best is not None:
+                target = best
+        # Validate a road route if one was supplied — guarded, falls back to the
+        # direct sector point. We don't store the path (steering seeks the
+        # anchor); this just ensures the objective is reachable by road.
+        if route_fn is not None:
+            try:
+                route = route_fn(anchor, target)
+                if route:
+                    target = route[-1]
+            except Exception:
+                pass
+        return target
+
+    def _splinter_group(self, gid: str, cx: float, cy: float, span: float,
+                        rng: random.Random) -> None:
+        """Peel ~30% of *gid*'s members into a fresh splinter group with its own
+        adjacent-sector objective (riot splinter, rank 12)."""
+        members = [m for m in self.members if m.group_id == gid]
+        if len(members) < 4:
+            return
+        n_split = max(1, int(len(members) * 0.30))
+        new_gid = f"g_{rng.getrandbits(32):08x}"
+        base_anchor = self._group_anchors.get(gid)
+        if base_anchor is None:
+            return
+        new_anchor = self._rotate_objective(base_anchor, cx, cy, span)
+        for m in members[:n_split]:
+            m.group_id = new_gid
+            m.anchor = new_anchor
+        self._group_anchors[new_gid] = new_anchor
+        self._group_phase[new_gid] = "march"
+
+    def _nearest_high_fear_event(self, pos: Vec2) -> Vec2 | None:
+        """Position of the nearest high-fear event (teargas / gunshot / charge /
+        flashbang) — used to flow a group away from police pressure (rank 12)."""
+        high_fear = {"teargas", "gunshot", "charge", "flashbang"}
+        cands = [e for e in self.events if e.event_type in high_fear]
+        if not cands:
+            return None
+        nearest = min(cands, key=lambda e: distance(pos, e.position))
+        return nearest.position
+
+    def _farthest_exit(self, event_pos: Vec2) -> Vec2:
+        """Perimeter node FARTHEST from *event_pos* (reuses the exit ring), so a
+        group flows down a road away from the threat. Falls back to the bounds
+        centre offset away from the event if no exits exist."""
+        if self._exits:
+            return max(self._exits, key=lambda ex: distance(ex, event_pos))
+        cx = (self.bounds[0] + self.bounds[2]) / 2.0
+        cy = (self.bounds[1] + self.bounds[3]) / 2.0
+        away = _sub((cx, cy), event_pos)
+        if magnitude(away) < 1e-6:
+            return (cx, cy)
+        span = self._span()
+        return self._clamp_to_bounds(_add((cx, cy), _scale(normalize(away), span * 0.4)))
+
+    def _member_anchor(self, m: CrowdMember) -> Vec2 | None:
+        """The member's stable sector anchor — its own ``anchor`` field, else the
+        live per-group objective anchor. None when neither is set (so the caller
+        falls back to the old group-centre behaviour, e.g. operator-spawned
+        crowds with no seeded sector)."""
+        if m.anchor is not None:
+            return m.anchor
+        if m.group_id:
+            return self._group_anchors.get(m.group_id)
+        return None
+
+    def _mill_target(self, m: CrowdMember, dt: float, speed: float) -> Vec2 | None:
+        """CALM/UNEASY-style milling: occasionally stand still (dwell), else
+        drift on a slowly-turning wander heading. Returns a seek target, or None
+        when the member is dwelling (velocity already damped + applied here)."""
+        if m.dwell > 0.0:
+            m.dwell -= dt
+            m.velocity = (m.velocity[0] * 0.5, m.velocity[1] * 0.5)
+            self._apply_velocity(m, dt)
+            return None
+        if magnitude(m.wander) < 1e-6 or random.random() < 0.05:
+            a = random.uniform(0, 2 * math.pi)
+            m.wander = (math.cos(a), math.sin(a))
+            if random.random() < 0.25:
+                m.dwell = random.uniform(0.5, 2.0)   # pause and mill
+        a = math.atan2(m.wander[1], m.wander[0]) + random.uniform(-0.4, 0.4)
+        m.wander = (math.cos(a), math.sin(a))
+        return _add(m.position, _scale(m.wander, speed))
+
     def _move_members(self, dt: float) -> None:
-        """Move each member according to their mood."""
+        """Move each member according to their mood — with organic milling,
+        dispersed flight, jittered cluster targets, and exponentially-smoothed
+        velocity, so the crowd reads as a believable gathering rather than
+        lines streaming onto a handful of points."""
+        # Loose formation jitter / arrival radius around a group's sector anchor
+        # (riot legibility rework, 2026-06-15) — agitated/rioting clusters hold
+        # their seeded sector across the full bounds instead of imploding onto
+        # the live group centroid (which collapsed the crowd to the centre).
+        formation_r = self._span() * 0.06
         for m in self.members:
             target: Vec2 | None = None
             speed = _SPEED_CALM
 
-            if m.mood == CrowdMood.CALM:
-                # Random walk
-                speed = _SPEED_CALM
-                angle = random.uniform(0, 2 * math.pi)
-                jitter = (math.cos(angle) * speed * 0.5, math.sin(angle) * speed * 0.5)
-                target = _add(m.position, jitter)
-
-            elif m.mood == CrowdMood.UNEASY:
-                speed = _SPEED_CALM * 1.2
-                angle = random.uniform(0, 2 * math.pi)
-                jitter = (math.cos(angle) * speed * 0.3, math.sin(angle) * speed * 0.3)
-                target = _add(m.position, jitter)
+            if m.mood in (CrowdMood.CALM, CrowdMood.UNEASY):
+                m.exit_target = None
+                speed = _SPEED_CALM * (1.2 if m.mood == CrowdMood.UNEASY else 1.0)
+                # Mill: occasionally stand still, else drift on a slowly-turning
+                # heading (not a fresh random angle every tick, which spins in place).
+                target = self._mill_target(m, dt, speed)
+                if target is None:
+                    continue
 
             elif m.mood == CrowdMood.AGITATED:
+                m.exit_target = None
                 speed = _SPEED_AGITATED
-                # Move toward group center / leaders
-                target = self._group_center(m)
+                anchor = self._member_anchor(m)
+                if anchor is not None:
+                    # Loiter once we've reached the sector — fall through to
+                    # CALM/UNEASY-style milling so the cluster holds its sector
+                    # instead of converging tighter.
+                    if distance(m.position, anchor) <= formation_r:
+                        target = self._mill_target(m, dt, _SPEED_CALM * 1.2)
+                        if target is None:
+                            continue
+                    else:
+                        # Steer to the STABLE anchor (+ loose jitter), NOT the
+                        # live group centre, which implodes the crowd.
+                        target = (anchor[0] + random.uniform(-formation_r, formation_r),
+                                  anchor[1] + random.uniform(-formation_r, formation_r))
+                else:
+                    gc = self._group_center(m)
+                    # Loose cluster AROUND the center (jittered), not a snap onto it.
+                    target = (gc[0] + random.uniform(-3.0, 3.0), gc[1] + random.uniform(-3.0, 3.0))
 
             elif m.mood == CrowdMood.RIOTING:
+                m.exit_target = None
                 speed = _SPEED_RIOTING
-                # Move toward nearest event or random aggressive direction
+                # Surge toward a NEARBY flashpoint; otherwise hold the group's
+                # STABLE sector anchor so scattered groups clash across the area
+                # instead of every rioter rushing one central point (tight blob).
+                near_ev = None
                 if self.events:
-                    nearest_evt = min(self.events, key=lambda e: distance(m.position, e.position))
-                    target = nearest_evt.position
+                    ev = min(self.events, key=lambda e: distance(m.position, e.position))
+                    if distance(m.position, ev.position) < 25.0:
+                        near_ev = ev
+                if near_ev is not None:
+                    target = (near_ev.position[0] + random.uniform(-5.0, 5.0),
+                              near_ev.position[1] + random.uniform(-5.0, 5.0))
                 else:
-                    target = self._group_center(m)
+                    anchor = self._member_anchor(m)
+                    if anchor is not None:
+                        if distance(m.position, anchor) <= formation_r:
+                            target = self._mill_target(m, dt, _SPEED_CALM * 1.2)
+                            if target is None:
+                                continue
+                        else:
+                            target = (anchor[0] + random.uniform(-formation_r, formation_r),
+                                      anchor[1] + random.uniform(-formation_r, formation_r))
+                    else:
+                        gc = self._group_center(m)
+                        target = (gc[0] + random.uniform(-4.0, 4.0), gc[1] + random.uniform(-4.0, 4.0))
 
             elif m.mood == CrowdMood.PANICKED:
                 speed = _SPEED_PANICKED
-                # Move away from nearest threat event
                 threat = self._nearest_threat(m)
-                if threat:
+                if threat and distance(m.position, threat) < 30.0:
                     away = _sub(m.position, threat)
                     if magnitude(away) > 1e-6:
                         target = _add(m.position, _scale(normalize(away), speed))
-                    else:
-                        target = self._nearest_exit(m.position)
-                else:
-                    target = self._nearest_exit(m.position)
+                if target is None:
+                    if m.exit_target is None:
+                        m.exit_target = self._pick_exit(m.position)
+                    target = m.exit_target
 
             elif m.mood == CrowdMood.FLEEING:
                 speed = _SPEED_FLEEING
-                target = self._nearest_exit(m.position)
+                if m.exit_target is None:
+                    m.exit_target = self._pick_exit(m.position)
+                target = m.exit_target
 
             if target is None:
                 continue
@@ -465,19 +991,65 @@ class CrowdSimulator:
             desired = _sub(target, m.position)
             d = magnitude(desired)
             if d < 1e-6:
-                m.velocity = (0.0, 0.0)
+                m.velocity = (m.velocity[0] * 0.5, m.velocity[1] * 0.5)
                 continue
 
             desired_vel = _scale(normalize(desired), speed)
-
-            # Separation force — avoid bumping into others
+            # Separation spreads the crowd into a cluster instead of a stack.
             sep = self._separation_force(m)
-            combined = _add(desired_vel, _scale(sep, 2.0))
+            combined = _add(desired_vel, _scale(sep, speed * 1.2))
             combined = truncate(combined, speed)
+            # Exponential velocity smoothing -> no per-tick heading snaps/jitter.
+            m.velocity = (0.7 * m.velocity[0] + 0.3 * combined[0],
+                          0.7 * m.velocity[1] + 0.3 * combined[1])
+            self._apply_velocity(m, dt)
 
-            m.velocity = combined
-            new_pos = _add(m.position, _scale(m.velocity, dt))
-            m.position = self._clamp_to_bounds(new_pos)
+    def _sink_arrived_fleers(self) -> None:
+        """Remove FLEEING members that reached the boundary exit (gone home).
+
+        The standard agent sink at an exit node. A member is sunk only when it
+        is genuinely committed to flight (``mood == FLEEING``) AND has reached
+        the perimeter — either within ``_EXIT_HOME_RADIUS`` of the exit it
+        picked, OR pressed against a boundary wall (within ``_EXIT_HOME_RADIUS``
+        of any edge). The wall test matters because ``_pick_exit`` jitters exit
+        points onto / just past the perimeter ring, so a member clamped to the
+        wall can sit a few metres short of an out-of-bounds exit and otherwise
+        never qualify — yet it has plainly LEFT the scene. Either condition
+        means the body has exited.
+
+        Members still en route, or merely PANICKED (fleeing a live threat but
+        not yet committed to an exit), are untouched — so the crowd drains
+        exactly as fast as bodies actually reach the perimeter, never instantly.
+
+        O(k): a single pass building the survivor list. Only rebuilds the
+        ``members`` list when at least one member is removed, so the common
+        no-flee tick pays just one cheap scan.
+        """
+        members = self.members
+        if not members:
+            return
+        home_r = _EXIT_HOME_RADIUS
+        x0, y0, x1, y1 = self.bounds
+        survivors: list[CrowdMember] = []
+        gone = 0
+        for m in members:
+            if m.mood == CrowdMood.FLEEING:
+                px, py = m.position
+                at_wall = (
+                    px - x0 <= home_r or x1 - px <= home_r
+                    or py - y0 <= home_r or y1 - py <= home_r
+                )
+                at_exit = (
+                    m.exit_target is not None
+                    and distance(m.position, m.exit_target) <= home_r
+                )
+                if at_wall or at_exit:
+                    gone += 1
+                    continue
+            survivors.append(m)
+        if gone:
+            self.members = survivors
+            self.members_gone_home += gone
 
     def _compute_group_centers(self) -> dict[str, Vec2]:
         """Precompute center position for each group, biased toward leaders.
@@ -503,10 +1075,47 @@ class CrowdSimulator:
         for gid, (sx, sy, cnt) in all_sums.items():
             ldata = leader_sums.get(gid)
             if ldata and ldata[2] > 0:
-                centers[gid] = (ldata[0] / ldata[2], ldata[1] / ldata[2])
+                c = (ldata[0] / ldata[2], ldata[1] / ldata[2])
             elif cnt > 0:
-                centers[gid] = (sx / cnt, sy / cnt)
+                c = (sx / cnt, sy / cnt)
+            else:
+                continue
+            # Anchor the gather point to the nearest street node so the group
+            # forms on a real street/junction, not an arbitrary centroid (which
+            # can sit inside a building). One scan per group per tick.
+            centers[gid] = self._nearest_street(c)
         return centers
+
+    def _nearest_street(self, pos: Vec2) -> Vec2:
+        """Snap a point to the nearest street node, if street data is loaded."""
+        nodes = self.street_nodes
+        if not nodes:
+            return pos
+        best = pos
+        best_d = float("inf")
+        px, py = pos
+        for nx, ny in nodes:
+            d = (nx - px) * (nx - px) + (ny - py) * (ny - py)
+            if d < best_d:
+                best_d = d
+                best = (nx, ny)
+        return best
+
+    def _nearest_open(self, pos: Vec2) -> Vec2 | None:
+        """Nearest open (non-building) point to pos, via a radial search outward.
+        Used to eject a member that ended up inside a building — the smallest pop
+        that clears the footprint, so they reappear just outside the wall rather
+        than teleporting across the map. Returns None if nothing open is found."""
+        if self.obstacles is None:
+            return pos
+        px, py = pos
+        for r in (1.5, 3.0, 4.5, 6.0, 8.0, 11.0, 15.0, 20.0, 28.0, 40.0):
+            for k in range(12):
+                ang = k * (math.pi / 6.0)
+                cand = self._clamp_to_bounds((px + math.cos(ang) * r, py + math.sin(ang) * r))
+                if not self._blocked(cand):
+                    return cand
+        return None
 
     def _group_center(self, member: CrowdMember) -> Vec2:
         """Center of this member's group, biased toward leaders.
@@ -531,7 +1140,7 @@ class CrowdSimulator:
 
         Uses the spatial grid for O(k) neighbor lookups instead of O(n) scans.
         """
-        sep_radius = 1.5
+        sep_radius = 3.0
         force = (0.0, 0.0)
         count = 0
         neighbors = self._grid.query_radius(member.position, sep_radius)
@@ -541,10 +1150,18 @@ class CrowdSimulator:
             d = distance(member.position, m.position)
             if 1e-6 < d < sep_radius:
                 diff = normalize(_sub(member.position, m.position))
-                force = _add(force, _scale(diff, 1.0 / d))
+                # Linear falloff (strongest when close) — spreads the crowd into
+                # a believable cluster instead of letting members stack into lines.
+                w = (sep_radius - d) / sep_radius
+                force = _add(force, _scale(diff, w))
                 count += 1
         if count > 0:
             force = _scale(force, 1.0 / count)
+            # De-clump dense pockets: averaging by count weakens separation
+            # exactly where it's needed most, so amplify when many neighbours
+            # are crowded in close — the crowd actively spreads instead of stacking.
+            if count > 3:
+                force = _scale(force, 1.0 + 0.4 * (count - 3))
         return force
 
     def _decay_events(self, dt: float) -> None:
@@ -729,25 +1346,81 @@ class CrowdSimulator:
 # ---------------------------------------------------------------------------
 
 def _build_peaceful_protest(bounds: tuple[float, float, float, float]) -> CrowdSimulator:
-    """200 calm protesters with leaders. Slow escalation if police arrive."""
+    """~200 calm protesters gathering in several scattered clusters (organic
+    groups, not one blob). Slow escalation if police arrive."""
     sim = CrowdSimulator(bounds, max_members=500)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
-    sim.spawn_crowd((cx, cy), 200, radius=30.0, mood=CrowdMood.CALM, leader_ratio=0.05)
+    span = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    off = span * 0.15
+    for dx, dy in [(0.0, 0.0), (-off, off * 0.6), (off, off * 0.5),
+                   (-off * 0.6, -off), (off * 0.7, -off * 0.7)]:
+        sim.spawn_crowd((cx + dx, cy + dy), 40, radius=span * 0.08,
+                        mood=CrowdMood.CALM, leader_ratio=0.05)
     return sim
 
 
-def _build_riot(bounds: tuple[float, float, float, float]) -> CrowdSimulator:
-    """150 agitated + 50 rioting, leaders, objects thrown."""
-    sim = CrowdSimulator(bounds, max_members=500)
+def _build_riot(
+    bounds: tuple[float, float, float, float],
+    seed: int | None = None,
+) -> CrowdSimulator:
+    """~200 agitated members seeded into 6 distinct compass SECTORS spread
+    across the FULL bounds (riot legibility rework, 2026-06-15) — not a pile of
+    units in the centre. Two of the six sectors are the RIOTING cores; the rest
+    are AGITATED. Each cluster is a tight knot anchored to its seeded sector
+    point; steering holds that sector so the crowd uses the whole map.
+
+    *seed* makes ALL placement deterministic (occupancy tests). When None the
+    module RNG is used (live runs vary).
+    """
+    sim = CrowdSimulator(bounds, max_members=500, seed=seed)
+    rng = random.Random(seed)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
-    sim.spawn_crowd((cx, cy), 150, radius=25.0, mood=CrowdMood.AGITATED, leader_ratio=0.03)
-    sim.spawn_crowd((cx + 10, cy), 50, radius=15.0, mood=CrowdMood.RIOTING, leader_ratio=0.06)
-    # Initial thrown objects
+    span = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
+
+    # 6 groups, one per compass sector. Place group i at angle 2*pi*i/N + 0.2,
+    # alternating radius rings (0.30 / 0.42 of span) so adjacent sectors sit on
+    # different rings and don't read as a single annulus. Two of the six are the
+    # rioting cores (indices 1 and 4 — opposite sectors, so the clash spans the
+    # map rather than hugging the centre).
+    n = 6
+    riot_sectors = {1, 4}
+    # Scale the crowd with the arena so a big "use the whole city" riot stays
+    # believably dense instead of a sparse scatter (riot city-scale, 2026-06-15).
+    # Baseline span 240 m -> ~200 members; up to 1.8x for a large arena. Spans at
+    # or below the 200 m test bounds keep dmult=1.0 (occupancy test unchanged).
+    dmult = max(1.0, min(span / 240.0, 1.8))
+    n_riot = round(30 * dmult)
+    n_agit = round(35 * dmult)
+    sector_points: list[Vec2] = []
+    for i in range(n):
+        angle = 2 * math.pi * i / n + 0.2
+        ring = 0.30 if (i % 2 == 0) else 0.42
+        radius = span * ring
+        sx = cx + radius * math.cos(angle)
+        sy = cy + radius * math.sin(angle)
+        sector_points.append(sim._clamp_to_bounds((sx, sy)))
+
+    rioting_core_pos: Vec2 | None = None
+    for i, anchor in enumerate(sector_points):
+        if i in riot_sectors:
+            sim.spawn_crowd(anchor, n_riot, radius=span * 0.05,
+                            mood=CrowdMood.RIOTING, leader_ratio=0.10,
+                            rng=rng, anchor=anchor)
+            if rioting_core_pos is None:
+                rioting_core_pos = anchor
+        else:
+            sim.spawn_crowd(anchor, n_agit, radius=span * 0.05,
+                            mood=CrowdMood.AGITATED, leader_ratio=0.06,
+                            rng=rng, anchor=anchor)
+
+    # Initial thrown object on a rioting core's seeded sector (not dead centre),
+    # so the flashpoint is where a riot core actually is.
+    throw_pos = rioting_core_pos if rioting_core_pos is not None else (cx, cy)
     sim.inject_event(CrowdEvent(
         event_type="throw_object",
-        position=(cx + 5, cy + 5),
+        position=throw_pos,
         radius=10.0,
         intensity=0.6,
         timestamp=0.0,
@@ -760,6 +1433,8 @@ def _build_stampede(bounds: tuple[float, float, float, float]) -> CrowdSimulator
     sim = CrowdSimulator(bounds, max_members=500)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
+    # PANICKED is not a volatile auto-fan mood, so this stays ONE radial blob
+    # that explodes outward from the gunshot — the intended stampede shape.
     sim.spawn_crowd((cx, cy), 300, radius=35.0, mood=CrowdMood.PANICKED, leader_ratio=0.0)
     sim.inject_event(CrowdEvent(
         event_type="gunshot",
@@ -776,7 +1451,10 @@ def _build_standoff(bounds: tuple[float, float, float, float]) -> CrowdSimulator
     sim = CrowdSimulator(bounds, max_members=500)
     cx = (bounds[0] + bounds[2]) / 2
     cy = (bounds[1] + bounds[3]) / 2
-    sim.spawn_crowd((cx, cy - 10), 100, radius=20.0, mood=CrowdMood.AGITATED, leader_ratio=0.05)
+    # sectors=1 opts OUT of the volatile-mood auto-fan: a standoff is ONE crowd
+    # massed in front of a single police line, not 6 scattered sector knots.
+    sim.spawn_crowd((cx, cy - 10), 100, radius=20.0, mood=CrowdMood.AGITATED,
+                    leader_ratio=0.05, sectors=1)
     return sim
 
 

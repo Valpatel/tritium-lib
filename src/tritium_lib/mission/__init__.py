@@ -1577,4 +1577,13 @@ __all__ = [
     "MissionStatus",
     "Mission",
     "MissionPlanner",
+    "rank_hold_points",
+    "assign_defenders_to_chokepoints",
 ]
+
+# Key-terrain defender placement (pure tactical helper; consumes the open
+# chokepoint tactical-object contract, no GIS/engine coupling).
+from tritium_lib.mission.defense import (  # noqa: E402
+    assign_defenders_to_chokepoints,
+    rank_hold_points,
+)

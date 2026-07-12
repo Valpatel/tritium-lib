@@ -13,8 +13,9 @@ Provides four core analysers:
   observations (RSSI histogram, beacon interval, channel usage, service
   UUIDs) and compare fingerprints for device re-identification.
 
-- **SpectrumAnalyzer** — Pure-math frequency-domain analysis: peak
+- **SignalSpectrumAnalyzer** — Pure-math frequency-domain analysis: peak
   detection, band classification, spectral entropy, and periodogram.
+  (Distinct from the device-backed ``tritium_lib.sdr.SpectrumAnalyzer``.)
 
 - **CSIProcessor** — WiFi Channel State Information processing for
   occupancy detection using subcarrier variance analysis with Hampel
@@ -25,7 +26,7 @@ All algorithms are pure Python (stdlib ``math`` only, no numpy required).
 Usage::
 
     from tritium_lib.signals import RSSIAnalyzer, SignalFingerprint
-    from tritium_lib.signals import SpectrumAnalyzer, CSIProcessor
+    from tritium_lib.signals import SignalSpectrumAnalyzer, CSIProcessor
 """
 
 from .rssi_analyzer import (
@@ -40,7 +41,7 @@ from .fingerprint import (
 )
 
 from .spectrum import (
-    SpectrumAnalyzer,
+    SignalSpectrumAnalyzer,
     SpectralPeak,
     SpectralSummary,
     BandClassification,
@@ -58,6 +59,14 @@ from .csi_processor import (
     hampel_filter,
 )
 
+# gcc_phat needs numpy (FFT). Keep it optional so a core-only (no-numpy)
+# install still imports the pure-Python analysers above.
+try:
+    from .gcc_phat import gcc_phat as gcc_phat
+    _HAS_GCC_PHAT = True
+except ImportError:  # pragma: no cover - numpy absent
+    _HAS_GCC_PHAT = False
+
 __all__ = [
     # RSSI
     "RSSIAnalyzer",
@@ -67,7 +76,7 @@ __all__ = [
     # Fingerprint
     "SignalFingerprint",
     # Spectrum
-    "SpectrumAnalyzer",
+    "SignalSpectrumAnalyzer",
     "SpectralPeak",
     "SpectralSummary",
     "BandClassification",
@@ -82,3 +91,6 @@ __all__ = [
     "SubcarrierBand",
     "hampel_filter",
 ]
+
+if _HAS_GCC_PHAT:
+    __all__.append("gcc_phat")

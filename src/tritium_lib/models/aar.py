@@ -77,6 +77,81 @@ class CivilianCollateral(BaseModel):
     # cause string -> count, e.g. {"crossfire": 3, "explosion": 1, "panic": 2}
 
 
+class DeEscalationSummary(BaseModel):
+    """Civil-unrest de-escalation outcome — how ORDER was (or wasn't) restored.
+
+    Surfaces the mode's central metric in the after-action record: the riot is
+    won by identifying/neutralizing enough instigators that the crowd
+    self-calms (de_escalation_score crosses de_escalation_target), NOT by
+    grinding every attrition wave.  ``weighted_score`` is the operator's
+    headline number (30% combat score + 70% de-escalation).
+    """
+
+    score: int = 0
+    target: int = 0
+    target_met: bool = False
+    weighted_score: int = 0
+
+
+class EscortSummary(BaseModel):
+    """Escort-mode outcome — did the VIP get delivered, and how far it got.
+
+    Escort is the moving-objective mode: a friendly non-combatant protectee
+    travels A->B.  The mission is won by ARRIVAL and lost by LOSS, never by
+    clearing waves, so the after-action record reports the delivery outcome
+    plus how much of the route was covered (``route_progress``, 0..1) and the
+    metres still to go (``distance_remaining``) — the honest convoy debrief.
+    """
+
+    protectee_id: str = ""
+    protectee_name: str = ""
+    delivered: bool = False  # reached destination (victory)
+    lost: bool = False  # destroyed / lost en route (defeat)
+    destination: tuple[float, float] | None = None
+    distance_remaining: float = 0.0  # metres from VIP to destination at end
+    route_progress: float = 0.0  # 0.0..1.0 fraction of A->B covered
+
+
+class PatrolSummary(BaseModel):
+    """Patrol-mode outcome — was the protected perimeter HELD or BREACHED.
+
+    Patrol is the static perimeter-security mode: a single hostile inside the
+    ``breach_radius`` of the protected point is an immediate defeat, distinct
+    from battle's all-friendlies-eliminated.  The after-action record reports
+    whether the zone held and the closest a hostile got to the centre.
+    """
+
+    protected_point: tuple[float, float] | None = None
+    breach_radius: float = 0.0
+    held: bool = False  # perimeter survived every wave without a breach (victory)
+    breached: bool = False  # a hostile entered the secure zone (defeat)
+    closest_approach: float = 0.0  # nearest hostile distance to the point (m)
+
+
+class InfrastructureSummary(BaseModel):
+    """Infrastructure-defence outcome — was the protected structure HELD or DESTROYED.
+
+    Drone-swarm and defense are the two structure-integrity modes: a single
+    integrity pool (a comms relay under air assault, or a fixed ground
+    strongpoint under siege) decays as attackers reach it, and the mission is
+    lost the moment it hits zero — distinct from battle's all-friendlies wipe.
+    The after-action record reports the final integrity, the lowest it ever
+    sank to, total damage absorbed, and a per-source breakdown
+    (``bomber_detonation`` / ``attack_fire`` / ``ground_siege``) so the
+    operator can see HOW the structure was worn down, not just whether it fell.
+    """
+
+    final_integrity: float = 0.0  # health at game end
+    max_integrity: float = 0.0  # starting / max health
+    integrity_percent: float = 0.0  # 0.0..100.0 of max remaining at end
+    min_integrity: float = 0.0  # lowest integrity reached during the engagement
+    total_damage: float = 0.0  # cumulative damage absorbed
+    destroyed: bool = False  # integrity hit 0 — mission-critical loss
+    damage_by_source: dict[str, float] = Field(default_factory=dict)
+    # source_type string -> damage dealt, e.g.
+    # {"bomber_detonation": 450.0, "attack_fire": 75.0, "ground_siege": 120.0}
+
+
 class MVPHighlight(BaseModel):
     """The most valuable friendly unit of the engagement."""
 
@@ -100,6 +175,8 @@ class AfterActionReport(BaseModel):
     scenario_name: str = ""  # Human-readable name (e.g. "Drone Swarm")
     game_mode_type: str = "battle"
     result: str = "draw"  # victory, defeat, draw, aborted
+    result_reason: str = ""  # why it ended: order_restored, civilian_harm_limit,
+    # all_friendlies_eliminated, all_waves_cleared, ...
     started_at: float = Field(default_factory=time.time)
     ended_at: float = Field(default_factory=time.time)
     duration_seconds: float = 0.0
@@ -111,6 +188,10 @@ class AfterActionReport(BaseModel):
         default_factory=lambda: FactionSummary(alliance="hostile")
     )
     civilian: CivilianCollateral = Field(default_factory=CivilianCollateral)
+    de_escalation: DeEscalationSummary | None = None  # civil_unrest only
+    escort: EscortSummary | None = None  # escort mode only
+    patrol: PatrolSummary | None = None  # patrol mode only
+    infrastructure: InfrastructureSummary | None = None  # drone_swarm/defense only
 
     mvp: MVPHighlight | None = None
 
@@ -125,6 +206,10 @@ __all__ = [
     "AfterActionReport",
     "FactionSummary",
     "CivilianCollateral",
+    "DeEscalationSummary",
+    "EscortSummary",
+    "PatrolSummary",
+    "InfrastructureSummary",
     "MVPHighlight",
     "KillGraphEntry",
     "MoraleSample",

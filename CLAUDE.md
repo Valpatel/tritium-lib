@@ -8,6 +8,21 @@ The foundation library for the entire Tritium ecosystem. Models, target tracking
 
 SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 
+## What belongs here (the bin boundary)
+
+**Belongs in lib:** reusable models, algorithms, wire contracts, protocols, the
+sim engine, geometry, planners, the addon SDK, shared JS — anything a *second*
+caller reuses. **Litmus: it must import cleanly on a bare aarch64 Jetson with
+only light deps (numpy / pydantic / opencv).**
+
+**Never belongs in lib** — this is a hard invariant, not a preference:
+`import isaacsim` / `pxr` / `rospy`, anything that *requires* torch or a
+framework runtime, FastAPI routers, on-robot code. Those poison the "imports on
+the robot brain" guarantee. Heavy simulator/tool runtimes → a **`tritium-addons`**
+addon (e.g. Isaac Sim → `tritium-addons/isaac_sim`); on-robot ROS2 → **`tritium-edge/ros2`**.
+When unsure where a file goes, see the copper-roof rule in
+[`../CLAUDE.md`](../CLAUDE.md) → `docs/ARCHITECTURE.md` (parent repo).
+
 **Parent context:** See [../CLAUDE.md](../CLAUDE.md) for full system architecture and conventions.
 
 ## Git Conventions
@@ -33,7 +48,6 @@ SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 | `config` | Pydantic base settings for service configuration |
 | `store` | Persistent data stores (BLE, targets, async, time-series) |
 | `sdk` | Addon SDK: AddonBase, AddonContext, DeviceRegistry, protocols, BaseRunner, GeoJSON layers |
-| `utils` | Shared helpers |
 
 ### Intelligence & Fusion
 | Package | Purpose |
@@ -68,7 +82,7 @@ SC imports directly from `tritium_lib` — no wrappers, no adapters, no shims.
 | `scenarios` | Pre-built simulation scenarios |
 
 ### JS Simulation (web/sim/)
-Browser-side city simulation: IDM, MOBIL, vehicles, pedestrians, road networks, traffic control, procedural city, protest engine, daily routines, weather, spatial grid, identity system. A distribution copy ships inside the Python tree at `src/tritium_lib/js/` (sim + render) so pip installs carry the JS modules.
+Browser-side city simulation: IDM, MOBIL, vehicles, pedestrians, road networks, traffic control, procedural city, protest engine, daily routines, weather, spatial grid, identity system. (`src/tritium_lib/js/` is a SECOND, textually-diverged copy of some of these modules — **NOT orphaned**: it is the runtime browser-module tree for the `sim_engine/demos/` city demos, reached via the git-tracked symlink `sim_engine/demos/js -> ../../js`. Consumed by `demos/city3d-clean.html` (imports `./js/sim/core/city-builder.js`, `world.js`, `weather.js`) and by `demos/city3d/inspect.js` → `../js/sim/identity.js` (loaded by `city3d.html`, served by `serve_city3d.py` on :8888). It correctly carries no `__init__.py`/`package-data` — it is browser JS served over HTTP, not importable Python, so wheels exclude it by design. **Do NOT delete** — deletion breaks the symlink and the demos. `web/` is the SEPARATE tree used by SC's frontend/tests. Verified 2026-07-11 — supersedes the old "zero-consumer, delete-or-wire" claim.)
 
 ### JS UI & Map Framework (web/)
 Shared frontend: layout manager, command palette, event bus, reactive store, WebSocket, plus panel system and tactical map (MapLibre GL, effects, asset types, 3D units, providers)

@@ -256,6 +256,48 @@ class TestDossierUpdates:
     def test_update_threat_level_nonexistent(self, store):
         assert store.update_threat_level("fake", "high") is False
 
+    # ── Classification fusion ───────────────────────────────────────
+
+    def test_update_classification_sets_type_and_confidence(self, store):
+        """A fresh classification lifts a placeholder dossier off unknown/0.0."""
+        did = store.create_dossier("Dog Detection")  # defaults: unknown / 0.0
+        assert store.update_classification(
+            did, entity_type="animal", confidence=0.77) is True
+        d = store.get_dossier(did)
+        assert d["entity_type"] == "animal"
+        assert d["confidence"] == pytest.approx(0.77)
+
+    def test_update_classification_confidence_is_monotonic(self, store):
+        """A weaker later sighting never downgrades a strong identification."""
+        did = store.create_dossier("Contact")
+        store.update_classification(did, entity_type="vehicle", confidence=0.9)
+        store.update_classification(did, entity_type="person", confidence=0.3)
+        d = store.get_dossier(did)
+        # Higher-confidence classification wins both fields.
+        assert d["entity_type"] == "vehicle"
+        assert d["confidence"] == pytest.approx(0.9)
+
+    def test_update_classification_higher_confidence_upgrades_type(self, store):
+        """A stronger observation overwrites the prior entity_type."""
+        did = store.create_dossier("Contact", entity_type="unknown")
+        store.update_classification(did, entity_type="animal", confidence=0.5)
+        store.update_classification(did, entity_type="person", confidence=0.95)
+        d = store.get_dossier(did)
+        assert d["entity_type"] == "person"
+        assert d["confidence"] == pytest.approx(0.95)
+
+    def test_update_classification_confidence_only_keeps_type(self, store):
+        """Bumping confidence without a type leaves entity_type intact."""
+        did = store.create_dossier("Dog", entity_type="animal", confidence=0.5)
+        store.update_classification(did, confidence=0.8)
+        d = store.get_dossier(did)
+        assert d["entity_type"] == "animal"
+        assert d["confidence"] == pytest.approx(0.8)
+
+    def test_update_classification_nonexistent(self, store):
+        assert store.update_classification(
+            "fake", entity_type="animal", confidence=0.5) is False
+
 
 # ── Merge ───────────────────────────────────────────────────────────
 

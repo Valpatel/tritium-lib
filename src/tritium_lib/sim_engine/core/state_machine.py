@@ -58,6 +58,14 @@ class State:
         min_duration: Minimum time (seconds) before any transition can fire.
         max_duration: Maximum time (seconds) before auto-transitioning.
         max_duration_target: State name to auto-transition to after max_duration.
+        max_duration_guard: Optional predicate ``(ctx) -> bool``.  When set, the
+            max_duration auto-transition fires ONLY when the guard returns True
+            (in addition to the elapsed-time check).  Used by civilian flee /
+            evade states so the timed auto-return to walking/driving is GATED on
+            danger having CLEARED — a ped under sustained gunfire must not be
+            auto-returned (and re-routed) toward a live threat.  States that
+            leave this ``None`` (every combat FSM state) keep the original
+            unconditional behavior, so combat ctx evaluation is byte-identical.
     """
 
     def __init__(
@@ -69,6 +77,7 @@ class State:
         min_duration: float = 0.0,
         max_duration: float = 0.0,
         max_duration_target: str | None = None,
+        max_duration_guard: Callable[[dict], bool] | None = None,
     ) -> None:
         self.name = name
         self._on_enter_cb = on_enter
@@ -77,6 +86,7 @@ class State:
         self.min_duration = min_duration
         self.max_duration = max_duration
         self.max_duration_target = max_duration_target
+        self.max_duration_guard = max_duration_guard
 
     def on_enter(self, ctx: dict) -> None:
         """Called when entering this state. Override in subclasses."""
@@ -424,6 +434,14 @@ class StateMachine:
         max_dur = getattr(current_state, "max_duration", 0.0)
         max_target = getattr(current_state, "max_duration_target", None)
         if max_dur > 0 and max_target is not None and self._time_in_state >= max_dur:
+            # Optional ctx guard: a guarded max_duration only auto-transitions
+            # when the predicate is satisfied.  Civilian flee/evade states use
+            # this to stay fleeing while danger is live (gate is "danger has
+            # cleared"); combat states set no guard, so this branch is skipped
+            # and behavior is unchanged.
+            guard = getattr(current_state, "max_duration_guard", None)
+            if guard is not None and not guard(ctx):
+                return False
             if max_target in self._states:
                 self._do_transition(max_target, ctx)
                 return True

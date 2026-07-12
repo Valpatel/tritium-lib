@@ -48,6 +48,12 @@ from dataclasses import dataclass, field
 
 from .target_history import TargetHistory
 from .target_reappearance import TargetReappearanceMonitor
+from .integrity import (
+    innovation_mahalanobis_sq,
+    update_velocity_ewma,
+    is_spoofed,
+    spoof_score,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +88,7 @@ _HALF_LIVES: dict[str, float] = {
     "ble": 30.0,
     "wifi": 45.0,
     "yolo": 15.0,
+    "camera": 15.0,   # frame detections decay like any vision contact
     "rf_motion": 10.0,
     "acoustic": 20.0,     # transient sounds — gunshot/glass-break/voice
     "mesh": 120.0,
@@ -96,9 +103,14 @@ _LN2 = math.log(2)
 _MULTI_SOURCE_BOOST = 1.3  # 30% boost per additional confirming source
 _MAX_BOOSTED_CONFIDENCE = 0.99
 
-# Velocity consistency — max plausible speed in meters/second
-# 50 m/s ~ 180 km/h, anything above is suspicious
+# Velocity consistency. The RAIM innovation gate (tracking.integrity) handles
+# normal motion checks; _MAX_PLAUSIBLE_SPEED_MPS is retained as a reference for a
+# typical ground vehicle (~180 km/h). _TELEPORT_SPEED_MPS is the absolute backstop:
+# a single-step speed above it is a teleport/spoof regardless of motion history, and
+# is set well above any plausible platform (fast aircraft ~300 m/s) so legitimate
+# fast movers (e.g. ADS-B aircraft) are not flagged.
 _MAX_PLAUSIBLE_SPEED_MPS = 50.0
+_TELEPORT_SPEED_MPS = 600.0
 _TELEPORT_FLAG_COOLDOWN = 30.0  # seconds before re-flagging same target
 
 
@@ -146,6 +158,27 @@ def _shared_ble_classifier():
     return _SHARED_BLE_CLASSIFIER
 
 
+# ---------------------------------------------------------------------------
+# Alliance authority
+# ---------------------------------------------------------------------------
+# The canonical alliance vocabulary.  The tracker is the ONE authority for a
+# target's *effective* alliance; every consumer (live map WS batches, REST
+# /api/targets*, CoT/TAK affiliation, fusion) reads it from here.  Values a
+# writer proposes are validated against this set — junk never clobbers a
+# known alliance.
+VALID_ALLIANCES = frozenset({"friendly", "hostile", "neutral", "unknown", "vip"})
+
+# Precedence order for alliance writes (highest wins, 2026-07-11 ruling):
+#   1. "operator"  — an explicit human tag (set_operator_alliance).  Pinned:
+#                    telemetry can never clobber a human's decision.
+#   2. "auto"      — declared telemetry (a frame that carries an "alliance"
+#                    key: a red-team robot re-declaring itself, an NPC
+#                    turning hostile).  Applied only while not pinned.
+#   3. creation default — whatever the ingest path stamped at first sight
+#                    (sim default / _resolve_alliance fallback); simply the
+#                    value that holds until tier 1 or 2 writes.
+
+
 @dataclass
 class TrackedTarget:
     """A target Amy is aware of — real or virtual."""
@@ -161,7 +194,7 @@ class TrackedTarget:
     last_seen: float = field(default_factory=time.monotonic)
     first_seen: float = field(default_factory=time.monotonic)
     signal_count: int = 0  # number of sightings/updates received
-    source: str = "manual"  # "simulation", "yolo", "manual"
+    source: str = "manual"  # "simulation", "yolo", "camera", "manual", ...
     status: str = "active"
     position_source: str = "unknown"  # "gps", "simulation", "mqtt", "fixed", "yolo", "unknown"
     position_confidence: float = 0.0  # 0.0 = no confidence, 1.0 = high
@@ -172,8 +205,34 @@ class TrackedTarget:
     correlation_confidence: float = 0.0  # weighted correlation score from correlator
     velocity_suspicious: bool = False  # flagged if target teleported
     _last_velocity_flag: float = 0.0  # monotonic time of last velocity flag
+    spoof_score: float = 0.0  # 0..1 RAIM innovation-gate plausibility-of-spoof
+    _vx: float = 0.0  # constant-velocity estimate (m/s) for the integrity gate
+    _vy: float = 0.0
+    _v_samples: int = 0  # velocity deltas observed (two-point init at the first)
     classification: str = "unknown"  # RL/ML classification (person, vehicle, phone, etc.)
     classification_confidence: float = 0.0  # confidence of the classification model
+    # Civil-unrest crowd sub-classification — finer grain than ``alliance``.
+    # "civilian" (protected), "instigator" (agitator), "rioter" (active).
+    # None for non-crowd entities (rovers, drones, vehicles, etc.).  Threaded
+    # from SimulationTarget.crowd_role through update_from_simulation so the
+    # tactical map / ops surface can render a protected civilian distinctly
+    # from an agitator.  See Wave 213.
+    crowd_role: str | None = None
+    # Hit-feedback contract (tritium_lib.models.hits): combat hitpoints for
+    # entities that REPORT health — sim combatants and wire robots whose
+    # telemetry carries a ``health`` block (a robot dog's HealthTracker).
+    # ``None`` means "this target does not report health" (most sensors),
+    # NOT "zero hp" — renderers must skip the HP bar, never draw it empty.
+    # Flat floats here (the tactical surface convention: health/max_health),
+    # distilled from the wire block's hp/max_hp by the ingest bridge.
+    health: float | None = None
+    max_health: float | None = None
+    # Who last wrote ``alliance`` — the alliance-authority precedence tier
+    # (see module docstring above the class).  "auto" = the tracker follows
+    # declared telemetry; "operator" = a human tagged this target and the
+    # value is PINNED (update_from_simulation and every other telemetry
+    # ingest must leave ``alliance`` alone until re-tagged).
+    alliance_source: str = "auto"  # "auto" | "operator"
     # Structured kinematic / detection metadata.  Sources that report rich
     # state (radar range/bearing/speed, RF motion direction hints, etc.)
     # store it here instead of squeezing it into the discrete ``status``
@@ -216,6 +275,7 @@ class TrackedTarget:
             "target_id": self.target_id,
             "name": self.name,
             "alliance": self.alliance,
+            "alliance_source": self.alliance_source,
             "asset_type": self.asset_type,
             "position": {"x": self.position[0], "y": self.position[1]},
             "lat": geo["lat"],
@@ -238,8 +298,12 @@ class TrackedTarget:
             "correlated_ids": list(self.correlated_ids),
             "correlation_confidence": self.correlation_confidence,
             "velocity_suspicious": self.velocity_suspicious,
+            "spoof_score": round(self.spoof_score, 3),
             "classification": self.classification,
             "classification_confidence": self.classification_confidence,
+            "crowd_role": self.crowd_role,
+            "health": self.health,
+            "max_health": self.max_health,
             "kinematics": dict(self.kinematics) if self.kinematics else None,
         }
         if history is not None:
@@ -250,7 +314,7 @@ class TrackedTarget:
 class TargetTracker:
     """Thread-safe registry of all tracked targets in the battlespace."""
 
-    # Stale timeout — remove YOLO detections older than this
+    # Stale timeout — remove vision detections (yolo/camera) older than this
     STALE_TIMEOUT = 30.0
 
     def __init__(self, event_bus=None, ble_classifier=None) -> None:
@@ -308,23 +372,51 @@ class TargetTracker:
             pass  # Don't let geofence errors break target tracking
 
     def _check_velocity(self, target: TrackedTarget, new_pos: tuple[float, float]) -> None:
-        """Check if position change implies impossible velocity (teleportation)."""
+        """RAIM-style integrity gate: flag fixes that defy the motion model.
+
+        Replaces a fixed max-speed threshold (which flagged every legitimately
+        fast, steady mover — e.g. an ADS-B aircraft at 200 m/s — and missed slow
+        drift spoofs) with an innovation test: predict the position from the
+        target's constant-velocity estimate and gate the normalized innovation
+        against a chi-square threshold. A steady fast mover stays in-gate; a
+        teleport / GPS-spoof jump trips the gate. Sets ``spoof_score`` (0..1) for
+        downstream consumers (HUD, anomaly engine, fusion confidence).
+        """
         now = time.monotonic()
         dt = now - target.last_seen
         if dt <= 0.0 or dt > 120.0:  # skip if first update or very stale
             return
 
+        # Absolute teleport backstop: a single-step speed faster than any plausible
+        # platform (well above even a fast aircraft ~300 m/s) is a teleport / GPS
+        # spoof. Flag it even before a velocity baseline exists -- the innovation
+        # gate below needs >=2 samples, so a teleport on a target's FIRST move would
+        # otherwise slip through warmup unflagged.
         dx = new_pos[0] - target.position[0]
         dy = new_pos[1] - target.position[1]
-        dist = math.sqrt(dx * dx + dy * dy)
-        speed = dist / dt
+        speed = math.hypot(dx, dy) / dt
+        teleport = speed > _TELEPORT_SPEED_MPS
 
-        if speed > _MAX_PLAUSIBLE_SPEED_MPS:
+        m2 = innovation_mahalanobis_sq(
+            target.position, new_pos, (target._vx, target._vy), dt
+        )
+        target.spoof_score = max(spoof_score(m2), 1.0 if teleport else 0.0)
+
+        if teleport or is_spoofed(m2, target._v_samples):
             if (now - target._last_velocity_flag) > _TELEPORT_FLAG_COOLDOWN:
                 target.velocity_suspicious = True
                 target._last_velocity_flag = now
         else:
             target.velocity_suspicious = False
+
+        # Update the constant-velocity model. Two-point init (alpha=1) on the
+        # first delta so a freshly-acquired steady mover gets the right model
+        # immediately, EWMA-smoothed thereafter.
+        alpha = 1.0 if target._v_samples == 0 else 0.4
+        target._vx, target._vy = update_velocity_ewma(
+            (target._vx, target._vy), target.position, new_pos, dt, alpha=alpha
+        )
+        target._v_samples += 1
 
     def _add_confirming_source(self, target: TrackedTarget, source: str) -> None:
         """Register an additional source that confirms this target's existence.
@@ -347,6 +439,14 @@ class TargetTracker:
             return
         if source == target.source:
             return
+        # "camera" (posed frame detection) and "yolo" (bare vision detection)
+        # are the SAME modality — vision — differing only in provenance.  A
+        # camera detection refreshing a yolo track (or vice versa) is not
+        # cross-modal confirmation; counting it would inflate the fusion
+        # headline exactly like the simulation artifact above.  Camera
+        # provenance is recorded in ``kinematics`` instead.
+        if source in self.VISION_SOURCES and target.source in self.VISION_SOURCES:
+            return
         target.confirming_sources.add(source)
 
     def update_from_simulation(self, sim_data: dict) -> None:
@@ -363,6 +463,36 @@ class TargetTracker:
                 t.speed = sim_data.get("speed", 0.0)
                 t.battery = sim_data.get("battery", 1.0)
                 t.status = sim_data.get("status", "active")
+                # Crowd sub-role can change mid-sim (a civilian radicalizes
+                # into a rioter).  Only overwrite when the telemetry actually
+                # carries the key — an absent key is "no opinion", not "clear
+                # the known role" (throttled/partial updates omit it).
+                if "crowd_role" in sim_data:
+                    t.crowd_role = sim_data.get("crowd_role")
+                # Health (hit-feedback contract): same absent-key rule — a
+                # telemetry frame without health is "no opinion", not "heal
+                # to unknown".  A frame WITH it is authoritative (the robot
+                # owns its own health; see tritium_lib.models.hits).
+                if "health" in sim_data:
+                    t.health = sim_data.get("health")
+                if "max_health" in sim_data:
+                    t.max_health = sim_data.get("max_health")
+                # Alliance (declared-telemetry tier): a unit CAN change sides
+                # mid-run — a red-team robot re-declares itself, an NPC turns
+                # hostile.  Same absent-key rule as crowd_role/health: a frame
+                # without the key is "no opinion", never a reset.  Junk values
+                # never clobber (VALID_ALLIANCES whitelist).  An operator tag
+                # outranks the wire: once alliance_source == "operator" the
+                # declared claim is ignored until the operator re-tags
+                # (set_operator_alliance is the only writer that pins).
+                if "alliance" in sim_data and t.alliance_source != "operator":
+                    declared = sim_data.get("alliance")
+                    if declared in VALID_ALLIANCES and declared != t.alliance:
+                        t.alliance = declared
+                        # Alliance is identity-grade state (map glyph color,
+                        # hostiles/friendlies REST, CoT affiliation): bump the
+                        # version counter so /api/targets ETag caches refresh.
+                        self._membership_count += 1
                 t.last_seen = time.monotonic()
                 t.signal_count += 1
                 self._add_confirming_source(t, "simulation")
@@ -392,6 +522,11 @@ class TargetTracker:
                     # cross-modal observations (BLE + YOLO, mesh + ADS-B,
                     # etc.).
                     confirming_sources=set(),
+                    # Civil-unrest crowd sub-role (None for non-crowd units).
+                    crowd_role=sim_data.get("crowd_role"),
+                    # Hit-feedback health (None = does not report health).
+                    health=sim_data.get("health"),
+                    max_health=sim_data.get("max_health"),
                 )
         self.history.record(tid, position)
         self._check_geofence(tid, position[0], position[1])
@@ -402,8 +537,16 @@ class TargetTracker:
     surface streets; faster vehicles will spawn new IDs (and that's fine —
     they're a different track regime)."""
 
-    def update_from_detection(self, detection: dict) -> None:
-        """Update or create a tracked target from a YOLO detection.
+    VISION_SOURCES = ("yolo", "camera")
+    """The single *vision* track regime.  ``"camera"`` marks a detection
+    with camera provenance (a posed security camera saw these pixels —
+    ``source_camera`` in the payload); ``"yolo"`` is a bare vision
+    detection with no camera identity.  Both describe the same physical
+    contact population, so matching treats them as one regime: a camera
+    detection refreshes a yolo track instead of spawning a duplicate id."""
+
+    def update_from_detection(self, detection: dict) -> str | None:
+        """Update or create a tracked target from a vision detection.
 
         Match logic chooses the *closest* existing target within a
         motion-aware radius — not the first that fits.  The radius grows
@@ -411,13 +554,27 @@ class TargetTracker:
         targets do not split into a new ID every frame, while still-recent
         ghosts don't get refreshed by a detection that's actually a new
         entity.
+
+        Camera provenance: when the payload carries ``source_camera`` (set
+        by :class:`tritium_lib.perception.FrameDetectionPipeline` and the
+        SC camera bridges), the track is created with ``source="camera"``
+        and the camera identity/geometry (``camera_id``, ``bearing_deg``,
+        ``distance_m``, ``bbox``) is stamped into ``kinematics`` so the
+        dossier and map can answer *which camera saw this target*.
+
+        Returns:
+            The ``det_*`` target id this detection matched or created, so
+            callers (dossier signals, fusion) can link follow-on records
+            to the exact track — or None if the detection was rejected.
         """
         if detection.get("confidence", 0) < 0.4:
-            return
+            return None
 
         class_name = detection.get("class_name", "unknown")
         cx = detection.get("center_x", 0.0)
         cy = detection.get("center_y", 0.0)
+        camera_id = str(detection.get("source_camera") or "")
+        src = "camera" if camera_id else "yolo"
 
         if class_name == "person":
             alliance = "hostile"
@@ -439,7 +596,7 @@ class TargetTracker:
             matched = None
             best_dist_sq = float("inf")
             for existing in self._targets.values():
-                if existing.source != "yolo":
+                if existing.source not in self.VISION_SOURCES:
                     continue
                 if existing.asset_type != asset_type:
                     continue
@@ -460,13 +617,15 @@ class TargetTracker:
                 matched.position = (cx, cy)
                 matched.last_seen = now
                 matched.signal_count += 1
-                self._add_confirming_source(matched, "yolo")
+                self._add_confirming_source(matched, src)
+                if camera_id:
+                    self._stamp_camera_provenance(matched, camera_id, detection)
                 tid = matched.target_id
             else:
                 self._detection_counter += 1
                 self._membership_count += 1
                 tid = f"det_{class_name}_{self._detection_counter}"
-                self._targets[tid] = TrackedTarget(
+                target = TrackedTarget(
                     target_id=tid,
                     name=f"{class_name.title()} #{self._detection_counter}",
                     alliance=alliance,
@@ -475,15 +634,41 @@ class TargetTracker:
                     last_seen=now,
                     first_seen=now,
                     signal_count=1,
-                    source="yolo",
-                    position_source="yolo",
+                    source=src,
+                    position_source=src,
                     position_confidence=0.1,
                     _initial_confidence=0.1,
-                    confirming_sources={"yolo"},
+                    confirming_sources={src},
                     classification=class_name,
                     classification_confidence=detection.get("confidence", 0.0),
                 )
+                if camera_id:
+                    self._stamp_camera_provenance(target, camera_id, detection)
+                self._targets[tid] = target
         self.history.record(tid, (cx, cy))
+        return tid
+
+    @staticmethod
+    def _stamp_camera_provenance(
+        target: TrackedTarget, camera_id: str, detection: dict
+    ) -> None:
+        """Record which camera saw this track (and where in its view).
+
+        Provenance lives in ``kinematics`` — the structured detection-
+        metadata field — NOT in ``confirming_sources``, because camera and
+        yolo are the same vision modality (see ``_add_confirming_source``).
+        Existing kinematics keys from other sources are preserved.
+        """
+        kin = dict(target.kinematics) if target.kinematics else {}
+        kin["camera_id"] = camera_id
+        for key in ("bearing_deg", "distance_m"):
+            value = detection.get(key)
+            if value is not None:
+                kin[key] = value
+        bbox = detection.get("bbox")
+        if isinstance(bbox, dict):
+            kin["bbox"] = dict(bbox)
+        target.kinematics = kin
 
     def update_from_camera_detection(
         self,
@@ -491,7 +676,8 @@ class TargetTracker:
         camera_lat: float,
         camera_lng: float,
         latlng_to_local_fn=None,
-    ) -> None:
+        camera_id: str = "",
+    ) -> str | None:
         """Update or create a target from a camera detection, positioned near the camera.
 
         Args:
@@ -500,6 +686,11 @@ class TargetTracker:
             camera_lng: Camera longitude.
             latlng_to_local_fn: Optional callable(lat, lng) -> (x, y, z).
                 If None, tries to import from tritium_lib.geo.
+            camera_id: Identity of the observing camera.  When set (or when
+                the detection dict carries ``camera_id``/``source_camera``),
+                the resulting track gets camera provenance: ``source="camera"``
+                and ``kinematics.camera_id`` for the dossier/map surface.
+                Default empty keeps the legacy ``source="yolo"`` behavior.
         """
         if latlng_to_local_fn is None:
             try:
@@ -528,12 +719,23 @@ class TargetTracker:
         game_x = cam_x + offset_x
         game_y = cam_y + offset_y
 
-        self.update_from_detection({
+        cam_id = str(
+            camera_id
+            or detection.get("camera_id")
+            or detection.get("source_camera")
+            or ""
+        )
+        payload = {
             "class_name": label,
             "confidence": confidence,
             "center_x": game_x,
             "center_y": game_y,
-        })
+        }
+        if cam_id:
+            payload["source_camera"] = cam_id
+        if isinstance(bbox, dict):
+            payload["bbox"] = bbox
+        return self.update_from_detection(payload)
 
     # BLE sightings have longer stale timeout — devices can be stationary
     BLE_STALE_TIMEOUT = 120.0
@@ -793,6 +995,107 @@ class TargetTracker:
             self.history.record(tid, position)
             self._check_geofence(tid, position[0], position[1])
 
+    # Acoustic targets — transient sounds (gunshot/voice/vehicle) detected by a
+    # mic array.  Localisation is coarse (direction-of-arrival, weak range), so
+    # tracks are low-confidence and short-lived, but they still confirm an
+    # entity already seen by RF/vision/mesh — the fourth north-star modality.
+    ACOUSTIC_STALE_TIMEOUT = 60.0
+
+    # Acoustic event type -> (asset_type, classification).  The classification
+    # IS the sound class; asset_type is the most likely emitter.
+    _ACOUSTIC_ASSET = {
+        "gunshot": "person",
+        "voice": "person",
+        "footsteps": "person",
+        "scream": "person",
+        "glass_break": "person",
+        "vehicle": "vehicle",
+        "engine": "vehicle",
+        "drone": "drone",
+    }
+
+    def update_from_acoustic(self, event: dict) -> None:
+        """Update or create a tracked target from an acoustic detection.
+
+        Args:
+            event: Dict with keys: event_type (gunshot/voice/vehicle/...),
+                position {x, y} (coarse DOA estimate), confidence, sensor_id,
+                and optionally target_id / name / alliance.
+
+        Acoustic is the fourth north-star modality (RF + vision + mesh +
+        acoustic).  A co-located acoustic track correlates with the RF/vision
+        tracks for the same entity into ONE unique multi-source ID.
+        """
+        event_type = event.get("event_type", "unknown")
+        target_id = event.get("target_id", "")
+        sensor_id = event.get("sensor_id", "mic")
+
+        # Stable per-entity id when the caller knows which entity made the
+        # sound; otherwise key by the sensor + sound class.
+        if target_id:
+            tid = f"acoustic_{target_id}"
+        elif event.get("position"):
+            tid = f"acoustic_{sensor_id}_{event_type}"
+        else:
+            # Nothing to localise or key on — ignore (never create junk tracks).
+            return
+
+        pos = event.get("position")
+        if pos:
+            position = (float(pos.get("x", 0)), float(pos.get("y", 0)))
+            pos_source = "acoustic_doa"
+        else:
+            position = (0.0, 0.0)
+            pos_source = "unknown"
+
+        name = event.get("name") or target_id or event_type
+        alliance = event.get("alliance", "unknown")
+        asset_type = self._ACOUSTIC_ASSET.get(event_type, "unknown")
+        # DOA localisation is coarse — cap confidence well below RF/vision.
+        confidence = max(0.0, min(0.6, float(event.get("confidence", 0.4))))
+
+        with self._lock:
+            if tid in self._targets:
+                t = self._targets[tid]
+                if pos_source != "unknown":
+                    self._check_velocity(t, position)
+                    t.position = position
+                    t.position_source = pos_source
+                t.last_seen = time.monotonic()
+                t.signal_count += 1
+                t.position_confidence = confidence
+                t._initial_confidence = confidence
+                self._add_confirming_source(t, "acoustic")
+            else:
+                self._membership_count += 1
+                self._targets[tid] = TrackedTarget(
+                    target_id=tid,
+                    name=name,
+                    alliance=alliance,
+                    asset_type=asset_type,
+                    position=position,
+                    last_seen=time.monotonic(),
+                    first_seen=time.monotonic(),
+                    signal_count=1,
+                    source="acoustic",
+                    position_source=pos_source,
+                    position_confidence=confidence,
+                    _initial_confidence=confidence,
+                    confirming_sources={"acoustic"},
+                    classification=event_type,
+                    classification_confidence=confidence,
+                )
+                self.reappearance_monitor.check_reappearance(
+                    target_id=tid,
+                    name=name,
+                    source="acoustic",
+                    asset_type=asset_type,
+                    position=position,
+                )
+        if pos_source != "unknown":
+            self.history.record(tid, position)
+            self._check_geofence(tid, position[0], position[1])
+
     # ADS-B aircraft targets
     ADSB_STALE_TIMEOUT = 120.0
 
@@ -983,6 +1286,11 @@ class TargetTracker:
         """Monotonic membership counter — bumps when targets are added or
         removed, but **not** on per-target position/state updates.
 
+        Exception: *alliance* changes (operator tag or a declared mid-run
+        side-switch) also bump, because alliance is identity-grade state a
+        reconciling client must not 304 past — see set_operator_alliance
+        and update_from_simulation's alliance handling.
+
         Used by /api/targets ETag/304 to short-circuit unchanged polls
         (Wave 201).  The reconciliation poll only cares about set
         membership: positions/state stream over WebSocket telemetry and
@@ -1018,6 +1326,33 @@ class TargetTracker:
         """Get a specific target by ID."""
         with self._lock:
             return self._targets.get(target_id)
+
+    def set_operator_alliance(self, target_id: str, alliance: str) -> TrackedTarget | None:
+        """Apply an explicit operator alliance tag — the TOP precedence tier.
+
+        This is the ONLY writer that sets ``alliance_source = "operator"``.
+        Once pinned, declared telemetry (update_from_simulation's alliance
+        handling, wire re-declarations) can never clobber the human's
+        decision; only a subsequent operator tag changes it.  SC's
+        POST /api/targets/{id}/tag and the classification-override route
+        both come through here so map == REST == CoT == fusion.
+
+        Returns the updated target, or ``None`` when the alliance value is
+        not in :data:`VALID_ALLIANCES` or the target is unknown.
+        """
+        if alliance not in VALID_ALLIANCES:
+            return None
+        with self._lock:
+            t = self._targets.get(target_id)
+            if t is None:
+                return None
+            t.alliance = alliance
+            t.alliance_source = "operator"
+            # Identity-grade change: invalidate /api/targets ETag caches so a
+            # reconciling client refreshes immediately instead of 304-ing on
+            # a stale alliance.
+            self._membership_count += 1
+            return t
 
     def remove(self, target_id: str) -> bool:
         """Remove a target from tracking."""
@@ -1098,6 +1433,80 @@ class TargetTracker:
 
         return result
 
+    def tactical_brief(self) -> str:
+        """Concise live situational grounding for the cognition layer.
+
+        Unlike :meth:`summary` (combat-oriented: proximity alerts + hostile
+        sectors, and which OMITS the ``neutral`` alliance), this is a
+        state-of-the-board inventory meant to ground an operator/Amy question
+        regardless of game state — it is a pure tracker read with no
+        ``game_mode`` dependency, so it works in monitor mode too:
+
+        - counts by alliance INCLUDING ``neutral`` (the civilian
+          non-combatants the combat summary leaves invisible), and
+        - a breakdown by target classification (person/vehicle/phone/animal —
+          the operational mission's "track every target" taxonomy), falling
+          back to ``asset_type`` when a target has no ML classification.
+
+        Returns ``""`` when nothing is tracked.
+        """
+        targets = self.get_all()
+        if not targets:
+            return ""
+
+        alliance_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        for t in targets:
+            alliance_counts[t.alliance] = alliance_counts.get(t.alliance, 0) + 1
+            # Prefer the ML/RL classification; fall back to the asset type.
+            kind = t.classification
+            if not kind or kind == "unknown":
+                kind = t.asset_type or "unknown"
+            type_counts[kind] = type_counts.get(kind, 0) + 1
+
+        # Stable, operator-meaningful ordering; unknown alliances trail.
+        order = ["friendly", "hostile", "neutral", "unknown"]
+        ordered = [a for a in order if a in alliance_counts]
+        ordered += [a for a in alliance_counts if a not in order]
+        alliance_str = ", ".join(f"{alliance_counts[a]} {a}" for a in ordered)
+
+        lines = [f"TRACKING {len(targets)} target(s): {alliance_str}"]
+
+        # Type breakdown — most common first (deterministic tie-break by name),
+        # capped to keep the brief short for the small chat model.
+        known = {k: v for k, v in type_counts.items() if k and k != "unknown"}
+        if known:
+            top = sorted(known.items(), key=lambda kv: (-kv[1], kv[0]))[:6]
+            lines.append("Types: " + ", ".join(f"{v} {k}" for k, v in top))
+
+        # Zone occupancy — surface live geofence state to cognition so an
+        # operator/Amy can answer "what's in the restricted zone?" instead of
+        # guessing (UX Loop 5 / 10). The tracker already holds the geofence
+        # engine reference (set via set_geofence_engine), and knows each
+        # target's alliance/classification, so it can resolve occupants into a
+        # threat-aware breakdown (a hostile in a restricted zone = BREACH).
+        geo = getattr(self, "_geofence_engine", None)
+        if geo is not None and hasattr(geo, "zone_brief"):
+            try:
+                by_id = {t.target_id: t for t in targets}
+
+                def _resolve(tid):
+                    t = by_id.get(tid)
+                    if t is None:
+                        return None
+                    kind = t.classification
+                    if not kind or kind == "unknown":
+                        kind = t.asset_type or "unknown"
+                    return {"alliance": t.alliance, "classification": kind}
+
+                zb = geo.zone_brief(occupant_resolver=_resolve)
+                if zb:
+                    lines.append(zb)
+            except Exception:
+                pass
+
+        return "\n".join(lines)
+
     SIM_STALE_TIMEOUT = 10.0
 
     def _prune_stale(self) -> None:
@@ -1106,11 +1515,13 @@ class TargetTracker:
         with self._lock:
             stale = [
                 tid for tid, t in self._targets.items()
-                if (t.source == "yolo" and (now - t.last_seen) > self.STALE_TIMEOUT)
+                if (t.source in self.VISION_SOURCES
+                    and (now - t.last_seen) > self.STALE_TIMEOUT)
                 or (t.source == "simulation" and (now - t.last_seen) > self.SIM_STALE_TIMEOUT)
                 or (t.source == "ble" and (now - t.last_seen) > self.BLE_STALE_TIMEOUT)
                 or (t.source == "rf_motion" and (now - t.last_seen) > self.RF_MOTION_STALE_TIMEOUT)
                 or (t.source == "mesh" and (now - t.last_seen) > self.MESH_STALE_TIMEOUT)
+                or (t.source == "acoustic" and (now - t.last_seen) > self.ACOUSTIC_STALE_TIMEOUT)
                 or (t.source == "adsb" and (now - t.last_seen) > self.ADSB_STALE_TIMEOUT)
             ]
             if stale:

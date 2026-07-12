@@ -30,9 +30,12 @@ from __future__ import annotations
 import math
 import random
 import time
+import zlib
 from typing import TYPE_CHECKING
 
 from tritium_lib.models.target_status import is_terminal
+from tritium_lib.sim_engine.behavior.doctrine import find_peek_position
+from tritium_lib.sim_engine.perception import detectability_multiplier
 
 if TYPE_CHECKING:
     from tritium_lib.sim_engine.combat.combat import CombatSystem
@@ -61,7 +64,57 @@ _GROUP_RUSH_SPEED_MULT = 1.2  # 20% speed boost during rush
 # Cover-seeking parameters
 _COVER_HEALTH_THRESHOLD = 0.5  # seek cover below this health fraction
 
+# Cover-vs-peek arbitration (damaged ground units with a MASKED shot).
+# A wounded unit whose fire solution is blocked prioritizes COVER over the raw
+# peek doctrine: it moves to cover first (seeking), commits there (holding),
+# then leans out to a BOUNDED peek (peeking) and re-engages.  A per-unit phase
+# machine with a minimum sim-time dwell prevents cover<->peek thrash (G-1: the
+# dwell elapses in the behavior SIM clock, never wall-clock).
+_COVER_ARRIVAL_RADIUS = 3.0    # within this of the cover point == "at cover"
+_COVER_PEEK_EXPOSURE = 6.0     # max lean-out distance from the cover anchor
+_COVER_PHASE_DWELL_S = 1.5     # min sim-seconds committed to a phase (hysteresis)
+
+# Engagement-range doctrine parameters (peek/flank to un-mask a fire solution)
+# Minimum sim-seconds between peek recomputes per unit — hysteresis so units
+# commit to a peek and don't thrash their waypoints every tick.
+_PEEK_RECOMPUTE_S = 1.5
+# Asset types that never peek: aerial units are LOS-exempt (they shoot/arc
+# over terrain) and static / mortar-capable units either can't move or already
+# lob rounds over obstacles.  Everything else (rover, apc, person, and the
+# person-based crowd roles) is an eligible GROUND stand-in.
+_NO_DOCTRINE_TYPES = frozenset({
+    "drone", "scout_drone", "heavy_drone", "recon_drone",
+    "swarm_drone", "quad_drone", "plane_drone",
+    "turret", "heavy_turret", "missile_turret", "tank",
+})
+
+# Hard rules-of-engagement for police stand-in AI: crowd roles police units
+# must NEVER fire on (protected non-combatants).  Mirrors AutoDispatcher's
+# PROTECTED_CROWD_ROLES so the less-lethal engagement can never target a
+# civilian or an already-calmed (arrested) crowd member.
+_PROTECTED_CROWD_ROLES: frozenset[str] = frozenset({"civilian", "calmed"})
+
+# Rival-faction riots (lane/riot tick 3): the ONLY crowd roles that are ever
+# a valid inter-faction engagement target.  Complements the protected set
+# above — a civilian or calmed crowd member is never engageable regardless of
+# the faction it carries, so faction warfare can't erode the ROE guard.
+_FACTION_VIOLENT_ROLES: frozenset[str] = frozenset({"rioter", "instigator"})
+
 # Weapon projectile type by asset_type (matches weapons.py loadouts)
+# A rioter that spots a friendly unit within this range CHARGES it (the
+# violent minority attacks the line pushing into the crowd — the core riot
+# contact dynamic).  Beyond it, rioters keep their street routine.
+_RIOTER_AGGRO_RANGE: float = 25.0
+
+# Rival-faction riots ONLY: a factioned rioter/instigator ADVANCES on the
+# nearest rival across the plaza (the two mobs seek each other and collide,
+# instead of both drifting to the police line and ignoring one another).  A
+# rioter in a riot always knows roughly where the enemy bloc is, so the seek
+# range effectively spans the map — set larger than the map diagonal so the
+# blocs converge no matter how far apart they spawn.  Gated on `rivals` being
+# set, so single-faction riots never pay it and stay byte-identical.
+_RIVAL_SEEK_RANGE: float = 2000.0
+
 _WEAPON_TYPES: dict[str, str | None] = {
     "turret": "nerf_turret_gun",
     "heavy_turret": "nerf_heavy_turret",
@@ -79,6 +132,7 @@ _WEAPON_TYPES: dict[str, str | None] = {
     # Mission-type weapon mappings
     "instigator": "thrown_object",
     "rioter": "melee_strike",
+    "police": "pepper_ball",       # Less-lethal crowd control
     "scout_swarm": None,           # Cannot fire
     "attack_swarm": "nerf_dart_gun",
     "bomber_swarm": None,          # Detonation, not projectile
@@ -136,15 +190,65 @@ class UnitBehaviors:
         self._de_escalation_timers: dict[str, float] = {}  # rioter_id -> accumulated proximity time
         self._bomber_original_speeds: dict[str, float] = {}  # bomber_id -> speed before dive
 
+        # Engagement-range doctrine: ground units that peek/flank to un-mask a
+        # blocked fire solution.  unit_id -> (target_id, last_recompute_sim_time,
+        # peek_pos).  Recompute is throttled by _PEEK_RECOMPUTE_S (hysteresis).
+        self._peek_targets: dict[str, tuple[str, float, tuple[float, float]]] = {}
+
+        # Cover-vs-peek arbitration phase machine (damaged + masked shot).
+        # unit_id -> (phase, phase_enter_sim_time, target_id, cover_anchor).
+        # phase in {"seeking", "holding", "peeking"}.  cover_anchor is the cover
+        # point the unit is committed to; bounded peeks lean out from it.
+        self._cover_phase: dict[
+            str, tuple[str, float, str, tuple[float, float]]
+        ] = {}
+
         # Sensor awareness tracking
         self._detected_base_speeds: dict[str, float] = {}  # speeds before detection boost
         self._detected_ids: set[str] = set()                # hostiles with active detection boost
 
         # Upgrade system reference (for EMP stun checks)
         self._upgrade_system = None
+        # Optional faction-hostility oracle for rival-faction riots: any
+        # object exposing are_hostile(faction_a, faction_b) -> bool (the
+        # DiplomacyEngine satisfies this directly).  None = single-faction
+        # behavior, bit-for-bit identical to before the faction feature.
+        self._diplomacy = None
+        # Optional callable(target_id)->bool: True when an embodiment slot is
+        # OCCUPIED by an external agent (Graphling). Occupied units skip the
+        # stand-in AI entirely — Tritium never puppets the occupant.
+        self._occupancy_check = None
 
         # Pathfinding router callback
         self._router = None  # Callable[[start, end, asset_type, alliance], list]
+
+        # Weather target-ACQUISITION degradation (1.0 == no degradation). The
+        # engine sets this each tick from the environmental layer's
+        # detection_range_modifier when weather is enabled; fog/snow shrink the
+        # range at which a unit can acquire (open fire on) a target, so the
+        # enemy closes before anyone shoots. Left at exactly 1.0 when weather is
+        # off, and weapon_range * 1.0 == weapon_range in IEEE754, so every
+        # weather-off drive (all 6 canonical goldens) stays byte-identical.
+        self._detection_modifier: float = 1.0
+
+        # Per-TARGET seasonal concealment (the GIS/environment integration
+        # seam). Optional callable(target)->float in 0..1: how well a target is
+        # hidden RIGHT NOW given where it stands and the season (summer forest
+        # canopy ~0.81, bare winter ~0.12). When set, a candidate's own
+        # acquisition range shrinks by (1 - concealment) ON TOP OF the global
+        # weather _detection_modifier — so a hostile in a summer treeline is
+        # acquired only when a unit closes much nearer than the same hostile in
+        # winter. None (default) => the acquisition path is byte-identical to
+        # before this feature; no canonical scenario attaches a field, so all
+        # goldens stay byte-identical. See sim_engine.perception.ConcealmentField.
+        self._concealment_fn = None
+
+        # Focus-fire spread (civil_unrest riot line): per-tick claim map,
+        # target_id -> number of officers that have already picked it THIS tick.
+        # Cleared at the top of tick(); police prefer the least-claimed nearby
+        # target so the line spreads fire across the front instead of the whole
+        # squad volleying one rioter.  Deterministic within a tick.
+        self._police_claims: dict[str, int] = {}
 
     def set_router(self, route_fn) -> None:
         """Set the pathfinding router callback.
@@ -152,6 +256,27 @@ class UnitBehaviors:
         route_fn signature: (start, end, unit_type, alliance) -> list[waypoints]
         """
         self._router = route_fn
+
+    def set_detection_modifier(self, mod: float) -> None:
+        """Set the weather target-acquisition multiplier (1.0 == no effect).
+
+        < 1.0 shrinks the range at which combatants open fire (fog/snow), so
+        hostiles close before engagement. Clamped to a small floor so a unit is
+        never fully blinded.
+        """
+        self._detection_modifier = max(0.05, float(mod))
+
+    def set_concealment_provider(self, fn) -> None:
+        """Attach (or clear) the per-target seasonal concealment provider.
+
+        ``fn`` is any ``callable(target) -> float`` returning concealment in
+        0..1 for that target's current position and season — in practice a
+        :class:`tritium_lib.sim_engine.perception.ConcealmentField` bound to a
+        GIS land-cover grid + the environment's live ``foliage_state``. Pass
+        ``None`` to disable (the default): the acquisition path then runs its
+        original byte-identical code, so no land-cover grid == no effect.
+        """
+        self._concealment_fn = fn
 
     def set_obstacles(self, obstacles) -> None:
         """Set obstacle geometry for cover-seeking behavior.
@@ -207,10 +332,94 @@ class UnitBehaviors:
             return False
         return self._upgrade_system.is_emp_stunned(target_id)
 
+    def set_diplomacy(self, diplomacy) -> None:
+        """Wire an optional faction-hostility oracle for rival-faction riots.
+
+        *diplomacy* is any object exposing
+        ``are_hostile(faction_a: str, faction_b: str) -> bool`` — the
+        :class:`~tritium_lib.sim_engine.factions.DiplomacyEngine` satisfies
+        this directly.  When wired, a factioned rioter's candidate enemy set
+        grows to include violent crowd members (rioter/instigator) of any
+        faction the oracle reports as hostile/at-war with its own.
+
+        No-op when unset (backward compatible): factionless riots and riots
+        without a diplomacy handle behave exactly as before.
+        """
+        self._diplomacy = diplomacy
+
+    def _factions_hostile(self, faction_a: str | None, faction_b: str | None) -> bool:
+        """True when the wired diplomacy oracle says the two factions fight.
+
+        Graceful degradation: no oracle, a missing faction on either side,
+        same faction, or an oracle error all mean NOT hostile — the stand-in
+        AI never invents a war on its own.
+        """
+        if self._diplomacy is None or faction_a is None or faction_b is None:
+            return False
+        if faction_a == faction_b:
+            return False
+        try:
+            return bool(self._diplomacy.are_hostile(faction_a, faction_b))
+        except Exception:
+            return False
+
+    def _build_rival_crowd(
+        self, hostiles: dict[str, SimulationTarget],
+    ) -> dict[str, dict[str, SimulationTarget]]:
+        """Precompute faction_id -> rival-faction crowd members, once per tick.
+
+        Returns {} (zero downstream work) when no diplomacy oracle is wired,
+        when fewer than two factions have violent crowd members on the field,
+        or when no pair of present factions is hostile — so today's
+        single-faction riot pays nothing beyond this guard.
+
+        Only violent crowd roles (:data:`_FACTION_VIOLENT_ROLES`) are ever
+        engageable: civilians and calmed (arrested) members stay protected
+        regardless of the faction they carry.
+        """
+        if self._diplomacy is None:
+            return {}
+        members: dict[str, dict[str, SimulationTarget]] = {}
+        for tid, t in hostiles.items():
+            fac = getattr(t, "faction", None)
+            if fac is not None and t.crowd_role in _FACTION_VIOLENT_ROLES:
+                members.setdefault(fac, {})[tid] = t
+        if len(members) < 2:
+            return {}
+        rivals: dict[str, dict[str, SimulationTarget]] = {}
+        factions = list(members.keys())
+        for fac_a in factions:
+            merged: dict[str, SimulationTarget] = {}
+            for fac_b in factions:
+                if fac_a != fac_b and self._factions_hostile(fac_a, fac_b):
+                    merged.update(members[fac_b])
+            if merged:
+                rivals[fac_a] = merged
+        return rivals
+
+    def set_occupancy_check(self, fn) -> None:
+        """Wire a callable(target_id)->bool that reports embodiment occupancy.
+
+        When it returns True, the unit's stand-in AI is SUPPRESSED for this tick
+        (an external agent / Graphling is on shift and decides its own actions).
+        No-op when unset (backward compatible).
+        """
+        self._occupancy_check = fn
+
+    def _is_occupied(self, target_id: str) -> bool:
+        if self._occupancy_check is None:
+            return False
+        try:
+            return bool(self._occupancy_check(target_id))
+        except Exception:
+            return False
+
     def tick(self, dt: float, targets: dict[str, SimulationTarget],
              vision_state=None) -> None:
         """For each active combatant, run its type-specific behavior."""
         self._sim_time += dt
+        # Fresh focus-fire claim map each tick (police line fire-spreading).
+        self._police_claims.clear()
         friendlies = {
             k: v for k, v in targets.items()
             if v.alliance == "friendly" and v.status in ("active", "idle", "stationary", "arrived")
@@ -226,6 +435,14 @@ class UnitBehaviors:
             # EMP-stunned friendlies cannot act
             if self._is_emp_stunned(tid):
                 continue
+            # Occupied embodiment: an external agent (Graphling) drives this
+            # unit; suppress the stand-in AI so Tritium never puppets it.
+            if self._is_occupied(tid):
+                continue
+
+            # Track whether a rover fired this tick — civil_unrest de-escalation
+            # backfires when an operator fires near the crowd.
+            rover_fired = False
 
             if t.asset_type == "missile_turret" and self._game_mode_type == "drone_swarm":
                 self._missile_turret_aa_priority(t, hostiles, vision_state=vision_state)
@@ -238,31 +455,53 @@ class UnitBehaviors:
             elif t.asset_type in ("scout_drone",):
                 self._drone_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type == "rover":
-                self._rover_behavior(t, hostiles, vision_state=vision_state)
+                rover_fired = self._rover_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type in ("tank", "apc"):
                 self._rover_behavior(t, hostiles, vision_state=vision_state)
+            elif t.asset_type == "police":
+                self._police_behavior(t, hostiles, vision_state=vision_state)
             elif t.asset_type == "graphling":
                 self._graphling_behavior(t, hostiles, vision_state=vision_state)
 
-            # Rover de-escalation in civil_unrest mode
+            # Rover de-escalation in civil_unrest mode.  Pass whether the rover
+            # fired so firing near the crowd backfires (resets timers + may
+            # radicalize bystanders) instead of silently de-escalating.
             if t.asset_type == "rover" and self._game_mode_type == "civil_unrest":
-                self._rover_de_escalation(t, targets, dt=dt)
+                self._rover_de_escalation(t, targets, dt=dt, rover_fired=rover_fired)
 
         # Detect group rushes before individual hostile ticks
         self._detect_group_rush(hostiles)
 
+        # Rival-faction riots: faction_id -> engageable rival crowd members.
+        # {} unless a diplomacy oracle is wired AND >= 2 hostile factions
+        # have violent crowd members on the field (single-faction riots are
+        # untouched).
+        rival_crowd = self._build_rival_crowd(hostiles)
+
         for tid, t in hostiles.items():
             # EMP-stunned hostiles cannot act (no movement, no firing)
             if self._is_emp_stunned(tid):
+                continue
+            # Occupied embodiment: an external agent (Graphling) drives this
+            # unit; suppress the stand-in AI so Tritium never puppets it.
+            if self._is_occupied(tid):
                 continue
 
             # Dispatch based on crowd_role and drone_variant
             if t.crowd_role == "civilian":
                 self._civilian_behavior(t, friendlies)
             elif t.crowd_role == "instigator":
-                self._instigator_behavior(t, friendlies, dt=dt)
+                rivals = (
+                    rival_crowd.get(getattr(t, "faction", None))
+                    if rival_crowd else None
+                )
+                self._instigator_behavior(t, friendlies, dt=dt, rivals=rivals)
             elif t.crowd_role == "rioter":
-                self._rioter_behavior(t, friendlies)
+                rivals = (
+                    rival_crowd.get(getattr(t, "faction", None))
+                    if rival_crowd else None
+                )
+                self._rioter_behavior(t, friendlies, rivals=rivals)
             elif t.drone_variant == "bomber_swarm":
                 self._bomber_behavior(t, friendlies, dt=dt)
             elif t.drone_variant == "scout_swarm":
@@ -393,22 +632,26 @@ class UnitBehaviors:
         rover: SimulationTarget,
         hostiles: dict[str, SimulationTarget],
         vision_state=None,
-    ) -> None:
+    ) -> bool:
         """Tanky. Move toward nearest hostile, engage at range.
 
         FSM-aware: in retreating state, does not engage.  In rtb state,
         ignores enemies and heads home.  In patrolling, fires at targets
         of opportunity but doesn't pursue beyond patrol route.
+
+        Returns True if the rover actually fired a shot this tick.  In
+        civil_unrest mode the caller feeds this to de-escalation so that
+        firing near the crowd backfires.
         """
         fsm = getattr(rover, "fsm_state", None)
 
         # In rtb or retreating, do not engage (heading home or withdrawing)
         if fsm in ("rtb", "retreating"):
-            return
+            return False
 
         # Degradation: too damaged to fire
         if not can_fire_degraded(rover):
-            return
+            return False
 
         # Track nearest enemy for heading (vision cone follows heading)
         any_target = self._nearest_in_range(rover, hostiles)
@@ -420,15 +663,20 @@ class UnitBehaviors:
         # Only fire at vision-confirmed targets
         target = self._nearest_in_range(rover, hostiles, vision_state=vision_state)
         if target is not None:
-            # Fire if in range (terrain LOS check)
+            # Fire if in range, else peek/flank to un-mask a blocked shot
+            # (engagement-range doctrine).  Returns the projectile when a shot
+            # actually goes off, None otherwise (cooldown / no ammo / out of
+            # range / LOS blocked / repositioning / miss).
             ptype = _WEAPON_TYPES.get(rover.asset_type, "nerf_dart")
-            self._combat.fire(rover, target, projectile_type=ptype,
-                              terrain_map=self._terrain_map)
+            proj = self._engage_or_reposition(rover, target, ptype)
+            return proj is not None
         elif hostiles and self._game_mode_type == "battle":
             # No target in weapon range — pursue nearest hostile.
             # During active battle, idle rovers should advance toward hostiles
             # instead of waiting for them to wander into weapon range.
             self._pursue_nearest_hostile(rover, hostiles)
+
+        return False
 
     def _graphling_behavior(
         self,
@@ -500,6 +748,61 @@ class UnitBehaviors:
                     unit._waypoint_index = 0
                 unit.status = "active"
 
+    def _police_behavior(
+        self,
+        officer: SimulationTarget,
+        hostiles: dict[str, SimulationTarget],
+        vision_state=None,
+    ) -> None:
+        """Riot police less-lethal engagement (civil_unrest stand-in AI).
+
+        Aims and fires a pepper_ball at the NEAREST in-range hostile whose
+        crowd_role is NOT a protected non-combatant (civilian / calmed) — a
+        HARD rules-of-engagement guard so police stand-ins never fire on the
+        people they are protecting.  Movement (line formation, dispersal
+        advance, arrests) is driven by PoliceTacticsController; this behavior
+        only orients the weapon and pulls the trigger.
+
+        Focus-fire spread: among in-range engageable targets the officer picks
+        the one minimizing ``(claim_count, distance)`` and claims it, so a
+        line of officers spreads fire across the front (least-shot-at, then
+        nearest) instead of the whole squad volleying one rioter.
+        """
+        # Degradation: too damaged to fire.
+        if not can_fire_degraded(officer):
+            return
+
+        # HARD ROE: drop civilians and already-calmed (arrested) targets from
+        # the valid engagement set before selecting a target.
+        engageable = {
+            k: v for k, v in hostiles.items()
+            if getattr(v, "crowd_role", None) not in _PROTECTED_CROWD_ROLES
+        }
+
+        candidates = self._candidates_in_range(
+            officer, engageable, vision_state=vision_state,
+        )
+        if not candidates:
+            return
+
+        # Spread fire: fewest existing claims first, nearest to break ties.
+        target, _ = min(
+            candidates,
+            key=lambda c: (self._police_claims.get(c[0].target_id, 0), c[1]),
+        )
+        self._police_claims[target.target_id] = (
+            self._police_claims.get(target.target_id, 0) + 1
+        )
+
+        # Face the target (vision cone follows heading next tick).
+        dx = target.position[0] - officer.position[0]
+        dy = target.position[1] - officer.position[1]
+        officer.heading = math.degrees(math.atan2(dx, dy))
+
+        ptype = _WEAPON_TYPES.get("police", "pepper_ball")
+        self._combat.fire(officer, target, projectile_type=ptype,
+                          terrain_map=self._terrain_map)
+
     def _hostile_kid_behavior(
         self,
         kid: SimulationTarget,
@@ -554,24 +857,36 @@ class UnitBehaviors:
             self._comms.emit_retreat(kid.target_id, kid.position, kid.alliance)
 
         # Fire at nearest defender in range (skip if morale-suppressed or too degraded)
+        engaged_target = None
         if not morale_suppressed and can_fire_degraded(kid):
-            target = self._nearest_in_range(kid, friendlies)
-            if target is not None:
+            engaged_target = self._nearest_in_range(kid, friendlies)
+            if engaged_target is not None:
                 # Emit contact signal for allies
                 if self._comms is not None:
                     self._comms.emit_contact(
                         kid.target_id, kid.position, kid.alliance,
-                        enemy_pos=target.position,
+                        enemy_pos=engaged_target.position,
                     )
                 ptype = _WEAPON_TYPES.get(kid.asset_type, "nerf_pistol")
-                self._combat.fire(kid, target, projectile_type=ptype,
-                                  terrain_map=self._terrain_map)
+                self._engage_or_reposition(kid, engaged_target, ptype)
 
-        # Cover-seeking: damaged hostile moves toward nearest building edge
-        # When seeking cover, skip flanking and dodge (cover takes priority)
+        # No active engagement this tick -> end any cover-vs-peek episode so a
+        # unit that lost its masked target reverts to the plain retreat below.
+        if engaged_target is None:
+            self._cover_phase.pop(kid.target_id, None)
+
+        # Cover-seeking: damaged hostile moves toward nearest building edge.
+        # When seeking cover, skip flanking and dodge (cover takes priority).
         seeking_cover = self._should_seek_cover(kid)
         if seeking_cover:
-            self._seek_cover(kid)
+            # Only run the DIRECT cover move when the unit is NOT engaging.  When
+            # it IS engaging, _engage_or_reposition already owns its movement —
+            # cover-vs-peek arbitration when the shot is masked, or hold-and-fire
+            # when it is clear.  Direct-moving to cover on top would either fight
+            # the arbitration (thrash) or drag a cleanly-firing unit back into
+            # the mask it just leaned out of (peek<->cover oscillation).
+            if engaged_target is None:
+                self._seek_cover(kid)
             return
 
         # Seek nearest defender if out of waypoints (prevents stalemates)
@@ -584,7 +899,10 @@ class UnitBehaviors:
         # seconds — wall-clock here broke replay determinism, G-1).
         # Reduced during group rush
         now = self._sim_time
-        last_dodge = self._last_dodge.get(kid.target_id, 0.0)
+        # -1e9 "never dodged" sentinel: a 0.0 default suppressed the FIRST
+        # dodge for the whole cooldown window after sim-clock zero (the same
+        # G-1 sentinel class as last_fired). Lets the first dodge fire.
+        last_dodge = self._last_dodge.get(kid.target_id, -1e9)
         dodge_interval = random.uniform(2.0, 4.0)
         if kid.target_id in self._group_rush_ids:
             dodge_interval *= 3.0  # Dodge less during rush
@@ -702,7 +1020,9 @@ class UnitBehaviors:
         Returns True if flank was applied.
         """
         now = self._sim_time
-        last_flank = self._last_flank.get(hostile.target_id, 0.0)
+        # -1e9 "never flanked" sentinel — a 0.0 default suppressed the FIRST
+        # flank for the cooldown window after sim-clock zero (G-1 class).
+        last_flank = self._last_flank.get(hostile.target_id, -1e9)
         if now - last_flank < _FLANK_COOLDOWN:
             return False
 
@@ -718,8 +1038,12 @@ class UnitBehaviors:
         if dist < 0.1:
             return False
 
-        # Perpendicular direction (choose a consistent side based on target_id hash)
-        perp_sign = 1.0 if hash(hostile.target_id) % 2 == 0 else -1.0
+        # Perpendicular direction (choose a consistent side per target_id).
+        # NOT the builtin hash(): str hashing is salted by PYTHONHASHSEED, so
+        # the flank side flipped per interpreter — the golden-replay hunt
+        # traced run-to-run battle divergence (swarm_attack victory<->defeat)
+        # to this line. crc32 is stable across processes and machines.
+        perp_sign = 1.0 if zlib.crc32(hostile.target_id.encode()) % 2 == 0 else -1.0
         perp_x = -dy / dist * perp_sign
         perp_y = dx / dist * perp_sign
 
@@ -829,45 +1153,62 @@ class UnitBehaviors:
 
     # -- Cover-seeking ----------------------------------------------------------
 
+    def _is_damaged(self, unit: SimulationTarget) -> bool:
+        """True when *unit* is below the cover health threshold (wounded)."""
+        max_hp = getattr(unit, "max_health", 100.0)
+        if max_hp <= 0:
+            return False
+        return (unit.health / max_hp) < _COVER_HEALTH_THRESHOLD
+
     def _should_seek_cover(self, hostile: SimulationTarget) -> bool:
         """Check if a hostile should seek cover (damaged + obstacles available)."""
         if self._obstacles is None:
             return False
-        max_hp = getattr(hostile, "max_health", 100.0)
-        if max_hp <= 0:
-            return False
-        health_pct = hostile.health / max_hp
-        return health_pct < _COVER_HEALTH_THRESHOLD
+        return self._is_damaged(hostile)
 
-    def _seek_cover(self, hostile: SimulationTarget) -> None:
-        """Move hostile toward the nearest building polygon edge."""
+    def _nearest_cover_point(
+        self, position: tuple[float, float]
+    ) -> tuple[float, float] | None:
+        """Return the closest point on any building polygon edge, or None.
+
+        Buildings ARE the cover: the nearest wall edge is the point a unit
+        tucks against to break line of sight.  Shared by the direct cover-seek
+        move (:meth:`_seek_cover`) and the cover-vs-peek arbitration so both
+        agree on where "cover" is.
+        """
         if self._obstacles is None:
-            return
+            return None
         polygons = getattr(self._obstacles, "polygons", [])
         if not polygons:
-            return
+            return None
 
-        # Find the nearest point on any polygon edge
         best_point = None
         best_dist = float("inf")
-
         for poly in polygons:
             n = len(poly)
             for i in range(n):
                 p1 = poly[i]
                 p2 = poly[(i + 1) % n]
-                cp = self._closest_point_on_segment(hostile.position, p1, p2)
-                dx = cp[0] - hostile.position[0]
-                dy = cp[1] - hostile.position[1]
+                cp = self._closest_point_on_segment(position, p1, p2)
+                dx = cp[0] - position[0]
+                dy = cp[1] - position[1]
                 dist = math.hypot(dx, dy)
                 if dist < best_dist:
                     best_dist = dist
                     best_point = cp
+        return best_point
 
-        if best_point is not None and best_dist > 0.1:
+    def _seek_cover(self, hostile: SimulationTarget) -> None:
+        """Move hostile toward the nearest building polygon edge."""
+        best_point = self._nearest_cover_point(hostile.position)
+        if best_point is None:
+            return
+
+        dx = best_point[0] - hostile.position[0]
+        dy = best_point[1] - hostile.position[1]
+        best_dist = math.hypot(dx, dy)
+        if best_dist > 0.1:
             # Move toward the cover point (fraction of the distance per tick)
-            dx = best_point[0] - hostile.position[0]
-            dy = best_point[1] - hostile.position[1]
             step = min(hostile.speed * 0.1, best_dist)  # move speed * dt toward cover
             hostile.position = (
                 hostile.position[0] + (dx / best_dist) * step,
@@ -973,12 +1314,23 @@ class UnitBehaviors:
             visible_targets = set(vision_state.can_see.get(unit.target_id, []))
             enemies = {k: v for k, v in enemies.items() if k in visible_targets}
 
+        # Weather shrinks the acquisition range (fog/snow). Exactly weapon_range
+        # when the modifier is 1.0 (weather off) => byte-identical goldens.
+        eff_range = unit.weapon_range * self._detection_modifier
+
+        # Seasonal concealment (GIS integration): each candidate has its OWN
+        # acquisition range = eff_range * (1 - its concealment). Only entered
+        # when a concealment field is attached; the default path below is
+        # untouched (byte-identical), and no canonical scenario attaches one.
+        if self._concealment_fn is not None:
+            return self._nearest_concealed(unit, enemies, eff_range)
+
         best: SimulationTarget | None = None
         best_dist = float("inf")
 
         if self._spatial_grid is not None:
-            # Grid-accelerated: only check targets in weapon_range radius
-            candidates = self._spatial_grid.query_radius(unit.position, unit.weapon_range)
+            # Grid-accelerated: only check targets in the acquisition radius
+            candidates = self._spatial_grid.query_radius(unit.position, eff_range)
             for candidate in candidates:
                 if candidate.target_id not in enemies:
                     continue
@@ -990,7 +1342,7 @@ class UnitBehaviors:
                     best = candidate
         else:
             # Brute-force fallback
-            wr2 = unit.weapon_range * unit.weapon_range
+            wr2 = eff_range * eff_range
             for enemy in enemies.values():
                 dx = enemy.position[0] - unit.position[0]
                 dy = enemy.position[1] - unit.position[1]
@@ -999,6 +1351,107 @@ class UnitBehaviors:
                     best_dist = dist
                     best = enemy
         return best
+
+    def _nearest_concealed(
+        self,
+        unit: SimulationTarget,
+        enemies: dict[str, SimulationTarget],
+        eff_range: float,
+    ) -> SimulationTarget | None:
+        """Concealment-aware nearest-acquirable lookup.
+
+        Each candidate's acquisition range is ``eff_range`` shrunk by its own
+        seasonal concealment, so a nearer but well-hidden hostile can be
+        *un-acquirable* while a farther exposed one is engaged. Among the
+        candidates a unit CAN acquire, the physically-nearest wins.
+
+        The grid query uses the un-shrunk ``eff_range`` as an upper bound —
+        concealment only shrinks each candidate's range (multiplier <= 1.0), so
+        the grid's radius still returns a superset and no acquirable target is
+        missed. Runs only when a concealment field is attached.
+        """
+        best: SimulationTarget | None = None
+        best_dist = float("inf")
+        if self._spatial_grid is not None:
+            candidates = [
+                c for c in self._spatial_grid.query_radius(unit.position, eff_range)
+                if c.target_id in enemies
+            ]
+        else:
+            candidates = list(enemies.values())
+        for candidate in candidates:
+            dx = candidate.position[0] - unit.position[0]
+            dy = candidate.position[1] - unit.position[1]
+            dist = dx * dx + dy * dy
+            if dist >= best_dist:
+                continue
+            cand_range = eff_range * detectability_multiplier(
+                self._concealment_fn(candidate))
+            if dist <= cand_range * cand_range:
+                best_dist = dist
+                best = candidate
+        return best
+
+    def _candidates_in_range(
+        self,
+        unit: SimulationTarget,
+        enemies: dict[str, SimulationTarget],
+        vision_state=None,
+    ) -> list[tuple[SimulationTarget, float]]:
+        """All in-range enemies as (target, squared_distance) pairs.
+
+        Mirrors :meth:`_nearest_in_range` gating EXACTLY (do not fork the rules):
+        vision pre-filtering applies only to non-combatants — combatants engage
+        on weapon_range + the fire()-time LOS check — and the SpatialGrid path
+        trusts ``query_radius`` for the range bound just as the nearest lookup
+        does.  Returns the full candidate set instead of only the nearest so the
+        caller can spread fire across the front.
+        """
+        # Only apply vision filtering for non-combatants (mirror nearest).
+        if vision_state is not None and not unit.is_combatant:
+            visible_targets = set(vision_state.can_see.get(unit.target_id, []))
+            enemies = {k: v for k, v in enemies.items() if k in visible_targets}
+
+        # Weather acquisition-range degradation (mirror nearest exactly).
+        eff_range = unit.weapon_range * self._detection_modifier
+
+        # Seasonal concealment (mirror _nearest_in_range): each candidate must
+        # clear its OWN concealment-shrunk range to enter the fire-spread set.
+        # Only when a field is attached; default path below is byte-identical.
+        concealed = self._concealment_fn is not None
+
+        out: list[tuple[SimulationTarget, float]] = []
+        if self._spatial_grid is not None:
+            candidates = self._spatial_grid.query_radius(
+                unit.position, eff_range,
+            )
+            for candidate in candidates:
+                if candidate.target_id not in enemies:
+                    continue
+                dx = candidate.position[0] - unit.position[0]
+                dy = candidate.position[1] - unit.position[1]
+                dist = dx * dx + dy * dy
+                if concealed:
+                    cand_range = eff_range * detectability_multiplier(
+                        self._concealment_fn(candidate))
+                    if dist > cand_range * cand_range:
+                        continue
+                out.append((candidate, dist))
+        else:
+            wr2 = eff_range * eff_range
+            for enemy in enemies.values():
+                dx = enemy.position[0] - unit.position[0]
+                dy = enemy.position[1] - unit.position[1]
+                dist = dx * dx + dy * dy
+                if concealed:
+                    cand_range = eff_range * detectability_multiplier(
+                        self._concealment_fn(enemy))
+                    if dist > cand_range * cand_range:
+                        continue
+                elif dist > wr2:
+                    continue
+                out.append((enemy, dist))
+        return out
 
     def _pursue_nearest_hostile(
         self,
@@ -1066,6 +1519,254 @@ class UnitBehaviors:
             unit._waypoint_index = 0
             unit.status = "active"
 
+    # -- Engagement-range doctrine ------------------------------------------------
+
+    def _engage_or_reposition(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+        projectile_type: str,
+    ) -> "Projectile | None":
+        """Fire at *target*, or peek/flank to un-mask a blocked shot.
+
+        Engagement-range doctrine for GROUND stand-ins.  When line of sight to
+        the target is clear (or no terrain map is wired) this fires exactly as
+        before.  When the shot is LOS-blocked by a building it steers the unit
+        toward a PEEK/FLANK point that restores line of sight (see
+        :meth:`_reposition_for_los`) and HOLDS fire this tick instead of wasting
+        the engagement.  If no peek is reachable it falls back to the normal
+        fire attempt (which returns None while masked) so the unit simply keeps
+        advancing on its existing path.
+
+        Turrets (static) and aerial drones (LOS-exempt) never route through
+        here; mortar-capable / flying types are additionally guarded inside
+        :meth:`_reposition_for_los`.
+
+        Returns the Projectile when a shot actually goes off, else None
+        (repositioning, cooldown, out of ammo, or masked with no peek).
+        """
+        tm = self._terrain_map
+        if (
+            tm is not None
+            and target is not None
+            and not tm.line_of_sight(unit.position, target.position)
+        ):
+            # Fire solution is MASKED.  Arbitrate the two movement drives:
+            #   - DAMAGED ground unit -> cover WINS: move to cover, then lean
+            #     out to a bounded peek (cover-vs-peek phase machine).  While
+            #     seeking cover it is NOT given peek waypoints (no thrash).
+            #   - HEALTHY ground unit -> raw engagement-range peek doctrine.
+            if self._arbitrate_cover_peek(unit, target):
+                return None  # phase machine is steering (cover/peek); hold fire
+            if self._reposition_for_los(unit, target):
+                return None  # steering toward a peek this tick; hold fire
+
+        # LOS clear (or nothing reachable): normal fire path.  Drop any stale
+        # repositioning state so a unit that regains LOS re-engages cleanly.
+        self._peek_targets.pop(unit.target_id, None)
+        self._cover_phase.pop(unit.target_id, None)
+        return self._combat.fire(
+            unit, target, projectile_type=projectile_type,
+            terrain_map=tm,
+        )
+
+    def _reposition_for_los(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+    ) -> bool:
+        """Steer *unit* toward a peek point that restores LOS to *target*.
+
+        Deterministic and hysteresis-limited: a fresh peek is computed at most
+        once every ``_PEEK_RECOMPUTE_S`` sim-seconds per unit (while the unit is
+        still repositioning toward the SAME target), so units commit to a peek
+        instead of re-solving and re-pathing every tick.
+
+        Returns True when the unit is steering toward a peek (the caller should
+        hold fire), False when the unit can't reposition or no peek is
+        reachable (the caller falls back to its normal behavior).
+        """
+        tm = self._terrain_map
+        if tm is None:
+            return False
+        # Static or LOS-exempt units don't peek (turret / tank-mortar / aerial).
+        if unit.speed <= 0 or unit.asset_type in _NO_DOCTRINE_TYPES:
+            return False
+
+        now = self._sim_time
+        tid = target.target_id
+        state = self._peek_targets.get(unit.target_id)
+        # Hysteresis: keep steering toward the current peek (same target) until
+        # the recompute window elapses — prevents per-tick waypoint thrash.
+        if (
+            state is not None
+            and state[0] == tid
+            and (now - state[1]) < _PEEK_RECOMPUTE_S
+        ):
+            return True
+
+        peek = find_peek_position(
+            tm, unit.position, target.position, unit.weapon_range,
+        )
+        if peek is None:
+            self._peek_targets.pop(unit.target_id, None)
+            return False
+
+        # Steer via the existing waypoint mechanism (same mover as _pursue).
+        unit.waypoints = [peek]
+        unit._waypoint_index = 0
+        if unit.status in ("arrived", "idle", "stationary"):
+            unit.status = "active"
+        self._peek_targets[unit.target_id] = (tid, now, peek)
+        return True
+
+    # -- Cover-vs-peek arbitration (damaged units) --------------------------------
+
+    @staticmethod
+    def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    def _steer_to(self, unit: SimulationTarget, dest: tuple[float, float]) -> None:
+        """Point the unit's waypoint mover at *dest* (idempotent per phase)."""
+        unit.waypoints = [dest]
+        unit._waypoint_index = 0
+        if unit.status in ("arrived", "idle", "stationary"):
+            unit.status = "active"
+
+    def _hold_at_cover(self, unit: SimulationTarget) -> None:
+        """Stay put at cover: drop movement waypoints (no advance while holding)."""
+        if unit.waypoints:
+            unit.waypoints = []
+            unit._waypoint_index = 0
+
+    def _arbitrate_cover_peek(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+    ) -> bool:
+        """Cover-vs-peek arbitration for a DAMAGED ground unit with a masked shot.
+
+        Runs a per-unit phase machine so the two movement drives never fight:
+
+            seeking  -> move to the nearest cover point; NO peek waypoints.
+            holding  -> committed at cover for a minimum dwell (hysteresis).
+            peeking  -> lean out to a BOUNDED peek (<= _COVER_PEEK_EXPOSURE from
+                        the cover anchor) that restores LOS, then re-engage.
+
+        Phase changes carry a minimum sim-time dwell (_COVER_PHASE_DWELL_S) so a
+        unit commits to a phase instead of oscillating between the cover point
+        and the peek point every tick (the thrash this method exists to remove).
+
+        Symmetric: both hostile stand-ins and defender (friendly) stand-ins that
+        route their fire through :meth:`_engage_or_reposition` get this identical
+        arbitration — the riot lane's police reuse the same doctrine.
+
+        Returns True when this method is steering the unit (caller HOLDS fire);
+        False when the unit is not eligible (aerial/static, no cover system, or
+        healthy) so the caller falls through to the raw peek doctrine.
+        """
+        # (5) aerial / static exemption: LOS-exempt or immobile units never
+        # cover-seek or peek — they arc/lob over terrain or cannot move.
+        if unit.speed <= 0 or unit.asset_type in _NO_DOCTRINE_TYPES:
+            return False
+        # No cover SYSTEM wired -> not our job (raw peek doctrine handles it).
+        if self._obstacles is None:
+            return False
+        # (1) only DAMAGED units prioritize cover; healthy units peek freely.
+        if not self._is_damaged(unit):
+            return False
+
+        now = self._sim_time
+        uid = unit.target_id
+        tid = target.target_id
+        state = self._cover_phase.get(uid)
+        if state is not None and state[2] != tid:
+            state = None  # target switched -> restart the arbitration cleanly
+
+        # --- fresh entry: pick cover, begin seeking (or peek if no cover) -----
+        if state is None:
+            cover = self._nearest_cover_point(unit.position)
+            if cover is None:
+                # (2) cover none available -> peek from the current position.
+                return self._begin_peek_from_cover(unit, target, unit.position, now, tid)
+            if self._dist(unit.position, cover) <= _COVER_ARRIVAL_RADIUS:
+                # Already at cover -> hold (commit) before leaning out.
+                self._cover_phase[uid] = ("holding", now, tid, cover)
+                self._hold_at_cover(unit)
+                return True
+            # (1) seeking: steer to cover, NO peek waypoints.
+            self._cover_phase[uid] = ("seeking", now, tid, cover)
+            self._steer_to(unit, cover)
+            return True
+
+        phase, enter_t, _, anchor = state
+        dwell = now - enter_t
+
+        if phase == "seeking":
+            if self._dist(unit.position, anchor) <= _COVER_ARRIVAL_RADIUS:
+                # (2) arrived at cover -> hold.
+                self._cover_phase[uid] = ("holding", now, tid, anchor)
+                self._hold_at_cover(unit)
+                return True
+            # Still moving to the SAME committed cover anchor.  Re-affirm the
+            # waypoint only if it drifted (idempotent -> no per-tick churn).
+            if not unit.waypoints or self._dist(unit.waypoints[-1], anchor) > 0.5:
+                self._steer_to(unit, anchor)
+            return True
+
+        if phase == "holding":
+            # Commit at cover for the minimum dwell (hysteresis) before peeking.
+            if dwell < _COVER_PHASE_DWELL_S:
+                self._hold_at_cover(unit)
+                return True
+            # (2) at cover + still masked -> lean out to a bounded peek.
+            return self._begin_peek_from_cover(unit, target, anchor, now, tid)
+
+        if phase == "peeking":
+            # Committed to the bounded peek for the minimum dwell; then fall
+            # back to holding to re-anchor (re-seek/re-peek cycle) — never
+            # snapping between cover and peek within the dwell window.
+            if dwell < _COVER_PHASE_DWELL_S:
+                return True
+            self._cover_phase[uid] = ("holding", now, tid, anchor)
+            self._hold_at_cover(unit)
+            return True
+
+        return False
+
+    def _begin_peek_from_cover(
+        self,
+        unit: SimulationTarget,
+        target: SimulationTarget,
+        anchor: tuple[float, float],
+        now: float,
+        tid: str,
+    ) -> bool:
+        """Enter the peeking phase: steer to a bounded peek near *anchor*.
+
+        The peek is constrained to within ``_COVER_PEEK_EXPOSURE`` of the cover
+        anchor (bounded lean-out) and is the CLOSEST such point that restores
+        LOS.  If no bounded peek exists the unit holds at cover rather than
+        over-exposing itself.
+        """
+        peek = find_peek_position(
+            self._terrain_map,
+            unit.position,
+            target.position,
+            unit.weapon_range,
+            max_offset=_COVER_PEEK_EXPOSURE,
+            anchor=anchor,
+            max_anchor_dist=_COVER_PEEK_EXPOSURE,
+        )
+        if peek is None:
+            # No safe lean-out restores the shot -> stay in cover, hold fire.
+            self._cover_phase[unit.target_id] = ("holding", now, tid, anchor)
+            self._hold_at_cover(unit)
+            return True
+        self._steer_to(unit, peek)
+        self._cover_phase[unit.target_id] = ("peeking", now, tid, anchor)
+        return True
+
     # -- Mission-type behaviors ---------------------------------------------------
 
     def _instigator_behavior(
@@ -1073,11 +1774,21 @@ class UnitBehaviors:
         instigator: SimulationTarget,
         friendlies: dict[str, SimulationTarget],
         dt: float = 0.1,
+        rivals: dict[str, SimulationTarget] | None = None,
     ) -> None:
         """Instigator activation cycle: hidden(8s)->activating(2s)->active(5s)->hidden.
 
-        During 'active': fires thrown_object projectiles at nearest friendly.
-        During 'hidden' and 'activating': acts like civilian, no combat.
+        During 'active': hurls thrown_object projectiles (15m reach) at the
+        nearest enemy.  During 'hidden' and 'activating': acts like civilian,
+        no combat.
+
+        RIVAL FACTIONS (lane/riot tick 4): when *rivals* is given (a factioned
+        instigator whose bloc is at war), the candidate target set is
+        friendlies PLUS rival crowd members — so blocs hurl objects at EACH
+        OTHER across the plaza (the reliable RANGED half of a three-way riot,
+        complementing the rioters' melee brawl).  ``rivals=None`` (factionless
+        instigator / no diplomacy wired) keeps the legacy friendlies-only set,
+        byte-identical to the single-faction riot.
         """
         state = instigator.instigator_state
         instigator.instigator_timer += dt
@@ -1102,15 +1813,37 @@ class UnitBehaviors:
                 instigator.instigator_timer = 0.0
                 return
 
-            # During active: fire thrown_object at nearest friendly (range 15m, cooldown 3s)
+            # During active: hurl thrown_object at the nearest enemy (range 15m,
+            # cooldown 3s).  Rival-faction riots add the enemy bloc to the set.
             if instigator.ammo_count == 0:
                 return
-            target = self._nearest_in_range(instigator, friendlies)
+            if rivals:
+                enemies: dict[str, SimulationTarget] = dict(friendlies)
+                enemies.update(rivals)
+            else:
+                enemies = friendlies
+            target = self._nearest_in_range(instigator, enemies)
             if target is not None:
                 ptype = _WEAPON_TYPES.get("instigator", "thrown_object")
                 if ptype is not None:
-                    self._combat.fire(instigator, target, projectile_type=ptype,
-                                      terrain_map=self._terrain_map)
+                    self._engage_or_reposition(instigator, target, ptype)
+            elif rivals:
+                # No enemy in throwing range — ADVANCE on the enemy bloc so the
+                # factions actually meet (mirrors the rioter bloc-seek). Only
+                # rival-faction riots reach this branch.
+                nearest = None
+                seek_d = _RIVAL_SEEK_RANGE
+                for f in rivals.values():
+                    d = math.hypot(f.position[0] - instigator.position[0],
+                                   f.position[1] - instigator.position[1])
+                    if d <= seek_d:
+                        nearest = f
+                        seek_d = d
+                if nearest is not None:
+                    wp = instigator.waypoints
+                    tx, ty = nearest.position[0], nearest.position[1]
+                    if (not wp or math.hypot(wp[-1][0] - tx, wp[-1][1] - ty) > 1.0):
+                        instigator.waypoints = [(tx, ty)]
 
     def _bomber_behavior(
         self,
@@ -1239,10 +1972,28 @@ class UnitBehaviors:
         self,
         rioter: SimulationTarget,
         friendlies: dict[str, SimulationTarget],
+        rivals: dict[str, SimulationTarget] | None = None,
     ) -> None:
-        """Rioter: melee-range only attacks using melee_strike weapon type.
+        """Rioter: charge nearby enemies, melee-strike at 3m.
 
-        Rioters can only attack targets within 3m range.
+        AGGRO (ESIM riot dynamic, lane/riot 2026-07-10): a violent rioter
+        that spots a friendly unit within _RIOTER_AGGRO_RANGE converges on
+        it — the violent minority ATTACKS the police line pushing into the
+        crowd, instead of strolling its spawn route while being sniped.
+        This is what turns a riot into a fight: the line advances, the mob
+        charges, melee erupts at the shield wall, and arrests happen at
+        contact.  Beyond aggro range the rioter keeps its street routine.
+
+        RIVAL FACTIONS (lane/riot tick 3): when *rivals* is given (a
+        factioned rioter whose faction is at war, per the wired diplomacy
+        oracle), the candidate enemy set is friendlies PLUS those rival
+        crowd members — same nearest-enemy aggro, same melee combat path,
+        so red-vs-blue street fights use the exact weapons/projectile
+        systems as rioter-vs-police.  ``rivals=None`` (factionless rioter,
+        no diplomacy wired, or no war) keeps the legacy friendlies-only
+        set, byte-identical to the single-faction riot.
+
+        Rioters can only attack targets within 3m range (melee_strike).
         """
         if not can_fire_degraded(rioter):
             return
@@ -1250,12 +2001,55 @@ class UnitBehaviors:
         if rioter.ammo_count == 0:
             return
 
-        target = self._nearest_in_range(rioter, friendlies)
+        # Candidate enemy set: police/friendlies, plus rival-faction crowd
+        # members when at war.  Protected roles (civilian/calmed) can never
+        # appear in rivals — _build_rival_crowd filters on violent roles.
+        if rivals:
+            enemies: dict[str, SimulationTarget] = dict(friendlies)
+            enemies.update(rivals)
+        else:
+            enemies = friendlies
+
+        # MOVEMENT objective.  A RIVAL-FACTION rioter's primary drive is the
+        # ENEMY BLOC: it marches on the nearest rival across the plaza (seek
+        # range) so the two factions actually converge and brawl in the middle
+        # instead of both drifting to the police line and ignoring each other.
+        # A factionless rioter (single-faction riot, rivals=None) keeps the
+        # legacy behavior — charge the nearest friendly within aggro range —
+        # so that path stays byte-identical.
+        nearest = None
+        if rivals:
+            seek_d = _RIVAL_SEEK_RANGE
+            for f in rivals.values():
+                d = math.hypot(f.position[0] - rioter.position[0],
+                               f.position[1] - rioter.position[1])
+                if d <= seek_d:
+                    nearest = f
+                    seek_d = d
+        if nearest is None:
+            nearest_d = _RIOTER_AGGRO_RANGE
+            for f in enemies.values():
+                d = math.hypot(f.position[0] - rioter.position[0],
+                               f.position[1] - rioter.position[1])
+                if d <= nearest_d:
+                    nearest = f
+                    nearest_d = d
+
+        if nearest is not None:
+            wp = rioter.waypoints
+            tx, ty = nearest.position[0], nearest.position[1]
+            # Re-aim only when the charge target moved meaningfully — the
+            # waypoint list is REPLACED (not mutated) so the movement
+            # controller re-syncs, and a 1m hysteresis avoids re-pathing
+            # every tick.
+            if (not wp or math.hypot(wp[-1][0] - tx, wp[-1][1] - ty) > 1.0):
+                rioter.waypoints = [(tx, ty)]
+
+        target = self._nearest_in_range(rioter, enemies)
         if target is not None:
             ptype = _WEAPON_TYPES.get("rioter", "melee_strike")
             if ptype is not None:
-                self._combat.fire(rioter, target, projectile_type=ptype,
-                                  terrain_map=self._terrain_map)
+                self._engage_or_reposition(rioter, target, ptype)
 
     def _scout_swarm_behavior(
         self,
@@ -1340,6 +2134,8 @@ class UnitBehaviors:
         self._base_speeds.pop(target_id, None)
         self._detected_base_speeds.pop(target_id, None)
         self._bomber_original_speeds.pop(target_id, None)
+        self._peek_targets.pop(target_id, None)
+        self._cover_phase.pop(target_id, None)
 
     def clear_dodge_state(self) -> None:
         """Reset all dodge timers and tactical state (for game reset)."""
@@ -1351,3 +2147,5 @@ class UnitBehaviors:
         self._detected_ids.clear()
         self._de_escalation_timers.clear()
         self._bomber_original_speeds.clear()
+        self._peek_targets.clear()
+        self._cover_phase.clear()

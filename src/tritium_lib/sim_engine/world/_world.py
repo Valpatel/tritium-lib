@@ -131,6 +131,11 @@ class World:
         self.config = config or WorldConfig()
         self._rng = random.Random(self.config.seed)
         self._next_id = 0
+        # Optional building obstacles (open-SDK shape: point_in_building +
+        # path_crosses_building). When set, _move_unit_toward refuses moves
+        # that would enter/cross a building. None = no building avoidance
+        # (unchanged behavior).
+        self._obstacles = None
 
         # --- sub-systems ---
         map_w, map_h = self.config.map_size
@@ -308,12 +313,26 @@ class World:
         radius: float,
         mood: CrowdMood = CrowdMood.CALM,
     ) -> list[str]:
-        """Spawn crowd members.  Enables the crowd subsystem if needed."""
+        """Spawn crowd members.  Enables the crowd subsystem if needed.
+
+        A volatile (RIOTING / AGITATED) crowd auto-fans into distinct
+        compass-sector sub-clusters (cohesion-to-distributed-anchors) so an
+        operator-spawned riot spreads across the map like the seeded preset
+        instead of collapsing onto one group centroid — the central-pile bug.
+        Here we force 6 sectors for those moods explicitly. Calmer / panicked
+        / fleeing crowds are NOT fanned (they don't pile, and fanning them only
+        hurts perf and legibility), so they keep the original single-cluster
+        behaviour regardless of size.
+        """
         if self.crowd is None:
             map_w, map_h = self.config.map_size
             self.crowd = CrowdSimulator(bounds=(0.0, 0.0, map_w, map_h), max_members=500)
             self.config.enable_crowds = True
-        ids = self.crowd.spawn_crowd(center, count, radius, mood=mood)
+        # A volatile crowd (riot / agitated) must spread; force 6 sectors so it
+        # uses the whole city. Calmer / panicked / fleeing crowds are left as a
+        # single cluster (CrowdSimulator only auto-fans volatile moods).
+        sectors = 6 if mood in (CrowdMood.RIOTING, CrowdMood.AGITATED) else None
+        ids = self.crowd.spawn_crowd(center, count, radius, mood=mood, sectors=sectors)
         self.events.append({"type": "spawn_crowd", "center": center, "count": len(ids)})
         return ids
 
@@ -705,6 +724,26 @@ class World:
 
     # -- Movement helpers -----------------------------------------------------
 
+    def set_obstacles(self, obstacles) -> None:
+        """Provide building obstacles for movement avoidance (open-SDK shape)."""
+        self._obstacles = obstacles
+
+    def _move_into_building(self, ax: float, ay: float, bx: float, by: float) -> bool:
+        """True if moving (ax,ay)->(bx,by) would enter/cross a building.
+        Swept when possible. A unit already inside is allowed to move (so it
+        can leave); a unit outside is blocked from entering/crossing."""
+        obs = self._obstacles
+        if obs is None or not hasattr(obs, "point_in_building"):
+            return False
+        if obs.point_in_building(ax, ay):
+            return False
+        if obs.point_in_building(bx, by):
+            return True
+        pcb = getattr(obs, "path_crosses_building", None)
+        if callable(pcb) and pcb([(ax, ay), (bx, by)]):
+            return True
+        return False
+
     def _move_unit_toward(self, unit: Any, target: Vec2, dt: float, status: str = "moving") -> None:
         """Move *unit* one step toward *target* at its effective speed.
 
@@ -712,6 +751,9 @@ class World:
           - Unit morale (via effective_speed)
           - Weather conditions (via environment.movement_speed_modifier)
           - Terrain slope (via movement_cost.max_speed_modifier)
+        Building-aware: a step that would enter/cross a building is rejected
+        (axis-separated slide), so units in this world loop don't clip
+        buildings when obstacles are set.
         """
         direction = _sub(target, unit.position)
         d = distance(unit.position, target)
@@ -723,10 +765,18 @@ class World:
         terrain_mod = self.movement_cost.max_speed_modifier(unit.position)
         move_speed = unit.effective_speed() * weather_mod * terrain_mod
         step = min(move_speed * dt, d)
-        unit.position = (
-            unit.position[0] + direction[0] * step,
-            unit.position[1] + direction[1] * step,
-        )
+        ox, oy = unit.position
+        nx = ox + direction[0] * step
+        ny = oy + direction[1] * step
+        if self._move_into_building(ox, oy, nx, ny):
+            # Slide along whichever axis is clear; else hold.
+            if not self._move_into_building(ox, oy, nx, oy):
+                ny = oy
+            elif not self._move_into_building(ox, oy, ox, ny):
+                nx = ox
+            else:
+                return
+        unit.position = (nx, ny)
         unit.heading = math.atan2(direction[1], direction[0])
         unit.state.status = status
 

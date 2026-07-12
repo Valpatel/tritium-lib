@@ -30,6 +30,7 @@ from tritium_lib.sim_engine.game.game_mode import (
     _SPAWN_STAGGER,
     _STALEMATE_TIMEOUT,
     _WAVE_ADVANCE_DELAY,
+    _WAVE_HARD_TIMEOUT,
 )
 
 
@@ -159,4 +160,97 @@ class TestSimTimeTimers:
         assert gm.state in ("wave_complete", "active", "victory"), (
             f"stalemate must force wave resolution in sim time "
             f"(state={gm.state}, alive hostiles never cleared)"
+        )
+
+
+class TestStalemateProgressReset:
+    """The stalemate timer must treat ACTIVE COMBAT as progress.
+
+    FEATURE-AUDIT 2026-06-14: a fresh-player trace of the 10-wave battle found
+    wave 1 was "won" by the 60s stalemate force-eliminator, not by the
+    defenders -- the clock only reset on a KILL, so defenders steadily chipping
+    hostiles (real combat, just slow) were force-removed by the timer before a
+    single hostile died.  The fix resets the clock whenever total wave-hostile
+    HP drops (damage = progress), with an absolute hard ceiling as a backstop.
+    """
+
+    def _active_wave(self):
+        gm, engine = _game()
+        gm.begin_war()
+        wave1_count = WAVE_CONFIGS[0].count
+        _run_sim(gm, _COUNTDOWN_DURATION + wave1_count * _SPAWN_STAGGER + 2.0)
+        assert gm.state == "active"
+        assert any(h.status == "active" for h in engine.spawned)
+        return gm, engine
+
+    @pytest.mark.unit
+    def test_ongoing_damage_prevents_premature_force_elimination(self):
+        """While hostiles keep taking damage, the timer must NOT force-clear."""
+        gm, engine = self._active_wave()
+        # Make hostiles tanky so steady damage does not finish them inside the
+        # window -- we are testing the timer, not wave completion.
+        for h in engine.spawned:
+            h.health = 100_000.0
+            h.max_health = 100_000.0
+        calls = []
+        gm._force_eliminate_wave_hostiles = lambda: calls.append(gm._sim_time)
+        dt = 0.1
+        # Run well past the old stalemate timeout, applying real damage each tick.
+        for _ in range(int((_STALEMATE_TIMEOUT * 1.5) / dt)):
+            alive = [h for h in engine.spawned if h.status == "active"]
+            if alive:
+                alive[0].health -= 2.0  # defenders chipping a hostile
+            gm.tick(dt)
+        assert not calls, (
+            f"stalemate force-elimination fired at {calls} despite continuous "
+            "combat damage -- active combat must reset the stalemate clock"
+        )
+
+    @pytest.mark.unit
+    def test_true_stalemate_still_force_eliminates(self):
+        """No damage at all for the timeout must still break the stalemate."""
+        gm, engine = self._active_wave()
+        for h in engine.spawned:
+            h.health = 100_000.0  # never die on their own
+        orig = gm._force_eliminate_wave_hostiles
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append(gm._sim_time)
+            orig(*args, **kwargs)
+
+        gm._force_eliminate_wave_hostiles = spy
+        # No damage applied -> genuine stalemate.
+        _run_sim(gm, _STALEMATE_TIMEOUT + 5.0)
+        assert calls, (
+            "a true stalemate (no damage dealt) must still force-eliminate to "
+            "prevent an infinite game"
+        )
+
+    @pytest.mark.unit
+    def test_hard_ceiling_bounds_total_wave_duration(self):
+        """A perpetual damage trickle cannot keep a wave alive forever."""
+        gm, engine = self._active_wave()
+        for h in engine.spawned:
+            h.health = 100_000.0
+            h.max_health = 100_000.0
+        orig = gm._force_eliminate_wave_hostiles
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append(gm._sim_time)
+            orig(*args, **kwargs)
+
+        gm._force_eliminate_wave_hostiles = spy
+        dt = 0.1
+        # Trickle damage every tick (resets the soft clock forever); only the
+        # hard ceiling can resolve the wave.
+        for _ in range(int((_WAVE_HARD_TIMEOUT + 20.0) / dt)):
+            alive = [h for h in engine.spawned if h.status == "active"]
+            if alive:
+                alive[0].health -= 0.1
+            gm.tick(dt)
+        assert calls, (
+            "the absolute hard ceiling must force-resolve a wave even when a "
+            "damage trickle keeps resetting the soft stalemate clock"
         )

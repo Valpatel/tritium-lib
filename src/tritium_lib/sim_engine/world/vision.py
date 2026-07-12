@@ -81,8 +81,13 @@ class VisionSystem:
       5. External sightings merged, then cleared
     """
 
-    def __init__(self, terrain_map: TerrainMap | None = None) -> None:
+    def __init__(
+        self,
+        terrain_map: TerrainMap | None = None,
+        environment=None,
+    ) -> None:
         self._terrain_map = terrain_map
+        self.environment = environment
         self._sweep_angles: dict[str, float] = {}
         self._external_sightings: list[SightingReport] = []
         self._last_state: VisibilityState | None = None
@@ -138,6 +143,12 @@ class VisionSystem:
             if cone_sweeps and cone_sweep_rpm > 0:
                 prev = self._sweep_angles.get(unit.target_id, unit.heading)
                 self._sweep_angles[unit.target_id] = prev + cone_sweep_rpm * 360.0 * dt / 60.0
+
+            # Weather/time degrade detection range (1.0 == byte-identical no-op)
+            det_mod = self.environment.detection_range_modifier() if self.environment is not None else 1.0
+            vision_radius *= det_mod
+            cone_range *= det_mod
+            ambient_radius *= det_mod
 
             # Determine the maximum detection range for spatial query
             max_range = max(vision_radius, cone_range, ambient_radius)

@@ -127,6 +127,115 @@ class TestSimulationTarget:
         t.tick(100.0)  # Large dt to drain battery
         assert t.status == "low_battery"
 
+    def test_idle_units_drain_less_than_active(self):
+        """Activity-scaled drain: idle/stationary units sip power, active draw
+        the full per-type rate (FEATURE-AUDIT 2026-06-14)."""
+        from tritium_lib.sim_engine.core.entity import _IDLE_DRAIN_FACTOR
+
+        def one_tick(status):
+            t = SimulationTarget(
+                target_id="r", name="R", alliance="friendly",
+                asset_type="rover", position=(0.0, 0.0),
+            )
+            t.status = status
+            t.battery = 1.0
+            before = t.battery
+            t.tick(0.1)
+            return before - t.battery
+
+        active = one_tick("active")
+        idle = one_tick("idle")
+        stationary = one_tick("stationary")
+        assert active > 0.0
+        assert idle < active and stationary < active
+        assert abs(idle / active - _IDLE_DRAIN_FACTOR) < 0.01
+        assert abs(stationary / active - _IDLE_DRAIN_FACTOR) < 0.01
+
+    def test_zero_drain_unit_never_enters_low_battery(self):
+        """Zero-drain entities (person/vehicle/crowd roles) never enter the
+        low-battery/recharge model, even at battery<0.05 (self-audit #12)."""
+        person = SimulationTarget(
+            target_id="p", name="P", alliance="neutral",
+            asset_type="person", position=(0.0, 0.0),
+        )
+        person.status = "active"
+        person.battery = 0.01
+        person.tick(0.1)
+        assert person.status != "low_battery"
+        # a unit that DOES drain still transitions correctly
+        rover = SimulationTarget(
+            target_id="r", name="R", alliance="friendly",
+            asset_type="rover", position=(0.0, 0.0),
+        )
+        rover.status = "active"
+        rover.battery = 0.01
+        rover.tick(0.1)
+        assert rover.status == "low_battery"
+
+    def test_recharge_window_is_brief(self):
+        """The low_battery recharge window must be a brief inert blip, not a long
+        freeze -- a low_battery unit can't move/fire/be targeted until it resumes
+        (FEATURE-AUDIT 2026-06-14, self-audit #9/#10: was 25s)."""
+        t = SimulationTarget(
+            target_id="d", name="D", alliance="friendly",
+            asset_type="drone", position=(0.0, 0.0),
+        )
+        t.status = "low_battery"
+        t.battery = 0.05
+        ticks = 0
+        while t.status == "low_battery" and ticks < 1000:
+            t.tick(0.1)
+            ticks += 1
+        assert ticks * 0.1 <= 8.0, f"recharge window {ticks*0.1:.1f}s too long for an inert unit"
+        assert t.status == "active"
+
+    def test_low_battery_unit_recharges_and_resumes(self):
+        """low_battery is 'reduced capability, not dead': a parked unit must
+        trickle-charge and resume, not freeze forever (FEATURE-AUDIT 2026-06-14).
+        """
+        from tritium_lib.sim_engine.core.entity import _RECHARGE_RESUME
+
+        t = SimulationTarget(
+            target_id="rover_lb", name="Rover", alliance="friendly",
+            asset_type="rover", position=(0.0, 0.0),
+        )
+        t.battery = 0.04
+        t.status = "low_battery"
+        # A handful of seconds of recharge ticks should lift it back to active.
+        for _ in range(600):  # 60s at dt=0.1
+            t.tick(0.1)
+            if t.status != "low_battery":
+                break
+        assert t.battery >= _RECHARGE_RESUME
+        assert t.status == "active", "a low_battery unit must recover, not stay frozen"
+
+    def test_draining_unit_never_permanently_dies(self):
+        """Over a long run an actively-operating unit cycles drain ->
+        low_battery -> recharge and stays alive, instead of the whole sim
+        draining to a dead map."""
+        # Looping waypoints keep the unit moving (status "active") so it draws
+        # the full drain rate -- an idle/stationary unit now sips power
+        # (activity-scaled drain) and would barely deplete in this window.
+        t = SimulationTarget(
+            target_id="rover_long", name="Rover", alliance="friendly",
+            asset_type="rover", position=(0.0, 0.0), speed=3.0,
+            waypoints=[(50.0, 0.0), (0.0, 0.0)], loop_waypoints=True,
+        )
+        t.status = "active"
+        t.battery = 1.0
+        recharge_cycles = 0
+        prev = t.status
+        for _ in range(60000):  # ~1.7h of sim at dt=0.1
+            t.tick(0.1)
+            if prev == "low_battery" and t.status == "active":
+                recharge_cycles += 1
+            prev = t.status
+        assert recharge_cycles >= 1, "unit should recover from low battery at least once"
+        assert t.status in ("active", "idle", "stationary", "low_battery"), (
+            f"unit must stay alive, got terminal status {t.status!r}"
+        )
+        assert t.battery > 0.0
+
 
 # ---------------------------------------------------------------------------
 # UnitIdentity

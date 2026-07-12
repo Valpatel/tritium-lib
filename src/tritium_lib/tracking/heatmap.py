@@ -28,6 +28,13 @@ logger = logging.getLogger(__name__)
 VALID_LAYERS = ("ble_activity", "camera_activity", "motion_activity")
 DEFAULT_RETENTION_SECONDS = 24 * 3600  # 24 hours
 
+# Amortized self-bound: run an in-line prune every N appends so the live
+# drain thread (which calls record_event continuously and never schedules
+# prune()) keeps _events plateaued at one retention window instead of
+# growing for the full process uptime.  Only events already outside the
+# retention window are dropped, so read semantics are unchanged.
+PRUNE_CHECK_INTERVAL = 500
+
 
 @dataclass
 class HeatmapEvent:
@@ -53,6 +60,8 @@ class HeatmapEngine:
         }
         self._retention = retention_seconds
         self._lock = threading.Lock()
+        # Amortized prune counter — see PRUNE_CHECK_INTERVAL.
+        self._appends_since_prune = 0
 
     def record_event(
         self,
@@ -71,6 +80,13 @@ class HeatmapEngine:
         evt = HeatmapEvent(layer=layer, x=x, y=y, timestamp=ts, weight=weight)
         with self._lock:
             self._events[layer].append(evt)
+            # Amortized self-bound: every PRUNE_CHECK_INTERVAL appends, drop
+            # events older than the retention window.  Only out-of-retention
+            # events (never returned by reads) are removed.
+            self._appends_since_prune += 1
+            if self._appends_since_prune >= PRUNE_CHECK_INTERVAL:
+                self._appends_since_prune = 0
+                self._prune_locked(time.time() - self._retention)
 
     def get_heatmap(
         self,
@@ -218,14 +234,18 @@ class HeatmapEngine:
     def prune(self, before: float | None = None) -> int:
         """Remove events older than *before* (unix timestamp)."""
         cutoff = before if before is not None else (time.time() - self._retention)
-        removed = 0
         with self._lock:
-            for layer in VALID_LAYERS:
-                original = len(self._events[layer])
-                self._events[layer] = [
-                    e for e in self._events[layer] if e.timestamp >= cutoff
-                ]
-                removed += original - len(self._events[layer])
+            return self._prune_locked(cutoff)
+
+    def _prune_locked(self, cutoff: float) -> int:
+        """Drop events with ``timestamp < cutoff``.  Caller MUST hold the lock."""
+        removed = 0
+        for layer in VALID_LAYERS:
+            original = len(self._events[layer])
+            self._events[layer] = [
+                e for e in self._events[layer] if e.timestamp >= cutoff
+            ]
+            removed += original - len(self._events[layer])
         if removed:
             logger.debug("Pruned %d heatmap events (cutoff=%.0f)", removed, cutoff)
         return removed

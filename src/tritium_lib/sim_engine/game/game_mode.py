@@ -104,16 +104,64 @@ WAVE_CONFIGS: list[WaveConfig] = [
 # Time between staggered spawns within a wave
 _SPAWN_STAGGER = 0.5  # seconds
 
-# Delay before auto-advancing to next wave after wave_complete
-_WAVE_ADVANCE_DELAY = 5.0  # seconds
+# Delay before auto-advancing to next wave after wave_complete.
+# Civil-unrest pacing (FEATURE-AUDIT 2026-06-21): the riot used to dead-air for
+# a full 5s between every wave while the de-escalation meter flatlined.  A
+# shorter advance keeps the crowd churn continuous so waves overlap into a
+# building arc instead of stuttering.  Battle/other modes are unaffected by the
+# civil-unrest-only continuous trickle, but they share the (now tighter) delay.
+_WAVE_ADVANCE_DELAY = 3.0  # seconds
 
 # Countdown duration before wave 1
 _COUNTDOWN_DURATION = 5.0  # seconds
 
-# Stalemate timeout: if no hostiles are eliminated for this many seconds
-# during an active wave, remaining hostiles are forcibly eliminated.
-# Prevents infinite stalemates when hostiles wander out of weapon range.
-_STALEMATE_TIMEOUT = 60.0  # seconds
+# Stalemate timeout: if NO combat progress is made (no elimination AND no
+# damage dealt to wave hostiles) for this many seconds during an active wave,
+# remaining hostiles are forcibly eliminated.  Prevents infinite stalemates
+# when hostiles wander permanently out of weapon range.  Slow-but-real combat
+# (defenders steadily chipping hostiles) resets this clock so a wave is decided
+# by actual kills, not by the timer (FEATURE-AUDIT 2026-06-14).
+_STALEMATE_TIMEOUT = 60.0  # seconds since last combat progress
+# Absolute ceiling: even if damage keeps trickling, a single wave can never run
+# longer than this (sim seconds) before remaining hostiles are force-eliminated.
+# Backstop against a pathological trickle that resets the progress clock forever.
+# Must stay well ABOVE how long a legitimate climactic wave takes: the standard
+# 10-wave layout's biggest waves (Full Invasion 20, FINAL STAND 25) grind for
+# ~230-290s of real combat, and 240s was clipping them mid-fight and counting
+# the survivors as leaks (FEATURE-AUDIT 2026-06-14).  600s = a true backstop
+# (>2x the worst legit wave); the 60s no-progress stalemate is the real
+# anti-infinite-game guard.
+_WAVE_HARD_TIMEOUT = 600.0  # seconds since the wave went active
+
+# --- Civil-unrest continuous de-escalation trickle (FEATURE-AUDIT 2026-06-21) -
+# The riot's de_escalation meter used to advance ONLY on discrete +50 detains
+# (and on new-instigator spawns), so it flatlined for ~50s between events while
+# the operator was actively working the crowd -- correct but a back-loaded
+# grind.  Crowd-control doctrine (Epstein/ESIM) says suppressing ringleaders
+# steadily cools the crowd, so we award a small CONTINUOUS trickle proportional
+# to how many active instigators have been pacified below the peak the riot
+# reached.  The meter then climbs smoothly as the operator keeps the
+# active-instigator population down, and STOPS climbing if instigators
+# re-radicalize (current rises back toward peak) -- it is earned suppression,
+# not a free timer.  A single detain (+50) still dominates, so the win still
+# requires real scout identifications; the trickle just removes the dead air.
+#
+# Trickle per pacified-instigator per sim-second.  Tuned so a typical mid-riot
+# state (a handful of ringleaders suppressed) advances the 500-target meter by a
+# few points/sec -- visible, continuous motion -- without ever out-pacing the
+# detain mechanic or trivializing the win.
+_DEESCALATION_TRICKLE_PER_PACIFIED = 1.5  # points / pacified-instigator / sec
+# Hard cap on cumulative trickle as a fraction of the de-escalation target, so
+# the meter can never be carried across the finish line by the trickle alone --
+# crossing the target always requires genuine detains.  (e.g. target 1200 ->
+# trickle contributes at most 300; the rest must come from real
+# identifications, police arrests/routs + the spawn/detain dynamics.)
+# Was 0.6 when the riot target was 400; at the 1200-point full-arc target
+# (police-engagement rebalance, lane/riot 2026-07-10) 0.6 let the trickle
+# CARRY the win at ~10pts/s before the police line ever made contact --
+# order restored in wave 2-3 with zero arrests.  0.25 keeps the smooth
+# meter motion but the fight decides the pace again.
+_DEESCALATION_TRICKLE_CAP_FRACTION = 0.25
 
 
 class GameMode:
@@ -150,15 +198,34 @@ class GameMode:
         )
 
         self.state: str = "setup"
+        # The doctrinal reason the game reached its terminal state -- the SAME
+        # string the game_over event carries (e.g. "protectee_reached_destination",
+        # "perimeter_breached", "all_waves_cleared", "infrastructure_destroyed").
+        # Captured centrally in _build_game_over_data so it is queryable from
+        # get_state() (a POLLED snapshot), not only from the one-shot event a
+        # consumer might miss. None until the game ends; cleared on reset.
+        self.end_reason: str | None = None
         self.wave: int = 0
         self.score: int = 0
         self.total_eliminations: int = 0
         self.wave_eliminations: int = 0
+        # Hostiles that escaped/leaked past the defense (FEATURE-AUDIT
+        # 2026-06-14): tracked so leaking has visible stakes instead of being
+        # silently treated as a clean wave.
+        self.total_leaked: int = 0
+        self.wave_leaked: int = 0
         self._countdown_remaining: float = _COUNTDOWN_DURATION
         self._wave_start_time: float = 0.0
         self._game_start_time: float = 0.0
         self._wave_complete_time: float = 0.0
         self._wave_hostile_ids: set[str] = set()
+        # Wave hostiles observed to have escaped (status "escaped").  Tracked
+        # DIRECTLY from status each tick (FEATURE-AUDIT 2026-06-14) rather than
+        # inferred as spawned-minus-eliminations, so the leak count / wave bonus
+        # do not silently break if the elimination-event wiring is ever absent
+        # (a headless/replay path with no event bus would otherwise count every
+        # kill as a leak).
+        self._wave_escaped_ids: set[str] = set()
         # Legacy attribute kept for external checks; always None — wave
         # spawning is tick-driven via _spawn_queue (G-1), never a thread.
         self._spawn_thread: threading.Thread | None = None
@@ -169,6 +236,27 @@ class GameMode:
         self._spawn_queue: list = []   # thunks; each spawns one hostile
         self._next_spawn_at: float = 0.0
         self._last_elimination_time: float = 0.0  # for stalemate detection
+        # Combat-progress tracking (FEATURE-AUDIT 2026-06-14): a wave is only a
+        # stalemate when NOTHING is happening.  Slow-but-real combat (defenders
+        # chipping hostiles down) used to be force-eliminated by the stalemate
+        # timer at 60s because the clock only reset on a KILL, not on damage --
+        # so wave 1 was routinely "won" by the timer, not by the defenders.
+        # We stamp _last_combat_progress_time whenever total wave-hostile HP
+        # drops, and only declare a stalemate when neither a kill nor damage has
+        # occurred for the timeout.  A hard ceiling still bounds total duration.
+        self._last_combat_progress_time: float = 0.0
+        self._last_wave_hostile_health: float = 0.0
+        self._wave_active_since: float = 0.0  # sim_time the wave went active
+        # Annihilation-defeat arming: "all friendlies eliminated" is only a
+        # real defeat if a friendly combatant EVER existed.  A scenario that
+        # deliberately fields no defenders (e.g. the stress_test render
+        # scenario) must run its waves to a real terminal state instead of
+        # insta-defeating on the first active tick — before this guard the
+        # stress_test golden pinned a VACUOUS defeat at t=5.2s with 0 of 3
+        # waves completed.  The moment the first friendly combatant appears
+        # (pre-placed or deployed mid-game), the defeat rule arms for the
+        # rest of the game.
+        self._had_friendly_combatant: bool = False
         # Dedup guard: target_ids already counted as eliminations.  The
         # stalemate force-eliminator increments counters directly AND
         # publishes target_eliminated, which the engine listener echoes
@@ -180,13 +268,64 @@ class GameMode:
         self._scenario: object | None = None
         self._scenario_waves: list | None = None
 
+        # Crowd-driven riot gate (G4): in an un-scripted civil_unrest game the
+        # threat is the live crowd + instigators (NPC-intelligence recruitment
+        # dynamics), NOT edge-spawned battle "Intruder" hostiles.  When True,
+        # _start_wave suppresses the default-WAVE_CONFIGS battle spawner and the
+        # active tick does NOT auto-complete the (intentionally empty) wave —
+        # the riot is resolved by de-escalation / civilian-harm conditions, not
+        # by clearing zero battle hostiles.  A loaded civil_unrest SCENARIO
+        # (with explicit crowd/instigator wave compositions) is unaffected: it
+        # takes the _scenario_waves path and this gate never engages.
+        self._crowd_driven_riot: bool = False
+
         # Mission-type fields (civil unrest, drone swarm)
         self.game_mode_type: str = "battle"
         self.de_escalation_score: int = 0
+        # Civil-unrest DE-ESCALATION VICTORY ("order restored"): when
+        # de_escalation_score reaches this target (>0), the riot is WON without
+        # grinding every attrition wave -- crowd-control doctrine says removing
+        # /identifying enough instigators self-calms the crowd (the Epstein
+        # model the sim uses).  0 = disabled (default; the mode falls back to
+        # the all_waves_cleared victory).  Set via scenario mode_config.
+        self.de_escalation_target: int = 0
+        # Continuous de-escalation trickle bookkeeping (civil_unrest only).
+        # _trickle_accum carries the fractional remainder so a sub-1.0/tick
+        # trickle still reaches the integer de_escalation_score smoothly;
+        # _peak_active_instigators is the high-water mark of un-pacified
+        # ringleaders (pacified = peak - current drives the trickle rate);
+        # _trickle_awarded is the running total of trickle points granted so
+        # the cap (_DEESCALATION_TRICKLE_CAP_FRACTION * target) is enforceable.
+        self._trickle_accum: float = 0.0
+        self._peak_active_instigators: int = 0
+        self._trickle_awarded: int = 0
+        # Riot-police tactical outcomes (civil_unrest): non-lethal detentions
+        # and routs made by the PoliceTacticsController stand-in AI.  Surfaced
+        # in get_state()/game_over so the operator + AAR see crowd-control
+        # effectiveness distinctly from raw eliminations.
+        self.arrest_count: int = 0
+        self.rout_count: int = 0
         self.infrastructure_health: float = 0.0
         self.infrastructure_max: float = 1000.0
         self.civilian_harm_count: int = 0
         self.civilian_harm_limit: int = 5
+        # Escort mode: a MOVING protectee whose ARRIVAL wins and LOSS loses.
+        self.protectee_id: str | None = None
+        self.escort_destination: tuple[float, float] | None = None
+        self.protectee_arrived: bool = False
+        self.protectee_lost: bool = False
+        # Patrol mode: a PROTECTED secure zone hostiles must not BREACH. Unlike
+        # drone_swarm's attrition (infrastructure HP decays under sustained
+        # fire), a SINGLE intruder reaching the zone is an immediate defeat
+        # (intrusion-response doctrine). Victory is clearing all intrusion waves
+        # without a breach. The engine owns hostile positions and computes the
+        # breach geometry, then calls on_perimeter_breached().
+        self.protected_point: tuple[float, float] | None = None
+        self.breach_radius: float = 30.0
+        self.perimeter_breached: bool = False
+        # True once a finite mode's ambush waves are exhausted but the game is
+        # NOT yet over (escort: hold "active" until the protectee arrives/dies).
+        self._waves_exhausted: bool = False
 
     # -- Public interface -------------------------------------------------------
 
@@ -194,20 +333,30 @@ class GameMode:
         """Transition from setup to countdown. Starts the war."""
         if self.state != "setup":
             return
-        # Reset all friendly units to full readiness
+        # Reset all friendly units to full readiness.  Seeing one here also
+        # arms the annihilation defeat (see _had_friendly_combatant): a force
+        # fielded at war start that gets wiped is a REAL defeat, while a
+        # deliberately defender-less run (stress_test render scenario) stays
+        # exempt from the vacuous all-friendlies-eliminated check.
+        self._had_friendly_combatant = False
         for t in self._engine.get_targets():
             if t.alliance == "friendly" and t.is_combatant:
                 t.battery = 1.0
                 t.health = t.max_health
                 if t.status in ("low_battery", "idle", "stationary"):
                     t.status = "active"
+                self._had_friendly_combatant = True
         self.state = "countdown"
+        self.end_reason = None
         self._countdown_remaining = _COUNTDOWN_DURATION
         self._game_start_time = self._sim_time
         self.wave = 1
         self.score = 0
         self.total_eliminations = 0
         self.wave_eliminations = 0
+        self.total_leaked = 0
+        self.wave_leaked = 0
+        self._waves_exhausted = False
         self._counted_eliminations.clear()
         self._combat.reset_streaks()
         self._publish_state_change()
@@ -225,12 +374,16 @@ class GameMode:
     def reset(self) -> None:
         """Reset to setup state. Clear game-mode hostiles and scenario data."""
         self.state = "setup"
+        self.end_reason = None
         self.wave = 0
         self.score = 0
         self.total_eliminations = 0
         self.wave_eliminations = 0
+        self.total_leaked = 0
+        self.wave_leaked = 0
         self._countdown_remaining = _COUNTDOWN_DURATION
         self._wave_hostile_ids.clear()
+        self._wave_escaped_ids.clear()
         self._spawn_queue.clear()
         self._counted_eliminations.clear()
         self._combat.reset_streaks()
@@ -239,11 +392,27 @@ class GameMode:
         # unless a new scenario is loaded
         self._scenario_waves = None
         self._scenario = None
+        self._crowd_driven_riot = False
         # Reset game mode type and mode-specific fields
         self.game_mode_type = "battle"
         self.de_escalation_score = 0
+        self.de_escalation_target = 0
+        self._trickle_accum = 0.0
+        self._peak_active_instigators = 0
+        self._trickle_awarded = 0
+        self.arrest_count = 0
+        self.rout_count = 0
         self.infrastructure_health = 0.0
         self.civilian_harm_count = 0
+        self.protectee_id = None
+        self.escort_destination = None
+        self.protectee_arrived = False
+        self.protectee_lost = False
+        self.protected_point = None
+        self.breach_radius = 30.0
+        self.perimeter_breached = False
+        self._waves_exhausted = False
+        self._had_friendly_combatant = False
         self.difficulty.reset()
         self._publish_state_change()
 
@@ -319,19 +488,82 @@ class GameMode:
             self._publish_state_change()
 
     def on_infrastructure_damaged(self, amount: float) -> None:
-        """Apply damage to infrastructure health (drone swarm mode only).
+        """Apply damage to the protected-structure health pool.
 
-        Reduces infrastructure_health by amount. In drone_swarm mode,
-        triggers defeat when infrastructure reaches 0. In other modes,
-        the counter is still reduced but does not trigger game over.
+        Reduces infrastructure_health by amount.  Two modes lose when the pool
+        hits 0, each with its OWN defeat reason so the end-state debrief is
+        honest per mode:
+
+          - ``drone_swarm`` -> ``infrastructure_destroyed`` (the comms relay /
+            critical infrastructure was bombed out by the air assault).
+          - ``defense`` -> ``strongpoint_overrun`` (a fixed strongpoint that
+            decays under ground siege; the position was overrun).
+
+        In every other mode the counter is still reduced but does not trigger
+        game over.
         """
         self.infrastructure_health = max(0.0, self.infrastructure_health - amount)
         if (self.infrastructure_health <= 0.0
                 and self.state == "active"
-                and self.game_mode_type == "drone_swarm"):
+                and self.game_mode_type in ("drone_swarm", "defense")):
+            reason = ("strongpoint_overrun"
+                      if self.game_mode_type == "defense"
+                      else "infrastructure_destroyed")
             self.state = "defeat"
             self._event_bus.publish("game_over", self._build_game_over_data(
-                "defeat", reason="infrastructure_destroyed",
+                "defeat", reason=reason,
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+
+    def on_protectee_arrived(self) -> None:
+        """The escorted protectee reached its destination (escort mode WIN).
+
+        Escort's victory is ARRIVAL, not wave-clearing — the genuinely new
+        dynamic vs the static-defense modes. No-op in other modes / once the
+        game is already over.
+        """
+        self.protectee_arrived = True
+        if (self.state in ("active", "countdown", "wave_complete")
+                and self.game_mode_type == "escort"):
+            self.state = "victory"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "victory", reason="protectee_reached_destination",
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+
+    def on_protectee_lost(self) -> None:
+        """The escorted protectee was destroyed / lost (escort mode DEFEAT).
+
+        Mirrors on_civilian_harmed / on_infrastructure_damaged: in other modes
+        the flag is recorded but no game over is triggered. No-op once over.
+        """
+        self.protectee_lost = True
+        if (self.state in ("active", "countdown", "wave_complete")
+                and self.game_mode_type == "escort"):
+            self.state = "defeat"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "defeat", reason="protectee_lost",
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+
+    def on_perimeter_breached(self) -> None:
+        """A hostile reached the protected SECURE ZONE (patrol mode DEFEAT).
+
+        Patrol's defeat is a single perimeter breach — the intrusion-response
+        failure case — distinct from drone_swarm's gradual infrastructure
+        attrition and battle's all-friendlies-eliminated. Mirrors the other
+        mode hooks: in other modes the flag is recorded but no game over is
+        triggered, and it is a no-op once the game is already over.
+        """
+        self.perimeter_breached = True
+        if (self.state in ("active", "countdown", "wave_complete")
+                and self.game_mode_type == "patrol"):
+            self.state = "defeat"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "defeat", reason="perimeter_breached",
                 waves_completed=self.wave - 1,
             ))
             self._publish_state_change()
@@ -357,6 +589,7 @@ class GameMode:
             display_wave = min(self.wave, total_waves)
         state: dict = {
             "state": self.state,
+            "end_reason": self.end_reason,
             "wave": display_wave,
             "wave_name": wave_config.name if wave_config else "",
             "total_waves": total_waves,
@@ -364,6 +597,8 @@ class GameMode:
             "score": self.score,
             "total_eliminations": self.total_eliminations,
             "wave_eliminations": self.wave_eliminations,
+            "total_leaked": self.total_leaked,
+            "wave_leaked": self.wave_leaked,
             "wave_hostiles_remaining": self._count_wave_hostiles_alive(),
             "infinite": self.infinite,
             "game_mode_type": self.game_mode_type,
@@ -372,14 +607,35 @@ class GameMode:
         }
         if self.game_mode_type == "civil_unrest":
             state["de_escalation_score"] = self.de_escalation_score
+            state["de_escalation_target"] = self.de_escalation_target
             state["civilian_harm_count"] = self.civilian_harm_count
             state["civilian_harm_limit"] = self.civilian_harm_limit
+            state["arrest_count"] = self.arrest_count
+            state["rout_count"] = self.rout_count
             state["weighted_total_score"] = int(
                 self.score * 0.3 + self.de_escalation_score * 0.7
             )
-        elif self.game_mode_type == "drone_swarm":
+        elif self.game_mode_type in ("drone_swarm", "defense"):
+            # Both modes defend a structure with an integrity pool — drone_swarm
+            # a comms relay, defense a fixed strongpoint — so both expose it for
+            # the HUD integrity bar.
             state["infrastructure_health"] = self.infrastructure_health
             state["infrastructure_max"] = self.infrastructure_max
+        elif self.game_mode_type == "escort":
+            state["protectee_id"] = self.protectee_id
+            state["escort_destination"] = (
+                list(self.escort_destination)
+                if self.escort_destination is not None else None
+            )
+            state["protectee_arrived"] = self.protectee_arrived
+            state["protectee_lost"] = self.protectee_lost
+        elif self.game_mode_type == "patrol":
+            state["protected_point"] = (
+                list(self.protected_point)
+                if self.protected_point is not None else None
+            )
+            state["breach_radius"] = self.breach_radius
+            state["perimeter_breached"] = self.perimeter_breached
         return state
 
     # -- State tick handlers ----------------------------------------------------
@@ -401,15 +657,25 @@ class GameMode:
         # Spawn pacing (G-1): pop due spawns from the queue in sim time.
         self._drain_spawn_queue()
 
-        # Check defeat: all friendly combatants eliminated
-        # low_battery units are still alive (reduced capability, not dead)
+        # Check defeat: all friendly combatants eliminated.
+        # low_battery units are still alive (reduced capability, not dead).
+        # ARMED only once a friendly combatant has EVER existed: a scenario
+        # that fields no defenders at all (stress_test render run, or an
+        # operator who starts the battle before deploying) has nothing to
+        # annihilate — "all friendlies eliminated" would be vacuously true
+        # from the first active tick and end the game at t≈5s.  Such a run
+        # instead proceeds to a real terminal state (waves resolve via
+        # leaks / stalemate cull / hard timeout).  Deploying the first
+        # defender mid-game arms the rule from that moment on.
         _ALIVE_STATUSES = ("active", "idle", "stationary", "low_battery", "arrived")
         friendlies_alive = [
             t for t in self._engine.get_targets()
             if t.alliance == "friendly" and t.is_combatant
             and t.status in _ALIVE_STATUSES
         ]
-        if not friendlies_alive:
+        if friendlies_alive:
+            self._had_friendly_combatant = True
+        elif self._had_friendly_combatant:
             self.state = "defeat"
             self._event_bus.publish("game_over", self._build_game_over_data(
                 "defeat", reason="all_friendlies_eliminated",
@@ -418,15 +684,85 @@ class GameMode:
             self._publish_state_change()
             return
 
-        # Stalemate detection: if no elimination for _STALEMATE_TIMEOUT seconds
-        # and there are hostiles alive, force-eliminate remaining hostiles.
-        # This prevents infinite games when hostiles wander out of weapon range.
-        if (self._last_elimination_time > 0
-                and (self._sim_time - self._last_elimination_time) >= _STALEMATE_TIMEOUT
-                and not self._is_spawning()):
+        # Civil-unrest CONTINUOUS de-escalation trickle: advance the meter
+        # smoothly as the operator suppresses ringleaders, instead of only on
+        # discrete detains/spawns (which left it flatlining between events).
+        # Runs BEFORE the victory check so a trickle that crosses the target on
+        # this tick wins immediately.  No-op outside civil_unrest / when the
+        # target is disabled.
+        if self.game_mode_type == "civil_unrest" and self.de_escalation_target > 0:
+            self._tick_deescalation_trickle(dt)
+
+        # Civil-unrest DE-ESCALATION VICTORY ("order restored"): when enough
+        # instigators have been identified/neutralized that de_escalation_score
+        # crosses the scenario target, the crowd self-calms and ORDER IS
+        # RESTORED -- a WIN by de-escalation rather than by clearing every
+        # escalating attrition wave.  This is the doctrinally-correct
+        # crowd-control success (remove the ringleaders -> the Epstein crowd
+        # cools) and keeps the mode completable in a fun timeframe.  Disabled
+        # (target == 0) leaves the legacy all_waves_cleared victory untouched.
+        if (self.game_mode_type == "civil_unrest"
+                and self.de_escalation_target > 0
+                and self.de_escalation_score >= self.de_escalation_target):
+            self.state = "victory"
+            self._event_bus.publish("game_over", self._build_game_over_data(
+                "victory", reason="order_restored",
+                waves_completed=self.wave - 1,
+            ))
+            self._publish_state_change()
+            return
+
+        # Combat-progress tracking: if total wave-hostile HP dropped since last
+        # tick, the defenders are actively fighting -- that is NOT a stalemate,
+        # so stamp the progress clock.  (New spawns only ever raise total HP, so
+        # they never falsely register as progress.)
+        cur_hp = self._wave_hostiles_total_health()
+        if cur_hp < self._last_wave_hostile_health - 0.5:
+            self._last_combat_progress_time = self._sim_time
+        self._last_wave_hostile_health = cur_hp
+
+        # Track leaks directly from status (robust to elimination-event wiring).
+        self._track_escapes()
+
+        # Stalemate detection: force-eliminate remaining hostiles only when there
+        # has been NO combat progress (neither a kill nor damage dealt) for
+        # _STALEMATE_TIMEOUT seconds -- or when the wave exceeds the absolute
+        # hard ceiling.  This lets slow-but-real combat resolve a wave by actual
+        # kills instead of the timer short-circuiting it (FEATURE-AUDIT 2026-06-14).
+        last_progress = max(self._last_elimination_time, self._last_combat_progress_time)
+        stale = (last_progress > 0
+                 and (self._sim_time - last_progress) >= _STALEMATE_TIMEOUT)
+        hard_timeout = (self._wave_active_since > 0
+                        and (self._sim_time - self._wave_active_since) >= _WAVE_HARD_TIMEOUT)
+        if (stale or hard_timeout) and not self._is_spawning():
             stale_alive = self._count_wave_hostiles_alive()
             if stale_alive > 0:
-                self._force_eliminate_wave_hostiles()
+                # A dive-bomber committed to a terminal run on the infrastructure
+                # is making real progress toward its objective -- it is NOT a
+                # stalemate. Exempt live bombers from the *stalemate* cull so the
+                # anti-infrastructure threat (and thus the infrastructure_destroyed
+                # defeat) can actually land instead of being wiped mid-flight; the
+                # hard timeout still culls everyone as an absolute backstop, so a
+                # wave can never hang forever waiting on a stuck bomber.
+                self._force_eliminate_wave_hostiles(
+                    exempt_dive_bombers=(stale and not hard_timeout))
+
+        # G4: a crowd-driven civil_unrest riot has no battle wave hostiles, so
+        # the "all wave hostiles cleared -> wave complete" rule does not apply —
+        # an empty wave would otherwise auto-complete every tick and march the
+        # game straight to victory through the (irrelevant) battle WAVE_CONFIGS.
+        # The riot stays active and is resolved by the de-escalation /
+        # civilian-harm conditions instead (on_civilian_harmed triggers defeat;
+        # the all-friendlies-eliminated defeat check above still applies).
+        if self._crowd_driven_riot:
+            return
+
+        # Escort: once ambush waves are exhausted, hold "active" while the
+        # protectee completes its route. Escort is won by ARRIVAL
+        # (on_protectee_arrived), never by clearing waves — so do not let an
+        # empty post-wave battlefield auto-complete toward a wave victory.
+        if self._waves_exhausted:
+            return
 
         # Check wave complete: all wave hostiles eliminated or escaped.
         # If spawn thread hasn't registered any hostiles yet, wait for it
@@ -447,13 +783,31 @@ class GameMode:
             else:
                 total_waves = len(WAVE_CONFIGS)
             if not self.infinite and self.wave > total_waves:
-                # All waves cleared — victory! (finite mode only)
-                self.state = "victory"
-                self._event_bus.publish("game_over", self._build_game_over_data(
-                    "victory", reason="all_waves_cleared",
-                    waves_completed=total_waves,
-                ))
-                self._publish_state_change()
+                if self.game_mode_type == "escort":
+                    # Ambush waves exhausted, but escort is won by ARRIVAL, not
+                    # wave-clearing. Clamp the wave + hold "active" (guarded by
+                    # _waves_exhausted) while the protectee finishes its route;
+                    # on_protectee_arrived / on_protectee_lost ends the game.
+                    self.wave = total_waves
+                    self._waves_exhausted = True
+                    self.state = "active"
+                    self._publish_state_change()
+                else:
+                    # All waves cleared — victory! (finite mode only)
+                    # Defense is won by HOLDING THE LINE: surviving every wave
+                    # with the strongpoint intact. It gets its OWN victory reason
+                    # (like escort's protectee_reached_destination / civil_unrest's
+                    # order_restored) so a held-the-line win is doctrinally
+                    # distinct from a generic battle clear in the debrief/AAR.
+                    reason = ("strongpoint_held"
+                              if self.game_mode_type == "defense"
+                              else "all_waves_cleared")
+                    self.state = "victory"
+                    self._event_bus.publish("game_over", self._build_game_over_data(
+                        "victory", reason=reason,
+                        waves_completed=total_waves,
+                    ))
+                    self._publish_state_change()
             else:
                 self.state = "active"
                 self._start_wave(self.wave)
@@ -485,10 +839,15 @@ class GameMode:
                 self.civilian_harm_limit = int(mc["civilian_harm_limit"])
             if "de_escalation_multiplier" in mc:
                 self._de_escalation_multiplier = float(mc["de_escalation_multiplier"])
+            if "de_escalation_target" in mc:
+                self.de_escalation_target = int(mc["de_escalation_target"])
             # Drone swarm settings
             if "infrastructure_max" in mc:
                 self.infrastructure_max = float(mc["infrastructure_max"])
                 self.infrastructure_health = self.infrastructure_max
+            # Patrol settings: how close an intruder may get before a breach.
+            if "breach_radius" in mc:
+                self.breach_radius = float(mc["breach_radius"])
 
         # Update engine map bounds when scenario specifies larger area.
         scenario_bounds = getattr(scenario, "map_bounds", None)
@@ -497,8 +856,12 @@ class GameMode:
 
         # Place pre-defined defenders
         from tritium_lib.sim_engine.core.entity import SimulationTarget
-        for d in scenario.defenders:
-            tid = f"{d.asset_type}-{d.name or 'auto'}-{id(d)}"
+        for di, d in enumerate(scenario.defenders):
+            # Stable index suffix — NOT id(d). The object's memory address
+            # varies per process, which made defender target_ids (and so every
+            # id-sorted targeting tie-break) nondeterministic across runs,
+            # breaking the golden_replay determinism gate (G-5 root cause).
+            tid = f"{d.asset_type}-{d.name or 'auto'}-{di}"
             base_speed = d.speed if d.speed is not None else (
                 0.0 if d.asset_type in ("turret", "heavy_turret", "missile_turret") else 2.0
             )
@@ -540,7 +903,11 @@ class GameMode:
         self.wave_eliminations = 0
         self._wave_start_time = self._sim_time
         self._last_elimination_time = self._sim_time  # reset stalemate clock
+        self._last_combat_progress_time = self._sim_time  # reset progress clock
+        self._last_wave_hostile_health = 0.0
+        self._wave_active_since = self._sim_time
         self._wave_hostile_ids.clear()
+        self._wave_escaped_ids.clear()
 
         # Wave 3+ adds environmental pressure via random hazard spawning.
         # Hazard count scales with wave number (1 per wave, capped at 5).
@@ -557,6 +924,7 @@ class GameMode:
                 "wave_number": wave_num,
                 "wave_name": wave_def.name,
                 "hostile_count": wave_def.total_count,
+                "game_mode_type": self.game_mode_type,
             }
             if wave_def.briefing:
                 event_data["briefing"] = wave_def.briefing
@@ -571,6 +939,30 @@ class GameMode:
                     wave_num, wave_def.name, wave_def.total_count,
                 )
             self._queue_scenario_wave(wave_def)
+            return
+
+        # G4 gate: an un-scripted civil_unrest game (no scenario waves loaded)
+        # must NOT run the default battle wave spawner.  In a riot the threat is
+        # the live crowd + instigators driven by NPC-intelligence recruitment —
+        # edge-spawned "Intruder Alpha..Hotel" units with crowd_role=None and
+        # generic assault/scout/infiltrate missions are purposeless battle bleed
+        # that never recede (measured: hostile-person pop rising during a riot
+        # wind-down).  Suppress the spawn; mark the riot crowd-driven so the
+        # active tick does not auto-complete the intentionally empty wave.  A
+        # civil_unrest SCENARIO takes the _scenario_waves path above and is
+        # unaffected.
+        if self.game_mode_type == "civil_unrest" and self._scenario_waves is None:
+            self._crowd_driven_riot = True
+            self._event_bus.publish("wave_start", {
+                "wave_number": wave_num,
+                "wave_name": "Civil Unrest",
+                "hostile_count": 0,
+                "crowd_driven": True,
+            })
+            if hasattr(self._engine, 'stats_tracker'):
+                self._engine.stats_tracker.on_wave_start(
+                    wave_num, "Civil Unrest", 0,
+                )
             return
 
         # Default WAVE_CONFIGS path
@@ -603,18 +995,34 @@ class GameMode:
         """
         def _make(group):
             def _spawn() -> None:
+                role = getattr(group, "crowd_role", None)
+                # Rival-faction riots: a group may pin a spawn SECTOR so the two
+                # blocs mass on opposite sides. Passed only when set, so
+                # factionless scenarios call exactly as before (and engines
+                # whose spawn_hostile_typed predates the direction arg are
+                # unaffected).
+                extra: dict[str, Any] = {}
+                spawn_dir = getattr(group, "spawn_direction", None)
+                if spawn_dir:
+                    extra["direction"] = spawn_dir
                 hostile = self._engine.spawn_hostile_typed(
                     asset_type=group.asset_type,
                     speed=group.speed * wave_def.speed_mult,
                     health=group.health * wave_def.health_mult,
                     drone_variant=group.drone_variant,
+                    crowd_role=role,
+                    **extra,
                 )
                 # Apply scenario overrides if available
                 if self._scenario is not None:
                     apply_fn = getattr(self._scenario, "apply_overrides", None)
                     if apply_fn is not None:
                         apply_fn(hostile, group)
-                self._wave_hostile_ids.add(hostile.target_id)
+                # civil_unrest: protected civilians are NOT wave hostiles to
+                # eliminate — counting them would make the wave never complete
+                # (you'd have to kill the people you are meant to protect).
+                if role != "civilian":
+                    self._wave_hostile_ids.add(hostile.target_id)
             return _spawn
 
         self._spawn_queue = [
@@ -728,18 +1136,150 @@ class GameMode:
             except Exception:
                 pass
 
+    @staticmethod
+    def _is_pacified(t) -> bool:
+        """A wave hostile that has been non-lethally taken out of the fight.
+
+        Detained ringleaders (InstigatorDetector), arrested rioters
+        (PoliceTacticsController) flip alliance to neutral; routed rioters
+        keep alliance but drop is_combatant. None of them is an active
+        threat any more, so none should hold a wave open — this is what
+        makes arrests/routs/detains ADVANCE the mission instead of
+        stalling it until the stalemate timer culls the pacified.
+        """
+        return (getattr(t, "alliance", "hostile") != "hostile"
+                or not getattr(t, "is_combatant", True))
+
     def _count_wave_hostiles_alive(self) -> int:
         """Count wave hostiles that are still active threats."""
         count = 0
         for t in self._engine.get_targets():
-            if t.target_id in self._wave_hostile_ids and t.status == "active":
+            if (t.target_id in self._wave_hostile_ids
+                    and t.status in ("active", "low_battery")
+                    and not self._is_pacified(t)):
                 count += 1
         return count
 
-    def _force_eliminate_wave_hostiles(self) -> None:
-        """Force-eliminate remaining wave hostiles to break a stalemate."""
+    def _track_escapes(self) -> None:
+        """Record wave hostiles that have escaped (status "escaped"), observed
+        directly each tick before the engine removes them.
+
+        Counting leaks this way (rather than spawned-minus-eliminations) means
+        the leak count and wave-bonus math stay correct even if the
+        elimination-event wiring is absent -- otherwise a path without an event
+        bus counts every kill as a leak (FEATURE-AUDIT 2026-06-14).
+        """
         for t in self._engine.get_targets():
-            if t.target_id in self._wave_hostile_ids and t.status == "active":
+            tid = getattr(t, "target_id", None)
+            if (tid in self._wave_hostile_ids
+                    and tid not in self._wave_escaped_ids
+                    and getattr(t, "status", "") == "escaped"):
+                self._wave_escaped_ids.add(tid)
+
+    def _count_active_instigators(self) -> int:
+        """Count un-pacified, still-active instigators on the field.
+
+        An "active instigator" is a crowd member whose ``crowd_role`` is still
+        ``instigator`` (a scout detain flips it to ``calmed``/``neutral``, a
+        nearby-detain cascade flips it to ``civilian``), that has not been
+        ``identified``, and that is still alive.  This is the live ringleader
+        pressure the operator is working to suppress.  Robust to targets that
+        lack the civil-unrest attributes (battle hostiles): ``getattr`` defaults
+        keep them out of the count.
+        """
+        count = 0
+        for t in self._engine.get_targets():
+            if (getattr(t, "crowd_role", None) == "instigator"
+                    and not getattr(t, "identified", False)
+                    and getattr(t, "status", "") in ("active", "low_battery")):
+                count += 1
+        return count
+
+    def _tick_deescalation_trickle(self, dt: float) -> None:
+        """Advance de_escalation_score continuously as ringleaders are suppressed.
+
+        The riot meter used to move only on discrete +50 detain events (and on
+        new-instigator spawns), so it flatlined for long stretches mid-wave
+        while the operator was actively containing the crowd.  Here we award a
+        small CONTINUOUS trickle proportional to how many active instigators
+        have been pacified below the riot's peak -- the Epstein/ESIM cooling
+        effect, made visible as steady meter motion.
+
+        Rules that keep the win EARNED, not free:
+          * trickle rate = pacified * rate * dt, where
+            ``pacified = peak_active_instigators - current_active_instigators``;
+            so it only flows once the operator has actually removed ringleaders,
+            and it slows/stops if instigators re-radicalize (current climbs).
+          * cumulative trickle is capped at a fraction of the target, so the
+            meter can never be carried over the finish line by the trickle
+            alone -- crossing the target still needs genuine detains.
+        """
+        current = self._count_active_instigators()
+        if current > self._peak_active_instigators:
+            self._peak_active_instigators = current
+        pacified = self._peak_active_instigators - current
+        if pacified <= 0:
+            return
+        cap = int(self.de_escalation_target * _DEESCALATION_TRICKLE_CAP_FRACTION)
+        if self._trickle_awarded >= cap:
+            return
+        self._trickle_accum += pacified * _DEESCALATION_TRICKLE_PER_PACIFIED * dt
+        whole = int(self._trickle_accum)
+        if whole <= 0:
+            return
+        # Respect the cumulative cap (never overshoot it).
+        grant = min(whole, cap - self._trickle_awarded)
+        if grant <= 0:
+            self._trickle_accum -= whole  # drop the un-grantable remainder
+            return
+        self._trickle_accum -= grant
+        self.de_escalation_score += grant
+        self._trickle_awarded += grant
+
+    def _wave_hostiles_total_health(self) -> float:
+        """Total current HP of alive wave hostiles (for stalemate progress).
+
+        A drop in this sum between ticks means the defenders are dealing damage
+        -- combat progress -- which resets the stalemate clock so a slow fight
+        is not force-eliminated by the timer (FEATURE-AUDIT 2026-06-14).
+        """
+        total = 0.0
+        for t in self._engine.get_targets():
+            if (t.target_id in self._wave_hostile_ids
+                    and t.status in ("active", "low_battery")
+                    and not self._is_pacified(t)):
+                hp = getattr(t, "health", 0.0)
+                total += hp if hp is not None else 0.0
+        return total
+
+    @staticmethod
+    def _is_dive_bomber(t) -> bool:
+        """True for anti-infrastructure dive-bombers: a dedicated ``plane_drone``
+        asset, or a ``swarm_drone`` carrying the ``bomber_swarm`` variant. Mirrors
+        ``engine.simulation.swarm.SwarmBehavior._is_dive_bomber`` so the game-mode
+        stalemate logic and the boids dive logic agree on what counts as a bomber.
+        """
+        return (getattr(t, "asset_type", None) == "plane_drone"
+                or getattr(t, "drone_variant", None) == "bomber_swarm")
+
+    def _force_eliminate_wave_hostiles(self, exempt_dive_bombers: bool = False) -> None:
+        """Force-eliminate remaining wave hostiles to break a stalemate.
+
+        When *exempt_dive_bombers* is set, live anti-infrastructure dive-bombers
+        are spared -- they are mid-run on the relay, not stalemated -- so the
+        bomber waves can press their attack home instead of being wiped before
+        impact (the whole point of a bomber wave). The hard-timeout backstop
+        calls this with exemption OFF, so a wave still cannot hang forever.
+        """
+        for t in self._engine.get_targets():
+            if t.target_id in self._wave_hostile_ids and t.status in ("active", "low_battery"):
+                if exempt_dive_bombers and self._is_dive_bomber(t):
+                    continue
+                if self._is_pacified(t):
+                    # Detained/arrested/routed crowd members are no longer
+                    # threats — a stalemate cull must not "eliminate" people
+                    # already peacefully taken out of the fight.
+                    continue
                 t.status = "eliminated"
                 t.health = 0
                 # Mark counted BEFORE publishing so the event echo through
@@ -765,12 +1305,35 @@ class GameMode:
         elapsed = self._sim_time - self._wave_start_time
         # Time bonus: starts at 50, decreases by 5 per 10s elapsed
         time_bonus = max(0, 50 - int(elapsed / 10) * 5)
-        wave_bonus = self.wave * 200
-        self.score += wave_bonus + time_bonus
 
-        # Record wave performance for adaptive difficulty
+        # Stakes for leaking (FEATURE-AUDIT 2026-06-14): the wave bonus is EARNED
+        # by DEFEATING hostiles, not by letting them walk past.  Previously the
+        # full wave*200 bonus was awarded even if every hostile escaped, so
+        # leaking was rewarded identically to a kill (escapes only fed adaptive
+        # difficulty, never the score, and were invisible to the operator).
+        # Scale the bonus by the fraction defeated so it stays meaningful at
+        # every wave size; a perfectly-defended wave is unchanged.
+        self._track_escapes()  # catch any last-tick escapes before completion
         hostiles_spawned = len(self._wave_hostile_ids)
-        escapes = max(0, hostiles_spawned - self.wave_eliminations)
+        # Leaks are counted DIRECTLY from escaped status (robust to the
+        # elimination-event wiring); a hostile is either defeated or it leaked.
+        escapes = min(hostiles_spawned, len(self._wave_escaped_ids))
+        defeated = max(0, hostiles_spawned - escapes)
+        # Empty _wave_hostile_ids at completion means "wave cleared" across the
+        # codebase (the engine never empties the set mid-wave; only _start_wave
+        # clears it for the next wave, and tests use it as the cleared-signal),
+        # so it maps to a full bonus.  (Self-audit #8 -- zeroing the bonus for a
+        # genuinely-empty custom wave -- was reverted: it's a latent edge that's
+        # harmless for the standard configs and it conflicts with that
+        # established convention.)
+        defeat_fraction = (
+            defeated / hostiles_spawned if hostiles_spawned else 1.0
+        )
+        defeat_fraction = max(0.0, min(1.0, defeat_fraction))
+        wave_bonus = int(self.wave * 200 * defeat_fraction)
+        self.score += wave_bonus + time_bonus
+        self.wave_leaked = escapes
+        self.total_leaked += escapes
         friendly_damage = 0.0
         friendly_max_health = 0.0
         for t in self._engine.get_targets():
@@ -795,6 +1358,8 @@ class GameMode:
             "wave_name": config.name if config else "",
             "time_elapsed": round(elapsed, 1),
             "eliminations": self.wave_eliminations,
+            "escaped": escapes,
+            "hostiles_spawned": hostiles_spawned,
             "score_bonus": wave_bonus + time_bonus,
             "next_wave_delay": _WAVE_ADVANCE_DELAY,
         }
@@ -820,7 +1385,17 @@ class GameMode:
     # -- Event publishing -------------------------------------------------------
 
     def _build_game_over_data(self, result: str, **extra) -> dict:
-        """Build a game_over event dict with mode-specific fields included."""
+        """Build a game_over event dict with mode-specific fields included.
+
+        Side effect (deliberate, documented): captures ``extra["reason"]`` into
+        ``self.end_reason``. This is the single choke point every terminal
+        transition routes through -- in this module AND in the SC engine's
+        mode-specific defeats (e.g. infrastructure_overwhelmed) -- so capturing
+        here exposes the doctrinal end reason via get_state() without editing
+        every one of the ~9 call sites.
+        """
+        if "reason" in extra and extra["reason"]:
+            self.end_reason = extra["reason"]
         # Same display clamp as get_state(): victory is detected at
         # wave == total+1 internally, but consumers never see "wave 8"
         # on a 7-wave scenario.
@@ -845,14 +1420,37 @@ class GameMode:
         }
         if self.game_mode_type == "civil_unrest":
             data["de_escalation_score"] = self.de_escalation_score
+            data["de_escalation_target"] = self.de_escalation_target
             data["civilian_harm_count"] = self.civilian_harm_count
             data["civilian_harm_limit"] = self.civilian_harm_limit
+            data["arrest_count"] = self.arrest_count
+            data["rout_count"] = self.rout_count
             data["weighted_total_score"] = int(
                 self.score * 0.3 + self.de_escalation_score * 0.7
             )
-        elif self.game_mode_type == "drone_swarm":
+        elif self.game_mode_type in ("drone_swarm", "defense"):
+            # Both defend a structure with an integrity pool (drone_swarm a comms
+            # relay, defense a fixed strongpoint), so both surface it on the
+            # game_over event for the HUD/announcer — matching get_state's parity
+            # for these two modes. Without this a defense win/loss event carried
+            # no integrity at all, unlike its own polled state.
             data["infrastructure_health"] = self.infrastructure_health
             data["infrastructure_max"] = self.infrastructure_max
+        elif self.game_mode_type == "escort":
+            data["protectee_id"] = self.protectee_id
+            data["protectee_arrived"] = self.protectee_arrived
+            data["protectee_lost"] = self.protectee_lost
+            data["escort_destination"] = (
+                list(self.escort_destination)
+                if self.escort_destination is not None else None
+            )
+        elif self.game_mode_type == "patrol":
+            data["protected_point"] = (
+                list(self.protected_point)
+                if self.protected_point is not None else None
+            )
+            data["breach_radius"] = self.breach_radius
+            data["perimeter_breached"] = self.perimeter_breached
         return data
 
     def _publish_state_change(self) -> None:
@@ -958,8 +1556,10 @@ class InfiniteWaveMode:
 # InstigatorDetector -- identifies instigators via sustained proximity
 # ---------------------------------------------------------------------------
 
-# Friendly unit types that can identify instigators (scout/recon roles)
-_IDENTIFIER_TYPES: frozenset[str] = frozenset({"scout_drone", "drone", "rover"})
+# Friendly unit types that can identify instigators (scout/recon roles).
+# Police officers identify/detain a ringleader they get eyes-on near, the same
+# way a scout does — an officer working the line is an ISR asset too.
+_IDENTIFIER_TYPES: frozenset[str] = frozenset({"scout_drone", "drone", "rover", "police"})
 
 # Alive statuses -- units must be in one of these to act as identifiers
 _ALIVE_STATUSES: frozenset[str] = frozenset({"active", "idle", "stationary"})
@@ -972,6 +1572,14 @@ _DEFAULT_DETECTION_TIME = 3.0
 
 # De-escalation score awarded per instigator identification
 _IDENTIFICATION_SCORE = 50
+
+# Radius (m) over which detaining a ringleader cools the surrounding crowd.
+# Was 45.0 — at that radius a single ringleader detain calmed rioters across
+# a third of the block, so the crowd evaporated before the police line ever
+# made contact (police-engagement rebalance, lane/riot 2026-07-10).  20m keeps
+# the ESIM local-cluster cooling but distant rioters stay in the fight and
+# must be pushed back / arrested by the line.
+_CALMING_RADIUS = 20.0
 
 
 class InstigatorDetector:
@@ -1069,6 +1677,13 @@ class InstigatorDetector:
                         ):
                             continue  # Too dense — timer stays but cannot identify
                         self._identify(instigator, friendly)
+                        # Removing the ringleader cools the cluster around it
+                        # (ESIM crowd-control doctrine): nearby rioters disperse
+                        # and would-be agitators back down. This lowers attack
+                        # pressure as detentions mount, so the stock ISR assets
+                        # survive long enough to finish the de-escalation loop
+                        # rather than being overwhelmed mid-way.
+                        self._calm_nearby(instigator, targets)
                         # Remove all timers for this instigator (it is done)
                         self._clear_instigator_timers(instigator.target_id)
                         break  # This instigator is identified, move on
@@ -1086,8 +1701,38 @@ class InstigatorDetector:
         instigator: Any,
         identifier: Any,
     ) -> None:
-        """Mark instigator as identified and publish event."""
+        """Mark an instigator identified and NON-LETHALLY detain it.
+
+        Identification is not just a scoreboard tick -- it CLOSES the
+        crowd-control action loop. A ringleader a scout has positively
+        identified is peacefully removed from the riot: converted to a neutral,
+        unarmed civilian. This is the doctrinally-correct de-escalation outcome
+        (remove the ringleaders -> the Epstein crowd self-calms -> order is
+        restored) and it is what makes ``order_restored`` actually REACHABLE:
+
+          * crowd_role leaves "instigator", so the activation cycle
+            (hidden->active->throw objects) in behaviors no longer dispatches to
+            it -- it stops attacking AND stops being an "active instigator", so
+            it can no longer recruit nearby civilians into rioters.
+          * alliance -> neutral + is_combatant False removes it as a kill target
+            (non-lethal) and drops it from the wave-hostile headcount, so the
+            wave winds down as ringleaders are pulled rather than only when they
+            are shot dead.
+
+        Without this, identifying a ringleader awarded points but left it
+        throwing rocks and recruiting -- the defenders were overwhelmed before
+        any de-escalation target could be met, so the riot mode could only ever
+        be LOST by attrition, never won by its defining mechanic.
+        """
         instigator.identified = True
+
+        # Non-lethal detain: convert the ringleader to a neutral civilian.
+        instigator.alliance = "neutral"
+        instigator.is_combatant = False
+        instigator.crowd_role = "calmed"
+        instigator.weapon_range = 0.0
+        instigator.weapon_damage = 0.0
+        instigator.weapon_cooldown = 0.0
 
         self._event_bus.publish("instigator_identified", {
             "target_id": instigator.target_id,
@@ -1097,10 +1742,64 @@ class InstigatorDetector:
                 "y": instigator.position[1],
             },
         })
+        # Drive the bonus-objective de-escalation counter (Master De-escalator)
+        # and any other de_escalation consumers -- this event had no publisher
+        # before, leaving that objective unreachable.
+        self._event_bus.publish("de_escalation", {
+            "target_id": instigator.target_id,
+            "reason": "instigator_identified",
+        })
 
         # Award de-escalation score if game mode is available
         if self._game_mode is not None:
             self._game_mode.de_escalation_score += _IDENTIFICATION_SCORE
+
+    def _calm_nearby(self, detained: Any, targets: dict[str, Any]) -> int:
+        """Cool the crowd cluster around a just-detained ringleader.
+
+        ESIM (Elaborated Social Identity Model) crowd-control doctrine: a riot
+        crowd is not uniformly violent -- most are bystanders pulled along by a
+        small set of agitators. Remove a ringleader and the local cluster
+        de-escalates. We model that as a positive feedback loop on detention:
+
+          * nearby ``rioter`` crowd members disperse back to non-combatant
+            ``civilian`` (stop their melee attacks);
+          * nearby still-active, NOT-yet-identified ``instigator`` units back
+            down -- their activation cycle is reset to ``hidden`` so they stop
+            throwing objects for a cooldown -- but they are NOT identified and
+            earn NO score (the win still requires genuine scout identifications;
+            the cascade only lowers attack pressure so the stock defenders
+            survive long enough to finish the loop).
+
+        Already-calmed/identified units and units beyond ``_CALMING_RADIUS`` are
+        untouched. Returns the number of crowd members calmed (telemetry/test).
+        """
+        dx0, dy0 = detained.position
+        r_sq = _CALMING_RADIUS * _CALMING_RADIUS
+        calmed = 0
+        for t in targets.values():
+            if t is detained:
+                continue
+            role = getattr(t, "crowd_role", None)
+            if role not in ("rioter", "instigator"):
+                continue
+            if getattr(t, "identified", False):
+                continue
+            tx, ty = t.position
+            dx = tx - dx0
+            dy = ty - dy0
+            if dx * dx + dy * dy > r_sq:
+                continue
+            if role == "rioter":
+                t.crowd_role = "civilian"
+                t.is_combatant = False
+                calmed += 1
+            else:  # an active instigator backs down (not identified, no score)
+                if getattr(t, "instigator_state", None) != "hidden":
+                    t.instigator_state = "hidden"
+                    t.instigator_timer = 0.0
+                    calmed += 1
+        return calmed
 
     def remove_unit(self, target_id: str) -> None:
         """Clean up timers for a removed unit (either friendly or instigator)."""

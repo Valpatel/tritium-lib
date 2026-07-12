@@ -46,6 +46,14 @@ class BaseStore:
     _SCHEMAS: Sequence[str] = ()
     _FOREIGN_KEYS: bool = False
 
+    #: Upper bound (bytes) the -wal file is truncated to after a
+    #: successful checkpoint.  Without this SQLite never shrinks the WAL
+    #: file — it keeps its high-water mark forever (a long-running
+    #: server once grew a 12 GB -wal next to a 1.3 GB db, 2026-07-10).
+    _JOURNAL_SIZE_LIMIT: int = 64 * 1024 * 1024
+
+    _CHECKPOINT_MODES = ("PASSIVE", "FULL", "RESTART", "TRUNCATE")
+
     def __init__(self, db_path: str | Path) -> None:
         """Open (or create) the SQLite database.
 
@@ -65,6 +73,12 @@ class BaseStore:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # Bound the -wal file: after any checkpoint that resets the log,
+        # SQLite truncates the file down to this many bytes instead of
+        # leaving it at its high-water mark.
+        self._conn.execute(
+            f"PRAGMA journal_size_limit={int(self._JOURNAL_SIZE_LIMIT)}"
+        )
         if self._FOREIGN_KEYS:
             self._conn.execute("PRAGMA foreign_keys=ON")
         self._create_tables()
@@ -75,8 +89,42 @@ class BaseStore:
             self._conn.executescript(schema)
         self._conn.commit()
 
+    def checkpoint(self, mode: str = "TRUNCATE") -> dict[str, int]:
+        """Run a WAL checkpoint and return its result.
+
+        Long-running services should call this periodically (e.g. from
+        an hourly retention sweep): passive auto-checkpoints can be
+        starved by concurrent readers, and only RESTART/TRUNCATE modes
+        (or ``journal_size_limit``) ever shrink the -wal file.
+
+        Parameters
+        ----------
+        mode:
+            One of ``PASSIVE``, ``FULL``, ``RESTART``, ``TRUNCATE``
+            (default ``TRUNCATE`` — checkpoint everything and truncate
+            the -wal file).
+
+        Returns ``{"busy": 0|1, "log": n_frames, "checkpointed": n_frames}``.
+        ``busy == 1`` means a concurrent reader/writer prevented
+        completion — safe to retry later.
+        """
+        mode = mode.upper()
+        if mode not in self._CHECKPOINT_MODES:
+            raise ValueError(
+                f"invalid checkpoint mode {mode!r}; "
+                f"expected one of {self._CHECKPOINT_MODES}"
+            )
+        with self._lock:
+            row = self._conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+        busy, log, checkpointed = (int(v) for v in row)
+        return {"busy": busy, "log": log, "checkpointed": checkpointed}
+
     def close(self) -> None:
-        """Close the database connection."""
+        """Close the database connection (checkpointing the WAL first)."""
+        try:
+            self.checkpoint()
+        except sqlite3.Error:
+            pass  # best effort — close() must never raise on cleanup
         self._conn.close()
 
     # ------------------------------------------------------------------

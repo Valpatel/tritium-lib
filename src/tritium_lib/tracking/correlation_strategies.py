@@ -34,11 +34,29 @@ from .target_tracker import TrackedTarget
 
 @dataclass(slots=True)
 class StrategyScore:
-    """Result of a single strategy evaluation."""
+    """Result of a single strategy evaluation.
+
+    ``applicable`` distinguishes an ABSTENTION (the strategy had no data to
+    judge this pair -- e.g. no movement history, no dossier, wrong source mix)
+    from a DISAGREEMENT (it judged the pair and scored low).  Abstentions are
+    excluded from the weighted-confidence denominator so they cannot penalise a
+    genuine match (FEATURE-AUDIT 2026-06-14): a perfect spatial + signal match
+    between cross-modal detections used to cap at ~0.5 confidence purely because
+    temporal/dossier/wifi_probe scored 0 for lack of data.  A low score with
+    ``applicable=True`` (real disagreement) still drags confidence down, so
+    distant or out-of-time pairs cannot over-correlate.
+    """
 
     strategy_name: str
     score: float  # 0.0 to 1.0
     detail: str  # human-readable explanation
+    applicable: bool = True  # False = abstained (no data), excluded from denom
+    # ``veto`` = definitive evidence the two targets are DIFFERENT entities
+    # (e.g. they belong to different known dossiers).  A veto forces combined
+    # confidence to 0 regardless of proximity, so co-location can never override
+    # known identity (FEATURE-AUDIT 2026-06-14: a 0.60 evidence floor was
+    # absorbing the dossier disagreement and merging known-different entities).
+    veto: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -141,12 +159,19 @@ class ConfidenceCalibrator:
         if not records or len(records) < 10:
             return raw_score  # not enough data to calibrate
 
-        # Find the bin (0.0-0.1, 0.1-0.2, ..., 0.9-1.0)
+        # Find the bin (0.0-0.1, 0.1-0.2, ..., 0.9-1.0).  The top bin is
+        # INCLUSIVE of 1.0 -- a half-open [0.9, 1.0) excluded scores of exactly
+        # 1.0 (the common "perfect spatial/signal match" case), so those scores
+        # could never be calibrated (self-audit #15: this is why calibration
+        # couldn't veto the over-correlation case, whose scores are 1.0).
         bin_idx = min(9, int(raw_score * 10))
         bin_low = bin_idx * 0.1
         bin_high = bin_low + 0.1
 
-        in_bin = [r for r in records if bin_low <= r.predicted_score < bin_high]
+        if bin_idx == 9:
+            in_bin = [r for r in records if bin_low <= r.predicted_score <= bin_high]
+        else:
+            in_bin = [r for r in records if bin_low <= r.predicted_score < bin_high]
         if len(in_bin) < 3:
             return raw_score  # not enough samples in this bin
 
@@ -287,6 +312,7 @@ class TemporalStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail=f"insufficient history ({len(trail_a)}/{len(trail_b)} samples)",
+                applicable=False,  # no movement history -> abstain, don't penalise
             )
 
         heading_a = self._compute_heading(trail_a)
@@ -303,6 +329,7 @@ class TemporalStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail="both targets stationary",
+                applicable=False,  # no motion to compare -> abstain
             )
 
         if heading_diff > self.heading_tolerance:
@@ -376,6 +403,7 @@ class SignalPatternStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail="same source type, signal pattern N/A",
+                applicable=False,  # appearance timing only meaningful cross-source
             )
 
         time_diff = abs(target_a.last_seen - target_b.last_seen)
@@ -421,6 +449,7 @@ class WiFiProbeStrategy(CorrelationStrategy):
                 strategy_name=self.name,
                 score=0.0,
                 detail="not a BLE+wifi_probe pair",
+                applicable=False,  # only judges BLE<->wifi_probe pairs -> abstain
             )
 
         time_diff = abs(target_a.last_seen - target_b.last_seen)
@@ -488,14 +517,19 @@ class DossierStrategy(CorrelationStrategy):
         d_b = self._store.find_by_signal(target_b.target_id)
 
         if d_a is not None and d_b is not None and d_a.uuid != d_b.uuid:
+            # Definitive negative identity evidence: the two targets are already
+            # known to be DIFFERENT entities -- veto the merge so proximity can
+            # never override it (FEATURE-AUDIT 2026-06-14).
             return StrategyScore(
                 strategy_name=self.name,
                 score=0.0,
                 detail="targets belong to different known dossiers",
+                veto=True,
             )
 
         return StrategyScore(
             strategy_name=self.name,
             score=0.0,
             detail="no prior association found",
+            applicable=False,  # no dossier history -> abstain (NOT evidence against)
         )

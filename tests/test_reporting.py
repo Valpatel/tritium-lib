@@ -182,6 +182,65 @@ class TestThreatSummary:
         assert ts.total_assessed == 0
         assert ts.high_threat == 0
 
+    # --- Situational assessor (assess=True) — the SitRep threat-level fix -----
+
+    def test_assess_false_default_ignores_alliance(self):
+        # Default (assess=False) buckets strictly on the stored threat_score.
+        # A hostile the sim never scored reads no_threat — this is exactly the
+        # all-zero distribution the bug produced.
+        tk = TargetTracker()
+        _add_sim_target(tk, "h1", "hostile", "person", (10, 10))   # score 0.0
+        _add_sim_target(tk, "f1", "friendly", "rover", (12, 12))
+        ts = ThreatSummary.from_targets(tk.get_all())
+        assert ts.no_threat == 2
+        assert ts.high_threat == ts.medium_threat == ts.low_threat == 0
+        assert ts.hostile_count == 1
+
+    def test_assess_populates_levels_for_unscored_hostiles(self):
+        # The reported gap: hostiles get an alliance but the sim never writes a
+        # threat_score, so High/Med/Low stayed 0 despite live hostiles.  With
+        # assess=True the situational assessor grades each hostile by its range
+        # to the friendly asset.
+        tk = TargetTracker()
+        _add_sim_target(tk, "f1", "friendly", "rover", (0, 0))
+        _add_sim_target(tk, "h_far", "hostile", "person", (500, 0))     # distant -> Low
+        _add_sim_target(tk, "h_close", "hostile", "person", (100, 0))   # closing -> Medium
+        _add_sim_target(tk, "h_contact", "hostile", "person", (20, 0))  # contact -> High
+        ts = ThreatSummary.from_targets(tk.get_all(), assess=True)
+        assert ts.high_threat == 1
+        assert ts.medium_threat == 1
+        assert ts.low_threat == 1
+        assert ts.hostile_count == 3
+        assert ts.no_threat == 1  # the friendly is never a threat
+
+    def test_assess_hostile_floor_is_low_without_assets(self):
+        # A hostile with nothing to threaten still reads at least Low, never
+        # no_threat.
+        tk = TargetTracker()
+        _add_sim_target(tk, "h1", "hostile", "person", (10, 10))
+        ts = ThreatSummary.from_targets(tk.get_all(), assess=True)
+        assert ts.low_threat == 1
+        assert ts.no_threat == 0
+
+    def test_assess_behavioral_score_still_wins(self):
+        # A high behavioral threat_score is preserved: effective = max(stored,
+        # situational).  A distant hostile with a stored 0.9 stays High.
+        tk = TargetTracker()
+        _add_sim_target(tk, "h1", "hostile", "person", (500, 0), threat_score=0.9)
+        ts = ThreatSummary.from_targets(tk.get_all(), assess=True)
+        assert ts.high_threat == 1
+
+    def test_assess_unknown_only_threatens_on_breach(self):
+        # An unknown far from assets is not a threat (no noise flood); an unknown
+        # that has closed on a friendly asset escalates.
+        tk = TargetTracker()
+        _add_sim_target(tk, "f1", "friendly", "rover", (0, 0))
+        _add_sim_target(tk, "u_far", "unknown", "phone", (500, 0))   # -> no_threat
+        _add_sim_target(tk, "u_near", "unknown", "person", (20, 0))  # -> High
+        ts = ThreatSummary.from_targets(tk.get_all(), assess=True)
+        assert ts.no_threat == 2  # friendly + distant unknown
+        assert ts.high_threat == 1
+
 
 # ---------------------------------------------------------------------------
 # ZoneActivity tests
@@ -232,6 +291,40 @@ class TestAnomalySummary:
         ans = AnomalySummary.from_events([])
         assert ans.total_anomalies == 0
         assert ans.top_anomalies == []
+
+    def test_proximity_breach_high_severity_counts(self, event_store):
+        # Severity-vocab reconcile (tick-70 note): proximity:breach events carry
+        # the proximity vocab (low/medium/high/critical), not the EventStore vocab
+        # (warning/error/critical).  A "high" breach must count as an anomaly, not
+        # be silently dropped because "high" is not in the EventStore vocab.
+        now = time.time()
+        event_store.record("proximity:breach", severity="high", source="proximity",
+                           target_id="h1", summary="Hostile breached friendly space",
+                           timestamp=now - 5)
+        event_store.record("proximity:breach", severity="medium", source="proximity",
+                           target_id="h2", summary="Hostile closing", timestamp=now - 4)
+        event_store.record("proximity:breach", severity="low", source="proximity",
+                           target_id="h3", summary="Outer-ring contact", timestamp=now - 3)
+        events = event_store.query_time_range(limit=100)
+        ans = AnomalySummary.from_events(events)
+        # high + medium count; low stays out as routine (mirrors info/debug).
+        assert ans.total_anomalies == 2
+        assert ans.by_severity.get("high") == 1
+        assert ans.by_severity.get("medium") == 1
+        assert "low" not in ans.by_severity
+
+    def test_high_breach_outranks_warning_in_top(self, event_store):
+        # A "high" proximity breach should rank above a "warning" event in the
+        # top-anomalies list (combined severity rank: high~error > warning).
+        now = time.time()
+        event_store.record("system_alert", severity="warning", source="system",
+                           summary="minor warning", timestamp=now - 10)
+        event_store.record("proximity:breach", severity="high", source="proximity",
+                           target_id="h1", summary="breach", timestamp=now - 9)
+        events = event_store.query_time_range(limit=100)
+        ans = AnomalySummary.from_events(events)
+        sev = [a["severity"] for a in ans.top_anomalies]
+        assert sev.index("high") < sev.index("warning")
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +504,11 @@ class TestDailySummary:
     def test_threats_detected_count(self, tracker):
         _populate_tracker(tracker)
         summary = DailySummary.from_tracker_and_events(tracker)
-        # 1 high + 1 medium = 2 threats
-        assert summary.threats_detected == 2
+        # DailySummary applies the situational assessor (assess=True).  In this
+        # fixture every hostile/unknown sits within ~60 m of a friendly asset —
+        # well inside the 150 m tactical envelope — so all four escalate to High.
+        # threats_detected = high + medium.
+        assert summary.threats_detected == 4
 
     def test_top_event_types(self, tracker, event_store):
         _populate_events(event_store)

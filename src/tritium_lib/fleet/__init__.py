@@ -3,9 +3,9 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """Fleet device management — register, heartbeat, group, command, monitor.
 
-Builds on the data models in ``tritium_lib.models.device`` and
-``tritium_lib.models.fleet`` to provide pure-logic management of a fleet
-of edge devices (ESP32 nodes, cameras, sensors).  No network I/O — callers
+Pure-logic management of a fleet of edge devices (ESP32 nodes, cameras,
+sensors).  Self-contained: ``FleetDevice``/``DeviceStatus`` are defined
+here, not imported from ``tritium_lib.models``.  No network I/O — callers
 feed in heartbeats and read back state.
 
 Quick start::

@@ -8,7 +8,7 @@ Kalman predictor, geofence engine, trilateration, heatmaps, movement pattern
 analysis, and dwell tracking.
 """
 
-from .target_tracker import TargetTracker, TrackedTarget
+from .target_tracker import VALID_ALLIANCES, TargetTracker, TrackedTarget
 from .correlator import TargetCorrelator, CorrelationRecord, start_correlator, stop_correlator
 from .geofence import GeofenceEngine, GeoZone, GeoEvent
 from .trilateration import TrilaterationEngine, PositionResult
@@ -26,6 +26,7 @@ from .kalman_predictor import (
 from .heatmap import HeatmapEngine, HeatmapEvent
 from .movement_patterns import MovementPatternAnalyzer, MovementPattern
 from .dossier import DossierStore, TargetDossier
+from .dossier_manager import DossierManager, entity_type_for_class
 from .correlation_strategies import (
     CorrelationStrategy,
     StrategyScore,
@@ -48,7 +49,13 @@ from .vehicle_pipeline import (
     WiFiProbeRecord,
 )
 from .convoy_detector import ConvoyDetector, TargetMotion
-from .threat_scoring import ThreatScorer, BehaviorProfile
+from .threat_scoring import (
+    ThreatScorer,
+    BehaviorProfile,
+    assess_target_threat,
+    protected_positions,
+    DEFAULT_THREAT_ENVELOPE_M,
+)
 from .escalation import (
     ThreatRecord,
     THREAT_LEVELS,
@@ -86,6 +93,7 @@ __all__ = [
     # Core tracker
     "TargetTracker",
     "TrackedTarget",
+    "VALID_ALLIANCES",
     # Correlator
     "TargetCorrelator",
     "CorrelationRecord",
@@ -124,6 +132,8 @@ __all__ = [
     # Dossier
     "DossierStore",
     "TargetDossier",
+    "DossierManager",
+    "entity_type_for_class",
     # Strategies
     "CorrelationStrategy",
     "StrategyScore",
@@ -155,6 +165,9 @@ __all__ = [
     "TargetMotion",
     # Threat scoring
     "ThreatScorer",
+    "assess_target_threat",
+    "protected_positions",
+    "DEFAULT_THREAT_ENVELOPE_M",
     "BehaviorProfile",
     # Escalation
     "ThreatRecord",

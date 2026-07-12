@@ -51,9 +51,18 @@ The classifier loads JSON lookup tables from the sibling `data/` directory:
 | `wifi_vendor_fingerprints.json` | WiFi vendor fingerprints |
 | `device_classification_rules.json` | Composite classification rules |
 
+## Consumed by (dated 2026-07-11, grep `from tritium_lib.classifier`)
+
+- **tritium-sc (the app): 2 sites** — `src/engine/tactical/enrichment.py`
+  (enriches tracked targets with a device type) and
+  `plugins/edge_tracker/plugin.py` (classifies edge-reported sightings).
+- **lib-internal: 1 site** — a sibling package re-uses it.
+- **tests: 2 sites**.
+
 ## Related
 
 - [../data/](../data/) — JSON lookup tables loaded by the classifier
-- [../ontology/](../ontology/) — Ontology types that classification results map to
-- [../../../../tritium-sc/src/engine/tactical/ble_classifier.py](../../../../tritium-sc/src/engine/tactical/ble_classifier.py) — SC-side BLE classifier that uses this library
-- [../../../../tritium-sc/plugins/edge_tracker/](../../../../tritium-sc/plugins/edge_tracker/) — Edge tracker plugin that triggers classification
+- [../ontology/](../ontology/) — ontology types that classification results map to
+- [../tracking/ble_classifier.py](../tracking/ble_classifier.py) — the tracking-side
+  `BLEClassifier` (known/unknown/new/suspicious levels) — a coarser, threat-level
+  classifier, distinct from this fine-grained device-type engine

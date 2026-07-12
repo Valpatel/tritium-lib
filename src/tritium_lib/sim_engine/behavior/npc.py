@@ -349,6 +349,11 @@ class NPCManager:
             speed=vtype["speed"],
             waypoints=waypoints,
         )
+        # SUBTYPE PLUMBING: stamp the concrete vehicle subtype on the target so
+        # the engine's IDM car-following pass can pick a per-subtype profile
+        # (sedan/suv/truck/bus).  Optional attribute — consumers read it via
+        # getattr fallback, so this never breaks the lib model contract.
+        target.vehicle_subtype = vehicle_type
 
         self._engine.add_target(target)
         self._npc_ids.add(target.target_id)

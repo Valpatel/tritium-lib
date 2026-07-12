@@ -186,7 +186,7 @@ def grid_find_path(
     start: tuple[float, float],
     end: tuple[float, float],
     profile_name: str,
-    max_iterations: int = 2000,
+    max_iterations: int | None = None,
     obstacles: Optional[BuildingObstacles] = None,
 ) -> Optional[list[tuple[float, float]]]:
     """Find a path on the terrain grid using A* with the given movement profile.
@@ -219,6 +219,17 @@ def grid_find_path(
     start_row = max(0, min(gs - 1, start_row))
     end_col = max(0, min(gs - 1, end_col))
     end_row = max(0, min(gs - 1, end_row))
+
+    # Iteration budget. When the caller does not specify one, auto-scale to
+    # the grid: a complete A* expands at most ~grid_cells nodes, and a fixed
+    # low cap silently fails to route AROUND large obstacles on bigger maps
+    # — the planner then fell back to a straight line THROUGH buildings
+    # (found 2026-06-13: vehicles whose building cost is 999 explore a wide
+    # detour frontier and blew the old 2000 cap, returning None). A hard
+    # 120k ceiling stays as the circuit breaker; an EXPLICIT max_iterations
+    # is respected as-is (callers can still bound the search tightly).
+    if max_iterations is None:
+        max_iterations = min(120000, gs * gs * 2)
 
     # Same cell — trivial
     if start_col == end_col and start_row == end_row:

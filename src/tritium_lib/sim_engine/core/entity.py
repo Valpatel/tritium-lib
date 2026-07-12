@@ -33,9 +33,10 @@ combat system.  Unit type stat profiles are applied via
 ``apply_combat_profile()`` or set explicitly by factories/spawners.
 
 This module lives in tritium-lib for sharing across tritium-sc and
-other consumers.  SC-specific imports (engine.units, engine.tactical.geo)
-are optional — when unavailable, the corresponding features degrade
-gracefully.
+other consumers.  The optional ``engine.units`` import is SC-specific —
+when unavailable, the corresponding features degrade gracefully.  The
+geo-reference comes from ``tritium_lib.geo`` (also degrades to 0,0 when
+no reference has been set).
 """
 
 from __future__ import annotations
@@ -373,6 +374,7 @@ def build_identity(target_id: str, asset_type: str, alliance: str) -> UnitIdenti
     # Robot/drone/turret/tank/apc/sensor types
     elif asset_type in (
         "rover", "drone", "turret", "scout_drone", "swarm_drone",
+        "quad_drone", "plane_drone", "robot_dog",
         "heavy_turret", "missile_turret", "tank", "apc", "camera", "sensor",
     ):
         ident.serial_number = generate_serial(target_id)
@@ -388,6 +390,8 @@ def build_identity(target_id: str, asset_type: str, alliance: str) -> UnitIdenti
 # Battery drain rates per second by asset type
 _DRAIN_RATES: dict[str, float] = {
     "rover": 0.001,
+    # Trot-gait draw from tritium_lib.models.quadruped: 120 W / 155 Wh pack.
+    "robot_dog": 0.00022,
     "drone": 0.002,
     "turret": 0.0005,
     "scout_drone": 0.0025,
@@ -399,6 +403,8 @@ _DRAIN_RATES: dict[str, float] = {
     "tank": 0.0008,
     "apc": 0.0010,
     "swarm_drone": 0.003,
+    "quad_drone": 0.003,
+    "plane_drone": 0.0022,
     # Mission-type entries (simulation-only, no real battery)
     "instigator": 0.0,
     "rioter": 0.0,
@@ -408,12 +414,47 @@ _DRAIN_RATES: dict[str, float] = {
     "bomber_swarm": 0.0,
 }
 
+# Low-battery recovery (sim convenience).  A low_battery unit is "reduced
+# capability, not dead" (the game_mode contract) -- without recovery it froze
+# permanently, so any sim running longer than ~15 min drained every unit to a
+# dead, motionless map (FEATURE-AUDIT 2026-06-14: 10/10 demo units pinned at
+# the 0.05 floor after an idle run).  A parked low_battery unit now trickle-
+# charges and resumes once it has enough charge.  Real hardware units report
+# battery via telemetry and never use this drain/recharge model.
+# Recharge fast (FEATURE-AUDIT 2026-06-14, self-audit #9/#10): a low_battery
+# unit is inert (can't move/fire/be targeted) until it resumes, so the recharge
+# window must be a brief blip, not a 25s freeze.  0.05/s recovers the
+# 0.05->0.30 band in ~5s; an actively-draining unit (e.g. a drone) then runs
+# ~2min before the next blip instead of freezing for 25s every cycle.
+_RECHARGE_RATE: float = 0.05    # battery per second while in low_battery
+_RECHARGE_RESUME: float = 0.30  # resume "active" once battery recovers to here
+
+# Battery draw scales with activity (FEATURE-AUDIT 2026-06-14): an idle or
+# stationary unit (a parked rover, a defending turret) sips power, so it rarely
+# hits the low-battery floor -- this keeps a long-running/idle demo smooth (far
+# fewer recharge pauses) and lets fixed defenses outlast a battle.  Moving /
+# engaging units still draw the full per-type rate.
+_IDLE_DRAIN_FACTOR: float = 0.15
+
+# Neutral civilian FSM states that mean "actively reacting to a live threat"
+# (fleeing to / sheltering at a door, or a vehicle speeding away).  A neutral
+# whose flee path COMPLETES while still in one of these states must NOT
+# terminalize (despawn) — that would STRAND the ped mid-incident and the engine
+# would never resume its routine after the threat passes.  Instead it stays
+# "active" (sheltering in place) so its behavior FSM keeps ticking; once the
+# danger decays and the flee max_duration returns it to "walking", the routine
+# bridge re-routes it to its scheduled destination (resume).
+_NEUTRAL_SHELTER_STATES: frozenset[str] = frozenset(
+    {"fleeing", "hiding", "panicking", "evading", "startled"}
+)
+
 # Combat stat profiles by (asset_type, alliance).
 # Format: (health, max_health, weapon_range, weapon_cooldown, weapon_damage, is_combatant)
 _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
     "turret":           (200.0, 200.0, 80.0, 1.5, 15.0, True),
     "drone":            (60.0,  60.0,  50.0, 1.0,  8.0, True),
     "rover":            (150.0, 150.0, 60.0, 2.0, 12.0, True),
+    "robot_dog":        (120.0, 120.0, 45.0, 1.2,  8.0, True),
     "person_hostile":   (80.0,  80.0,  40.0, 2.5, 10.0, True),
     "person_neutral":   (50.0,  50.0,   0.0, 0.0,  0.0, False),
     "vehicle":          (300.0, 300.0,  0.0, 0.0,  0.0, False),
@@ -430,10 +471,18 @@ _COMBAT_PROFILES: dict[str, tuple[float, float, float, float, float, bool]] = {
     "hostile_leader":   (150.0, 150.0, 50.0, 2.0, 12.0, True),
     # Swarm drone: fast, fragile, short-range
     "swarm_drone":      (25.0,  25.0,  20.0, 1.0,  5.0, True),
+    # Quad-copter: fast, fragile, agile — hunts PEOPLE & VEHICLES (anti-personnel
+    # strafing). plane: larger, tougher, faster-forward BOMBER — hits BUILDINGS
+    # & INFRASTRUCTURE (longer range, heavier ordnance). Target preference is
+    # enforced in the swarm targeting logic; these are just the stat lines.
+    "quad_drone":       (28.0,  28.0,  28.0, 0.9,  7.0, True),
+    "plane_drone":      (80.0,  80.0,  40.0, 2.2, 28.0, True),
     # Civil unrest crowd roles
     "instigator":       (60.0,  60.0,  15.0, 3.0,  5.0, True),   # Low range, thrown objects
     "rioter":           (50.0,  50.0,   3.0, 2.0,  3.0, True),   # Melee range only
     "civilian":         (50.0,  50.0,   0.0, 0.0,  0.0, False),  # Non-combatant
+    # Riot police: tanky, less-lethal (pepper-ball) crowd-control stand-in.
+    "police":           (120.0, 120.0,  8.0, 2.0,  6.0, True),
     # Non-combatant sensors
     "camera":           (50.0,  50.0,   0.0, 0.0,  0.0, False),  # Passive observation
     "sensor":           (30.0,  30.0,   0.0, 0.0,  0.0, False),  # Passive detection
@@ -540,6 +589,11 @@ class SimulationTarget:
 
     # Mission-type fields (civil unrest, drone swarm)
     crowd_role: str | None = None         # "civilian", "instigator", "rioter" for civil unrest
+    # Crowd faction id for rival-faction riots (e.g. "red_bloc"/"blue_bloc").
+    # None = single-faction riot — ALL legacy behavior unchanged.  Inter-
+    # faction hostility is decided by a DiplomacyEngine wired into
+    # UnitBehaviors.set_diplomacy(); this field alone is inert without it.
+    faction: str | None = None
     drone_variant: str | None = None      # "scout_swarm", "attack_swarm", "bomber_swarm" for drone swarm
     instigator_state: str = "hidden"      # Activation cycle: hidden / activating / active
     instigator_timer: float = 0.0         # Timer for activation cycle (seconds)
@@ -550,6 +604,45 @@ class SimulationTarget:
     # Source classification: where this target came from
     # "sim" = locally simulated, "real" = physical hardware/YOLO, "graphling" = remote agent
     source: str = "sim"
+
+    # Daily-routine destination (x, y) for neutral pedestrians driven by the
+    # NPCWorldBridge.  When set, a neutral that completes its path WITHIN
+    # ~3m of this point terminates as "arrived" (reached its scheduled POI)
+    # rather than the generic "despawned".  None = no routine destination
+    # (legacy edge-to-edge transit).
+    routine_destination: tuple[float, float] | None = None
+
+    # Home-range anchor (x, y) for neutral ANIMALS (dogs/cats).  When set, an
+    # animal that finishes its wander loop does NOT despawn at a map edge —
+    # it stays "active" so the engine's _tick_animals pass can hand it a fresh
+    # bounded home-range loop (it lives in its territory instead of walking off
+    # the map).  None for non-animals and unanchored animals (legacy behavior).
+    home_anchor: tuple[float, float] | None = None
+
+    # Leash owner (target_id) for a following DOG.  Set by the engine when a
+    # dog is in 'following' and a live neutral person is within leash range;
+    # cleared when the owner is gone/out-of-range.  None = no owner (cats never
+    # get one; only dogs leash).
+    owner_id: str | None = None
+
+    # Species of a neutral ANIMAL ("dog" / "cat"), stamped explicitly by the
+    # AmbientSpawner at spawn (MINOR A, FEATURE-AUDIT 2026-06-15).  The engine
+    # reads this instead of string-matching the display name against _DOG_NAMES
+    # (fragile/coupled).  None for non-animals and for animals spawned without a
+    # species (the engine keeps a name-based getattr fallback so those are
+    # unaffected — only DOGS leash; cats never follow).
+    species: str | None = None
+
+    # Per-animal turnover budget (seconds).  An anchored animal never edge-
+    # despawns (home_anchor keeps it "active"), so without a bounded lifespan it
+    # would be immortal and eventually starve the global AmbientSpawner cap
+    # (MAJOR 2 leak class).  After it has dwelt in its territory for
+    # home_lifespan_s of CALM (non-fleeing, non-following) sim-time, the engine
+    # retires it gracefully (it wanders off the map edge and despawns), freeing
+    # a slot for a fresh spawn so the animal population CYCLES.  None / inf would
+    # mean no turnover.  home_dwell_s is the engine's running accumulator.
+    home_lifespan_s: float | None = None
+    home_dwell_s: float = 0.0
 
     # Rich identity information (generated once at spawn from target_id)
     identity: UnitIdentity | None = field(default=None, repr=False)
@@ -569,10 +662,22 @@ class SimulationTarget:
     _collision_check: Callable[[float, float], bool] | None = field(
         default=None, repr=False
     )
+    # SWEPT building check: callable(list[(x,y)]) -> True if the polyline
+    # crosses a building (segment-vs-polygon, not just an endpoint sample).
+    # Set alongside _collision_check; when present the per-tick move check
+    # is the EXACT segment test (kills tunneling + corner-edge clips that a
+    # destination-point sample misses). Falls back to sub-sampling the
+    # point check when absent.
+    _segment_collision_check: Callable[
+        [list[tuple[float, float]]], bool] | None = field(
+        default=None, repr=False
+    )
+    # Sub-sample spacing (m) for the point-check fallback swept test.
+    _SWEEP_SAMPLE_M: float = field(default=0.5, repr=False)
 
     # Types that fly over buildings (exempt from collision)
     _FLYING_TYPES: tuple[str, ...] = field(
-        default=("drone", "scout_drone", "swarm_drone"), init=False, repr=False
+        default=("drone", "scout_drone", "swarm_drone", "quad_drone", "plane_drone"), init=False, repr=False
     )
 
     def __post_init__(self) -> None:
@@ -667,6 +772,42 @@ class SimulationTarget:
             return
         self._collision_check = check
 
+    def set_segment_collision_check(
+        self,
+        check: Callable[[list[tuple[float, float]]], bool] | None,
+    ) -> None:
+        """Set the SWEPT building checker (e.g. BuildingObstacles.
+        path_crosses_building). Flying units stay exempt — their
+        point-check is already height-gated by set_collision_check."""
+        if self.asset_type in self._FLYING_TYPES:
+            return
+        self._segment_collision_check = check
+
+    def _move_blocked(self, ax: float, ay: float,
+                      bx: float, by: float) -> bool:
+        """True if MOVING from (ax,ay) to (bx,by) would enter a building.
+
+        Swept, not point-sampled: uses the exact segment-vs-polygon check
+        when available, else sub-samples the segment with the point check
+        at <=_SWEEP_SAMPLE_M spacing. Either way a fast step or a chord
+        that starts and ends outside a thin wall but crosses it is
+        rejected (no tunneling), and a segment grazing a building edge is
+        rejected (no corner clip)."""
+        if self._segment_collision_check is not None:
+            return bool(self._segment_collision_check([(ax, ay), (bx, by)]))
+        if self._collision_check is None:
+            return False
+        # Fallback: sample the whole segment, not just the endpoint.
+        if self._collision_check(bx, by):
+            return True
+        dist = math.hypot(bx - ax, by - ay)
+        steps = int(dist / self._SWEEP_SAMPLE_M)
+        for i in range(1, steps + 1):
+            t = i / (steps + 1)
+            if self._collision_check(ax + (bx - ax) * t, ay + (by - ay) * t):
+                return True
+        return False
+
     def apply_damage(self, amount: float) -> bool:
         """Apply *amount* damage. Returns True if this target is eliminated (health <= 0)."""
         if is_terminal(self.status):
@@ -695,15 +836,29 @@ class SimulationTarget:
         # terminal/low-battery units — a unit's clock never runs
         # backwards relative to the engine's.
         self.sim_time += dt
-        # Skip ticking when target is terminal OR in low_battery (non-terminal
-        # but still inactive — battery drain pass already set this state).
-        if is_terminal(self.status) or self.status == "low_battery":
+        # Terminal units never tick again.
+        if is_terminal(self.status):
+            return
+        # low_battery is "reduced capability, not dead": trickle-charge while
+        # parked and resume once recovered, so an idle unit isn't frozen forever
+        # (otherwise a long-running sim drains every unit to a dead map).
+        if self.status == "low_battery":
+            self.battery = min(1.0, self.battery + _RECHARGE_RATE * dt)
+            if self.battery >= _RECHARGE_RESUME:
+                self.status = "active"
             return
 
-        # Battery drain
-        drain = _DRAIN_RATES.get(self.asset_type, 0.001) * dt
+        # Battery drain — idle/stationary units sip power; active ones draw full.
+        base_drain = _DRAIN_RATES.get(self.asset_type, 0.001)
+        if self.status in ("idle", "stationary"):
+            base_drain *= _IDLE_DRAIN_FACTOR
+        drain = base_drain * dt
         self.battery = max(0.0, self.battery - drain)
-        if self.battery < 0.05:
+        # Only units that actually draw power enter the low-battery/recharge
+        # model.  Zero-drain entities (person/vehicle/animal/crowd roles) report
+        # battery via telemetry and must never be forced low_battery here even if
+        # their battery field is set <0.05 externally (self-audit #12).
+        if base_drain > 0 and self.battery < 0.05:
             self.status = "low_battery"
             return
 
@@ -742,9 +897,11 @@ class SimulationTarget:
         # Tick the controller
         mc.tick(dt)
 
-        # Building collision check: if new position is inside a building,
-        # revert to pre-tick position and advance past the blocking waypoint.
-        if self._collision_check is not None and self._collision_check(mc.x, mc.y):
+        # Building collision check (SWEPT): if the move from the pre-tick
+        # position to the new position would enter/cross a building, revert
+        # and advance past the blocking waypoint. Swept so a fast step or a
+        # waypoint-snap chord can't tunnel through a thin wall.
+        if self._move_blocked(pre_x, pre_y, mc.x, mc.y):
             mc.x = pre_x
             mc.y = pre_y
             # Advance waypoint index past the blocking segment
@@ -774,7 +931,7 @@ class SimulationTarget:
         if mc.arrived:
             # Controller finished its path — determine terminal status
             if self.alliance == "neutral":
-                self.status = "despawned"
+                self.status = self._neutral_terminal_status()
             elif self.alliance == "hostile":
                 self.status = "escaped"
             elif self.loop_waypoints:
@@ -782,6 +939,48 @@ class SimulationTarget:
                 pass
             else:
                 self.status = "arrived"
+
+    def _neutral_terminal_status(self) -> str:
+        """End-of-path status for a neutral that finished its route.
+
+        If the routine bridge gave this neutral a scheduled destination and
+        it stopped within ~3m of it, this is a true ARRIVAL at its POI and we
+        return ``"arrived"``.  Otherwise it is a generic edge despawn
+        (``"despawned"``).
+
+        IMPORTANT: ``"arrived"`` is NOT terminal.  Unlike ``"despawned"``
+        (a TERMINAL_STATUS), ``"arrived"`` is a non-terminal RESTING_STATUS
+        (see ``tritium_lib.models.target_status``) shared with the friendly
+        one-shot dispatcher.  A neutral parked at "arrived" therefore stays
+        alive on the map and is NOT cleaned up by the generic despawn path —
+        the SimulationEngine GC removes arrived neutrals separately, after a
+        short POI dwell, so they free their spawner slot.
+
+        ANTI-STRAND: when the neutral is mid-flee (its behavior FSM is in a
+        shelter/flee/evade state), completing the short flee path is NOT an end
+        of life — the ped has reached shelter and must WAIT OUT the incident,
+        then resume its routine.  Returning "active" here keeps the engine FSM
+        ticking (despawned/arrived neutrals are skipped by _tick_fsms), so the
+        flee max_duration can return it to walking and the bridge re-routes it
+        to its scheduled destination.  Without this, a fast flee path that
+        finishes before the danger decays strands the ped (despawn → GC).
+        """
+        if self.fsm_state in _NEUTRAL_SHELTER_STATES:
+            return "active"
+        # ANTI-DESPAWN (home range): an anchored animal that finishes its
+        # wander/follow loop is HOME, not done.  Returning "active" keeps it on
+        # the map so the engine's _tick_animals pass can hand it a fresh
+        # bounded home-range loop.  Fleeing animals are excluded above (shelter
+        # states), so tick-3 danger-flee still terminalizes/shelters normally.
+        if self.asset_type == "animal" and self.home_anchor is not None:
+            return "active"
+        dest = self.routine_destination
+        if dest is not None:
+            if math.hypot(
+                self.position[0] - dest[0], self.position[1] - dest[1]
+            ) <= 3.0:
+                return "arrived"
+        return "despawned"
 
     def _tick_legacy(self, dt: float) -> None:
         """Legacy linear movement (non-combatants: neutrals, animals, etc.)."""
@@ -795,6 +994,19 @@ class SimulationTarget:
                 self.status = "stationary"
             return
 
+        # Bounds guard: the waypoint list can be REPLACED mid-trip (the NPC
+        # routine bridge re-routes a fleeing/hiding/curious ped to a SHORTER
+        # list while ``_waypoint_index`` is stale).  Clamp the cursor so the
+        # indexed read below cannot IndexError — an un-guarded raise here
+        # aborts the engine's whole tick loop.  Mirrors the id(self.waypoints)
+        # version tracking that _tick_with_controller uses.
+        wv = id(self.waypoints)
+        if wv != self._waypoints_version:
+            self._waypoints_version = wv
+            self._waypoint_index = 0
+        if self._waypoint_index >= len(self.waypoints):
+            self._waypoint_index = max(0, len(self.waypoints) - 1)
+
         tx, ty = self.waypoints[self._waypoint_index]
 
         # Pre-check: if the current waypoint itself is inside a building,
@@ -803,7 +1015,7 @@ class SimulationTarget:
             if self._waypoint_index >= len(self.waypoints) - 1:
                 # All remaining waypoints blocked — terminal status
                 if self.alliance == "neutral":
-                    self.status = "despawned"
+                    self.status = self._neutral_terminal_status()
                 elif self.alliance == "hostile":
                     # Don't escape — stay active to participate in combat
                     pass
@@ -822,7 +1034,7 @@ class SimulationTarget:
             if self._waypoint_index >= len(self.waypoints) - 1:
                 # Path complete — terminal status depends on alliance
                 if self.alliance == "neutral":
-                    self.status = "despawned"
+                    self.status = self._neutral_terminal_status()
                 elif self.alliance == "hostile":
                     self.status = "escaped"
                 elif self.loop_waypoints:
@@ -844,12 +1056,16 @@ class SimulationTarget:
         new_x = self.position[0] + (dx / dist) * step
         new_y = self.position[1] + (dy / dist) * step
 
-        # Building collision check: reject moves into buildings
-        if self._collision_check is not None and self._collision_check(new_x, new_y):
+        # Building collision check (SWEPT): reject moves that enter/cross a
+        # building between this position and the step destination.
+        if self._move_blocked(self.position[0], self.position[1], new_x, new_y):
             # Movement would enter a building — skip to next waypoint
             if self._waypoint_index >= len(self.waypoints) - 1:
                 if self.alliance == "neutral":
-                    self.status = "despawned"
+                    # Route through _neutral_terminal_status so an anchored
+                    # animal (or a sheltering ped) is kept "active" instead of
+                    # despawned at a building it can't path past.
+                    self.status = self._neutral_terminal_status()
                 elif self.alliance == "hostile":
                     # Don't escape — stay active to participate in combat
                     pass
@@ -877,10 +1093,10 @@ class SimulationTarget:
         Note: threat_level is NOT included — it is computed externally by
         ThreatClassifier and lives in ThreatRecord, not on the target.
         """
-        # Geo-reference is SC-specific; when unavailable, default to 0.
+        # When no geo-reference has been set, local_to_latlng returns 0,0.
         geo = {"lat": 0.0, "lng": 0.0, "alt": 0.0}
         try:
-            from engine.tactical.geo import local_to_latlng
+            from tritium_lib.geo import local_to_latlng
             geo = local_to_latlng(self.position[0], self.position[1], self.altitude)
         except ImportError:
             pass
@@ -926,6 +1142,7 @@ class SimulationTarget:
             ),
             "vision_range": round(self.vision_range, 1),
             "crowd_role": self.crowd_role,
+            "faction": self.faction,
             "drone_variant": self.drone_variant,
             "instigator_state": self.instigator_state,
             "identified": self.identified,

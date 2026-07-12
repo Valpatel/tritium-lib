@@ -31,8 +31,9 @@ from .base import BaseStore
 class ConfigStore(BaseStore):
     """Thread-safe SQLite store for system configuration key-value pairs.
 
-    Values are stored as strings internally. Use :meth:`get_typed` for
-    automatic JSON deserialization of complex values.
+    Values are stored as strings internally. Use :meth:`get_json` /
+    :meth:`set_json` for automatic JSON (de)serialization of complex
+    values.
     """
 
     _SCHEMAS = [

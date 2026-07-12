@@ -17,9 +17,9 @@ Pure Python — stdlib math only.
 
 Usage::
 
-    from tritium_lib.signals import SpectrumAnalyzer
+    from tritium_lib.signals import SignalSpectrumAnalyzer
 
-    analyzer = SpectrumAnalyzer()
+    analyzer = SignalSpectrumAnalyzer()
 
     # Feed raw frequency/power pairs
     peaks = analyzer.find_peaks(
@@ -159,8 +159,11 @@ class SpectralSummary:
 # SpectrumAnalyzer
 # ---------------------------------------------------------------------------
 
-class SpectrumAnalyzer:
+class SignalSpectrumAnalyzer:
     """Pure-math frequency-domain spectrum analyser.
+
+    Distinct from ``tritium_lib.sdr.analyzer.SpectrumAnalyzer`` (a device-backed
+    detection engine). This one takes frequency/power arrays and does pure math.
 
     Provides peak detection, band classification, noise floor estimation,
     and spectral entropy calculation.  Works on any frequency/power data

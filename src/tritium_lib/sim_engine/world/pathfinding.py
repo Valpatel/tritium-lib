@@ -36,8 +36,40 @@ _FLYING_TYPES = {"drone", "scout_drone"}
 # Unit types that follow roads
 _ROAD_TYPES = {"rover", "tank", "apc", "vehicle"}
 
-# Unit types that prefer sidewalks (pedestrian navigation)
-_PEDESTRIAN_TYPES = {"person", "infantry", "civilian", "animal"}
+# Unit types that prefer sidewalks (pedestrian navigation).
+# A quadruped walks where people walk, not where cars drive.
+_PEDESTRIAN_TYPES = {"person", "infantry", "civilian", "animal", "robot_dog"}
+
+# Public aliases (2026-07-10): consumers (sc engine.route_path) need the same
+# unit-type taxonomy to decide network-graph vs costmap planner precedence.
+# Frozen so a consumer cannot mutate the dispatch tables.
+PEDESTRIAN_TYPES = frozenset(_PEDESTRIAN_TYPES)
+ROAD_TYPES = frozenset(_ROAD_TYPES)
+FLYING_TYPES = frozenset(_FLYING_TYPES)
+STATIONARY_TYPES = frozenset(_STATIONARY_TYPES)
+
+# Per-unit-type standoff radius (meters) fed to the costmap A* planner as its
+# ``clearance_m``: a wide, heavy unit keeps more distance from walls/obstacles
+# than a person.  A tank/APC needs a wider berth than a rover/light vehicle.
+# Pedestrians and unknown types stay 0.0 — PINNED: this protects pedestrian
+# sidewalk routing and the riot golden-replay determinism (a non-zero clearance
+# for peds would perturb their paths).  Consumers read this via
+# :func:`clearance_for_unit_type`.
+UNIT_CLEARANCE_M: dict[str, float] = {
+    "rover": 1.0,
+    "vehicle": 1.0,
+    "tank": 2.0,
+    "apc": 2.0,
+}
+
+
+def clearance_for_unit_type(unit_type: str) -> float:
+    """Return the costmap standoff radius (meters) for ``unit_type``.
+
+    Looks up :data:`UNIT_CLEARANCE_M`; pedestrians and any unrecognised type
+    get ``0.0`` (no extra standoff — historical planner behavior).
+    """
+    return UNIT_CLEARANCE_M.get(unit_type, 0.0)
 
 # Distance threshold for hostile direct approach (meters)
 _HOSTILE_DIRECT_RANGE = 30.0
@@ -84,8 +116,16 @@ def plan_path(
     if unit_type in _PEDESTRIAN_TYPES and sidewalk_graph is not None:
         path = _sidewalk_path(start, end, sidewalk_graph)
         if path is not None and len(path) > 2:
-            return path
-        # Sidewalk graph didn't have coverage — fall through to other methods
+            # A curb-side sidewalk graph derived from roads is purely
+            # geometric, so a run can clip a building that sits beside a
+            # road. Only hand back a sidewalk route that stays clear of
+            # buildings; otherwise fall through to the building-aware grid
+            # A* so the pedestrian still REACHES its destination instead of
+            # stalling against a wall on the swept per-tick collision check.
+            if obstacles is None or not obstacles.path_crosses_building(path):
+                return path
+        # Sidewalk graph didn't help (no coverage or building-crossing) —
+        # fall through to other methods (grid A* avoids buildings).
 
     # Hostile persons: road approach then direct last 30m
     if alliance == "hostile" and unit_type == "person":
@@ -139,13 +179,24 @@ def _grid_fallback(
     if terrain_map is not None:
         try:
             from tritium_lib.sim_engine.world.grid_pathfinder import grid_find_path, profile_for_unit
-            profile_name = profile_for_unit(unit_type, alliance)
-            path = grid_find_path(
-                terrain_map, start, end, profile_name,
-                obstacles=obstacles,
-            )
-            if path is not None and len(path) >= 2:
-                return path
+            # Try the unit's own profile, then a permissive ground profile.
+            # A vehicle on road-less terrain (no street graph) would
+            # otherwise get no grid route and fall through to a straight
+            # line THROUGH buildings — better to route it off-road around
+            # them. The pedestrian profile treats open/yard as cheap, so it
+            # finds a building-avoiding ground route whenever one exists.
+            profiles = [profile_for_unit(unit_type, alliance)]
+            if "pedestrian" not in profiles:
+                profiles.append("pedestrian")
+            for profile_name in profiles:
+                path = grid_find_path(
+                    terrain_map, start, end, profile_name,
+                    obstacles=obstacles,
+                )
+                if path is not None and len(path) >= 2:
+                    # Never hand back a route that crosses a building.
+                    if obstacles is None or not obstacles.path_crosses_building(path):
+                        return path
         except Exception:
             pass
     return [start, end]

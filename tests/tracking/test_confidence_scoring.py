@@ -655,3 +655,182 @@ class TestCorrelateEmptyTracker:
         c = TargetCorrelator(tracker, confidence_threshold=0.01, max_age=9999)
         records = c.correlate()
         assert records == []
+
+
+class TestAbstainExcludedFromConfidence:
+    """Strategies with no data to judge a pair must ABSTAIN, not vote 0.
+
+    FEATURE-AUDIT 2026-06-14 ("does fusion actually fuse?"): the live
+    correlation dashboard showed 387 correlations but ZERO high-confidence
+    ones (avg 0.488).  Tracing a textbook same-entity case
+    (POST /api/fusion/inject_test_quad) found a perfect cross-modal match
+    capped at ~0.51 confidence purely because temporal ("insufficient
+    history"), dossier ("no prior association") and wifi_probe ("not a
+    BLE+wifi pair") scored 0 for lack of data and dragged the weighted
+    average down.  Those are abstentions, not evidence against; they are now
+    excluded from the confidence denominator (with a floor that preserves
+    skepticism), so genuine matches can reach the 0.70 "high confidence" bar
+    while distant / out-of-time pairs still cannot over-correlate.
+    """
+
+    def _corr(self, targets, **kw):
+        tracker = TargetTracker()
+        with tracker._lock:
+            for t in targets:
+                tracker._targets[t.target_id] = t
+        return TargetCorrelator(tracker, max_age=9999, **kw).correlate()
+
+    def test_clear_cross_modal_match_reaches_high_confidence(self):
+        """Co-located + co-timed cross-modal detections fuse at high confidence
+        (>=0.70) -- the INTENDED multi-sensor fusion (one entity seen by BLE +
+        camera + acoustic at one place/time).
+
+        Honest caveat (FEATURE-AUDIT 2026-06-14): proximity + timing alone carry
+        no identity-discriminating evidence, so this input shape is the same as
+        two genuinely-different co-located entities -- the system fuses them by
+        design. What it MUST NOT do is fuse entities KNOWN to be different; that
+        is guarded by TestIdentityVeto (a different-dossier veto). Before the
+        abstain fix this capped at ~0.51 (temporal/dossier/wifi_probe abstained
+        but were counted as 0 in the denominator)."""
+        now = time.monotonic()
+        ble = _make_target("ble_aa", "ble", position=(100.0, 100.0), last_seen=now)
+        aco = _make_target("acoustic_x", "acoustic", position=(100.0, 100.0), last_seen=now)
+        records = self._corr([ble, aco])
+        assert records, "a co-located cross-modal pair must correlate (intended fusion)"
+        assert records[0].confidence >= 0.70, (
+            f"confidence {records[0].confidence:.3f} below the 0.70 high-confidence "
+            "bar -- abstaining strategies are still penalising a genuine match"
+        )
+
+    def test_same_place_different_time_does_not_over_correlate(self):
+        """SAFETY: same position but far apart in time must stay below 0.70.
+
+        signal_pattern HAS timing data and disagrees, so it stays in the
+        denominator and holds confidence down -- the abstain fix must not turn
+        coincidental co-location into a false fusion."""
+        now = time.monotonic()
+        ble = _make_target("ble_bb", "ble", position=(100.0, 100.0), last_seen=now)
+        aco = _make_target("acoustic_y", "acoustic", position=(100.0, 100.0),
+                           last_seen=now - 60.0)
+        records = self._corr([ble, aco], confidence_threshold=0.01)
+        conf = records[0].confidence if records else 0.0
+        assert conf < 0.70, (
+            f"same-place/different-time pair reached {conf:.3f} -- the abstain "
+            "fix must not over-correlate coincidental co-location"
+        )
+
+    def test_distant_pair_does_not_correlate(self):
+        """SAFETY: spatial always votes, so a distant pair stays low / unformed."""
+        now = time.monotonic()
+        a = _make_target("ble_cc", "ble", position=(100.0, 100.0), last_seen=now)
+        b = _make_target("acoustic_z", "acoustic", position=(400.0, 400.0), last_seen=now)
+        records = self._corr([a, b])
+        assert records == [] or records[0].confidence < 0.50, (
+            "a pair hundreds of metres apart must not become a confident fusion"
+        )
+
+    def test_weighted_score_excludes_abstentions(self):
+        """Unit: an abstaining (applicable=False) strategy is excluded from the
+        denominator, so it does not dilute the applicable strategies."""
+        c = TargetCorrelator(TargetTracker())
+        applicable_only = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+        ]
+        with_abstention = applicable_only + [
+            StrategyScore("dossier", 0.0, "no data", applicable=False),
+            StrategyScore("temporal", 0.0, "no history", applicable=False),
+        ]
+        # Adding pure abstentions must not lower the combined confidence.
+        assert c._weighted_score(with_abstention) == pytest.approx(
+            c._weighted_score(applicable_only)
+        )
+        # ...whereas a real low-scoring (applicable) strategy DOES lower it.
+        # Use enough applicable weight that the denominator floor is not masking
+        # the effect (applicable weight must exceed _MIN_EVIDENCE_WEIGHT).
+        all_agree = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+            StrategyScore("temporal", 1.0, "match"),
+            StrategyScore("dossier", 1.0, "match"),
+        ]
+        one_disagrees = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+            StrategyScore("temporal", 0.0, "different movement", applicable=True),
+            StrategyScore("dossier", 1.0, "match"),
+        ]
+        assert c._weighted_score(one_disagrees) < c._weighted_score(all_agree)
+
+
+class TestIdentityVeto:
+    """Definitive identity disagreement (known-different dossiers) vetoes a
+    merge, so co-location can never override known identity (FEATURE-AUDIT
+    2026-06-14 fusion over-correlation fix).
+    """
+
+    def _corr(self, targets, ds=None, **kw):
+        tracker = TargetTracker()
+        with tracker._lock:
+            for t in targets:
+                tracker._targets[t.target_id] = t
+        return TargetCorrelator(tracker, max_age=9999, dossier_store=ds, **kw).correlate()
+
+    def test_known_different_dossiers_do_not_merge(self):
+        from tritium_lib.tracking.dossier import DossierStore
+        ds = DossierStore()
+        ds.create_or_update("ble_x", "ble", "filler1", "x", 0.9)      # dossier 1
+        ds.create_or_update("aco_y", "acoustic", "filler2", "y", 0.9)  # dossier 2
+        a = _make_target("ble_x", "ble", position=(100.0, 100.0))
+        b = _make_target("aco_y", "acoustic", position=(100.0, 100.0))
+        records = self._corr([a, b], ds)
+        # co-located AND co-timed, but the dossier KNOWS they are different
+        # entities -> proximity must not override that.
+        assert records == [], "known-different entities must not merge despite co-location"
+
+    def test_veto_forces_weighted_score_to_zero(self):
+        c = TargetCorrelator(TargetTracker())
+        scores = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+            StrategyScore("dossier", 0.0, "different dossiers", applicable=True, veto=True),
+        ]
+        # Without the veto these would score 0.733; the veto forces 0.
+        assert c._weighted_score(scores) == 0.0
+
+    def test_non_veto_disagreement_still_scores(self):
+        """A veto is only for DEFINITIVE negative evidence; an ordinary low
+        applicable score must not zero the whole correlation."""
+        c = TargetCorrelator(TargetTracker())
+        scores = [
+            StrategyScore("spatial", 1.0, "match"),
+            StrategyScore("signal_pattern", 1.0, "match"),
+        ]
+        assert c._weighted_score(scores) > 0.0
+
+
+class TestCalibrationTopBinAndVeto:
+    """Scores of exactly 1.0 are calibratable (top bin inclusive), so a trained
+    calibrator can veto a known-bad high-score fusion (self-audit #15)."""
+
+    def test_score_one_is_calibratable(self):
+        cal = ConfidenceCalibrator()
+        for _ in range(15):
+            cal.record_outcome("spatial", 1.0, actual_match=False)
+        # Before the top-bin fix, calibrate_score(1.0) fell through to raw (1.0)
+        # because the 0.9 bin was half-open [0.9, 1.0).
+        assert cal.calibrate_score("spatial", 1.0) < 0.5
+
+    def test_trained_calibrator_lowers_combined_confidence(self):
+        cal = ConfidenceCalibrator()
+        for _ in range(15):
+            cal.record_outcome("spatial", 1.0, actual_match=False)
+            cal.record_outcome("signal_pattern", 1.0, actual_match=False)
+        c = TargetCorrelator(TargetTracker(), calibrator=cal)
+        scores = [StrategyScore("spatial", 1.0, "x"),
+                  StrategyScore("signal_pattern", 1.0, "x")]
+        raw = c._weighted_score(scores)
+        calibrated = c._weighted_score(c._calibrate_scores(scores))
+        assert raw >= 0.70
+        assert calibrated < raw, "trained calibrator must be able to lower confidence"
+        assert min(raw, calibrated) < c.confidence_threshold, "merge would be vetoed"

@@ -132,3 +132,67 @@ def test_all_hosts_failed_error():
     err = AllHostsFailedError(TaskType.VISION)
     assert err.task_type == TaskType.VISION
     assert "vision" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# Graceful degradation: hard capabilities (vision) must NOT route to a blind
+# text model (FEATURE-AUDIT 2026-06-14).
+# ---------------------------------------------------------------------------
+
+import tritium_lib.inference.model_router as _mr
+import pytest
+
+
+def test_infer_vision_with_no_vision_model_fails_cleanly(monkeypatch):
+    """A VISION task with only a text model must raise AllHostsFailedError --
+    NOT silently route images to a blind text model."""
+    called = {"n": 0}
+
+    def _boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("ollama_chat must not be called for vision with no vision model")
+
+    monkeypatch.setattr(_mr, "ollama_chat", _boom)
+    r = ModelRouter()
+    r.register(ModelProfile(name="text-only", capabilities={"text"}, priority=1))
+
+    with pytest.raises(AllHostsFailedError):
+        r.infer(TaskType.VISION, [{"role": "user", "content": "what is in this image?"}])
+    assert called["n"] == 0, "no model call should have been attempted"
+
+
+def test_infer_vision_uses_vision_model_when_available(monkeypatch):
+    """When a vision-capable model exists, the vision task routes to it."""
+    used = {}
+
+    def _fake(model, messages, base_url=None, **k):
+        used["model"] = model
+        return {"message": {"content": "I see a cat"}}
+
+    monkeypatch.setattr(_mr, "ollama_chat", _fake)
+    r = ModelRouter()
+    r.register(ModelProfile(name="text-only", capabilities={"text"}, priority=1))
+    r.register(ModelProfile(name="llava", capabilities={"text", "vision"}, priority=2))
+
+    out = r.infer(TaskType.VISION, [{"role": "user", "content": "x"}])
+    assert used["model"] == "llava"
+    assert out["_routing"]["model"] == "llava"
+
+
+def test_infer_soft_task_falls_back_to_any_model(monkeypatch):
+    """A soft task (code) with no exact-capability model still degrades to an
+    available text model -- soft fallback must keep working."""
+    used = {}
+
+    def _fake(model, messages, base_url=None, **k):
+        used["model"] = model
+        return {"message": {"content": "def f(): pass"}}
+
+    monkeypatch.setattr(_mr, "ollama_chat", _fake)
+    r = ModelRouter()
+    r.register(ModelProfile(name="text-only", capabilities={"text"}, priority=1))
+
+    # CODE_GEN requires "code" (not present) but is soft -> falls back to text.
+    out = r.infer(TaskType.CODE_GEN, [{"role": "user", "content": "write code"}])
+    assert used["model"] == "text-only"
+    assert out is not None

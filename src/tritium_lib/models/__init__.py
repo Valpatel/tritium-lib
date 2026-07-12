@@ -208,6 +208,10 @@ from .aar import (
     AfterActionReport,
     FactionSummary,
     CivilianCollateral,
+    DeEscalationSummary,
+    EscortSummary,
+    PatrolSummary,
+    InfrastructureSummary,
     MVPHighlight,
     KillGraphEntry,
     MoraleSample,
@@ -274,6 +278,8 @@ from .acoustic_tdoa import (
     TDoAObservation,
     TDoAResult,
     compute_tdoa_position,
+    compute_tdoa_position_leastsq,
+    solve_tdoa_xy,
     SPEED_OF_SOUND_MPS as TDOA_SPEED_OF_SOUND_MPS,
 )
 from .behavior import (
@@ -754,6 +760,28 @@ from .position_anchor import (
     FusedPositionEstimate,
     PositionAnchor,
 )
+from .fire_control import (
+    FireCommand,
+    FireSolution,
+    TurretAimCommand,
+    WeaponStatus,
+    compute_fire_solution,
+)
+from .hits import (
+    DEFAULT_HP,
+    HIT_SOURCES,
+    LIMP_MOBILITY,
+    LIMP_THRESHOLD,
+    HealthStatus,
+    HealthTracker,
+    HitReport,
+    RegisterHitCommand,
+)
+from .quadruped import (
+    DEFAULT_GAITS,
+    GaitSpec,
+    QuadrupedProfile,
+)
 
 __all__ = [
     # Deployment
@@ -938,6 +966,10 @@ __all__ = [
     "AfterActionReport",
     "FactionSummary",
     "CivilianCollateral",
+    "DeEscalationSummary",
+    "EscortSummary",
+    "PatrolSummary",
+    "InfrastructureSummary",
     "MVPHighlight",
     "KillGraphEntry",
     "MoraleSample",
@@ -996,6 +1028,8 @@ __all__ = [
     "TDoAObservation",
     "TDoAResult",
     "compute_tdoa_position",
+    "compute_tdoa_position_leastsq",
+    "solve_tdoa_xy",
     "TDOA_SPEED_OF_SOUND_MPS",
     # Behavioral pattern recognition
     "AnomalySeverity",
@@ -1405,4 +1439,23 @@ __all__ = [
     "DetectionEdge",
     "FusedPositionEstimate",
     "PositionAnchor",
+    # Fire control (turret actuation wire contract + reverse telemetry)
+    "FireCommand",
+    "FireSolution",
+    "TurretAimCommand",
+    "WeaponStatus",
+    "compute_fire_solution",
+    # Hit feedback (adjudicator -> robot register_hit; dog-owned health)
+    "DEFAULT_HP",
+    "HIT_SOURCES",
+    "LIMP_MOBILITY",
+    "LIMP_THRESHOLD",
+    "HealthStatus",
+    "HealthTracker",
+    "HitReport",
+    "RegisterHitCommand",
+    # Quadruped (robot-dog gait profile — sim animation + Go2-class telemetry)
+    "DEFAULT_GAITS",
+    "GaitSpec",
+    "QuadrupedProfile",
 ]

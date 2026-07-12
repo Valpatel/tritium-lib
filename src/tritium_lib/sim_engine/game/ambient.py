@@ -38,6 +38,7 @@ generators are simpler and more readable.
 
 from __future__ import annotations
 
+import math
 import random
 import threading
 import time
@@ -51,6 +52,35 @@ from tritium_lib.sim_engine.core.entity import SimulationTarget
 # Default map bounds -- overridden by engine's actual bounds at runtime.
 # These are only used if the spawner is somehow constructed without an engine.
 _DEFAULT_MAP_BOUNDS = 200.0
+
+# Home-range radius (m) for neutral animals (dogs/cats).  An anchored animal
+# wanders within this radius of its home_anchor (yard center) and NEVER walks
+# off to a map edge.  FEATURE-AUDIT 2026-06-15: the old _yard_wander appended a
+# random map-edge exit and the animal despawned there (p90 167m / max 343m from
+# spawn, 100% edge-despawn).  Bounding the loop to HOME_RANGE_R keeps animals in
+# their territory (target p90 < 40m, max < 55m).
+HOME_RANGE_R = 35.0
+
+# Per-species sub-cap for neutral animals (MAJOR 2, FEATURE-AUDIT 2026-06-15).
+# Anchored animals never edge-despawn, so without a sub-cap they would
+# accumulate until the GLOBAL MAX_NEUTRALS=80 cap is full of immortal
+# dogs/cats — at which point the spawner stops producing ANY neutral
+# (peds/vehicles too).  _spawn_random stops adding animals at MAX_ANIMALS but
+# still adds peds/vehicles up to MAX_NEUTRALS, so the population stays mixed.
+MAX_ANIMALS = 20
+
+# Turnover budget (seconds) for an anchored animal.  After it has dwelt in its
+# territory for this much CALM (non-fleeing, non-following) sim-time, the engine
+# retires it gracefully (wanders off / despawns) so a fresh one can spawn and
+# the animal population CYCLES instead of saturating the sub-cap forever.  A
+# range so animals don't all retire at once (staggered turnover).
+ANIMAL_LIFESPAN_MIN_S = 120.0
+ANIMAL_LIFESPAN_MAX_S = 300.0
+
+
+def _animal_lifespan() -> float:
+    """A random per-animal turnover budget in [MIN, MAX] seconds (staggered)."""
+    return random.uniform(ANIMAL_LIFESPAN_MIN_S, ANIMAL_LIFESPAN_MAX_S)
 
 # -- Neighborhood street grid ------------------------------------------------
 # Street grid is generated dynamically based on map bounds.  Streets are
@@ -185,6 +215,11 @@ class AmbientSpawner:
     """
 
     MAX_NEUTRALS = 80
+    # Per-species sub-cap for animals (MAJOR 2): the spawner stops adding MORE
+    # animals at this count but still adds peds/vehicles up to MAX_NEUTRALS, so
+    # immortal anchored animals can never starve the global neutral cap.  Mirrors
+    # the module-level MAX_ANIMALS (resolved from module globals at class build).
+    MAX_ANIMALS = MAX_ANIMALS
     SPAWN_MIN = 5.0  # seconds
     SPAWN_MAX = 15.0
 
@@ -255,18 +290,39 @@ class AmbientSpawner:
             self._spawn_random()
 
     def _spawn_random(self) -> None:
-        """Spawn a random neutral target type."""
+        """Spawn a random neutral target type.
+
+        MAJOR 2 sub-cap: when the live animal count is already at MAX_ANIMALS, a
+        dog/cat roll is REDIRECTED to a ped/vehicle instead of skipped — so the
+        global MAX_NEUTRALS cap keeps filling with non-animals (peds/vehicles)
+        and immortal anchored animals can never starve it.
+        """
         roll = random.random()
         if roll < 0.35:
             self._spawn_neighbor()
         elif roll < 0.55:
             self._spawn_car()
         elif roll < 0.70:
-            self._spawn_dog()
+            self._spawn_dog() if not self._animals_at_cap() else self._spawn_neighbor()
         elif roll < 0.80:
-            self._spawn_cat()
+            self._spawn_cat() if not self._animals_at_cap() else self._spawn_car()
         else:
             self._spawn_delivery()
+
+    def _animals_at_cap(self) -> bool:
+        """True when the live (non-terminal) neutral animal count is at the
+        per-species sub-cap — the spawner must not add MORE animals."""
+        try:
+            targets = self._engine.get_targets()
+        except Exception:
+            return False
+        count = sum(
+            1 for t in targets
+            if getattr(t, "asset_type", None) == "animal"
+            and getattr(t, "alliance", None) == "neutral"
+            and not is_terminal(getattr(t, "status", "active"))
+        )
+        return count >= self.MAX_ANIMALS
 
     def _pick_name(self, names: list[str]) -> str:
         """Pick an unused name, adding suffix if needed."""
@@ -358,28 +414,74 @@ class AmbientSpawner:
         # Fallback: edge point (always safe)
         return self._random_edge()
 
-    def _yard_wander(self) -> tuple[tuple[float, float], list[tuple[float, float]]]:
-        """Generate a start + wander path within a yard area.
+    def _home_range_loop(
+        self, anchor: tuple[float, float], count: int | None = None
+    ) -> tuple[tuple[float, float], list[tuple[float, float]]]:
+        """Generate a bounded wander loop within HOME_RANGE_R of an anchor.
 
-        All generated points are validated against building obstacles.
-        Yard areas are scattered across the full map, not just near center.
+        Returns ``(anchor, waypoints)`` where every waypoint is within
+        HOME_RANGE_R of ``anchor`` (so the animal never leaves its territory)
+        and validated against building obstacles via _safe_point.  No map-edge
+        exit is appended — the animal stays home.  Reused by the engine's
+        _tick_animals pass to hand an idle animal a fresh loop.
         """
-        # Pick a random yard area anywhere within 80% of map bounds
+        ax, ay = anchor
+        n = count if count is not None else random.randint(3, 5)
+        points: list[tuple[float, float]] = []
+        for _ in range(n):
+            # Uniform-ish point inside the home-range disc, clamped to the map.
+            ang = random.uniform(0.0, 2.0 * 3.141592653589793)
+            r = HOME_RANGE_R * (random.random() ** 0.5)
+            px = self._clamp(ax + r * math.cos(ang))
+            py = self._clamp(ay + r * math.sin(ang))
+            pt = self._safe_point(px, py)
+            # _safe_point may fall back to a map-edge point when an anchor is
+            # boxed in by buildings; reject anything outside the home range so
+            # the bound is hard (the animal would rather re-roll than leave).
+            if math.hypot(pt[0] - ax, pt[1] - ay) <= HOME_RANGE_R:
+                points.append(pt)
+        if not points:
+            # Degenerate (anchor fully boxed in) — rest in place at the anchor.
+            points.append(self._safe_point(ax, ay))
+            if math.hypot(points[0][0] - ax, points[0][1] - ay) > HOME_RANGE_R:
+                points[0] = (ax, ay)
+        return anchor, points
+
+    def _yard_wander(self) -> tuple[tuple[float, float], list[tuple[float, float]]]:
+        """Pick a home anchor + a bounded home-range wander loop for an animal.
+
+        FEATURE-AUDIT 2026-06-15: the old version picked a random yard center
+        anywhere in 80% of bounds, appended a random map-edge exit, and the
+        animal despawned at that edge (100% edge-despawn).  Now it stamps a home
+        anchor and returns a loop bounded to HOME_RANGE_R — NO edge exit.  The
+        animal lives in its territory; the engine refreshes the loop when it
+        depletes.  Returns ``(anchor, waypoints)`` (anchor is also the start).
+        """
+        # Anchor anywhere within 80% of bounds, validated OFF buildings.  The
+        # anchor is also the spawn position, so it must be building-free or the
+        # animal would clip on tick 0 and never escape (FEATURE-AUDIT residual:
+        # a boxed-in fallback anchor left 2/60 animals stuck inside a footprint).
+        # Re-roll a fresh yard center until one is outside all buildings.
         yard_range = self._map_bounds * 0.8
-        cx = random.uniform(-yard_range, yard_range)
-        cy = random.uniform(-yard_range, yard_range)
-        start = self._safe_point(cx + random.uniform(-3, 3), cy + random.uniform(-3, 3))
-        points = []
-        for _ in range(random.randint(3, 5)):
-            pt = self._safe_point(
-                self._clamp(cx + random.uniform(-5, 5)),
-                self._clamp(cy + random.uniform(-5, 5)),
-            )
-            points.append(pt)
-        # Exit toward nearest edge
-        exit_point = self._random_edge()
-        points.append(exit_point)
-        return start, points
+        anchor: tuple[float, float] | None = None
+        for _ in range(20):
+            cx = random.uniform(-yard_range, yard_range)
+            cy = random.uniform(-yard_range, yard_range)
+            if not self._point_in_building(cx, cy):
+                anchor = (cx, cy)
+                break
+            # Try a small jitter off this center before re-rolling.
+            jpt = self._safe_point(cx, cy, max_attempts=12)
+            if (not self._point_in_building(jpt[0], jpt[1])
+                    and math.hypot(jpt[0] - cx, jpt[1] - cy) <= HOME_RANGE_R):
+                anchor = jpt
+                break
+        if anchor is None:
+            # Last resort: the map center is reliably open in any sane layout.
+            anchor = (0.0, 0.0)
+            if self._point_in_building(*anchor):
+                anchor = self._safe_point(0.0, 0.0)
+        return self._home_range_loop(anchor)
 
     def _delivery_path(self) -> tuple[tuple[float, float], list[tuple[float, float]]]:
         """Generate delivery path: road edge -> front door -> pause -> back.
@@ -429,30 +531,36 @@ class AmbientSpawner:
         self._engine.add_target(target)
 
     def _spawn_dog(self) -> None:
-        start, waypoints = self._yard_wander()
+        anchor, waypoints = self._yard_wander()
         name = self._pick_name(_DOG_NAMES)
         target = SimulationTarget(
             target_id=str(uuid.uuid4()),
             name=name,
             alliance="neutral",
             asset_type="animal",
-            position=start,
+            position=anchor,
             speed=2.0,
             waypoints=waypoints,
+            home_anchor=anchor,
+            species="dog",                 # MINOR A: explicit, not name-matched
+            home_lifespan_s=_animal_lifespan(),  # MAJOR 2: turnover budget
         )
         self._engine.add_target(target)
 
     def _spawn_cat(self) -> None:
-        start, waypoints = self._yard_wander()
+        anchor, waypoints = self._yard_wander()
         name = self._pick_name(_CAT_NAMES)
         target = SimulationTarget(
             target_id=str(uuid.uuid4()),
             name=name,
             alliance="neutral",
             asset_type="animal",
-            position=start,
+            position=anchor,
             speed=1.5,
             waypoints=waypoints,
+            home_anchor=anchor,
+            species="cat",                 # MINOR A: explicit, not name-matched
+            home_lifespan_s=_animal_lifespan(),  # MAJOR 2: turnover budget
         )
         self._engine.add_target(target)
 

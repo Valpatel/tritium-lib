@@ -3,7 +3,7 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """Tests for tritium_lib.signals — RF signal analysis toolkit.
 
-Covers: RSSIAnalyzer, SignalFingerprint, SpectrumAnalyzer, CSIProcessor.
+Covers: RSSIAnalyzer, SignalFingerprint, SignalSpectrumAnalyzer, CSIProcessor.
 """
 
 import math
@@ -15,7 +15,7 @@ from tritium_lib.signals import (
     RSSIStats,
     MotionResult,
     SignalFingerprint,
-    SpectrumAnalyzer,
+    SignalSpectrumAnalyzer,
     SpectralPeak,
     SpectralSummary,
     BandClassification,
@@ -297,10 +297,10 @@ class TestSignalFingerprint:
 
 
 # ===========================================================================
-# SpectrumAnalyzer Tests
+# SignalSpectrumAnalyzer Tests
 # ===========================================================================
 
-class TestSpectrumAnalyzer:
+class TestSignalSpectrumAnalyzer:
     """Tests for frequency-domain spectrum analysis."""
 
     def _make_spectrum(self, n=200, peak_idx=100, peak_power=-40.0,
@@ -317,7 +317,7 @@ class TestSpectrumAnalyzer:
 
     def test_find_peaks_basic(self):
         """find_peaks should detect a clear peak."""
-        sa = SpectrumAnalyzer()
+        sa = SignalSpectrumAnalyzer()
         freqs, powers = self._make_spectrum()
         peaks = sa.find_peaks(freqs, powers)
         assert len(peaks) >= 1
@@ -326,7 +326,7 @@ class TestSpectrumAnalyzer:
 
     def test_find_peaks_empty(self):
         """find_peaks returns empty list for flat noise."""
-        sa = SpectrumAnalyzer()
+        sa = SignalSpectrumAnalyzer()
         freqs = [2.4e9 + i * 1e6 for i in range(100)]
         powers = [-90.0] * 100
         peaks = sa.find_peaks(freqs, powers)
@@ -334,7 +334,7 @@ class TestSpectrumAnalyzer:
 
     def test_find_peaks_multiple(self):
         """find_peaks should detect multiple distinct peaks."""
-        sa = SpectrumAnalyzer()
+        sa = SignalSpectrumAnalyzer()
         n = 200
         freqs = [2.4e9 + i * 1e6 for i in range(n)]
         powers = [-90.0] * n
@@ -351,29 +351,29 @@ class TestSpectrumAnalyzer:
 
     def test_classify_frequency_wifi(self):
         """WiFi 2.4 GHz should be classified correctly."""
-        name, cat = SpectrumAnalyzer.classify_frequency(2.437e9)
+        name, cat = SignalSpectrumAnalyzer.classify_frequency(2.437e9)
         assert cat == "wifi" or cat == "ble"  # overlapping band
         assert name != "unknown"
 
     def test_classify_frequency_fm(self):
         """FM broadcast should be classified correctly."""
-        name, cat = SpectrumAnalyzer.classify_frequency(98.5e6)
+        name, cat = SignalSpectrumAnalyzer.classify_frequency(98.5e6)
         assert cat == "broadcast"
         assert "FM" in name
 
     def test_classify_frequency_unknown(self):
         """Frequency outside known bands should be 'unknown'."""
-        name, cat = SpectrumAnalyzer.classify_frequency(50e6)
+        name, cat = SignalSpectrumAnalyzer.classify_frequency(50e6)
         assert cat == "unknown"
 
     def test_classify_frequency_detailed_wifi_channel(self):
         """Detailed classification should identify WiFi channel."""
-        result = SpectrumAnalyzer.classify_frequency_detailed(2.437e9)
+        result = SignalSpectrumAnalyzer.classify_frequency_detailed(2.437e9)
         assert result.wifi_channel == 6  # 2437 MHz = channel 6
 
     def test_summarize(self):
         """summarize should return correct overall stats."""
-        sa = SpectrumAnalyzer()
+        sa = SignalSpectrumAnalyzer()
         freqs, powers = self._make_spectrum()
         summary = sa.summarize(freqs, powers)
         assert summary.num_bins == 200
@@ -383,7 +383,7 @@ class TestSpectrumAnalyzer:
 
     def test_spectral_entropy_pure_tone(self):
         """Pure tone should have low spectral entropy."""
-        sa = SpectrumAnalyzer()
+        sa = SignalSpectrumAnalyzer()
         freqs = list(range(100))
         # One dominant bin, rest very low
         powers = [-120.0] * 100
@@ -394,7 +394,7 @@ class TestSpectrumAnalyzer:
 
     def test_spectral_entropy_noise(self):
         """Flat noise should have high spectral entropy."""
-        sa = SpectrumAnalyzer()
+        sa = SignalSpectrumAnalyzer()
         freqs = [float(i) for i in range(100)]
         powers = [-90.0] * 100
         summary = sa.summarize(freqs, powers)
@@ -402,7 +402,7 @@ class TestSpectrumAnalyzer:
 
     def test_periodogram_sine(self):
         """Periodogram of a sine wave should have a peak at the frequency."""
-        sa = SpectrumAnalyzer()
+        sa = SignalSpectrumAnalyzer()
         fs = 1000.0  # 1 kHz sample rate
         f_signal = 100.0  # 100 Hz signal
         n = 256

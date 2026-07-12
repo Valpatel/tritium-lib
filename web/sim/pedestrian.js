@@ -92,6 +92,13 @@ export class SimPedestrian {
         this.buildingTimer = 0;
         this.currentBuildingId = null;
 
+        // Static building avoidance. Set via setObstacles() with an object
+        // exposing point_in_building(x, z) (and optionally
+        // path_crosses_building([[x,z],...])) — the same open-SDK
+        // BuildingObstacles interface the Python core uses. Without it the
+        // pedestrian behaves exactly as before (no static avoidance).
+        this.obstacles = config.obstacles || null;
+
         // Daily routine
         this._schedule = this._generateSchedule();
         this._scheduleIdx = 0;
@@ -104,6 +111,28 @@ export class SimPedestrian {
         this.instanceIdx = -1;
         this.color = PED_COLORS.idle;
         this.bobPhase = Math.random() * Math.PI * 2;
+    }
+
+    /** Provide building geometry for static avoidance (open-SDK shape). */
+    setObstacles(obstacles) {
+        this.obstacles = obstacles;
+    }
+
+    /**
+     * True if MOVING from the current position to (nx, nz) would enter or
+     * cross a building. A pedestrian currently INSIDE a building (e.g.
+     * spawned at a footprint centroid, or exiting one) is always allowed to
+     * move — so it can walk OUT — but one that is OUTSIDE is never allowed to
+     * step IN or tunnel across a footprint while travelling.
+     */
+    _blockedMove(nx, nz) {
+        const obs = this.obstacles;
+        if (!obs || typeof obs.point_in_building !== 'function') return false;
+        if (obs.point_in_building(this.x, this.z)) return false; // inside -> let it leave
+        if (obs.point_in_building(nx, nz)) return true;
+        if (typeof obs.path_crosses_building === 'function'
+                && obs.path_crosses_building([[this.x, this.z], [nx, nz]])) return true;
+        return false;
     }
 
     /**
@@ -354,6 +383,41 @@ export class SimPedestrian {
                     }
                 }
 
+                // Building avoidance: if a footprint lies ahead toward the
+                // goal, steer perpendicular (wall-following) so the ped
+                // rounds it instead of stalling against it. The hard
+                // no-clip guarantee is the slide guard below; this is the
+                // steering that makes the route smooth.
+                const obs = this.obstacles;
+                if (obs && typeof obs.point_in_building === 'function'
+                        && !obs.point_in_building(this.x, this.z)) {
+                    const look = 6.0;
+                    const ahx = this.x + (dx / dist) * look;
+                    const ahz = this.z + (dz / dist) * look;
+                    if (obs.point_in_building(ahx, ahz)) {
+                        const px = -(dz / dist), pz = (dx / dist);  // perpendicular
+                        // Pick a side and COMMIT to it (stable per wall hug,
+                        // so the ped doesn't oscillate at the face). Prefer
+                        // the side whose lookahead is clear.
+                        const leftClear = !obs.point_in_building(
+                            this.x + px * look, this.z + pz * look);
+                        const rightClear = !obs.point_in_building(
+                            this.x - px * look, this.z - pz * look);
+                        if (this._wallSide === undefined)
+                            this._wallSide = leftClear ? 1 : (rightClear ? -1 : 1);
+                        const side = this._wallSide;
+                        const sp = Math.max(0.1, this.desiredSpeed);
+                        // Wall-follow DOMINATES: replace the (blocked)
+                        // goal-ward push with mostly-lateral motion + a small
+                        // forward bias, so the ped slides along and rounds the
+                        // footprint instead of stalling against its face.
+                        dvx = px * side * sp + (dx / dist) * sp * 0.25;
+                        dvz = pz * side * sp + (dz / dist) * sp * 0.25;
+                    } else {
+                        this._wallSide = undefined;  // path clear — reset
+                    }
+                }
+
                 // Velocity relaxation (tau = 0.5s)
                 const tau = 0.5;
                 this.vx += (dvx - this.vx) / tau * dt;
@@ -366,9 +430,23 @@ export class SimPedestrian {
                     this.vz = (this.vz / s) * this.desiredSpeed * 1.5;
                 }
 
-                // Update position
-                this.x += this.vx * dt;
-                this.z += this.vz * dt;
+                // Update position — building-aware. Slide along walls
+                // (axis-separated) so the ped routes around a footprint
+                // instead of walking through it or stopping dead at it.
+                let nx = this.x + this.vx * dt;
+                let nz = this.z + this.vz * dt;
+                if (this._blockedMove(nx, nz)) {
+                    if (!this._blockedMove(this.x + this.vx * dt, this.z)) {
+                        nz = this.z; this.vz = 0;            // slide along X
+                    } else if (!this._blockedMove(this.x, this.z + this.vz * dt)) {
+                        nx = this.x; this.vx = 0;            // slide along Z
+                    } else {
+                        nx = this.x; nz = this.z;            // cornered — hold
+                        this.vx = 0; this.vz = 0;
+                    }
+                }
+                this.x = nx;
+                this.z = nz;
                 this.speed = Math.sqrt(this.vx * this.vx + this.vz * this.vz);
                 this.heading = Math.atan2(this.vx, this.vz);
 

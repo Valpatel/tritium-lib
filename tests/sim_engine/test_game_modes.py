@@ -19,6 +19,12 @@ from tritium_lib.sim_engine.game.game_mode import (
     WaveConfig,
     WAVE_CONFIGS,
     InfiniteWaveMode,
+    InstigatorDetector,
+    _IDENTIFICATION_SCORE,
+    _STALEMATE_TIMEOUT,
+    _WAVE_HARD_TIMEOUT,
+    _DEESCALATION_TRICKLE_PER_PACIFIED,
+    _DEESCALATION_TRICKLE_CAP_FRACTION,
 )
 
 
@@ -263,6 +269,414 @@ class TestCivilUnrestMode:
         assert "de_escalation_score" in data
         assert "civilian_harm_count" in data
         assert "weighted_total_score" in data
+
+
+class TestCivilUnrestDeEscalationVictory:
+    """Order-restored WIN: civil_unrest is won by de-escalation, not only by
+    grinding every attrition wave (roadmap #1 — keeps the mode completable)."""
+
+    def test_target_defaults_to_disabled(self):
+        gm, _, _ = _build_game_mode("civil_unrest")
+        assert gm.de_escalation_target == 0
+
+    def _order_restored(self, bus):
+        return [e for name, e in bus.events
+                if name == "game_over" and e.get("reason") == "order_restored"]
+
+    def test_no_victory_when_target_disabled(self):
+        """target == 0 preserves the legacy all_waves_cleared-only behavior."""
+        gm, bus, _ = _build_game_mode("civil_unrest")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_score = 99999
+        gm.tick(0.1)
+        assert gm.state != "victory"
+        assert not self._order_restored(bus)
+
+    def test_victory_when_score_reaches_target(self):
+        gm, bus, _ = _build_game_mode("civil_unrest")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_target = 500
+        gm.de_escalation_score = 500
+        gm.tick(0.1)
+        assert gm.state == "victory"
+        game_over = [e for name, e in bus.events if name == "game_over"]
+        assert len(game_over) == 1
+        assert game_over[0]["result"] == "victory"
+        assert game_over[0]["reason"] == "order_restored"
+
+    def test_no_victory_below_target(self):
+        gm, bus, _ = _build_game_mode("civil_unrest")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_target = 500
+        gm.de_escalation_score = 499
+        gm.tick(0.1)
+        assert gm.state != "victory"
+        assert not self._order_restored(bus)
+
+    def test_target_only_applies_to_civil_unrest(self):
+        """A battle game with a stray target must not order-restore."""
+        gm, bus, _ = _build_game_mode("battle")
+        gm.begin_war()
+        gm.state = "active"
+        gm.de_escalation_target = 100
+        gm.de_escalation_score = 999
+        gm.tick(0.1)
+        assert gm.state != "victory"
+        assert not self._order_restored(bus)
+
+    def test_target_in_get_state_and_game_over(self):
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_target = 600
+        assert gm.get_state()["de_escalation_target"] == 600
+        data = gm._build_game_over_data("victory", reason="order_restored")
+        assert data["de_escalation_target"] == 600
+
+    def test_reset_clears_target(self):
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_target = 600
+        gm.reset()
+        assert gm.de_escalation_target == 0
+
+    def test_load_scenario_applies_target_from_mode_config(self):
+        """The scenario->game_mode seam: mode_config carries the target."""
+        gm, _, _ = _build_game_mode("civil_unrest")
+
+        class _StubScenario:
+            waves = []
+            defenders = []
+            map_bounds = 100.0
+            mode_config = {"de_escalation_target": 750, "civilian_harm_limit": 3}
+
+        gm.load_scenario(_StubScenario())
+        assert gm.de_escalation_target == 750
+        assert gm.civilian_harm_limit == 3
+
+
+class TestContinuousDeEscalationTrickle:
+    """CONTINUOUS de-escalation trickle (FEATURE-AUDIT 2026-06-21): the riot
+    meter must climb steadily as the operator suppresses ringleaders, not
+    flatline between discrete detain events.  The trickle is EARNED (only flows
+    once active instigators are pacified below the riot's peak), bounded (capped
+    well below the target so it can never win on its own), and civil-unrest-only
+    (no effect on battle/other modes)."""
+
+    def _instigator(self, tid, active=True):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            target_id=tid,
+            alliance="hostile",
+            is_combatant=True,
+            crowd_role="instigator" if active else "calmed",
+            identified=not active,
+            status="active",
+            position=(0.0, 0.0),
+        )
+
+    def _riot(self, target=500):
+        """A civil_unrest GameMode with the de-escalation target enabled.
+
+        Marked crowd-driven (an un-scripted live riot): _tick_active then does
+        not try to auto-complete the (empty) battle wave, so the trickle can be
+        exercised over many ticks in isolation -- the same gate a real
+        un-scripted riot takes.
+        """
+        gm, bus, engine = _build_game_mode("civil_unrest")
+        gm.de_escalation_target = target
+        gm.state = "active"
+        gm._crowd_driven_riot = True
+        return gm, bus, engine
+
+    def test_no_trickle_with_no_pacification(self):
+        """Instigators on the field but none pacified -> meter does NOT move."""
+        gm, _, engine = self._riot()
+        for i in range(4):
+            engine.add_target(self._instigator(f"ig_{i}"))
+        for _ in range(50):
+            gm._tick_active(0.1)  # 5s of ticks
+        assert gm.de_escalation_score == 0
+
+    def test_trickle_climbs_when_instigators_pacified(self):
+        """Pacify 2 of 4 ringleaders -> the meter trickles UP continuously
+        WITHOUT any detain event firing (de_escalation_score is never touched
+        by _identify in this test)."""
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        # Establish the peak (4 active) for a tick.
+        gm._tick_active(0.1)
+        assert gm.de_escalation_score == 0  # nothing pacified yet
+        # Operator suppresses 2 (e.g. cascade/scout) -> flip them to calmed.
+        igs[0].crowd_role = "calmed"; igs[0].identified = True
+        igs[1].crowd_role = "calmed"; igs[1].identified = True
+        before = gm.de_escalation_score
+        for _ in range(30):  # 3s of sustained suppression
+            gm._tick_active(0.1)
+        # 2 pacified * 1.5/sec * 3s = ~9 points, smoothly accrued.
+        assert gm.de_escalation_score > before
+        assert gm.de_escalation_score == pytest.approx(
+            int(2 * _DEESCALATION_TRICKLE_PER_PACIFIED * 3.0), abs=2
+        )
+
+    def test_trickle_is_continuous_not_stepwise(self):
+        """The meter advances on consecutive ticks (no long flatline): after
+        pacification, the score is strictly non-decreasing and reaches several
+        distinct intermediate values rather than jumping once."""
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(6)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak = 6
+        for ig in igs[:4]:  # pacify 4 -> strong, steady trickle
+            ig.crowd_role = "calmed"; ig.identified = True
+        seen = []
+        for _ in range(40):  # 4s
+            gm._tick_active(0.1)
+            seen.append(gm.de_escalation_score)
+        # Non-decreasing and visibly progressing across the window.
+        assert seen == sorted(seen)
+        assert len(set(seen)) >= 4  # several distinct steps, not one jump
+        assert seen[-1] > seen[0]
+
+    def test_trickle_stops_if_instigators_reradicalize(self):
+        """If current active instigators climb back toward the peak, pacified
+        drops to 0 and the trickle halts (the meter does not keep climbing for
+        free)."""
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak 4
+        igs[0].crowd_role = "calmed"; igs[0].identified = True
+        igs[1].crowd_role = "calmed"; igs[1].identified = True
+        for _ in range(20):
+            gm._tick_active(0.1)
+        mid = gm.de_escalation_score
+        assert mid > 0
+        # Re-radicalize: the two calmed ones flare back to active instigators.
+        igs[0].crowd_role = "instigator"; igs[0].identified = False
+        igs[1].crowd_role = "instigator"; igs[1].identified = False
+        for _ in range(20):
+            gm._tick_active(0.1)
+        assert gm.de_escalation_score == mid  # no further trickle
+
+    def test_trickle_is_capped_below_target(self):
+        """Even with sustained max pacification, the cumulative trickle is
+        capped at _DEESCALATION_TRICKLE_CAP_FRACTION of the target -- the win
+        can never be carried over the line by the trickle alone."""
+        gm, _, engine = self._riot(target=500)
+        igs = [self._instigator(f"ig_{i}") for i in range(10)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak 10
+        for ig in igs:  # pacify ALL
+            ig.crowd_role = "calmed"; ig.identified = True
+        for _ in range(2000):  # way more than enough to saturate
+            gm._tick_active(0.1)
+        cap = int(500 * _DEESCALATION_TRICKLE_CAP_FRACTION)
+        assert gm.de_escalation_score == cap
+        assert gm.de_escalation_score < gm.de_escalation_target
+
+    def test_trickle_can_complete_a_near_win(self):
+        """A trickle that crosses the target on a tick wins immediately
+        (order_restored) -- it runs before the victory check.  Seed the score
+        just below target so the trickle (within cap) finishes it."""
+        gm, bus, engine = self._riot(target=100)
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)  # peak 4
+        for ig in igs:
+            ig.crowd_role = "calmed"; ig.identified = True
+        gm.de_escalation_score = 95  # detains already did the bulk of the work
+        for _ in range(200):
+            gm._tick_active(0.1)
+            if gm.state == "victory":
+                break
+        assert gm.state == "victory"
+        reasons = [d.get("reason") for n, d in bus.events if n == "game_over"]
+        assert "order_restored" in reasons
+
+    def test_no_trickle_in_battle_mode(self):
+        """The trickle is civil_unrest-only: a battle game with instigator-like
+        targets never accrues de_escalation_score from the trickle path."""
+        gm, _, engine = _build_game_mode("battle")
+        gm.de_escalation_target = 500  # even if set, mode gates it off
+        gm.state = "active"
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)
+        for ig in igs[:2]:
+            ig.crowd_role = "calmed"; ig.identified = True
+        for _ in range(30):
+            gm._tick_active(0.1)
+        assert gm.de_escalation_score == 0
+
+    def test_reset_clears_trickle_state(self):
+        gm, _, engine = self._riot()
+        igs = [self._instigator(f"ig_{i}") for i in range(4)]
+        for ig in igs:
+            engine.add_target(ig)
+        gm._tick_active(0.1)
+        for ig in igs[:2]:
+            ig.crowd_role = "calmed"; ig.identified = True
+        for _ in range(20):
+            gm._tick_active(0.1)
+        assert gm._peak_active_instigators > 0
+        gm.reset()
+        assert gm._peak_active_instigators == 0
+        assert gm._trickle_accum == 0.0
+        assert gm._trickle_awarded == 0
+
+
+class TestInstigatorDetain:
+    """InstigatorDetector._identify NON-LETHALLY detains the ringleader and
+    drives the de-escalation victory loop. Identifying a ringleader must:
+    award de-escalation score, convert it to a neutral non-combatant (so it
+    leaves the hostile headcount and stops recruiting), and publish both the
+    ``instigator_identified`` and ``de_escalation`` events. Without the detain
+    + score, ``order_restored`` victory is mechanically unreachable."""
+
+    def _make_instigator(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            target_id="rioter_7",
+            alliance="hostile",
+            is_combatant=True,
+            crowd_role="instigator",
+            identified=False,
+            position=(10.0, 10.0),
+            weapon_range=8.0,
+            weapon_damage=5.0,
+            weapon_cooldown=1.5,
+        )
+
+    def _make_scout(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(target_id="scout_1", position=(10.0, 10.0))
+
+    def test_identify_detains_non_lethally(self):
+        bus = _FakeEventBus()
+        det = InstigatorDetector(event_bus=bus)
+        inst = self._make_instigator()
+        det._identify(inst, self._make_scout())
+
+        assert inst.identified is True
+        # Non-lethal: neutralized, disarmed, dropped from hostile headcount.
+        assert inst.alliance == "neutral"
+        assert inst.is_combatant is False
+        assert inst.crowd_role == "calmed"
+        assert inst.weapon_range == 0.0
+        assert inst.weapon_damage == 0.0
+        assert inst.weapon_cooldown == 0.0
+
+    def test_identify_publishes_both_events(self):
+        bus = _FakeEventBus()
+        det = InstigatorDetector(event_bus=bus)
+        det._identify(self._make_instigator(), self._make_scout())
+
+        names = [n for n, _ in bus.events]
+        assert "instigator_identified" in names
+        assert "de_escalation" in names
+
+    def test_identify_awards_de_escalation_score(self):
+        bus = _FakeEventBus()
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_score = 0
+        det = InstigatorDetector(event_bus=bus, game_mode=gm)
+        det._identify(self._make_instigator(), self._make_scout())
+        assert gm.de_escalation_score == _IDENTIFICATION_SCORE
+
+
+class TestCalmingCascade:
+    """Detaining a ringleader COOLS the local crowd (ESIM doctrine: crowds are
+    not uniformly violent; removing the instigator de-escalates the cluster
+    around it). When ``_calm_nearby`` runs on a detained ringleader it must:
+    revert nearby rioters to non-combatant civilians, and reset nearby ACTIVE
+    (still-hidden-identity) instigators back to their hidden/passive state so
+    they stop throwing objects -- WITHOUT identifying them or awarding score
+    (the win still requires genuine identifications, the cascade only lowers
+    attack pressure so defenders survive to finish the loop). Out-of-radius
+    units and already-calmed units are untouched."""
+
+    def _ns(self, **kw):
+        from types import SimpleNamespace
+        base = dict(
+            alliance="hostile", is_combatant=True, status="active",
+            identified=False, instigator_state="active", instigator_timer=4.0,
+        )
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def _detained(self):
+        return self._ns(target_id="ring_0", position=(0.0, 0.0),
+                        crowd_role="calmed", alliance="neutral",
+                        is_combatant=False, identified=True)
+
+    def test_nearby_rioter_reverts_to_civilian(self):
+        det = InstigatorDetector(event_bus=_FakeEventBus())
+        ring = self._detained()
+        rioter = self._ns(target_id="rt_1", position=(5.0, 0.0),
+                          crowd_role="rioter")
+        n = det._calm_nearby(ring, {"ring_0": ring, "rt_1": rioter})
+        assert rioter.crowd_role == "civilian"
+        assert rioter.is_combatant is False
+        assert n == 1
+
+    def test_nearby_active_instigator_resets_to_hidden(self):
+        det = InstigatorDetector(event_bus=_FakeEventBus())
+        ring = self._detained()
+        other = self._ns(target_id="ig_2", position=(8.0, 0.0),
+                         crowd_role="instigator")
+        det._calm_nearby(ring, {"ring_0": ring, "ig_2": other})
+        # Pacified but NOT identified -- still an instigator, just cooled off.
+        assert other.instigator_state == "hidden"
+        assert other.instigator_timer == 0.0
+        assert other.identified is False
+        assert other.crowd_role == "instigator"
+
+    def test_far_units_untouched(self):
+        det = InstigatorDetector(event_bus=_FakeEventBus())
+        ring = self._detained()
+        far = self._ns(target_id="rt_far", position=(500.0, 0.0),
+                       crowd_role="rioter")
+        n = det._calm_nearby(ring, {"ring_0": ring, "rt_far": far})
+        assert far.crowd_role == "rioter"
+        assert far.is_combatant is True
+        assert n == 0
+
+    def test_cascade_does_not_award_score(self):
+        """The cascade lowers attack pressure but must NOT inflate the metric:
+        only genuine identifications add de_escalation_score."""
+        gm, _, _ = _build_game_mode("civil_unrest")
+        gm.de_escalation_score = 0
+        det = InstigatorDetector(event_bus=_FakeEventBus(), game_mode=gm)
+        ring = self._detained()
+        rioter = self._ns(target_id="rt_1", position=(3.0, 0.0),
+                          crowd_role="rioter")
+        det._calm_nearby(ring, {"ring_0": ring, "rt_1": rioter})
+        assert gm.de_escalation_score == 0
+
+    def test_identify_triggers_cascade_in_tick(self):
+        """End-to-end via tick(): a scout that identifies a ringleader also
+        calms a rioter standing next to it."""
+        det = InstigatorDetector(event_bus=_FakeEventBus(), detection_time=0.1)
+        scout = self._ns(target_id="scout_1", alliance="friendly",
+                         asset_type="scout_drone", crowd_role=None,
+                         position=(20.0, 20.0))
+        ring = self._ns(target_id="ring_0", crowd_role="instigator",
+                        position=(20.0, 20.0), weapon_range=8.0,
+                        weapon_damage=5.0, weapon_cooldown=1.5)
+        rioter = self._ns(target_id="rt_1", crowd_role="rioter",
+                          position=(22.0, 20.0))
+        targets = {"scout_1": scout, "ring_0": ring, "rt_1": rioter}
+        det.tick(0.2, targets, "civil_unrest")
+        assert ring.identified is True
+        assert rioter.crowd_role == "civilian"
 
 
 # ===================================================================
@@ -628,3 +1042,324 @@ class TestGameOverPayloadClamp:
         data = gm._build_game_over_data("defeat")
         assert data["wave"] == 23
         assert data["total_waves"] == -1
+
+
+class TestLeakStakes:
+    """Leaking hostiles past the defense must have stakes, not be rewarded like
+    a kill (FEATURE-AUDIT 2026-06-14).
+
+    Before: the full wave*200 bonus was awarded on wave-complete regardless of
+    how many hostiles escaped; escapes only fed adaptive difficulty and were
+    invisible to the operator.  Now the wave bonus scales by the fraction
+    DEFEATED, and leaked counts are tracked + surfaced.
+    """
+
+    def _complete_wave(self, spawned, eliminated, wave=1):
+        gm, bus, engine = _build_game_mode()
+        gm.wave = wave
+        gm._wave_hostile_ids = {f"h{i}" for i in range(spawned)}
+        gm.wave_eliminations = eliminated
+        # Leaks are counted directly from escaped status now; the non-eliminated
+        # hostiles are the ones that leaked.
+        gm._wave_escaped_ids = {f"h{i}" for i in range(eliminated, spawned)}
+        gm._wave_start_time = gm._sim_time  # elapsed 0 -> time_bonus 50
+        gm.score = 0
+        gm._on_wave_complete()
+        return gm, bus
+
+    def test_clean_wave_gets_full_bonus(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=4)
+        assert gm.wave_leaked == 0
+        assert gm.score == 1 * 200 + 50  # full wave bonus + time bonus (unchanged)
+
+    def test_half_leaked_halves_wave_bonus(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=2)
+        assert gm.wave_leaked == 2
+        assert gm.total_leaked == 2
+        assert gm.score == int(1 * 200 * 0.5) + 50  # 100 + 50
+
+    def test_all_leaked_forfeits_wave_bonus(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=0)
+        assert gm.wave_leaked == 4
+        assert gm.score == 0 + 50  # only the time bonus; no wave bonus earned
+
+    def test_leaked_counts_surface_in_state(self):
+        gm, _ = self._complete_wave(spawned=3, eliminated=1)
+        st = gm.get_state()
+        assert st["wave_leaked"] == 2
+        assert st["total_leaked"] == 2
+
+    def test_wave_complete_event_reports_escaped(self):
+        gm, bus = self._complete_wave(spawned=5, eliminated=3)
+        wc = [d for (name, d) in bus.events if name == "wave_complete"]
+        assert wc, "a wave_complete event should be published"
+        assert wc[-1]["escaped"] == 2
+        assert wc[-1]["hostiles_spawned"] == 5
+
+    def test_reset_clears_leaked(self):
+        gm, _ = self._complete_wave(spawned=4, eliminated=1)
+        assert gm.total_leaked == 3
+        gm.reset()
+        assert gm.total_leaked == 0
+        assert gm.wave_leaked == 0
+
+
+class TestLeakCountRobustness:
+    """Leaks are counted from escaped STATUS, not spawned-minus-eliminations, so
+    the count stays correct even when the elimination counter is 0 (e.g. a
+    headless/replay path with no event-bus wiring).  Without this, every
+    defeated hostile is miscounted as a leak (FEATURE-AUDIT 2026-06-14).
+    """
+
+    def test_track_escapes_reads_status(self):
+        gm, bus, engine = _build_game_mode()
+        h = [engine.spawn_hostile() for _ in range(3)]
+        for t in h:
+            gm._wave_hostile_ids.add(t.target_id)
+        h[0].status = "escaped"
+        gm._track_escapes()
+        assert gm._wave_escaped_ids == {h[0].target_id}
+        # idempotent + dedup
+        gm._track_escapes()
+        assert len(gm._wave_escaped_ids) == 1
+
+    def test_leak_count_independent_of_elimination_counter(self):
+        gm, bus, engine = _build_game_mode()
+        gm.wave = 1
+        h = [engine.spawn_hostile() for _ in range(3)]
+        for t in h:
+            gm._wave_hostile_ids.add(t.target_id)
+        # One escapes; the other two were defeated but the elimination event
+        # never fired (wave_eliminations stays 0, as in an unwired harness).
+        h[0].status = "escaped"
+        gm.wave_eliminations = 0
+        gm._wave_start_time = gm._sim_time
+        gm.score = 0
+        gm._on_wave_complete()
+        assert gm.wave_leaked == 1, "only the actually-escaped hostile is a leak"
+        # defeat fraction 2/3 -> wave bonus int(200*2/3)=133, + time 50
+        assert gm.score == int(1 * 200 * (2 / 3)) + 50
+
+
+class TestLowBatteryHostilesCountAlive:
+    """A recharging (low_battery) hostile is still on the map and a threat, so it
+    must count as alive -- otherwise a wave completes / mis-accounts while it
+    recharges (FEATURE-AUDIT 2026-06-14, self-audit #11)."""
+
+    def test_low_battery_hostile_counts_alive_and_in_hp(self):
+        gm, bus, engine = _build_game_mode()
+        ids = []
+        for _ in range(3):
+            h = engine.spawn_hostile()
+            ids.append(h.target_id)
+            gm._wave_hostile_ids.add(h.target_id)
+        engine._targets[ids[0]].status = "low_battery"  # one recharging
+        assert gm._count_wave_hostiles_alive() == 3, "recharging hostile must count as alive"
+        assert gm._wave_hostiles_total_health() > 0.0
+
+    def test_force_eliminate_clears_low_battery_hostile(self):
+        gm, bus, engine = _build_game_mode()
+        h = engine.spawn_hostile()
+        gm._wave_hostile_ids.add(h.target_id)
+        h.status = "low_battery"
+        gm._force_eliminate_wave_hostiles()
+        assert h.status == "eliminated", "a recharging hostile must be force-eliminable"
+
+
+class TestDiveBomberStalemateExemption:
+    """A drone_swarm dive-bomber mid-run on the relay is making real progress
+    toward its objective, NOT stalemated. The stalemate cull must spare live
+    bombers so the anti-infrastructure threat (and thus the
+    ``infrastructure_destroyed`` defeat) can actually land instead of being
+    wiped mid-flight -- while the hard-timeout backstop still culls everyone so
+    a wave can never hang forever. (Recovered + proven 2026-06-20; backlog item
+    'plane_drone dive-bomb so drone_swarm defeat is reachable'.)"""
+
+    def _add_wave_hostile(self, gm, engine, tid, *, asset_type="person",
+                          drone_variant=None):
+        t = _FakeTarget(target_id=tid, alliance="hostile", status="active",
+                        asset_type=asset_type)
+        if drone_variant is not None:
+            t.drone_variant = drone_variant
+        engine.add_target(t)
+        gm._wave_hostile_ids.add(tid)
+        return t
+
+    def test_is_dive_bomber_plane_drone(self):
+        t = _FakeTarget(target_id="p", asset_type="plane_drone")
+        assert GameMode._is_dive_bomber(t) is True
+
+    def test_is_dive_bomber_bomber_swarm_variant(self):
+        t = _FakeTarget(target_id="b", asset_type="swarm_drone")
+        t.drone_variant = "bomber_swarm"
+        assert GameMode._is_dive_bomber(t) is True
+
+    def test_is_dive_bomber_false_for_regular_units(self):
+        # Anti-personnel swarm drones (scout/attack) and ground units are NOT
+        # bombers -- they get no exemption from the stalemate cull.
+        plain = _FakeTarget(target_id="s", asset_type="swarm_drone")
+        assert GameMode._is_dive_bomber(plain) is False
+        scout = _FakeTarget(target_id="sc", asset_type="swarm_drone")
+        scout.drone_variant = "scout_swarm"
+        assert GameMode._is_dive_bomber(scout) is False
+        person = _FakeTarget(target_id="pr", asset_type="person")
+        assert GameMode._is_dive_bomber(person) is False
+
+    def test_stalemate_cull_spares_dive_bombers(self):
+        """exempt_dive_bombers=True: bombers survive, everything else is culled."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        plane = self._add_wave_hostile(gm, engine, "plane",
+                                       asset_type="plane_drone")
+        grunt = self._add_wave_hostile(gm, engine, "grunt")
+
+        gm._force_eliminate_wave_hostiles(exempt_dive_bombers=True)
+
+        assert bomber.status == "active", "bomber spared during stalemate"
+        assert plane.status == "active", "plane_drone spared during stalemate"
+        assert grunt.status == "eliminated", "non-bomber still culled"
+
+    def test_backstop_cull_eliminates_dive_bombers(self):
+        """Default (hard-timeout backstop): EVERYONE is culled, bombers too --
+        a wave can never hang forever waiting on a stuck bomber."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        grunt = self._add_wave_hostile(gm, engine, "grunt")
+
+        gm._force_eliminate_wave_hostiles()  # exempt_dive_bombers defaults False
+
+        assert bomber.status == "eliminated", "backstop must cull stuck bombers"
+        assert grunt.status == "eliminated"
+
+    def test_tick_stalemate_spares_bomber_but_culls_grunt(self):
+        """End-to-end through tick(): a STALEMATE (no combat progress, wave not
+        past the hard ceiling) spares the live bomber and culls the grunt."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        gm.begin_war()
+        gm.state = "active"
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        grunt = self._add_wave_hostile(gm, engine, "grunt")
+        # Stalemate: last progress was long ago, but the wave only just went
+        # active (so we are NOT past _WAVE_HARD_TIMEOUT -> not a hard timeout).
+        gm._sim_time = 1000.0  # positive base so "long ago" stays > 0
+        now = gm._sim_time
+        gm._wave_active_since = now
+        gm._last_elimination_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_combat_progress_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_wave_hostile_health = gm._wave_hostiles_total_health()
+
+        gm.tick(0.1)
+
+        assert bomber.status == "active", "stalemate must not wipe a live bomber"
+        assert grunt.status == "eliminated", "stalemate culls the non-bomber grunt"
+
+    def test_tick_hard_timeout_culls_bomber(self):
+        """End-to-end through tick(): past the HARD timeout, even the bomber is
+        culled -- the absolute backstop, so the wave cannot hang forever."""
+        gm, _, engine = _build_game_mode("drone_swarm")
+        gm.begin_war()
+        gm.state = "active"
+        bomber = self._add_wave_hostile(
+            gm, engine, "bomber", asset_type="swarm_drone",
+            drone_variant="bomber_swarm")
+        gm._sim_time = 1000.0  # positive base so "long ago" stays > 0
+        now = gm._sim_time
+        # Wave went active long enough ago to exceed the hard ceiling.
+        gm._wave_active_since = now - (_WAVE_HARD_TIMEOUT + 5.0)
+        gm._last_elimination_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_combat_progress_time = now - (_STALEMATE_TIMEOUT + 5.0)
+        gm._last_wave_hostile_health = gm._wave_hostiles_total_health()
+
+        gm.tick(0.1)
+
+        assert bomber.status == "eliminated", "hard timeout culls even a bomber"
+
+
+class TestAnnihilationDefeatArming:
+    """The all-friendlies-eliminated defeat only fires once a friendly
+    combatant has EVER existed.  A scenario that deliberately fields no
+    defenders (the stress_test render scenario; an operator who starts the
+    war before deploying) has nothing to annihilate -- before this guard,
+    "all friendlies eliminated" was VACUOUSLY true on the first active tick
+    and the stress_test golden pinned defeat at t=5.2s with 0 of 3 waves
+    completed.  Deploying the first defender arms the rule from then on."""
+
+    def _build_no_friendlies(self):
+        """GameMode with stub deps and NO friendly combatants at all."""
+        bus = _FakeEventBus()
+        engine = _FakeEngine()
+        gm = GameMode(event_bus=bus, engine=engine,
+                      combat_system=_FakeCombat(), infinite=False)
+        return gm, bus, engine
+
+    def _add_wave_hostile(self, gm, engine, tid):
+        t = _FakeTarget(target_id=tid, alliance="hostile", status="active")
+        engine.add_target(t)
+        gm._wave_hostile_ids.add(tid)
+        return t
+
+    def test_no_friendly_ever_no_vacuous_defeat(self):
+        gm, bus, engine = self._build_no_friendlies()
+        gm.begin_war()
+        gm.state = "active"
+        self._add_wave_hostile(gm, engine, "h1")
+
+        gm.tick(0.1)
+
+        assert gm.state != "defeat", (
+            "a game where no friendly combatant ever existed must not "
+            "insta-defeat on the vacuous all-friendlies-eliminated check")
+        assert not any(name == "game_over" for name, _ in bus.events)
+
+    def test_first_deploy_arms_the_defeat_rule(self):
+        gm, bus, engine = self._build_no_friendlies()
+        gm.begin_war()
+        gm.state = "active"
+        self._add_wave_hostile(gm, engine, "h1")
+
+        gm.tick(0.1)  # no friendlies ever -> still active
+        assert gm.state == "active"
+
+        turret = engine.add_friendly()
+        gm.tick(0.1)  # friendly alive -> rule arms, no defeat
+        assert gm.state == "active"
+
+        turret.status = "eliminated"
+        gm.tick(0.1)  # armed + annihilated -> real defeat
+        assert gm.state == "defeat"
+        overs = [d for name, d in bus.events if name == "game_over"]
+        assert overs and overs[-1]["reason"] == "all_friendlies_eliminated"
+
+    def test_preplaced_friendlies_defeat_unchanged(self):
+        """Regression guard: the classic path (defenders placed before the
+        war, then wiped) still defeats exactly as before."""
+        gm, bus, engine = _build_game_mode()  # 3 friendlies pre-placed
+        gm.begin_war()
+        gm.state = "active"
+        self._add_wave_hostile(gm, engine, "h1")
+
+        gm.tick(0.1)
+        assert gm.state == "active"
+
+        for t in engine.get_targets():
+            if t.alliance == "friendly":
+                t.status = "eliminated"
+        gm.tick(0.1)
+        assert gm.state == "defeat"
+        overs = [d for name, d in bus.events if name == "game_over"]
+        assert overs and overs[-1]["reason"] == "all_friendlies_eliminated"
+
+    def test_reset_disarms_for_next_game(self):
+        gm, bus, engine = _build_game_mode()
+        gm.begin_war()
+        gm.state = "active"
+        gm.tick(0.1)  # friendlies alive -> armed
+        assert gm._had_friendly_combatant is True
+        gm.reset()
+        assert gm._had_friendly_combatant is False

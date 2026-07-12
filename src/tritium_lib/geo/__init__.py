@@ -23,6 +23,56 @@ import math
 import threading
 from dataclasses import dataclass
 
+__all__ = [
+    # Constants
+    "METERS_PER_DEG_LAT",
+    "WGS84_A",
+    "WGS84_B",
+    "WGS84_F",
+    "WGS84_E2",
+    # Reference + calibration
+    "GeoReference",
+    "CameraCalibration",
+    "ProjectedCoordinate",
+    # Reference singleton
+    "init_reference",
+    "get_reference",
+    "is_initialized",
+    "reset",
+    # Local <-> lat/lng transforms
+    "local_to_latlng",
+    "latlng_to_local",
+    "local_to_latlng_2d",
+    # Camera projection
+    "camera_pixel_to_ground",
+    # Polygon / area
+    "point_in_polygon",
+    "point_in_polygon_latlng",
+    "compute_area",
+    "compute_area_latlng",
+    "polygon_area_geodetic",
+    # Distance + bearing
+    "haversine_distance",
+    "approx_distance_m",
+    "distance_vincenty",
+    "initial_bearing",
+    "midpoint",
+    "destination_point",
+    "bounding_box",
+    # WGS84 / ECEF
+    "meters_per_degree_lat",
+    "meters_per_degree_lng",
+    "latlng_to_ecef",
+    "ecef_to_latlng",
+    # UTM / MGRS
+    "utm_zone_from_latlng",
+    "latlng_to_utm",
+    "utm_to_latlng",
+    "grid_reference",
+    # Geocoding
+    "reverse_geocode",
+]
+
 METERS_PER_DEG_LAT = 111_320.0
 
 

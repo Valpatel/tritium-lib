@@ -125,6 +125,27 @@ class SDRDevice(ABC):
         """Stop any running operation (sweep, receive, etc)."""
         ...
 
+    async def read_iq(self, n_samples: int) -> "Any":
+        """Read ``n_samples`` of baseband complex IQ from the tuned frequency.
+
+        This is the raw-sample seam: hardware backends stream samples from the
+        radio, the simulator synthesizes them.  Returns a 1-D array of complex
+        baseband samples (typically ``numpy.complex64``) of length
+        ``n_samples``.  The device must be tuned (via :meth:`tune`) first.
+
+        The default implementation raises ``NotImplementedError`` so backends
+        that have no sample path fail loudly rather than silently.
+
+        Args:
+            n_samples: Number of IQ samples to return.
+
+        Returns:
+            A 1-D complex sample array of length ``n_samples``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement read_iq()"
+        )
+
     @property
     def info(self) -> SDRInfo | None:
         """Cached device info from last detect() call."""
