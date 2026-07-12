@@ -13,8 +13,9 @@ Provides four core analysers:
   observations (RSSI histogram, beacon interval, channel usage, service
   UUIDs) and compare fingerprints for device re-identification.
 
-- **SpectrumAnalyzer** — Pure-math frequency-domain analysis: peak
+- **SignalSpectrumAnalyzer** — Pure-math frequency-domain analysis: peak
   detection, band classification, spectral entropy, and periodogram.
+  (Distinct from the device-backed ``tritium_lib.sdr.SpectrumAnalyzer``.)
 
 - **CSIProcessor** — WiFi Channel State Information processing for
   occupancy detection using subcarrier variance analysis with Hampel
@@ -25,7 +26,7 @@ All algorithms are pure Python (stdlib ``math`` only, no numpy required).
 Usage::
 
     from tritium_lib.signals import RSSIAnalyzer, SignalFingerprint
-    from tritium_lib.signals import SpectrumAnalyzer, CSIProcessor
+    from tritium_lib.signals import SignalSpectrumAnalyzer, CSIProcessor
 """
 
 from .rssi_analyzer import (
@@ -40,7 +41,7 @@ from .fingerprint import (
 )
 
 from .spectrum import (
-    SpectrumAnalyzer,
+    SignalSpectrumAnalyzer,
     SpectralPeak,
     SpectralSummary,
     BandClassification,
@@ -57,6 +58,19 @@ from .csi_processor import (
     SubcarrierBand,
     hampel_filter,
 )
+
+# ---------------------------------------------------------------------------
+# Back-compat alias (DEPRECATED — do not use in new code).
+#
+# The pure-math ``SpectrumAnalyzer`` was renamed to ``SignalSpectrumAnalyzer``
+# to end the name collision with the device-backed
+# ``tritium_lib.sdr.SpectrumAnalyzer``. This alias keeps the old name importable
+# for the one remaining external consumer (``tritium-sc``
+# ``app/routers/sim_signals.py``). Migrate that import to
+# ``SignalSpectrumAnalyzer`` and then delete this alias. Intentionally NOT added
+# to ``__all__`` so the ambiguous name is not re-advertised as public API.
+# ---------------------------------------------------------------------------
+SpectrumAnalyzer = SignalSpectrumAnalyzer
 
 # gcc_phat needs numpy (FFT). Keep it optional so a core-only (no-numpy)
 # install still imports the pure-Python analysers above.
@@ -75,7 +89,7 @@ __all__ = [
     # Fingerprint
     "SignalFingerprint",
     # Spectrum
-    "SpectrumAnalyzer",
+    "SignalSpectrumAnalyzer",
     "SpectralPeak",
     "SpectralSummary",
     "BandClassification",

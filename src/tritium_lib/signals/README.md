@@ -24,16 +24,20 @@ feed samples into and query.
 |----------|------|---------|----------|
 | `RSSIAnalyzer` | `rssi_analyzer.py` | per-device RSSI samples | Kalman-smoothed RSSI, log-distance range, variance-based motion |
 | `SignalFingerprint` | `fingerprint.py` | BLE/WiFi observations | an RF signature for device re-identification |
-| `SpectrumAnalyzer` | `spectrum.py` | a power spectrum array | detected peaks, band labels, spectral entropy, periodogram |
+| `SignalSpectrumAnalyzer` | `spectrum.py` | a power spectrum array | detected peaks, band labels, spectral entropy, periodogram |
 | `CSIProcessor` | `csi_processor.py` | WiFi CSI subcarrier frames | occupancy verdict via subcarrier-variance + Hampel filter |
 
-> **Name collision, on purpose two different classes.**
-> `tritium_lib.signals.SpectrumAnalyzer` does **pure-math frequency-domain
-> analysis** of a spectrum you already have (peaks / entropy / periodogram).
-> `tritium_lib.sdr.SpectrumAnalyzer` (see [`../sdr/`](../sdr/README.md)) is a
-> higher-level **signal detector** over SDR sweep results (waterfall, band
-> matching, `DetectedSignal`s). Import the one you mean; they are not
-> interchangeable.
+> **Name-collision fix (2026-07-11).** This pure-math analyser was renamed
+> `SpectrumAnalyzer` → **`SignalSpectrumAnalyzer`** to end a real caller hazard:
+> it used to share the bare name `SpectrumAnalyzer` with the *device-backed*
+> `tritium_lib.sdr.SpectrumAnalyzer` (see [`../sdr/`](../sdr/README.md)), so an
+> import of the wrong module silently gave the wrong class. The two do different
+> jobs and are **not** interchangeable: `SignalSpectrumAnalyzer` does pure-math
+> frequency-domain analysis of a spectrum you already have (peaks / entropy /
+> periodogram); the sdr one is a higher-level **signal detector** over SDR sweep
+> results (waterfall, band matching, `DetectedSignal`s). A deprecated
+> `SpectrumAnalyzer = SignalSpectrumAnalyzer` alias remains in `__init__.py`
+> (not in `__all__`) only until `tritium-sc app/routers/sim_signals.py` migrates.
 
 ## Objects & typed actions (Palantir lens)
 
@@ -51,8 +55,8 @@ feed samples into and query.
 | `RSSIAnalyzer.estimate_distance` | `rssi_analyzer.py:242` | RSSI + tx-power + path-loss exponent → metres |
 | `RSSIAnalyzer.detect_motion` | `rssi_analyzer.py:267` | RSSI variance → moving / still |
 | `SignalFingerprint.compare` | `fingerprint.py:219` | fingerprint ↔ fingerprint → similarity score |
-| `SpectrumAnalyzer.find_peaks` | `spectrum.py:184` | spectrum array → `SpectralPeak`s |
-| `SpectrumAnalyzer.classify_frequency` | `spectrum.py:261` | Hz → `(band, service)` label |
+| `SignalSpectrumAnalyzer.find_peaks` | `spectrum.py:186` | spectrum array → `SpectralPeak`s |
+| `SignalSpectrumAnalyzer.classify_frequency` | `spectrum.py:263` | Hz → `(band, service)` label |
 | `CSIProcessor.detect_occupancy` | `csi_processor.py:258` | CSI window → `OccupancyResult` |
 
 Band reference data lives alongside the analyser: `BandDef`, `BAND_TABLE`,
@@ -77,7 +81,7 @@ needs TDoA should check for the symbol or import `signals.gcc_phat` directly.
 
 The live operator surface is the **SIM Lab signals router**,
 `/api/sim/signals` (`tritium-sc/src/app/routers/sim_signals.py`), which wires
-`RSSIAnalyzer`, `SignalFingerprint`, and `SpectrumAnalyzer` behind:
+`RSSIAnalyzer`, `SignalFingerprint`, and `SignalSpectrumAnalyzer` behind:
 
 | Route | Analyser action |
 |-------|-----------------|
@@ -94,7 +98,7 @@ flowchart LR
     RA --> MOT["moving / still"]
     OBS["BLE/WiFi observations"] --> FP["SignalFingerprint"]
     FP --> REID["re-id similarity"]
-    SPEC["power spectrum"] --> SA["SpectrumAnalyzer"]
+    SPEC["power spectrum"] --> SA["SignalSpectrumAnalyzer"]
     SA --> PK["peaks + band labels"]
     CSI["WiFi CSI frames"] --> CP["CSIProcessor"]
     CP --> OCC["occupancy"]
@@ -107,8 +111,8 @@ flowchart LR
 ## Related
 
 - [`../sdr/`](../sdr/README.md) — SDR device abstraction + its own
-  `SpectrumAnalyzer` (signal **detection** over sweeps; note the collision
-  above).
+  `SpectrumAnalyzer` (signal **detection** over sweeps; distinct from this
+  package's `SignalSpectrumAnalyzer` — see the rename note above).
 - [`../indoor/`](../indoor/README.md) — indoor positioning; reuses RSSI
   distance conventions from this package.
 - [`../tracking/`](../tracking/) — where fingerprints and distances become
