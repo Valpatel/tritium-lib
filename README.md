@@ -108,7 +108,7 @@ tritium-lib/
 │   ├── sim_engine/            Tactical simulation (AI, combat, physics, world)
 │   ├── sdk/                   Addon SDK (AddonBase, DeviceRegistry, BaseRunner)
 │   ├── classifier/            BLE/WiFi device type classification
-│   ├── graph/                 KuzuDB entity-relationship storage
+│   ├── graph/                 TritiumGraph / KuzuDB store (shelfware — demos + tests only)
 │   ├── ontology/              Semantic type system for entities and relationships
 │   ├── cot/                   Cursor on Target codec (TAK/ATAK interop)
 │   ├── mqtt/                  MQTT topic hierarchy builder
