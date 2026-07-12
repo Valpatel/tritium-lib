@@ -189,15 +189,25 @@ composition and the SIM Lab routers — the table is candid about which.
 
 ## Honesty notes (measured 2026-07-11)
 
-- **`js/` is orphaned.** `tritium-lib/CLAUDE.md` calls it "a distribution
-  copy" of the browser city-sim so "pip installs carry the JS modules" —
-  neither half is true today: the 12 same-named files have textually
-  diverged from the live `web/sim/` tree, the dir has no `__init__.py`
-  and no `package-data` entry (`pyproject.toml:76-78` ships only JSON),
-  so wheels exclude it, and nothing imports or serves it. The *served*
-  frontend is the repo-root [`web/`](../../web/README.md), mounted by sc
-  at `/lib/` (`app/main.py:2786-2789`). Needs a ruling: delete or
-  actually wire the copy.
+- **`js/` is NOT orphaned — it is the demos' browser-module tree.**
+  Earlier notes (and CLAUDE.md's older "distribution copy" claim) said it
+  had zero consumers; a 2026-07-11 confirming sweep DISPROVED that. It is
+  reached via the git-tracked symlink `sim_engine/demos/js -> ../../js`
+  (mode 120000) and consumed at runtime by two demos: `city3d-clean.html`
+  imports `./js/sim/core/city-builder.js`, `world.js`, `weather.js`; and
+  `city3d/inspect.js` imports `../js/sim/identity.js` (`inspect.js` is
+  loaded by `city3d.html`, the demo `serve_city3d.py` serves on :8888).
+  Deleting `js/` breaks the symlink and both demos, so the delete-or-wire
+  ruling resolved to **KEEP**. Two facts from the old note remain true: it
+  IS textually diverged from `web/sim/`, and it correctly carries no
+  `__init__.py`/`package-data` (`pyproject.toml:76-78` ships only JSON)
+  because it is browser JS served over HTTP, not importable Python —
+  wheels exclude it by design, not by neglect. The repo-root
+  [`web/`](../../web/README.md) tree (mounted by sc at `/lib/`,
+  `app/main.py:2786-2789`) is SEPARATE and serves sc's frontend/tests; the
+  two coexist for different consumers. Optional future cleanup =
+  consolidate the two trees (a relocate that preserves the demos), never a
+  deletion.
 - **`fleet/` has one consumer and it's broken:** sc
   `app/routers/ota_broadcast.py:169` imports `FleetService`, a class
   that does not exist anywhere in this library (the real API is
