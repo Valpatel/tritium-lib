@@ -47,8 +47,16 @@ device_type = registry.get_entity_type("device")
 related_rel = registry.get_relationship_type("related_to")
 ```
 
+## Consumed by (dated 2026-07-11, grep `from tritium_lib.ontology`)
+
+- **tritium-sc (the app): 1 site**, **lib-internal: 1 site**, **tests: 1 site**.
+- Reconfirming the honesty note above: `OntologyRegistry.validate_entity` has
+  **no production callers** — its only invokers are `tests/test_ontology.py`.
+  This is a typed *view* awaiting reconciliation, not a live validation layer.
+
 ## Related
 
-- [../graph/](../graph/) — KuzuDB graph store that persists ontology instances
+- [../graph/](../graph/) — KuzuDB graph store (aspirational shelfware — tests/demos
+  only; the live `/api/v1/ontology/*` is an in-memory adapter, not this graph)
 - [../models/](../models/) — Pydantic models that implement ontology entity types
 - [../classifier/](../classifier/) — DeviceClassifier that assigns ontology types to detected devices

@@ -48,6 +48,7 @@ graph TD
 | `__init__.py` | Exports `FusionEngine`, `FusionSnapshot`, `FusedTarget`, `SensorRecord`, `SensorPipeline` |
 | `engine.py` | `FusionEngine` -- unified ingest API for 7 sensor types, correlation control, zone management, query methods |
 | `pipeline.py` | `SensorPipeline` -- event-bus bridge that auto-routes `sensor.*` topics to `FusionEngine.ingest_*()` |
+| `byte_assoc.py` | BYTE two-stage data association (algorithm-only, MIT). **Not yet wired into `engine.py`** -- a documented follow-up. `ingest_camera` (engine.py ~L431) hard-drops any detection with `confidence < 0.4`; BYTE's second round is the license-clean remedy for the resulting identity switches on dim/occluded targets. Operates over plain `Track`/`Detection` dataclasses. |
 
 ## Key Types
 
@@ -66,5 +67,15 @@ engine.ingest_ble({"mac": "AA:BB:CC:DD:EE:FF", "rssi": -55})
 engine.ingest_camera({"class_name": "person", "confidence": 0.9, "center_x": 10.0, "center_y": 5.0})
 targets = engine.get_fused_targets()  # returns list[FusedTarget]
 ```
+
+## Consumed by (dated 2026-07-11, grep `from tritium_lib.fusion`)
+
+Deliberately thin: `FusionEngine` is meant to be the *one* composition point,
+so few callers wrap it directly.
+
+- **tritium-sc (the app): 1 site** — `src/app/main.py` wires it at startup.
+- **lib-internal: 3 sites** — `sitaware.SitAwareEngine` composes it (its
+  `fusion` property); the rest are re-exports.
+- **tests: 12 sites** — engine + pipeline coverage.
 
 **Parent:** [../README.md](../README.md)
