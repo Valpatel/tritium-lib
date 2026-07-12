@@ -56,7 +56,7 @@ flowchart TD
 |---------|------:|-------------|---------|
 | [`core/`](core/README.md) | 7 | `SimulationTarget`, `StateMachine`, `SpatialGrid`, `MovementController`, `NPCThinker`, `UnitInventory` | Entity dataclass, FSM engine, spatial queries, movement, inventory |
 | [`ai/`](ai/README.md) | 15 | `SteeringSystem`, behavior-tree `Node` + `make_patrol_tree`, `RoadNetwork`, `StrategicAI` | Steering, pathfinding, behavior trees, squad tactics, formations |
-| `unit_types/` | 18 | `UnitType`, `CombatStats`, `MovementCategory` + robot/person/sensor archetypes | Type registry — archetype stats, perception cones |
+| [`unit_types/`](unit_types/README.md) | 18 | `UnitType`, `CombatStats`, `MovementCategory` + robot/person/sensor archetypes | Type registry — archetype stats, perception cones |
 | [`behavior/`](behavior/README.md) | 6 | `UnitBehaviors`, `create_fsm_for_type`, `UnitMissionSystem`, `NPCManager` | **Stand-in drivers** — per-type combat AI, missions, civilians |
 | [`game/`](game/README.md) | 8 | `GameMode`, `StatsTracker`, `DifficultyScaler`, `PoliceTacticsController` | **Rules layer** — waves, victory/defeat, scoring, riot doctrine |
 | [`combat/`](combat/README.md) | 4 | `CombatSystem`, `MatchReferee`, `WeaponSystem`, `SquadManager` | **Hit resolution** — projectiles + transport-agnostic nerf-match scoring |
@@ -88,7 +88,8 @@ cd tritium-lib
 PYTHONPATH=src python3 -m tritium_lib.sim_engine.demos.game_server
 ```
 
-Open `http://localhost:8090`. Other demos: `demo_city` (NPC routines),
+Open `http://localhost:9090` (override with the `SIM_PORT` env var —
+`demos/game_server.py:4688`). Other demos: `demo_city` (NPC routines),
 `demo_full` (GTA-style city), `demo_steering`, `demo_rf`, `demo_perf`,
 `serve_city3d`. All require `PYTHONPATH=src`; the server demos need `fastapi`
 + `uvicorn`.
