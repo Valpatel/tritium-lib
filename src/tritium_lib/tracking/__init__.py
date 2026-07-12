@@ -49,7 +49,13 @@ from .vehicle_pipeline import (
     WiFiProbeRecord,
 )
 from .convoy_detector import ConvoyDetector, TargetMotion
-from .threat_scoring import ThreatScorer, BehaviorProfile
+from .threat_scoring import (
+    ThreatScorer,
+    BehaviorProfile,
+    assess_target_threat,
+    protected_positions,
+    DEFAULT_THREAT_ENVELOPE_M,
+)
 from .escalation import (
     ThreatRecord,
     THREAT_LEVELS,
@@ -159,6 +165,9 @@ __all__ = [
     "TargetMotion",
     # Threat scoring
     "ThreatScorer",
+    "assess_target_threat",
+    "protected_positions",
+    "DEFAULT_THREAT_ENVELOPE_M",
     "BehaviorProfile",
     # Escalation
     "ThreatRecord",

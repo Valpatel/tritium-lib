@@ -10,7 +10,11 @@ from tritium_lib.tracking.threat_scoring import (
     BehaviorProfile,
     LOITER_WEIGHT,
     ZONE_VIOLATION_WEIGHT,
+    assess_target_threat,
+    protected_positions,
+    DEFAULT_THREAT_ENVELOPE_M,
 )
+from tritium_lib.tracking.target_tracker import TrackedTarget
 
 
 # --- BehaviorProfile ---
@@ -264,3 +268,72 @@ def test_profiles_dict_bounded():
     # Internal profiles should have been cleaned up (all scores are 0)
     remaining = len(scorer._profiles)
     assert remaining == 0
+
+
+# --- assess_target_threat — situational (alliance + proximity) scoring -------
+
+def _t(alliance, pos):
+    return TrackedTarget(target_id="x", name="x", alliance=alliance,
+                         asset_type="person", position=pos)
+
+
+def test_assess_friendly_and_neutral_never_threat():
+    assets = [(0.0, 0.0)]
+    assert assess_target_threat(_t("friendly", (5, 5)), assets) == 0.0
+    assert assess_target_threat(_t("neutral", (5, 5)), assets) == 0.0
+    assert assess_target_threat(_t("vip", (5, 5)), assets) == 0.0
+
+
+def test_assess_hostile_floor_low_without_assets():
+    # No protected assets -> just the Low alliance floor, never no_threat.
+    s = assess_target_threat(_t("hostile", (10, 10)), [])
+    assert 0.0 < s < 0.3  # Low band
+
+
+def test_assess_hostile_escalates_with_proximity():
+    assets = [(0.0, 0.0)]
+    far = assess_target_threat(_t("hostile", (500, 0)), assets)      # beyond envelope
+    closing = assess_target_threat(_t("hostile", (100, 0)), assets)  # medium
+    imminent = assess_target_threat(_t("hostile", (60, 0)), assets)  # high
+    contact = assess_target_threat(_t("hostile", (20, 0)), assets)   # critical
+    assert far < 0.3            # Low
+    assert 0.3 <= closing < 0.7  # Medium
+    assert imminent >= 0.7       # High
+    assert contact >= 0.7        # High
+    assert far < closing < imminent < contact  # monotonic in proximity
+
+
+def test_assess_unknown_only_on_breach():
+    assets = [(0.0, 0.0)]
+    assert assess_target_threat(_t("unknown", (500, 0)), assets) == 0.0  # distant -> none
+    assert assess_target_threat(_t("unknown", (20, 0)), assets) >= 0.7   # breach -> High
+
+
+def test_assess_uses_nearest_asset():
+    # Two assets; the near one drives the score.
+    assets = [(0.0, 0.0), (1000.0, 0.0)]
+    s = assess_target_threat(_t("hostile", (20, 0)), assets)
+    assert s >= 0.7
+
+
+def test_assess_accepts_dict_target():
+    s = assess_target_threat(
+        {"alliance": "hostile", "position": {"x": 20.0, "y": 0.0}}, [(0.0, 0.0)]
+    )
+    assert s >= 0.7
+
+
+def test_protected_positions_extracts_friendly_and_vip():
+    targets = [
+        _t("friendly", (1, 1)),
+        _t("vip", (2, 2)),
+        _t("hostile", (9, 9)),
+        _t("neutral", (3, 3)),
+    ]
+    got = protected_positions(targets)
+    assert (1, 1) in got and (2, 2) in got
+    assert (9, 9) not in got and (3, 3) not in got
+
+
+def test_default_envelope_is_positive():
+    assert DEFAULT_THREAT_ENVELOPE_M > 0
