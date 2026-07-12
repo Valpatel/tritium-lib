@@ -3,8 +3,7 @@
 **Not a grab-bag — this is Amy's memory.** Despite the generic name, this
 package holds one substantial thing: a JSON-file-backed `Memory` that gives an
 embodied assistant spatial, episodic, and social recall (where it looked, what
-it saw, who it met, what it was told), plus the regex `extraction` helpers that
-feed that memory from conversation.
+it saw, who it met, what it was told).
 
 **Where you are:** `tritium-lib/src/tritium_lib/utils/`
 **Parent:** [`../`](../) — the tritium-lib package map
@@ -13,6 +12,14 @@ feed that memory from conversation.
 > Amy memory is SC's own `amy/brain/memory.py`. This lib `Memory` is a
 > parallel copy that nothing imports — see "How it's consumed." Named `utils`
 > for historical reasons; it is **not** a home for generic helpers.
+>
+> **Dedup (lane/dual-pkg, 2026-07-11):** the former `extraction.py` here was
+> **byte-identical** to the live `perception/extraction.py` (consumed by
+> `perception/__init__.py` and SC's `amy/commander.py`). It was removed as a
+> dead duplicate — its tests were fully subsumed by
+> `tests/perception/test_extraction.py`. Only `Memory` remains; the
+> lib-canonical extraction of SC's `amy/brain/memory.py` is still open (see
+> the LIB-EXTRACTION proposal, below).
 
 ## What it's for
 
@@ -23,16 +30,17 @@ was told, and detect routine patterns — then fold all of that into the context
 string it sends to the LLM each turn. `Memory` is that store, persisted to a
 versioned JSON file (with a v2→v3 migration path, `memory.py:618`).
 
-`extraction.py` is the intake side: pull a person's name and any durable facts
-out of a transcript so the caller can push them into `Memory`.
+The intake side (pull a person's name and durable facts out of a transcript,
+to push into `Memory`) lives in `perception/extraction.py` — the former
+byte-identical `utils/extraction.py` was removed (see status note above).
 
 ## How it works
 
 ```mermaid
 graph TD
-    subgraph INTAKE["extraction.py"]
-        EN["extract_person_name :27"]
-        EF["extract_facts :54"]
+    subgraph INTAKE["perception/extraction.py"]
+        EN["extract_person_name"]
+        EF["extract_facts"]
     end
     TRANSCRIPT["conversation transcript"] --> EN --> MEM
     TRANSCRIPT --> EF --> MEM
@@ -55,28 +63,25 @@ graph TD
 | Module | Key objects | What it does |
 |--------|-------------|--------------|
 | `memory.py` | `Memory` (`:21`) | The store. Spatial: `add_observation`/`get_nearby_observations`/`register_zone`/`get_zone_at`. Episodic: `add_event`/`get_recent_events`/`generate_session_summary`. Social: `record_person`/`link_person`/`identify_person`. Semantic: `add_fact`/`add_preference`/`add_self_note`/`recall`. Synthesis: `detect_patterns`, `build_context`/`build_people_context`/`build_self_context`, `get_dashboard_data`. Persistence: `save`/`_load` + `_migrate_v2_to_v3`. |
-| `extraction.py` | `extract_person_name` (`:27`), `extract_facts` (`:54`) | Regex intake — pull a name and durable facts from a transcript+response into fact dicts. |
 
 ## How it's consumed (verified 2026-07-11)
 
 **No consumer anywhere.** Dated grep for `from tritium_lib.utils` /
 `import tritium_lib.utils` across sc/edge/addons: **0 hits.** Tests only
-(`tests/test_memory.py`, `tests/comms/test_extraction.py` — note the extraction
-tests live under `tests/comms/`, a historical placement).
+(`tests/test_memory.py`).
 
-The live twin is SC's `amy/brain/memory.py`, which the Amy router
-(`amy/router.py`) and commander (`amy/commander.py`) actually use. The two
-diverge; this lib copy is unwired. Adopting it (lift SC's memory into the lib
-so both the sim and a real embodiment share one recall implementation) is a
-code decision — recorded so the two `Memory` classes aren't conflated.
-
-> Note: `perception/extraction.py` is a **separate** file with the same two
-> function names (`extract_person_name`/`extract_facts`) — the perception copy
-> is the one the extracted camera pipeline uses. This `utils/extraction.py` is
-> the older sibling.
+The live twin is SC's `amy/brain/memory.py`, which the Amy commander
+(`amy/commander.py`) actually uses — and it is **~92% identical** to this
+`Memory` (56 diff lines over ~660): this lib copy is already the
+de-Amy-ified generalization (generic docstrings, generic default path, adds
+`os.makedirs` on save, drops debug prints). SC constructs it with an explicit
+`Memory(path=…)`, so the only behavioral deltas are cosmetic. Making lib
+canonical (SC re-exports lib `Memory`) is therefore a **low-risk extraction**
+— routed as a proposal to the main loop (it needs a canonical module name,
+since `utils` is a poor home, plus a cross-submodule test run).
 
 ## Related
 
 - `tritium-sc/src/amy/brain/memory.py` — the **live** Amy memory twin
-- [../perception/](../perception/) — its own `extraction.py` (same function names) feeds the live detection path
+- [../perception/](../perception/) — now the **sole** home of `extraction.py` (the former `utils/extraction.py` byte-identical dup was removed)
 - [../inference/](../inference/) — consumes the `build_context()` string an assistant memory produces
