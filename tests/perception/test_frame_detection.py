@@ -96,6 +96,34 @@ def test_motion_detector_quiet_scene_yields_nothing():
     assert det.detect(bg, "cam1") == []
 
 
+def test_motion_detector_rejects_full_frame_warmup_artifact():
+    """The first frame (unlearned background) must not surface a full-frame blob.
+
+    MOG2 with no learned background can mark the entire first frame as
+    foreground; without a max-area guard that leaked a spurious full-frame
+    "person" onto the operator map on every camera start / scene-cut reset().
+    """
+    det = BackgroundMotionDetector(min_area=200)
+    bg = _with_person(_blank(), 160, 120)  # content on the very first frame
+    dets = det.detect(bg, "cam1")  # no _learn_background: first frame ever seen
+    full = [d for d in dets if d.bbox.w >= 315 and d.bbox.h >= 235]
+    assert not full, f"first-frame full-frame artifact leaked: {full}"
+
+
+def test_motion_detector_max_area_ratio_rejects_oversized_blob():
+    """A blob covering more than max_area_ratio of the frame is dropped (no real
+    object fills the whole view); a normal person-sized blob still passes."""
+    bg = _blank(320, 240)
+    det = BackgroundMotionDetector(min_area=200, max_area_ratio=0.5)
+    _learn_background(det, bg)
+    flood = bg.copy()
+    flood[10:230, 10:310] = (230, 230, 230)  # ~0.89 of the frame -> rejected
+    assert det.detect(flood, "cam1") == [], "oversized blob should be rejected"
+    det2 = BackgroundMotionDetector(min_area=200, max_area_ratio=0.5)
+    _learn_background(det2, bg)
+    assert det2.detect(_with_person(bg, 160, 120), "cam1"), "normal blob wrongly rejected"
+
+
 def test_motion_detector_is_deterministic():
     def run():
         det = BackgroundMotionDetector(min_area=200)
