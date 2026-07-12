@@ -140,9 +140,9 @@ procedural city, vision/sensor models).
 | Package | What it does | Wired where |
 |---------|-------------|-------------|
 | [`sim_engine/`](sim_engine/README.md) | The tactical simulation engine (`World`, `Scenario`, units, combat, weather, EW) | sc (86) — heaviest lib consumer |
-| `synthetic/` | Synthetic data generators: BLE scans, camera detections, patrol/threat scenarios | sc SIM Lab (`/api/sim/*`) |
-| `scenarios/` | Predefined surveillance scenarios (airport, border, campus…) + player | sc SIM Lab routers |
-| `recording/` | JSONL event `Recorder`/`Player` + retention sweep; feeds sc's AAR battle recordings | sc (3) |
+| [`synthetic/`](synthetic/README.md) | Synthetic data generators: stateless record generators (SIM Lab-wired) + EventBus stream publishers (test/demo only) | sc `sim_synthetic` (4 routes) |
+| [`scenarios/`](scenarios/README.md) | 5 predefined surveillance scenarios (airport, border, campus…) + `ScenarioPlayer` | sc `sim_scenarios` (24 routes) |
+| [`recording/`](recording/README.md) | JSONL event `Recorder`/`Player`/`Session` + retention sweep; feeds sc's AAR battle recordings | sc AAR + `sim_recordings` (2 routes) |
 
 ## Geo & signals (Geo/Signals family)
 
@@ -150,8 +150,8 @@ procedural city, vision/sensor models).
 |---------|-------------|-------------|
 | [`geo/`](geo/README.md) | Lat/lng ↔ local ENU meters, WGS84/UTM/MGRS, camera-pixel-to-ground; `gis/` fetchers+cache; **`scene3d.py`** — DEM heightfield + building extrusion + road ribbons + water fills for the map→Isaac 3D twin (no USD dep) | sc (57) |
 | [`planning/`](planning/README.md) | Open-source baseline route planner: GIS-derived `Costmap` + deterministic A* + hierarchical planning (the advanced flow-field planner is intentionally elsewhere, private) | sc (6) |
-| `signals/` | RSSI Kalman + path-loss distance, RF fingerprinting, spectrum classification, CSI occupancy, GCC-PHAT TDOA | sc `sim_signals` router |
-| `sdr/` | `SDRDevice` ABC + fully-working `SimulatedSDR`, `SpectrumAnalyzer`, Mode-S IQ synthesis (no hardware backends here) | sc (2) |
+| [`signals/`](signals/README.md) | RSSI Kalman + path-loss distance, RF fingerprinting, spectrum classification, CSI occupancy, GCC-PHAT TDOA | sc `sim_signals` router |
+| [`sdr/`](sdr/README.md) | `SDRDevice` ABC + fully-working `SimulatedSDR`, `SpectrumAnalyzer`, Mode-S IQ synthesis (no hardware backends here) | sc (2) |
 | `indoor/` | WiFi/BLE RSSI fingerprint k-NN positioning, zone clustering, floor plans | sc `indoor_positioning` plugin |
 
 ## Operations (Operations family)
@@ -162,17 +162,17 @@ composition and the SIM Lab routers — the table is candid about which.
 
 | Package | What it does | Wired where |
 |---------|-------------|-------------|
-| `fleet/` | `FleetManager`: registration, heartbeat staleness, groups, priority command queue (pure logic, no I/O) | sc `ota_broadcast.py` — **broken import**, see honesty notes |
-| `firmware/` | esptool-based ESP32 flashing; `MeshtasticFlasher` downloads + flashes official releases | sc firmware router, addons |
-| `monitoring/` | Pluggable health checks → `SystemStatus`; metrics collectors (no Prometheus) | `sitaware/`, `scheduler/` |
-| `alerting/` | `AlertEngine` rules over bus events (geofence, escalation, loitering) → notify/log/escalate | `sitaware/`, `incident/`, `mission/` |
+| [`fleet/`](fleet/README.md) | `FleetManager`: registration, heartbeat staleness, groups, priority command queue (pure logic, no I/O) | sc `ota_broadcast.py` — **dormant hook**, see honesty notes |
+| [`firmware/`](firmware/README.md) | esptool-based ESP32 flashing; `MeshtasticFlasher` downloads + flashes official releases | sc firmware router, addons |
+| [`monitoring/`](monitoring/README.md) | Pluggable health checks → `SystemStatus`; metrics collectors (no Prometheus) | `sitaware/`, `scheduler/` |
+| [`alerting/`](alerting/README.md) | `AlertEngine` rules over bus events (geofence, escalation, loitering) → notify/log/escalate | `sitaware/`, `incident/`, `mission/` |
 | [`notifications/`](notifications/README.md) | Thread-safe in-memory notification manager with broadcast callback | `alerting/` (lib-internal) |
-| `mission/` | `MissionPlanner` lifecycle (planning→active→completed), objectives, briefs; `defense.py` key-terrain placement | `sitaware/` (lib-internal) |
-| `rules/` | JSON-serializable IF-THEN engine over tracking state with combinators | sc `sim_rules` router |
+| [`mission/`](mission/README.md) | `MissionPlanner` lifecycle (planning→active→completed), objectives, briefs; `defense.py` key-terrain placement | `sitaware/` (lib-internal) |
+| [`rules/`](rules/README.md) | JSON-serializable IF-THEN engine over tracking state with combinators | sc `sim_rules` router |
 | `incident/` | Incident state machines (detected→…→resolved) with timelines | `sitaware/` (lib-internal) |
-| `scheduler/` | Thread-based interval/cron/one-shot scheduler + task queue | sc (2) |
-| `reporting/` | `SitRepGenerator` — situation/daily/incident reports from tracker+stores (text/HTML/JSON) | sc (1) |
-| `threat_intel/` | Minimal STIX 2.1: indicator feeds, watchlist matching, `to_stix`/`from_stix` | sc `sim_threat_intel` router |
+| [`scheduler/`](scheduler/README.md) | Thread-based interval/cron/one-shot scheduler + task queue; 4 builtin operator tasks (disabled by default) | sc `sim_scheduler` (7 routes) |
+| [`reporting/`](reporting/README.md) | `SitRepGenerator` — situation/daily/incident reports from tracker+events (text/HTML/JSON) | sc `sim_reporting` (3 routes) |
+| [`threat_intel/`](threat_intel/README.md) | Minimal STIX 2.1: indicator feeds, watchlist matching, `to_stix`/`from_stix` | sc `sim_threat_intel` (7 routes) |
 | `audit/` | Standalone SQLite compliance trail (deliberately separate from `store.AuditStore`) | `visualization/` (lib-internal) |
 | `privacy/` | GDPR tooling: retention purges, anonymization, consent, privacy zones | no external consumer |
 | `federation/` | Multi-site trust levels + share policies (transport explicitly NOT included); sc's federation *plugin* does not use it | no external consumer |
