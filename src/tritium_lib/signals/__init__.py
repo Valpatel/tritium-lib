@@ -59,19 +59,6 @@ from .csi_processor import (
     hampel_filter,
 )
 
-# ---------------------------------------------------------------------------
-# Back-compat alias (DEPRECATED — do not use in new code).
-#
-# The pure-math ``SpectrumAnalyzer`` was renamed to ``SignalSpectrumAnalyzer``
-# to end the name collision with the device-backed
-# ``tritium_lib.sdr.SpectrumAnalyzer``. This alias keeps the old name importable
-# for the one remaining external consumer (``tritium-sc``
-# ``app/routers/sim_signals.py``). Migrate that import to
-# ``SignalSpectrumAnalyzer`` and then delete this alias. Intentionally NOT added
-# to ``__all__`` so the ambiguous name is not re-advertised as public API.
-# ---------------------------------------------------------------------------
-SpectrumAnalyzer = SignalSpectrumAnalyzer
-
 # gcc_phat needs numpy (FFT). Keep it optional so a core-only (no-numpy)
 # install still imports the pure-Python analysers above.
 try:
