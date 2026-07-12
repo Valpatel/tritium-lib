@@ -1,5 +1,7 @@
 # Tritium-Lib — Shared Platform Library
 
+> **Submodule of [Valpatel/tritium](https://github.com/Valpatel/tritium).** Cross-repo commit/push order, gitlink safety, the pre-push privacy gate, and merge hazards are in [`AGENTS.md`](AGENTS.md) (+ the parent's). Read it before any multi-repo work.
+
 > **North Star:** *Build a fun simulator for the purpose of testing and validating the software stack that drives independent machines.*
 
 This library is the seam where the game and the production system are literally the same code. The simulation engine, target tracker, fusion correlator, and addon SDK ship together. When the in-game wave spawner calls them, they behave identically to when a real sensor fleet calls them. That is the point. See top-level [../CLAUDE.md](../CLAUDE.md) and `project_north_star.md`.
