@@ -782,6 +782,9 @@ from .quadruped import (
     GaitSpec,
     QuadrupedProfile,
 )
+from .rover import (
+    RoverProfile,
+)
 
 __all__ = [
     # Deployment
@@ -1458,4 +1461,6 @@ __all__ = [
     "DEFAULT_GAITS",
     "GaitSpec",
     "QuadrupedProfile",
+    # Rover (mini 4-wheel skid-steer body — second fleet body)
+    "RoverProfile",
 ]
