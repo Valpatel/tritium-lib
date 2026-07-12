@@ -99,7 +99,6 @@ lives in `tracking/`, not here.
 | [`data/`](data/README.md) | 11 static JSON fingerprint tables (OUI, BLE company IDs, Apple Continuity) | `classifier/` (lib-internal) |
 | [`conf/`](conf/README.md) | One example config: `llm-fleet.conf.example` (no code) | reference only |
 | [`nodes/`](nodes/README.md) | Abstract `SensorNode` hardware interface (camera/PTZ/mic/speaker) | no consumer (SC has a near-identical twin it subclasses) |
-| [`utils/`](utils/README.md) | Amy-persona `Memory` (JSON-file store) + regex fact extraction — not generic utilities | no external consumer (SC's `amy/brain/memory.py` is the live twin) |
 | `js/` | **Orphaned** second copy of the browser city-sim JS — see honesty notes below | none |
 
 ## Tracking, fusion, and intelligence (Intelligence family)
