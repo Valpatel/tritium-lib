@@ -45,6 +45,11 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from tritium_lib.tracking.target_tracker import TargetTracker, TrackedTarget
+from tritium_lib.tracking.threat_scoring import (
+    assess_target_threat,
+    protected_positions,
+    DEFAULT_THREAT_ENVELOPE_M,
+)
 from tritium_lib.store.event_store import EventStore, TacticalEvent, SEVERITY_LEVELS
 
 
@@ -163,8 +168,25 @@ class ThreatSummary:
         }
 
     @staticmethod
-    def from_targets(targets: list[TrackedTarget]) -> ThreatSummary:
-        """Build a threat summary from tracked targets."""
+    def from_targets(
+        targets: list[TrackedTarget],
+        assess: bool = False,
+        envelope_m: float = DEFAULT_THREAT_ENVELOPE_M,
+    ) -> ThreatSummary:
+        """Build a threat summary from tracked targets.
+
+        Args:
+            targets: Current tracked targets.
+            assess: When ``True``, apply the situational threat assessor
+                (:func:`~tritium_lib.tracking.threat_scoring.assess_target_threat`)
+                so hostiles and targets closing on protected assets get a
+                High/Medium/Low level even when no behavioral ``threat_score``
+                has been written to them.  The effective score is
+                ``max(target.threat_score, situational)`` so behavioral scoring,
+                when present, still wins.  Defaults to ``False`` to preserve the
+                raw stored-``threat_score`` distribution for callers that want it.
+            envelope_m: Tactical threat envelope passed to the assessor.
+        """
         high = 0
         medium = 0
         low = 0
@@ -172,8 +194,12 @@ class ThreatSummary:
         hostile = 0
         suspicious: list[str] = []
 
+        protected = protected_positions(targets) if assess else []
+
         for t in targets:
             score = t.threat_score
+            if assess:
+                score = max(score, assess_target_threat(t, protected, envelope_m))
             if score >= 0.7:
                 high += 1
                 suspicious.append(t.target_id)
@@ -257,6 +283,31 @@ class ZoneActivity:
 # ---------------------------------------------------------------------------
 # AnomalySummary — top anomalies from events
 # ---------------------------------------------------------------------------
+#
+# Severity-vocabulary reconcile: events carry one of two vocabularies.  The
+# EventStore vocab is debug/info/warning/error/critical (``SEVERITY_LEVELS``);
+# proximity:breach events instead carry the proximity vocab low/medium/high/
+# critical (``models.proximity.ProximitySeverity``).  Only "critical" overlaps,
+# so a "high" (or "medium") proximity breach used to be dropped from the anomaly
+# counts entirely.  These maps span BOTH vocabularies so a "high" breach counts
+# and sorts like an "error", not below "debug".
+
+# Severities that mark an event as an anomaly worth surfacing.  Spans both
+# vocabularies; "info"/"debug"/"low" stay excluded as routine.
+ANOMALY_SEVERITIES: frozenset[str] = frozenset(
+    {"warning", "error", "critical", "medium", "high"}
+)
+
+# Ordinal rank across both vocabularies (used to sort top anomalies).  Keeps the
+# EventStore ranks identical to the old SEVERITY_LEVELS ordering and slots the
+# proximity vocab in alongside: low~info, medium~warning, high~error.
+COMBINED_SEVERITY_RANK: dict[str, int] = {
+    "debug": 0, "info": 1, "low": 1,
+    "warning": 2, "medium": 2,
+    "error": 3, "high": 3,
+    "critical": 4,
+}
+
 
 @dataclass
 class AnomalySummary:
@@ -279,7 +330,7 @@ class AnomalySummary:
         anomaly_events: list[TacticalEvent] = []
         for ev in events:
             etype = ev.event_type.lower()
-            if "anomaly" in etype or ev.severity in ("warning", "error", "critical"):
+            if "anomaly" in etype or ev.severity in ANOMALY_SEVERITIES:
                 anomaly_events.append(ev)
 
         by_severity: dict[str, int] = {}
@@ -288,10 +339,9 @@ class AnomalySummary:
             by_severity[sev] = by_severity.get(sev, 0) + 1
 
         # Top anomalies sorted by severity then timestamp
-        severity_rank = {s: i for i, s in enumerate(SEVERITY_LEVELS)}
         sorted_anomalies = sorted(
             anomaly_events,
-            key=lambda e: (-severity_rank.get(e.severity, 0), -e.timestamp),
+            key=lambda e: (-COMBINED_SEVERITY_RANK.get(e.severity, 0), -e.timestamp),
         )
 
         top: list[dict[str, Any]] = []
@@ -626,7 +676,10 @@ class SitRepGenerator:
         """
         targets = self._tracker.get_all()
         target_breakdown = TargetBreakdown.from_targets(targets)
-        threat_summary = ThreatSummary.from_targets(targets)
+        # assess=True: apply the situational assessor so hostiles/closing targets
+        # populate the High/Medium/Low buckets even when no background scorer has
+        # written threat_score (the live sim does not).
+        threat_summary = ThreatSummary.from_targets(targets, assess=True)
 
         # Fetch events
         events: list[TacticalEvent] = []
@@ -802,7 +855,7 @@ class DailySummary:
 
         targets = tracker.get_all()
         breakdown = TargetBreakdown.from_targets(targets)
-        threat_summary = ThreatSummary.from_targets(targets)
+        threat_summary = ThreatSummary.from_targets(targets, assess=True)
 
         # Count new targets (first_seen within the last 24h using monotonic offset)
         now_mono = time.monotonic()
@@ -838,7 +891,7 @@ class DailySummary:
                     elif "exit" in etype_lower:
                         zone_exits += 1
 
-                if "anomaly" in etype_lower or ev.severity in ("warning", "error", "critical"):
+                if "anomaly" in etype_lower or ev.severity in ANOMALY_SEVERITIES:
                     anomaly_count += 1
 
         # Top event types

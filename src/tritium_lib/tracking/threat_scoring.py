@@ -24,6 +24,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from tritium_lib.models.proximity import classify_proximity_severity
+
 logger = logging.getLogger("threat-scoring")
 
 # Score weights for different behavioral indicators
@@ -370,3 +372,112 @@ class ThreatScorer:
             "medium_threat_count": medium_threat,
             "has_geofence_checker": self._geofence_checker is not None,
         }
+
+
+# ---------------------------------------------------------------------------
+# Situational threat assessment — the TACTICAL half of threat scoring
+# ---------------------------------------------------------------------------
+#
+# ``ThreatScorer`` above scores *behavior* (loitering, off-hours, erratic
+# movement).  That never fires for a hostile charging a friendly asset in a
+# battle — a charging unit is not "loitering" — so on its own it leaves every
+# hostile at ``threat_score == 0.0`` and the SitRep's High/Medium/Low buckets
+# empty even with hundreds of hostiles on the field.
+#
+# ``assess_target_threat`` supplies the missing situational floor from the two
+# signals the simulation DOES produce: declared ``alliance`` and ``position``.
+# A hostile is at least a Low threat; a hostile (or an unknown) that has closed
+# inside a protected asset's tactical envelope escalates to Medium/High graded
+# by range.  Friendlies, VIPs and neutrals are never a threat to us.  It is a
+# pure function of its inputs (it does not mutate the target), so it is safe to
+# call from a read path such as SitRep generation.
+
+# Alliance base threat floor.  A hostile reads Low even with no other signal;
+# an unknown is neutral (0.0) until it breaches an asset's space.
+_ALLIANCE_BASE_THREAT: dict[str, float] = {
+    "hostile": 0.2,   # Low band (0.0 < s < 0.3)
+    "unknown": 0.0,   # only a threat once it closes on a protected asset
+}
+
+# Default tactical threat envelope (meters).  A hostile/unknown within this
+# range of a protected asset is a live threat, graded by depth inside the
+# envelope.  Deliberately wider than the 20 m weapon-fire proximity ALERT range
+# (``models.proximity.DEFAULT_PROXIMITY_RULES``): a closing hostile is a threat
+# to assess before it is in weapon range.
+DEFAULT_THREAT_ENVELOPE_M: float = 150.0
+
+# Maps the shared proximity-severity vocabulary
+# (``models.proximity.classify_proximity_severity``: low/medium/high/critical)
+# onto the ``ThreatSummary`` bands (>=0.7 High, >=0.3 Medium, >0 Low).
+_PROX_SEVERITY_TO_THREAT: dict[str, float] = {
+    "low": 0.25,       # inside the envelope but distant  -> Low
+    "medium": 0.5,     # closing                          -> Medium
+    "high": 0.75,      # imminent                         -> High
+    "critical": 0.95,  # in contact                       -> High
+}
+
+# Alliances whose members are protected assets a hostile threatens.
+PROTECTED_ALLIANCES: frozenset[str] = frozenset({"friendly", "vip"})
+
+
+def _target_field(target: Any, name: str, default: Any = None) -> Any:
+    """Read ``name`` from a TrackedTarget-like object or a dict."""
+    if isinstance(target, dict):
+        return target.get(name, default)
+    return getattr(target, name, default)
+
+
+def assess_target_threat(
+    target: Any,
+    protected_positions: Optional[list[tuple[float, float]]] = None,
+    envelope_m: float = DEFAULT_THREAT_ENVELOPE_M,
+) -> float:
+    """Situational threat score for one target from alliance + proximity.
+
+    Args:
+        target: TrackedTarget-like object (or dict) with ``alliance`` and
+            ``position``.
+        protected_positions: Planar ``(x, y)`` positions of the assets worth
+            protecting (friendly + VIP targets).  Distance is euclidean in
+            meters, matching the proximity monitor's model.
+        envelope_m: Tactical threat envelope radius in meters.
+
+    Returns:
+        Threat score in ``[0.0, 1.0]``.  ``0.0`` for friendlies/VIPs/neutrals
+        and for distant unknowns.
+    """
+    alliance = _target_field(target, "alliance", "") or ""
+    base = _ALLIANCE_BASE_THREAT.get(alliance, 0.0)
+    # Not a threat type (friendly / vip / neutral / anything unlisted) and not an
+    # unknown that could escalate on proximity -> definitively no threat.
+    if base == 0.0 and alliance != "unknown":
+        return 0.0
+    if not protected_positions or envelope_m <= 0:
+        return base
+
+    pos = _target_field(target, "position", None)
+    if isinstance(pos, dict):
+        pos = (pos.get("x", 0.0), pos.get("y", 0.0))
+    if not pos:
+        return base
+    px, py = pos[0], pos[1]
+
+    nearest = min(math.hypot(px - ax, py - ay) for (ax, ay) in protected_positions)
+    if nearest > envelope_m:
+        return base
+
+    severity = classify_proximity_severity(nearest, envelope_m)
+    return max(base, _PROX_SEVERITY_TO_THREAT.get(severity, base))
+
+
+def protected_positions(targets: list[Any]) -> list[tuple[float, float]]:
+    """Extract protected-asset positions (friendly + VIP) from a target list."""
+    out: list[tuple[float, float]] = []
+    for t in targets:
+        if _target_field(t, "alliance", "") in PROTECTED_ALLIANCES:
+            pos = _target_field(t, "position", None)
+            if isinstance(pos, dict):
+                pos = (pos.get("x", 0.0), pos.get("y", 0.0))
+            if pos:
+                out.append((pos[0], pos[1]))
+    return out
