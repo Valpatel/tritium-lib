@@ -417,6 +417,122 @@ def test_register_external_hit_unknown_target_raises() -> None:
 # Hit feedback — register_hit_command: referee verdict -> wire command
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# N-dog free-for-all + deterministic multi-KO tie-break
+# ---------------------------------------------------------------------------
+
+def _ffa(rng: random.Random, ids: list[str], hp: float = 10.0) -> MatchReferee:
+    """A free-for-all: N dogs, each its own team, strung out along +x."""
+    ref = MatchReferee(rng=rng)
+    for i, cid in enumerate(ids):
+        ref.add_combatant(cid, hp=hp)
+        ref.update_pose(cid, i * 3.0, 0.0, 0.0)
+    return ref
+
+
+def test_ffa_last_dog_standing_wins() -> None:
+    """Four dogs enter, three fall in sequence; the survivor takes it."""
+    ref = _ffa(random.Random(1), ["d1", "d2", "d3", "d4"])
+    assert ref.active() is True
+    assert ref.winner() is None
+    # Drop three (in a scrambled order): d1 is the last dog standing.
+    ref.sync_health("d2", 0.0)
+    assert ref.active() is True  # three still stand -> contested
+    ref.sync_health("d4", 0.0)
+    ref.sync_health("d3", 0.0)
+    assert ref.active() is False
+    assert ref.winner() == "d1"
+    assert ref.decide_winner() == "d1"
+    assert ref.scoreboard()["decided_winner"] == "d1"
+    assert ref.scoreboard()["winner"] == "d1"
+
+
+def test_ffa_mid_match_is_contested_no_winner() -> None:
+    """With two of four down, two teams still stand -> no decision yet."""
+    ref = _ffa(random.Random(2), ["d1", "d2", "d3", "d4"])
+    ref.sync_health("d1", 0.0)
+    ref.sync_health("d2", 0.0)
+    assert ref.active() is True
+    assert ref.decide_winner() is None  # still contested
+    assert ref.winner() is None
+
+
+def test_defeated_seq_stamps_ko_order() -> None:
+    """Each body is stamped with a strictly increasing KO-order number the
+    first time it reaches 0 hp — the backbone of the tie-break."""
+    ref = _ffa(random.Random(3), ["a", "b", "c"])
+    assert all(ref.get_combatant(c).defeated_seq == 0 for c in ("a", "b", "c"))
+    ref.sync_health("b", 0.0)
+    ref.sync_health("a", 0.0)
+    assert ref.get_combatant("b").defeated_seq == 1  # b fell first
+    assert ref.get_combatant("a").defeated_seq == 2  # a fell second
+    assert ref.get_combatant("c").defeated_seq == 0  # c never fell
+    # Re-reporting a dead dog does NOT re-stamp it (seq is set once).
+    ref.sync_health("b", 0.0)
+    assert ref.get_combatant("b").defeated_seq == 1
+
+
+def test_simultaneous_double_ko_tie_break_is_last_to_fall() -> None:
+    """A true double-KO (both at 0 hp) is decided deterministically: the body
+    that fell LAST wins — never dict/registration order.  Pinned against the
+    seeded shot script (dog_a falls first, dog_b second)."""
+    ref = MatchReferee(rng=random.Random(4242))
+    ref.add_combatant("dog_a")
+    ref.add_combatant("dog_b")
+    ref.update_pose("dog_a", 0.0, 0.0, 0.0, turret_pan_deg=0.0)
+    ref.update_pose("dog_b", 0.0, 5.0, 180.0, turret_pan_deg=0.0)
+    for _ in range(10):
+        ref.resolve_shot("dog_a", "dog_b")
+        ref.resolve_shot("dog_b", "dog_a")
+    a, b = ref.get_combatant("dog_a"), ref.get_combatant("dog_b")
+    assert a.hp == 0.0 and b.hp == 0.0        # genuine double-KO
+    assert a.defeated_seq == 1 and b.defeated_seq == 2  # a fell first
+    assert ref.winner() is None                # sole-survivor notion: nobody
+    assert ref.decide_winner() == "dog_b"      # fell last -> survived longest
+    assert ref.scoreboard()["decided_winner"] == "dog_b"
+
+
+def test_double_ko_tie_break_independent_of_registration_order() -> None:
+    """The winner of a double-KO is the last to fall, whichever order the
+    two were registered — the order-dependence bug is gone."""
+    for first, second in (("x", "y"), ("y", "x")):
+        ref = MatchReferee(rng=random.Random(0))
+        ref.add_combatant(first, hp=8.0)
+        ref.add_combatant(second, hp=8.0)
+        ref.update_pose(first, 0.0, 0.0, 0.0)
+        ref.update_pose(second, 0.0, 3.0, 180.0)
+        ref.sync_health("x", 0.0)   # x always falls first
+        ref.sync_health("y", 0.0)   # y always falls last -> y wins
+        assert ref.decide_winner() == "y"
+
+
+def test_teams_last_team_standing() -> None:
+    """A team match resolves to the surviving team; the winner id is that
+    team's healthiest survivor."""
+    ref = MatchReferee(rng=random.Random(5))
+    for cid, team, hp in (("r1", "red", 10.0), ("r2", "red", 4.0),
+                          ("b1", "blue", 10.0), ("b2", "blue", 10.0)):
+        ref.add_combatant(cid, hp=hp, team=team)
+        ref.update_pose(cid, 0.0, 0.0, 0.0)
+    assert ref.active() is True
+    ref.sync_health("b1", 0.0)
+    assert ref.active() is True   # blue still has b2
+    ref.sync_health("b2", 0.0)
+    assert ref.active() is False  # red wins — both blue down
+    assert ref.winning_team() == "red"
+    assert ref.decide_winner() == "r1"   # red's healthiest (10 > 4)
+    assert ref.scoreboard()["winning_team"] == "red"
+    assert ref.scoreboard()["combatants"]["r1"]["team"] == "red"
+
+
+def test_decide_winner_needs_two_combatants() -> None:
+    """A lone entrant is not a match — no winner is decided."""
+    ref = MatchReferee(rng=random.Random(0))
+    ref.add_combatant("solo")
+    assert ref.decide_winner() is None
+    assert ref.winning_team() is None
+
+
 def test_register_hit_command_from_resolved_outcome() -> None:
     """A seeded referee hit maps onto the exact wire command the target
     dog's brain keys on."""

@@ -141,6 +141,13 @@ class MatchCombatant:
     north, clockwise) and the body-relative turret servo convention
     (``turret_pan_deg``: 0 = straight ahead) — the same frame a real dog's
     ``WeaponStatus.pan_deg`` reports.
+
+    ``team`` groups combatants for a team match; ``None`` (the default) means
+    the combatant is its OWN team — a free-for-all entrant.  ``defeated_seq``
+    is a KO-order stamp (0 while standing; the referee sets it to a strictly
+    increasing value the instant the body first reaches 0 hp) so a
+    simultaneous multi-KO is broken deterministically: the body that fell
+    LAST — the higher ``defeated_seq`` — survived longest and takes the tie.
     """
 
     combatant_id: str
@@ -157,11 +164,19 @@ class MatchCombatant:
     hits_taken: int = 0
     damage_dealt: float = 0.0
     damage_taken: float = 0.0
+    team: str | None = None
+    defeated_seq: int = 0
 
     @property
     def alive(self) -> bool:
         """A combatant fights while its hitpoints are above zero."""
         return self.hp > 0
+
+    @property
+    def team_id(self) -> str:
+        """Effective team — the explicit ``team``, else the combatant's own id
+        (free-for-all: every dog is its own side)."""
+        return self.team if self.team is not None else self.combatant_id
 
 
 @dataclass
@@ -199,6 +214,11 @@ class MatchReferee:
         self._rng = rng if rng is not None else random.Random()
         self._hit_radius = hit_radius
         self._combatants: dict[str, MatchCombatant] = {}
+        # Monotonic KO-order counter — stamps ``defeated_seq`` so the winner
+        # of a simultaneous multi-KO is decided deterministically (last to
+        # fall wins), never by dict/registration order.  No rng: the golden
+        # dispersion sequence is untouched.
+        self._ko_counter: int = 0
 
     # ------------------------------------------------------------------
     # Registration & pose feed
@@ -210,15 +230,23 @@ class MatchReferee:
         weapon: Weapon | None = None,
         asset_type: str = "robot_dog",
         hp: float = 40.0,
+        team: str | None = None,
     ) -> MatchCombatant:
         """Register a combatant.  ``weapon=None`` equips the default loadout
         for *asset_type* (a fresh copy, same table :class:`WeaponSystem`
-        uses — unknown types get the generic blaster)."""
+        uses — unknown types get the generic blaster).
+
+        ``team`` groups the combatant for a team match (last team standing
+        wins); ``None`` (default) makes it its own side — a free-for-all
+        entrant.  Any number of combatants may be registered: two for a duel,
+        N for a free-for-all, or several teams.
+        """
         if weapon is None:
             template = _DEFAULT_WEAPONS.get(asset_type)
             weapon = replace(template) if template is not None else Weapon()
         combatant = MatchCombatant(
             combatant_id=combatant_id, weapon=weapon, hp=hp, max_hp=hp,
+            team=team,
         )
         self._combatants[combatant_id] = combatant
         return combatant
@@ -320,6 +348,7 @@ class MatchReferee:
             shooter.damage_dealt += damage
             target.hits_taken += 1
             target.damage_taken += damage
+            self._stamp_defeats()
             return ShotOutcome(
                 shooter_id=shooter_id, target_id=target_id, hit=True,
                 distance_m=distance, aim_error_deg=aim_error,
@@ -371,6 +400,7 @@ class MatchReferee:
             c.hp = 0.0
         if max_hp is not None:
             c.max_hp = max(c.hp, float(max_hp))
+        self._stamp_defeats()
 
     def register_external_hit(
         self,
@@ -402,15 +432,43 @@ class MatchReferee:
         if shooter is not None:
             shooter.hits_landed += 1
             shooter.damage_dealt += damage
+        self._stamp_defeats()
         return target.hp
+
+    def _stamp_defeats(self) -> None:
+        """Stamp ``defeated_seq`` on any body that has newly reached 0 hp.
+
+        Called after every hp mutation (``resolve_shot`` hit, ``sync_health``,
+        ``register_external_hit``): a body dropping to 0 for the FIRST time is
+        given the next KO-order number.  A single hp mutation kills at most one
+        body, so at most one stamp is assigned per call and iteration order is
+        immaterial.  This is the deterministic backbone of the multi-KO
+        tie-break — no rng, so golden dispersion replays are untouched.
+        """
+        for c in self._combatants.values():
+            if c.hp <= 0.0 and c.defeated_seq == 0:
+                self._ko_counter += 1
+                c.defeated_seq = self._ko_counter
 
     # ------------------------------------------------------------------
     # Match state
     # ------------------------------------------------------------------
 
+    def _living_teams(self) -> set[str]:
+        """Team ids with at least one living member (free-for-all: each living
+        combatant is its own team)."""
+        return {c.team_id for c in self._combatants.values() if c.alive}
+
     def winner(self) -> str | None:
         """ID of the sole living combatant — only when at least two are
-        registered and exactly one remains alive; otherwise ``None``."""
+        registered and exactly one remains alive; otherwise ``None``.
+
+        This is the free-for-all, combatant-level notion (unchanged contract).
+        For a team match where the winning team keeps more than one survivor,
+        this returns ``None`` — use :meth:`winning_team` or :meth:`decide_winner`.
+        A simultaneous multi-KO (nobody alive) also returns ``None`` here;
+        :meth:`decide_winner` applies the tie-break for that case.
+        """
         if len(self._combatants) < 2:
             return None
         living = [c for c in self._combatants.values() if c.alive]
@@ -418,22 +476,76 @@ class MatchReferee:
             return living[0].combatant_id
         return None
 
+    def winning_team(self) -> str | None:
+        """The sole surviving team id — only when >= 2 combatants are
+        registered and exactly one team still has a living member; otherwise
+        ``None`` (match still contested, or a simultaneous multi-KO left no
+        team standing — :meth:`decide_winner` breaks that tie)."""
+        if len(self._combatants) < 2:
+            return None
+        teams = self._living_teams()
+        if len(teams) == 1:
+            return next(iter(teams))
+        return None
+
+    def _rank_key(self, c: MatchCombatant) -> tuple:
+        """Sort key ranking combatants best-first (ascending sort).
+
+        A living body always outranks a dead one; among the living, more hp
+        wins; among the fallen, the one that fell LAST (higher ``defeated_seq``)
+        wins — it survived longest.  The combatant id is the final, fully
+        deterministic backstop so the order never depends on dict insertion.
+        """
+        return (
+            0 if c.alive else 1,      # living beats dead
+            -c.hp,                    # more hp is better
+            -c.defeated_seq,          # fell later (higher seq) is better
+            c.combatant_id,           # deterministic tie-breaker of last resort
+        )
+
+    def decide_winner(self) -> str | None:
+        """Definitive match-winner id — deterministic even on a simultaneous
+        multi-KO, so a caller never has to fall back to dict/list order.
+
+        Returns ``None`` while the match is still contested (>= 2 teams alive)
+        or when fewer than two combatants are registered.  Once the match is
+        settled (0 or 1 living team) it ranks ALL combatants with
+        :meth:`_rank_key` and returns the champion: the sole survivor, the
+        winning team's healthiest member, or — if everyone fell together — the
+        body that fell last.  The result is stable across runs and independent
+        of registration order or ``PYTHONHASHSEED``.
+        """
+        if len(self._combatants) < 2:
+            return None
+        if len(self._living_teams()) >= 2:
+            return None
+        return min(self._combatants.values(), key=self._rank_key).combatant_id
+
     def active(self) -> bool:
-        """The match is live while at least two combatants stand."""
-        return sum(1 for c in self._combatants.values() if c.alive) >= 2
+        """The match is live while at least two distinct teams still stand
+        (free-for-all: at least two combatants alive)."""
+        return len(self._living_teams()) >= 2
 
     def scoreboard(self) -> dict:
         """Match snapshot — winner (if decided) plus per-combatant stats.
 
-        Shape is JSON-safe for any transport (HUD panel, MQTT publish,
-        REST response)."""
+        ``winner`` keeps its free-for-all, sole-survivor meaning (``None``
+        while contested).  ``decided_winner`` is the tie-broken definitive
+        winner (``None`` only while the match is genuinely still contested), so
+        a consumer never sees a null/order-dependent result at match end.
+        ``winning_team`` names the surviving team (== ``decided_winner``'s team
+        for a decided match).  Shape is JSON-safe for any transport (HUD panel,
+        MQTT publish, REST response)."""
         return {
             "winner": self.winner(),
+            "decided_winner": self.decide_winner(),
+            "winning_team": self.winning_team(),
             "combatants": {
                 cid: {
                     "hp": c.hp,
                     "max_hp": c.max_hp,
                     "alive": c.alive,
+                    "team": c.team_id,
                     "shots_fired": c.shots_fired,
                     "hits_landed": c.hits_landed,
                     "hits_taken": c.hits_taken,
