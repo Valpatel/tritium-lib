@@ -78,7 +78,10 @@ class TestTrackedTarget:
         t = targets[0]
         assert t.source == "yolo"
         assert t.asset_type == "person"
-        assert t.alliance == "hostile"
+        # Vision carries no IFF — a detected person lands "unknown" until
+        # an operator tag / declared telemetry / classification upgrades it
+        # (see test_person_detection_is_not_assumed_hostile).
+        assert t.alliance == "unknown"
         assert t.classification == "person"
 
 
@@ -325,14 +328,45 @@ class TestTargetRemoval:
             "alliance": "friendly",
             "asset_type": "rover",
         })
-        tracker.update_from_detection({
+        # A DECLARED hostile (telemetry carries the alliance) — the only
+        # legitimate automatic way a track lands hostile.
+        tracker.update_from_simulation({
+            "target_id": "raider_01",
+            "name": "Raider",
+            "alliance": "hostile",
+            "asset_type": "person",
+        })
+
+        assert len(tracker.get_friendlies()) == 1
+        assert len(tracker.get_hostiles()) == 1
+
+    def test_person_detection_is_not_assumed_hostile(self):
+        """A camera-detected person lands as alliance="unknown".
+
+        Vision carries zero IFF information — most person detections in
+        demo/city-sim are ambient civilians.  The old person="hostile"
+        hard-code fabricated hundreds of phantom hostiles (203 tracked
+        "hostiles" vs 4 real ones, 2026-07-17 verification) and poisoned
+        /api/targets/hostiles and every threat count.  Hostility must come
+        from the alliance authority tiers: an operator tag, declared
+        telemetry, or fusion/classification — never assumed from pixels.
+        """
+        tracker = TargetTracker()
+        tid = tracker.update_from_detection({
             "class_name": "person",
             "confidence": 0.8,
             "center_x": 5.0,
             "center_y": 10.0,
         })
 
-        assert len(tracker.get_friendlies()) == 1
+        target = tracker.get_target(tid)
+        assert target is not None
+        assert target.asset_type == "person"
+        assert target.alliance == "unknown"
+        assert len(tracker.get_hostiles()) == 0
+
+        # An operator tag still outranks the creation default.
+        tracker.set_operator_alliance(tid, "hostile")
         assert len(tracker.get_hostiles()) == 1
 
     def test_update_increments_signal_count(self):

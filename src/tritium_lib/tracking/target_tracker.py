@@ -576,15 +576,24 @@ class TargetTracker:
         camera_id = str(detection.get("source_camera") or "")
         src = "camera" if camera_id else "yolo"
 
+        # A vision detection carries ZERO IFF information — pixels that say
+        # "person" say nothing about intent.  Land as "unknown" like every
+        # other passive-sensor ingest (radar obstacles, acoustic, BLE) and
+        # let the alliance-authority precedence upgrade it: an operator tag,
+        # declared telemetry via fusion with a sim/wire track, or a
+        # classifier/threat verdict.  The old person="hostile" hard-code
+        # fabricated phantom hostiles at fleet scale (203 "hostile" tracks
+        # vs 4 real hostiles measured in the 2026-07-17 battle verification)
+        # and made /api/targets/hostiles and every threat count meaningless
+        # in demo/city-sim, where most person detections are ambient
+        # civilians.
         if class_name == "person":
-            alliance = "hostile"
             asset_type = "person"
         elif class_name in ("car", "motorcycle", "bicycle"):
-            alliance = "unknown"
             asset_type = "vehicle"
         else:
-            alliance = "unknown"
             asset_type = class_name
+        alliance = "unknown"
 
         tid = f"det_{class_name}_{self._detection_counter}"
 
