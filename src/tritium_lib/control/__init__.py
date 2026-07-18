@@ -32,6 +32,11 @@ from tritium_lib.control.route_trace import (
     RouteScore,
     score_route_trace,
 )
+from tritium_lib.control.yaw_rate_loop import (
+    YawRateCorrection,
+    YawRateLoop,
+    yaw_rate_from_headings,
+)
 from tritium_lib.control.waypoint_follower import (
     FollowState,
     PurePursuitFollower,
@@ -58,4 +63,7 @@ __all__ = [
     "roll_pitch_deg",
     "score_recovery",
     "score_route_trace",
+    "YawRateCorrection",
+    "YawRateLoop",
+    "yaw_rate_from_headings",
 ]
