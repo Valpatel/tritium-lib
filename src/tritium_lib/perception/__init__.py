@@ -46,6 +46,11 @@ from tritium_lib.perception.depth import (
     enrich_detections_with_depth,
     range_for_bbox,
 )
+from tritium_lib.perception.depth_codec import (
+    DEPTH_SCALE_MM,
+    decode_depth16_png,
+    encode_depth16_png,
+)
 from tritium_lib.perception.projection import (
     CameraWorldPose,
     GroundCameraModel,
@@ -80,6 +85,9 @@ __all__ = [
     "deproject_pixel",
     "enrich_detections_with_depth",
     "range_for_bbox",
+    "DEPTH_SCALE_MM",
+    "decode_depth16_png",
+    "encode_depth16_png",
     "CameraWorldPose",
     "GroundCameraModel",
     "place_detections_on_map",
