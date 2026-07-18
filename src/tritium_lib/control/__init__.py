@@ -49,6 +49,11 @@ from tritium_lib.control.yaw_rate_loop import (
     YawRateLoop,
     yaw_rate_from_headings,
 )
+from tritium_lib.control.yaw_rate_tracker import (
+    TurnCorrection,
+    YawRateState,
+    YawRateTracker,
+)
 from tritium_lib.control.yaw_regulator import (
     YawCorrection,
     YawRegulator,
@@ -116,8 +121,11 @@ __all__ = [
     "score_route_trace",
     "step_target",
     "velocity_from_impulse",
+    "TurnCorrection",
     "YawRateCorrection",
     "YawRateLoop",
+    "YawRateState",
+    "YawRateTracker",
     "yaw_rate_from_headings",
     "YawCorrection",
     "YawRegulator",

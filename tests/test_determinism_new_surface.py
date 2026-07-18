@@ -19,6 +19,11 @@ to the recently landed modules:
                                   ``StepReflex.decide``
   * ``control/yaw_regulator``   — ``heading_error_deg`` /
                                   ``YawRegulator.correct`` / ``turn_intent``
+  * ``control/yaw_rate_tracker`` — ``YawRateTracker.track`` (threaded
+                                  integrator state — the payload runs a
+                                  scripted multi-tick sequence so the state
+                                  threading itself is pinned, not just one
+                                  stateless call)
 
 Four guarantees, each tested honestly:
 
@@ -63,6 +68,8 @@ from tritium_lib.control import (
     LegPlacement,
     ReachLimits,
     StepReflex,
+    YawRateState,
+    YawRateTracker,
     YawRegulator,
     capture_point,
     heading_error_deg,
@@ -422,6 +429,50 @@ def _yaw_payload() -> dict:
     }
 
 
+def _yaw_rate_payload() -> dict:
+    """A scripted multi-tick run so the STATE THREADING is what gets pinned.
+
+    Each row carries the integral the tick handed forward; a change to the
+    anti-windup condition, the integral clamp, or the entry clamp moves a
+    digest even if any single stateless call still agrees.
+    """
+    default = YawRateTracker(turn_rate_dps=60.0)  # documented defaults
+    weak_authority = YawRateTracker(
+        turn_rate_dps=90.0, kp=2.0, ki=3.0, max_turn=0.5,
+        integral_limit_deg=4.0,
+    )
+    script = (
+        # (demanded_dps, measured_dps, dt_s)
+        (0.0, 0.0, 0.02),     # the byte-zero no-op
+        (6.0, 0.0, 0.02),     # opening tick of a step demand
+        (6.0, 2.0, 0.02),     # partial delivery — integral building
+        (40.0, 5.0, 0.02),    # saturating demand — anti-windup path
+        (40.0, 5.0, 0.02),    # still pinned: the integral must not move
+        (4.0, 6.0, 0.02),     # desaturating reversal
+        (-6.0, 1.0, 0.05),    # sign flip on a coarser tick
+        (3.0, 3.0, 0.0),      # repeated timestamp: integrator holds
+    )
+    out: dict = {}
+    for name, tracker in (
+        ("default", default), ("weak_authority", weak_authority),
+    ):
+        state: YawRateState | None = None
+        ticks = []
+        for demanded, measured, dt in script:
+            cmd = tracker.track(demanded, measured, dt, state=state)
+            state = cmd.state
+            ticks.append(cmd.as_dict())
+        out[name] = ticks
+    out["stale_state_clamp"] = default.track(
+        0.0, 0.0, 0.02, state=YawRateState(integral_deg=50.0),
+    ).as_dict()
+    out["limits"] = [
+        default.effective_integral_limit_deg,
+        weak_authority.effective_integral_limit_deg,
+    ]
+    return out
+
+
 def build_payload() -> dict:
     """Every pinned surface, computed from constants — no time, no randomness."""
     return {
@@ -434,6 +485,7 @@ def build_payload() -> dict:
         "body": _body_payload(),
         "step_reflex": _step_reflex_payload(),
         "yaw": _yaw_payload(),
+        "yaw_rate": _yaw_rate_payload(),
     }
 
 
@@ -459,7 +511,7 @@ class TestRepeatability:
         payload = build_payload()
         assert set(payload) == {
             "gait", "hitscan", "depth", "projection", "pipeline",
-            "engagement", "body", "step_reflex", "yaw",
+            "engagement", "body", "step_reflex", "yaw", "yaw_rate",
         }
         # The gait section must emit all 12 canonical joints.
         sample = payload["gait"]["trot_None"][0]
@@ -796,6 +848,48 @@ class TestYawRegulatorPins:
         assert regulator.hold(0.0, 10.0, 0.25, 60.0) == pytest.approx(
             0.5, rel=REL,
         )
+
+
+class TestYawRateTrackerPins:
+    """Hand-computed single-tick pins for the rate tracker's PI law."""
+
+    def test_no_op_is_exactly_zero(self):
+        cmd = YawRateTracker(turn_rate_dps=60.0).track(0.0, 0.0, 0.02)
+        assert cmd.turn == 0.0
+        assert cmd.state.integral_deg == 0.0
+        assert not cmd.saturated
+
+    def test_opening_tick_of_a_step_demand(self):
+        # error 6; integrate first: I = 6 * 0.02 = 0.12; then
+        # comp = 6 + 1.0*6 + 6.0*0.12 = 12.72; turn = 12.72 / 60 = 0.212.
+        cmd = YawRateTracker(turn_rate_dps=60.0).track(6.0, 0.0, 0.02)
+        assert cmd.compensated_dps == pytest.approx(12.72, rel=REL)
+        assert cmd.turn == pytest.approx(0.212, rel=REL)
+        assert cmd.state.integral_deg == pytest.approx(0.12, rel=REL)
+        assert not cmd.saturated
+
+    def test_saturating_tick_freezes_the_integral(self):
+        # raw = 120 + 120 + 0 = 240 > 60, same-sign error: conditional
+        # integration must leave the integral at EXACTLY zero.
+        cmd = YawRateTracker(turn_rate_dps=60.0).track(120.0, 0.0, 0.02)
+        assert cmd.turn == 1.0
+        assert cmd.saturated
+        assert cmd.state.integral_deg == 0.0
+
+    def test_desaturating_tick_with_a_warm_integral(self):
+        # error -2; I = 2.0 - 2*0.02 = 1.96;
+        # comp = 4 - 2 + 6*1.96 = 13.76; turn = 13.76 / 60.
+        cmd = YawRateTracker(turn_rate_dps=60.0).track(
+            4.0, 6.0, 0.02, state=YawRateState(integral_deg=2.0),
+        )
+        assert cmd.compensated_dps == pytest.approx(13.76, rel=REL)
+        assert cmd.turn == pytest.approx(13.76 / 60.0, rel=REL)
+        assert cmd.state.integral_deg == pytest.approx(1.96, rel=REL)
+
+    def test_default_integral_limit_derivation(self):
+        assert YawRateTracker(
+            turn_rate_dps=60.0
+        ).effective_integral_limit_deg == pytest.approx(10.0, rel=REL)
 
 
 class TestBodyPins:
