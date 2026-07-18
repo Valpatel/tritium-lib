@@ -68,6 +68,7 @@ from .escalation import (
     classify_target,
     classify_all_targets,
 )
+from .engagement import EngagementLog, ShotEvent
 from .patrol import PatrolRoute, PatrolAssignment, PatrolManager
 from .network_analysis import NetworkAnalyzer, DeviceProfile, ProbeRecord, COMMON_SSIDS
 from .proximity_monitor import ProximityMonitor
@@ -127,6 +128,9 @@ __all__ = [
     # Heatmap
     "HeatmapEngine",
     "HeatmapEvent",
+    # Engagement (fired rounds -> drawable records)
+    "EngagementLog",
+    "ShotEvent",
     # Movement patterns
     "MovementPatternAnalyzer",
     "MovementPattern",
