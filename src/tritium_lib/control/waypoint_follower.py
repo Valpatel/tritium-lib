@@ -41,6 +41,7 @@ __all__ = [
     "PurePursuitFollower",
     "StrideBias",
     "TwistCommand",
+    "cross_track_distance",
     "differential_stride",
 ]
 
@@ -112,6 +113,30 @@ def _segment_distance(point: Point, start: Point, end: Point) -> float:
     t = ((point[0] - sx) * dx + (point[1] - sy) * dy) / span
     t = max(0.0, min(1.0, t))
     return _distance(point, (sx + t * dx, sy + t * dy))
+
+
+def cross_track_distance(point: Point, route: Sequence[Point]) -> float:
+    """Distance from ``point`` to the nearest *segment* of ``route``.
+
+    The honest tracking metric, and deliberately a free function rather than a
+    follower method: the offline grader in
+    :mod:`tritium_lib.control.route_trace` recomputes this from ground-truth
+    poses and has no follower to ask.  Making it standalone is what keeps the
+    live number and the graded number the same definition instead of two
+    implementations that drift.
+
+    Measuring to the nearest *waypoint* instead would flatter a follower on
+    long legs, where a body can sit metres off the line while close to a node.
+    A single-waypoint route degenerates to plain point distance.
+    """
+    if not route:
+        raise ValueError("cross_track_distance needs at least one waypoint")
+    if len(route) == 1:
+        return _distance(point, route[0])
+    return min(
+        _segment_distance(point, route[i], route[i + 1])
+        for i in range(len(route) - 1)
+    )
 
 
 class PurePursuitFollower:
@@ -246,13 +271,12 @@ class PurePursuitFollower:
         return last, points[last]
 
     def _cross_track(self, position: Point, points: Sequence[Point]) -> float:
-        """Distance to the nearest segment of the route."""
-        if len(points) == 1:
-            return _distance(position, points[0])
-        return min(
-            _segment_distance(position, points[i], points[i + 1])
-            for i in range(len(points) - 1)
-        )
+        """Distance to the nearest segment of the route.
+
+        Delegates to :func:`cross_track_distance` so the follower's live
+        telemetry and the offline grade are the same computation.
+        """
+        return cross_track_distance(position, points)
 
 
 def _wrap_to_pi(angle: float) -> float:

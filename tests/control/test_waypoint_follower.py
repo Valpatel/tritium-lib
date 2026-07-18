@@ -26,6 +26,7 @@ from tritium_lib.control.waypoint_follower import (
     PurePursuitFollower,
     StrideBias,
     TwistCommand,
+    cross_track_distance,
     differential_stride,
 )
 
@@ -162,6 +163,34 @@ def test_cross_track_is_unsigned_distance_on_either_side():
     port = follower.update((2.5, 0.5, EAST), [(0.0, 0.0), (5.0, 0.0)])
     stbd = follower.update((2.5, -0.5, EAST), [(0.0, 0.0), (5.0, 0.0)])
     assert port.cross_track_m == pytest.approx(stbd.cross_track_m)
+
+
+def test_cross_track_distance_is_callable_without_a_follower():
+    """The metric is shared with the offline scorer, so it must stand alone.
+
+    A grader recomputing tracking error from ground truth has no follower and
+    wants none — instantiating one would mean inventing a lookahead and a
+    cruise speed that have nothing to do with the measurement.
+    """
+    assert cross_track_distance((2.5, 0.5), [(0.0, 0.0), (5.0, 0.0)]) == pytest.approx(0.5)
+
+
+def test_cross_track_distance_degenerates_to_point_distance_for_one_waypoint():
+    assert cross_track_distance((0.0, 3.0), [(0.0, 0.0)]) == pytest.approx(3.0)
+
+
+def test_cross_track_distance_takes_the_nearest_of_several_segments():
+    route = [(0.0, 0.0), (5.0, 0.0), (5.0, 5.0)]
+    assert cross_track_distance((5.4, 3.0), route) == pytest.approx(0.4)
+
+
+def test_the_follower_delegates_its_cross_track_to_the_shared_function():
+    """Behaviour-preservation proof: method and function must not drift apart."""
+    route = [(0.0, 0.0), (5.0, 0.0), (5.0, 5.0)]
+    follower = PurePursuitFollower(lookahead_m=1.0, cruise_mps=0.3)
+    for probe in ((2.5, 0.5), (5.4, 3.0), (-1.0, -1.0), (5.0, 5.0)):
+        state = follower.update((probe[0], probe[1], EAST), route)
+        assert state.cross_track_m == pytest.approx(cross_track_distance(probe, route))
 
 
 # --------------------------------------------------------------------------
