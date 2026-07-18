@@ -17,6 +17,8 @@ to the recently landed modules:
   * ``models/body``             — ``intent_from_motors`` / ``motors_from_intent``
   * ``control/step_reflex``     — ``capture_point`` / ``step_target`` /
                                   ``StepReflex.decide``
+  * ``control/yaw_regulator``   — ``heading_error_deg`` /
+                                  ``YawRegulator.correct`` / ``turn_intent``
 
 Four guarantees, each tested honestly:
 
@@ -61,7 +63,9 @@ from tritium_lib.control import (
     LegPlacement,
     ReachLimits,
     StepReflex,
+    YawRegulator,
     capture_point,
+    heading_error_deg,
     step_target,
     velocity_from_impulse,
 )
@@ -371,6 +375,53 @@ def _step_reflex_payload() -> dict:
     }
 
 
+def _yaw_payload() -> dict:
+    regulator = YawRegulator()  # documented defaults — a retune must face this
+    hot = YawRegulator(kp=4.0, kd=1.0, max_correction_dps=20.0)
+    cases = (
+        # (measured, commanded, rate or None, dt or None)
+        (90.0, 90.0, None, None),      # on heading — the byte-zero no-op
+        (359.0, 1.0, None, None),      # wrap across north, small positive
+        (1.0, 359.0, None, None),      # wrap the other way
+        (0.0, 179.0, None, None),      # saturating demand
+        (0.0, 180.0, None, None),      # half-open boundary: error -180
+        (10.0, 40.0, 5.0, None),       # damped mid-turn
+        (0.0, 1.0, 0.0, 0.02),         # deadbeat cap active
+        (45.0, 45.0, -20.0, 0.02),     # pure damping at zero error
+        (-355.0, 3.0, 2.5, 0.05),      # unnormalized compass input
+    )
+    corrections = []
+    for measured, commanded, rate, dt in cases:
+        corrections.append(
+            regulator.correct(
+                measured, commanded, measured_yaw_rate_dps=rate, dt=dt,
+            ).as_dict()
+        )
+        corrections.append(
+            hot.correct(
+                measured, commanded, measured_yaw_rate_dps=rate, dt=dt,
+            ).as_dict()
+        )
+    return {
+        "errors": [
+            heading_error_deg(m, c)
+            for m, c in (
+                (359.0, 1.0), (1.0, 359.0), (180.0, -180.0),
+                (0.0, 180.0), (725.0, 5.0), (-90.0, 270.0),
+            )
+        ],
+        "corrections": corrections,
+        "turn_intents": [
+            regulator.correct(0.0, e).turn_intent(60.0)
+            for e in (0.0, 2.0, 45.0, -45.0, 179.0)
+        ],
+        "hold": [
+            regulator.hold(0.0, e, 0.25, 60.0)
+            for e in (0.0, 10.0, -10.0, 170.0)
+        ],
+    }
+
+
 def build_payload() -> dict:
     """Every pinned surface, computed from constants — no time, no randomness."""
     return {
@@ -382,6 +433,7 @@ def build_payload() -> dict:
         "engagement": _engagement_payload(),
         "body": _body_payload(),
         "step_reflex": _step_reflex_payload(),
+        "yaw": _yaw_payload(),
     }
 
 
@@ -407,7 +459,7 @@ class TestRepeatability:
         payload = build_payload()
         assert set(payload) == {
             "gait", "hitscan", "depth", "projection", "pipeline",
-            "engagement", "body", "step_reflex",
+            "engagement", "body", "step_reflex", "yaw",
         }
         # The gait section must emit all 12 canonical joints.
         sample = payload["gait"]["trot_None"][0]
@@ -707,6 +759,43 @@ class TestStepReflexPins:
             0.1066772372009778, rel=REL,
         )
         assert shoved.step.residual_m == pytest.approx(0.09, rel=REL)
+
+
+class TestYawRegulatorPins:
+    def test_wrap_pins(self):
+        assert heading_error_deg(359.0, 1.0) == pytest.approx(2.0, rel=REL)
+        assert heading_error_deg(1.0, 359.0) == pytest.approx(-2.0, rel=REL)
+        assert heading_error_deg(0.0, 180.0) == pytest.approx(-180.0, rel=REL)
+        assert heading_error_deg(180.0, -180.0) == pytest.approx(0.0, abs=1e-15)
+
+    def test_default_law_pins(self):
+        regulator = YawRegulator()
+        plain = regulator.correct(0.0, 10.0)
+        assert plain.correction_dps == pytest.approx(15.0, rel=REL)  # kp=1.5
+        assert not plain.saturated
+        damped = regulator.correct(0.0, 10.0, measured_yaw_rate_dps=5.0)
+        assert damped.correction_dps == pytest.approx(12.0, rel=REL)  # -kd*5
+        clamped = regulator.correct(0.0, 179.0)
+        assert clamped.correction_dps == pytest.approx(30.0, rel=REL)
+        assert clamped.saturated
+
+    def test_zero_error_is_exactly_zero(self):
+        corr = YawRegulator().correct(90.0, 90.0)
+        assert corr.correction_dps == 0.0
+        assert corr.turn_intent(60.0) == 0.0
+
+    def test_deadbeat_and_fold_in_pins(self):
+        capped = YawRegulator(
+            kp=50.0, kd=0.0, max_correction_dps=90.0,
+        ).correct(0.0, 1.0, dt=0.1)
+        assert capped.correction_dps == pytest.approx(10.0, rel=REL)
+        regulator = YawRegulator()
+        assert regulator.correct(0.0, 2.0).turn_intent(60.0) == pytest.approx(
+            0.05, rel=REL,
+        )
+        assert regulator.hold(0.0, 10.0, 0.25, 60.0) == pytest.approx(
+            0.5, rel=REL,
+        )
 
 
 class TestBodyPins:

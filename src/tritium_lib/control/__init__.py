@@ -49,6 +49,11 @@ from tritium_lib.control.yaw_rate_loop import (
     YawRateLoop,
     yaw_rate_from_headings,
 )
+from tritium_lib.control.yaw_regulator import (
+    YawCorrection,
+    YawRegulator,
+    heading_error_deg,
+)
 from tritium_lib.control.waypoint_follower import (
     FollowState,
     PurePursuitFollower,
@@ -114,4 +119,7 @@ __all__ = [
     "YawRateCorrection",
     "YawRateLoop",
     "yaw_rate_from_headings",
+    "YawCorrection",
+    "YawRegulator",
+    "heading_error_deg",
 ]
