@@ -28,15 +28,27 @@ from tritium_lib.control.disturbance import (
     kick_landed,
     score_recovery,
 )
+from tritium_lib.control.waypoint_follower import (
+    FollowState,
+    PurePursuitFollower,
+    StrideBias,
+    TwistCommand,
+    differential_stride,
+)
 
 __all__ = [
     "AttitudeCorrection",
     "AttitudeStabilizer",
     "DisturbanceSchedule",
+    "FollowState",
     "Impulse",
     "KickVerdict",
     "LegPlacement",
+    "PurePursuitFollower",
     "RecoveryScore",
+    "StrideBias",
+    "TwistCommand",
+    "differential_stride",
     "kick_landed",
     "roll_pitch_deg",
     "score_recovery",
