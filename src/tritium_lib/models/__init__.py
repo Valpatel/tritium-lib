@@ -794,6 +794,13 @@ from .quadruped import (
     GaitSpec,
     QuadrupedProfile,
 )
+from .gait_trajectory import (
+    JOINT_LIMITS_RAD,
+    JOINT_NAMES,
+    NEUTRAL_STAND_RAD,
+    QuadrupedGaitCycle,
+    joint_targets_at,
+)
 from .rover import (
     RoverProfile,
 )
@@ -1497,6 +1504,12 @@ __all__ = [
     "DEFAULT_GAITS",
     "GaitSpec",
     "QuadrupedProfile",
+    # Gait trajectory (Newton-native 12-DOF joint drive targets over a gait cycle)
+    "JOINT_LIMITS_RAD",
+    "JOINT_NAMES",
+    "NEUTRAL_STAND_RAD",
+    "QuadrupedGaitCycle",
+    "joint_targets_at",
     # Rover (mini 4-wheel skid-steer body — second fleet body)
     "RoverProfile",
     # Multirotor (quadcopter thrust+attitude body — third fleet body)
