@@ -41,6 +41,7 @@ ThreatRecord separately.  The tracker only tracks *identity and position*.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -54,6 +55,8 @@ from .integrity import (
     is_spoofed,
     spoof_score,
 )
+
+logger = logging.getLogger("tritium.tracking.target_tracker")
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +315,61 @@ class TrackedTarget:
 
 
 class TargetTracker:
-    """Thread-safe registry of all tracked targets in the battlespace."""
+    """Thread-safe registry of all tracked targets in the battlespace.
+
+    Args:
+        event_bus: Optional EventBus for reappearance + capacity alarms.
+        ble_classifier: Optional DeviceClassifier (``False`` disables).
+        max_targets: Optional hard cap on tracker membership — the LAST
+            line of defense against runaway track minting (see the
+            2026-07 feedback cascade: a consumer re-ingesting its own
+            republished detections grew 0 -> 1,279 tracks in 3.5 min).
+            ``None`` (the default) preserves the historical unbounded
+            behavior.  When set, *sensor-derived* ingest paths (vision,
+            BLE, mesh, acoustic, ADS-B, RF motion, lidar) refuse to mint
+            NEW tracks once ``len(targets) >= max_targets`` — refusals
+            are counted in :attr:`cap_rejections`, logged at WARNING,
+            and published to the event bus as ``tracker.capacity``.
+            Updates to EXISTING tracks always proceed at cap.  The
+            operator's own fleet (``update_from_simulation`` /
+            ``update_from_robot_pose``) is exempt: those populations are
+            bounded by the engine/fleet itself, and a full tracker must
+            never blind the operator to their own assets.
+    """
 
     # Stale timeout — remove vision detections (yolo/camera) older than this
     STALE_TIMEOUT = 30.0
 
-    def __init__(self, event_bus=None, ble_classifier=None) -> None:
+    # Upper bound on stored detection-key aliases (stable-identity path).
+    # Aliases map caller-supplied keys -> det_* track ids; entries pointing
+    # at pruned tracks are purged with the tracks, and the map is LRU-capped
+    # so a caller cycling through unbounded distinct keys cannot leak memory
+    # here.  Evicting an old alias is safe: the worst case is that a key not
+    # seen for 4096+ other keys re-mints one fresh track.
+    MAX_DETECTION_KEY_ALIASES = 4096
+
+    # Minimum seconds between capacity alarms (log + bus event).  The cap
+    # must be LOUD but not a log flood at 10 Hz ingest.
+    CAP_ALARM_INTERVAL = 10.0
+
+    def __init__(
+        self,
+        event_bus=None,
+        ble_classifier=None,
+        max_targets: int | None = None,
+    ) -> None:
         self._targets: dict[str, TrackedTarget] = {}
         self._lock = threading.Lock()
         self._detection_counter: int = 0
         self._event_bus = event_bus
+        # Stable-identity aliases: caller-supplied detection key -> det_*
+        # track id.  See update_from_detection's ``detection_key`` contract.
+        self._detection_keys: dict[str, str] = {}
+        # Hard-cap state (defense-in-depth; see class docstring).
+        self.max_targets = max_targets
+        self.cap_rejections: int = 0
+        self._cap_alarm_pending: dict | None = None
+        self._last_cap_alarm: float | None = None
         self._geofence_engine = None  # Set via set_geofence_engine()
         # Gap-fix B-7: optional injected DeviceClassifier.  If left None
         # we fall back to a process-wide shared instance loaded lazily by
@@ -449,6 +497,121 @@ class TargetTracker:
             return
         target.confirming_sources.add(source)
 
+    # ------------------------------------------------------------------
+    # Stable detection identity (the republish-echo hardening, 2026-07)
+    # ------------------------------------------------------------------
+
+    def _resolve_keyed_track_locked(self, key: str) -> TrackedTarget | None:
+        """Resolve a caller-supplied detection key to a live track.
+
+        Must be called with ``self._lock`` held.  Resolution order:
+
+        1. The alias map (``key`` was seen before and minted/claimed a
+           ``det_*`` track that is still alive).  A mapping whose track
+           has since been pruned is dropped — a dead track is never
+           resurrected through its key.
+        2. The key IS one of our own live *vision* track ids — the
+           republish-echo shape: a consumer feeding the tracker's own
+           output back stamps ``source_track_id=target.target_id``.
+           Matching it directly is what makes the echo loop PLATEAU
+           instead of minting a new generation of tracks per pass.
+           Non-vision tracks (``ble_*``, ``mesh_*``, ...) are NOT
+           claimed this way — updating them through the vision path
+           would corrupt their source semantics; such a key instead
+           mints one vision track and aliases to it thereafter.
+        """
+        mapped = self._detection_keys.get(key)
+        if mapped is not None:
+            t = self._targets.get(mapped)
+            if t is not None:
+                return t
+            del self._detection_keys[key]
+        t = self._targets.get(key)
+        if t is not None and t.source in self.VISION_SOURCES:
+            return t
+        return None
+
+    def _record_detection_key_locked(self, key: str, tid: str) -> None:
+        """Remember ``key -> tid``.  Must be called with the lock held.
+
+        Self-aliases (``key == tid``) are skipped — the direct-id branch
+        of :meth:`_resolve_keyed_track_locked` already covers them.  The
+        map is LRU-capped at :attr:`MAX_DETECTION_KEY_ALIASES`.
+        """
+        if key == tid:
+            return
+        self._detection_keys.pop(key, None)
+        self._detection_keys[key] = tid
+        while len(self._detection_keys) > self.MAX_DETECTION_KEY_ALIASES:
+            self._detection_keys.pop(next(iter(self._detection_keys)))
+
+    def _purge_detection_keys_locked(self) -> None:
+        """Drop aliases whose target no longer exists.  Lock held."""
+        if self._detection_keys:
+            self._detection_keys = {
+                k: v for k, v in self._detection_keys.items()
+                if v in self._targets
+            }
+
+    # ------------------------------------------------------------------
+    # Hard membership cap (defense-in-depth; see class docstring)
+    # ------------------------------------------------------------------
+
+    def _reject_at_cap_locked(self, source: str) -> bool:
+        """Return True when a NEW track must be refused (tracker full).
+
+        Must be called with ``self._lock`` held, at a creation site of a
+        sensor-derived ingest path.  Counts the rejection and stages the
+        LOUD alarm; the caller must invoke :meth:`_flush_cap_alarm`
+        after releasing the lock (the alarm publishes to the event bus,
+        which may re-enter the tracker — never do that under the lock).
+        """
+        if self.max_targets is None or len(self._targets) < self.max_targets:
+            return False
+        self.cap_rejections += 1
+        self._cap_alarm_pending = {
+            "max_targets": self.max_targets,
+            "active_targets": len(self._targets),
+            "rejected_total": self.cap_rejections,
+            "source": source,
+        }
+        return True
+
+    def _flush_cap_alarm(self) -> None:
+        """Emit the staged capacity alarm (rate-limited, outside the lock).
+
+        LOUD by contract: a WARNING log line plus a ``tracker.capacity``
+        event on the bus.  Rate-limited to one alarm per
+        :attr:`CAP_ALARM_INTERVAL` seconds so a 10 Hz ingest storm reads
+        as a heartbeat, not a log flood — but the very first trip always
+        fires immediately.  ``cap_rejections`` counts every refusal
+        regardless of rate limiting, so nothing is silently dropped.
+        """
+        pending = self._cap_alarm_pending
+        if pending is None:
+            return
+        now = time.monotonic()
+        if (
+            self._last_cap_alarm is not None
+            and (now - self._last_cap_alarm) < self.CAP_ALARM_INTERVAL
+        ):
+            return
+        self._last_cap_alarm = now
+        self._cap_alarm_pending = None
+        logger.warning(
+            "TargetTracker at capacity (%d/%d): refused new '%s' track — "
+            "%d total refusals. Runaway ingest or cap too small.",
+            pending["active_targets"], pending["max_targets"],
+            pending["source"], pending["rejected_total"],
+        )
+        if self._event_bus is not None:
+            try:
+                self._event_bus.publish("tracker.capacity", data=pending)
+            except Exception:
+                # The alarm must never break ingest — the WARNING above
+                # already made the refusal visible.
+                pass
+
     def update_from_simulation(self, sim_data: dict) -> None:
         """Update or create a tracked target from simulation telemetry."""
         tid = sim_data["target_id"]
@@ -545,15 +708,49 @@ class TargetTracker:
     contact population, so matching treats them as one regime: a camera
     detection refreshes a yolo track instead of spawning a duplicate id."""
 
-    def update_from_detection(self, detection: dict) -> str | None:
+    def update_from_detection(
+        self, detection: dict, *, detection_key: str | None = None
+    ) -> str | None:
         """Update or create a tracked target from a vision detection.
 
-        Match logic chooses the *closest* existing target within a
-        motion-aware radius — not the first that fits.  The radius grows
-        with the time since each candidate was last seen so that fast
-        targets do not split into a new ID every frame, while still-recent
-        ghosts don't get refreshed by a detection that's actually a new
-        entity.
+        Identity resolution has two modes:
+
+        **Keyed (stable identity)** — when the caller supplies a key
+        (the ``detection_key`` kwarg, or a ``detection_key`` /
+        ``source_track_id`` field in the payload), the detection resolves
+        STRICTLY by key: the same key always updates the same live track,
+        a new key mints a new track, and proximity plays no part.  This
+        is the contract for any consumer that re-ingests detections it
+        already has an identity for — an upstream tracker id (ByteTrack,
+        radar track), a per-slot camera id, or the tracker's OWN
+        ``det_*`` id when republishing (the 2026-07 feedback cascade:
+        without a stable key, every re-ingest of the tracker's own
+        output minted a fresh ``det_*``, growing 0 -> 1,279 tracks in
+        3.5 min).  Keyed resolution trusts the caller: it bypasses the
+        asset-type check, so a key whose class drifts (person -> car)
+        keeps updating the one track rather than re-minting.  A key
+        whose track has been pruned mints a fresh track — keys never
+        resurrect the dead.  Distinct keys are never merged, even when
+        co-located: supplying keys asserts identity, and asserting two
+        identities means two tracks (the fusion correlator, not this
+        method, is where cross-track identity is argued).
+
+        **Unkeyed (dedupe-by-proximity)** — with no key (the default,
+        byte-identical to the historical behavior), match logic chooses
+        the *closest* existing vision target of the same asset type
+        within a motion-aware radius — not the first that fits.  The
+        radius grows with the time since each candidate was last seen so
+        that fast targets do not split into a new ID every frame, while
+        still-recent ghosts don't get refreshed by a detection that's
+        actually a new entity.  What this does and does NOT guarantee:
+        it deduplicates *re-observations of the same entity* (small
+        inter-frame motion, same class); it does NOT guarantee two
+        genuinely distinct co-located entities stay distinct (two people
+        within the match radius CAN collapse to one track — in a crowd,
+        supply keys), and it does NOT guarantee a fast or teleporting
+        re-observation reuses its track (outside the motion budget a new
+        id is minted — which is exactly the runaway a republishing
+        caller must avoid by supplying keys).
 
         Camera provenance: when the payload carries ``source_camera`` (set
         by :class:`tritium_lib.perception.FrameDetectionPipeline` and the
@@ -565,10 +762,18 @@ class TargetTracker:
         Returns:
             The ``det_*`` target id this detection matched or created, so
             callers (dossier signals, fusion) can link follow-on records
-            to the exact track — or None if the detection was rejected.
+            to the exact track — or None if the detection was rejected
+            (confidence gate, or the tracker is at ``max_targets``).
         """
         if detection.get("confidence", 0) < 0.4:
             return None
+
+        key = (
+            detection_key
+            or detection.get("detection_key")
+            or detection.get("source_track_id")
+        )
+        key = str(key) if key else None
 
         class_name = detection.get("class_name", "unknown")
         cx = detection.get("center_x", 0.0)
@@ -595,31 +800,36 @@ class TargetTracker:
             asset_type = class_name
         alliance = "unknown"
 
-        tid = f"det_{class_name}_{self._detection_counter}"
-
         now = time.monotonic()
         v_max = self.YOLO_MAX_TRACK_SPEED
         base_threshold_sq = 9.0 if (abs(cx) > 2.0 or abs(cy) > 2.0) else 0.04
 
+        capped = False
         with self._lock:
             matched = None
-            best_dist_sq = float("inf")
-            for existing in self._targets.values():
-                if existing.source not in self.VISION_SOURCES:
-                    continue
-                if existing.asset_type != asset_type:
-                    continue
-                dx = existing.position[0] - cx
-                dy = existing.position[1] - cy
-                dist_sq = dx * dx + dy * dy
-                # Motion budget: a target moving at v_max for the elapsed
-                # interval can have travelled up to (dt * v_max) meters.
-                dt = max(0.0, now - existing.last_seen)
-                motion_budget_sq = (dt * v_max) ** 2
-                threshold = max(base_threshold_sq, motion_budget_sq)
-                if dist_sq < threshold and dist_sq < best_dist_sq:
-                    matched = existing
-                    best_dist_sq = dist_sq
+            if key is not None:
+                # Keyed path: strict identity, no proximity, no
+                # asset-type gate — the caller asserted which entity
+                # this is.
+                matched = self._resolve_keyed_track_locked(key)
+            else:
+                best_dist_sq = float("inf")
+                for existing in self._targets.values():
+                    if existing.source not in self.VISION_SOURCES:
+                        continue
+                    if existing.asset_type != asset_type:
+                        continue
+                    dx = existing.position[0] - cx
+                    dy = existing.position[1] - cy
+                    dist_sq = dx * dx + dy * dy
+                    # Motion budget: a target moving at v_max for the elapsed
+                    # interval can have travelled up to (dt * v_max) meters.
+                    dt = max(0.0, now - existing.last_seen)
+                    motion_budget_sq = (dt * v_max) ** 2
+                    threshold = max(base_threshold_sq, motion_budget_sq)
+                    if dist_sq < threshold and dist_sq < best_dist_sq:
+                        matched = existing
+                        best_dist_sq = dist_sq
 
             if matched:
                 self._check_velocity(matched, (cx, cy))
@@ -630,6 +840,8 @@ class TargetTracker:
                 if camera_id:
                     self._stamp_camera_provenance(matched, camera_id, detection)
                 tid = matched.target_id
+            elif self._reject_at_cap_locked(src):
+                capped = True
             else:
                 self._detection_counter += 1
                 self._membership_count += 1
@@ -654,6 +866,11 @@ class TargetTracker:
                 if camera_id:
                     self._stamp_camera_provenance(target, camera_id, detection)
                 self._targets[tid] = target
+                if key is not None:
+                    self._record_detection_key_locked(key, tid)
+        if capped:
+            self._flush_cap_alarm()
+            return None
         self.history.record(tid, (cx, cy))
         return tid
 
@@ -756,6 +973,12 @@ class TargetTracker:
             payload["source_camera"] = cam_id
         if isinstance(bbox, dict):
             payload["bbox"] = bbox
+        # Stable-identity passthrough: a caller that knows which entity
+        # this is (upstream tracker id, per-slot camera track) rides the
+        # keyed contract of update_from_detection instead of proximity.
+        key = detection.get("detection_key") or detection.get("source_track_id")
+        if key:
+            payload["detection_key"] = str(key)
         return self.update_from_detection(payload)
 
     # BLE sightings have longer stale timeout — devices can be stationary
@@ -860,6 +1083,7 @@ class TargetTracker:
             final_class = asset_type
             final_class_conf = float(sighting_class_conf or 0.0)
 
+        capped = False
         with self._lock:
             if tid in self._targets:
                 t = self._targets[tid]
@@ -886,6 +1110,8 @@ class TargetTracker:
                     # high-confidence tag (e.g. an explicit upstream label).
                     t.classification = derived_class
                     t.classification_confidence = derived_class_conf
+            elif self._reject_at_cap_locked("ble"):
+                capped = True
             else:
                 self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
@@ -912,6 +1138,9 @@ class TargetTracker:
                     asset_type=effective_asset_type,
                     position=position,
                 )
+        if capped:
+            self._flush_cap_alarm()
+            return
         if pos_source != "unknown":
             self.history.record(tid, position)
             self._check_geofence(tid, position[0], position[1])
@@ -972,6 +1201,7 @@ class TargetTracker:
             pos_source = "unknown"
             confidence = 0.0
 
+        capped = False
         with self._lock:
             if tid in self._targets:
                 t = self._targets[tid]
@@ -986,6 +1216,8 @@ class TargetTracker:
                 t.position_confidence = confidence
                 t._initial_confidence = confidence
                 self._add_confirming_source(t, "mesh")
+            elif self._reject_at_cap_locked("mesh"):
+                capped = True
             else:
                 self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
@@ -1012,6 +1244,9 @@ class TargetTracker:
                     asset_type=asset_type,
                     position=position,
                 )
+        if capped:
+            self._flush_cap_alarm()
+            return
         if pos_source != "unknown":
             self.history.record(tid, position)
             self._check_geofence(tid, position[0], position[1])
@@ -1104,6 +1339,7 @@ class TargetTracker:
 
         now = time.monotonic()
         touched: list[str] = []
+        capped = False
 
         with self._lock:
             # Candidates are this lidar's own existing tracks.  Each may be
@@ -1132,6 +1368,9 @@ class TargetTracker:
                     self._add_confirming_source(t, "lidar")
                     touched.append(best_id)
                 else:
+                    if self._reject_at_cap_locked("lidar"):
+                        capped = True
+                        continue
                     self._lidar_seq = getattr(self, "_lidar_seq", 0) + 1
                     tid = f"{prefix}{self._lidar_seq}"
                     self._membership_count += 1
@@ -1155,6 +1394,8 @@ class TargetTracker:
                     )
                     touched.append(tid)
 
+        if capped:
+            self._flush_cap_alarm()
         for tid in touched:
             t = self._targets.get(tid)
             if t is not None:
@@ -1334,6 +1575,7 @@ class TargetTracker:
         # DOA localisation is coarse — cap confidence well below RF/vision.
         confidence = max(0.0, min(0.6, float(event.get("confidence", 0.4))))
 
+        capped = False
         with self._lock:
             if tid in self._targets:
                 t = self._targets[tid]
@@ -1346,6 +1588,8 @@ class TargetTracker:
                 t.position_confidence = confidence
                 t._initial_confidence = confidence
                 self._add_confirming_source(t, "acoustic")
+            elif self._reject_at_cap_locked("acoustic"):
+                capped = True
             else:
                 self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
@@ -1372,6 +1616,9 @@ class TargetTracker:
                     asset_type=asset_type,
                     position=position,
                 )
+        if capped:
+            self._flush_cap_alarm()
+            return
         if pos_source != "unknown":
             self.history.record(tid, position)
             self._check_geofence(tid, position[0], position[1])
@@ -1424,6 +1671,7 @@ class TargetTracker:
             pos_source = "unknown"
             confidence = 0.0
 
+        capped = False
         with self._lock:
             if tid in self._targets:
                 t = self._targets[tid]
@@ -1439,6 +1687,8 @@ class TargetTracker:
                 t.position_confidence = confidence
                 t._initial_confidence = confidence
                 self._add_confirming_source(t, "adsb")
+            elif self._reject_at_cap_locked("adsb"):
+                capped = True
             else:
                 self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
@@ -1460,6 +1710,9 @@ class TargetTracker:
                     classification="aircraft",
                 )
 
+        if capped:
+            self._flush_cap_alarm()
+            return
         if pos_source != "unknown":
             self.history.record(tid, position)
             self._check_geofence(tid, position[0], position[1])
@@ -1514,6 +1767,7 @@ class TargetTracker:
         direction = motion.get("direction_hint", "unknown")
         pair_id = motion.get("pair_id", "")
 
+        capped = False
         with self._lock:
             if tid in self._targets:
                 t = self._targets[tid]
@@ -1531,6 +1785,8 @@ class TargetTracker:
                     kinematics["pair_id"] = pair_id
                 t.kinematics = kinematics
                 self._add_confirming_source(t, "rf_motion")
+            elif self._reject_at_cap_locked("rf_motion"):
+                capped = True
             else:
                 self._membership_count += 1
                 self._targets[tid] = TrackedTarget(
@@ -1553,6 +1809,9 @@ class TargetTracker:
                     },
                     confirming_sources={"rf_motion"},
                 )
+        if capped:
+            self._flush_cap_alarm()
+            return
         self.history.record(tid, position)
 
     def get_all(self) -> list[TrackedTarget]:
@@ -1640,6 +1899,7 @@ class TargetTracker:
             removed = self._targets.pop(target_id, None) is not None
             if removed:
                 self._membership_count += 1
+                self._purge_detection_keys_locked()
             return removed
 
     def clear_source(self, source: str) -> int:
@@ -1660,6 +1920,7 @@ class TargetTracker:
                 self._targets.pop(tid, None)
             if stale:
                 self._membership_count += 1
+                self._purge_detection_keys_locked()
             return len(stale)
 
     def summary(self) -> str:
@@ -1817,3 +2078,5 @@ class TargetTracker:
                 )
                 del self._targets[tid]
                 self.history.clear(tid)
+            if stale:
+                self._purge_detection_keys_locked()
