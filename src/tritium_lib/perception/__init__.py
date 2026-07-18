@@ -51,6 +51,11 @@ from tritium_lib.perception.depth_codec import (
     decode_depth16_png,
     encode_depth16_png,
 )
+from tritium_lib.perception.multipart import (
+    MultipartPart,
+    boundary_from_content_type,
+    iter_multipart,
+)
 from tritium_lib.perception.projection import (
     CameraWorldPose,
     GroundCameraModel,
@@ -88,6 +93,9 @@ __all__ = [
     "DEPTH_SCALE_MM",
     "decode_depth16_png",
     "encode_depth16_png",
+    "MultipartPart",
+    "boundary_from_content_type",
+    "iter_multipart",
     "CameraWorldPose",
     "GroundCameraModel",
     "place_detections_on_map",

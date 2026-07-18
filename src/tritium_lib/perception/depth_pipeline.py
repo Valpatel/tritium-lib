@@ -65,6 +65,12 @@ __all__ = ["DepthCameraPipeline", "process_depth_frame"]
 #: dossier can tell a measured 3D fix from the flat-ground approximation.
 GROUND_FALLBACK_SOURCE = "2d_ground"
 
+#: Placeholder camera id used only for the internal CameraDetection view the
+#: ground fallback projects through. The model requires a non-empty source_id
+#: while ``cam_id`` is optional upstream; this keeps an unnamed camera's
+#: fallback alive instead of failing validation and dropping the contact.
+UNNAMED_CAMERA_ID = "unnamed_camera"
+
 
 # ------------------------------------------------------------------ helpers
 
@@ -114,12 +120,20 @@ def _as_camera_detection(det: Any, cam_id: str) -> Optional[CameraDetection]:
     conf = det.get("confidence") if isinstance(det, dict) else None
     try:
         return CameraDetection(
-            source_id=cam_id or "",
+            # CameraDetection.source_id is min_length=1, and cam_id is
+            # OPTIONAL upstream (it defaults to ""). Passing the empty string
+            # raised here, the except below swallowed it, and the ground
+            # fallback went silently dead for every unnamed camera — depth
+            # dropouts dropped contacts instead of degrading to flat-ground.
+            # This view is projection-only, so a placeholder id is harmless.
+            source_id=cam_id or UNNAMED_CAMERA_ID,
             class_name=str(name or "unknown"),
             confidence=float(conf) if conf is not None else 0.5,
             bbox=BoundingBox(x=x, y=y, w=w, h=h),
         )
-    except Exception:
+    except Exception as exc:
+        # Never silent: a systematic failure here disables the whole fallback.
+        logger.debug("Detection -> CameraDetection view failed: %s", exc)
         return None
 
 
