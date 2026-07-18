@@ -178,16 +178,29 @@ def scene_bounds(
     )
 
 
+#: Default cap on an obstacle's footprint edge, meters.  Anything wider than
+#: this is world-scale geometry — terrain, a horizon backdrop, a sky dome —
+#: not something to route around.  See :func:`obstacles_to_feature_collection`.
+DEFAULT_MAX_FOOTPRINT_M: float = 100.0
+
+
 def obstacles_to_feature_collection(
     obstacles: list[SceneObstacle],
     body_band: tuple[float, float] = DEFAULT_BODY_BAND,
     ignore_prims: list[str] | None = None,
+    max_footprint_m: float | None = DEFAULT_MAX_FOOTPRINT_M,
 ) -> dict:
     """GeoJSON FeatureCollection of the footprints that block the body band.
 
     Exposed separately from :func:`costmap_from_scene` so a caller can hand
     the same footprints to the operator UI (draw the obstacles the planner
     actually saw) without rebuilding a costmap.
+
+    ``max_footprint_m`` rejects world-scale geometry.  A terrain mesh's
+    axis-aligned bounds pass the band test — a real stage returned a ground
+    mesh with 1519 m half-extents spanning z=-24..+33 — and stamping it would
+    turn the whole costmap lethal.  Pass ``None`` to disable the cap when the
+    caller has already curated its obstacle list.
     """
     band_min, band_max = body_band
     if band_min >= band_max:
@@ -200,6 +213,10 @@ def obstacles_to_feature_collection(
             continue
         if not obs.intersects_band(band_min, band_max):
             continue
+        if max_footprint_m is not None:
+            hx, hy, _ = obs.half_extents
+            if max(hx, hy) * 2.0 > max_footprint_m:
+                continue
         features.append(
             {
                 "type": "Feature",
@@ -220,6 +237,7 @@ def costmap_from_scene(
     resolution: float = 0.5,
     body_band: tuple[float, float] = DEFAULT_BODY_BAND,
     ignore_prims: list[str] | None = None,
+    max_footprint_m: float | None = DEFAULT_MAX_FOOTPRINT_M,
     padding_m: float = 10.0,
     include: list[tuple[float, float]] | None = None,
     weights: CostmapWeights | None = None,
@@ -248,12 +266,23 @@ def costmap_from_scene(
     Returns:
         A :class:`Costmap` ready for :func:`~tritium_lib.planning.plan_route`.
     """
-    if bounds is None:
-        bounds = scene_bounds(obstacles, padding_m=padding_m, include=include)
-
     collection = obstacles_to_feature_collection(
-        obstacles, body_band=body_band, ignore_prims=ignore_prims
+        obstacles,
+        body_band=body_band,
+        ignore_prims=ignore_prims,
+        max_footprint_m=max_footprint_m,
     )
+
+    if bounds is None:
+        # Bound the obstacles that SURVIVED filtering, never the raw list --
+        # a rejected 1519 m terrain mesh would otherwise still size the grid
+        # and allocate millions of cells for a 12 m walk.
+        kept = {f["properties"]["prim_path"] for f in collection["features"]}
+        bounds = scene_bounds(
+            [o for o in obstacles if o.prim_path in kept],
+            padding_m=padding_m,
+            include=include,
+        )
     builder = CostmapBuilder(bounds, resolution=resolution, weights=weights)
     builder.add_obstacles(collection, kind="scene")
     return builder.build()

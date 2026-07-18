@@ -160,6 +160,42 @@ class TestCostmapFromScene:
         assert _lethal_at(cm, 0.0, 0.0) is True
 
 
+class TestWorldScaleGeometryIsNotAnObstacle:
+    """A terrain mesh's AABB spans the body band but is the world, not a wall.
+
+    Regression: reading a real Isaac city stage returned ``/World/Ground``
+    with 1519 m half-extents and a z span of -24..+33 m.  The body band does
+    not reject it — the band test passes — so without a footprint cap the
+    entire costmap goes lethal and every route fails.
+    """
+
+    def _terrain(self):
+        return _box("/World/Ground", -11.4, -24.9, 4.27, 1519.0, 1513.0, 28.65)
+
+    def test_terrain_would_swallow_the_map_without_a_cap(self):
+        cm = costmap_from_scene(
+            [self._terrain()], bounds=(-30, -30, 30, 30), resolution=1.0,
+            body_band=(0.1, 0.5), max_footprint_m=None,
+        )
+        assert _lethal_at(cm, 0.0, 0.0) is True, "control: uncapped terrain is lethal"
+
+    def test_footprint_cap_rejects_the_terrain(self):
+        cm = costmap_from_scene(
+            [self._terrain()], bounds=(-30, -30, 30, 30), resolution=1.0,
+            body_band=(0.1, 0.5), max_footprint_m=100.0,
+        )
+        assert _lethal_at(cm, 0.0, 0.0) is False
+
+    def test_footprint_cap_keeps_normal_obstacles(self):
+        truck = _box("/World/tmp_truck", 0.0, 0.0, 2.75, 2.06, 4.44, 2.75)
+        cm = costmap_from_scene(
+            [truck, self._terrain()], bounds=(-30, -30, 30, 30), resolution=1.0,
+            body_band=(0.1, 0.5), max_footprint_m=100.0,
+        )
+        assert _lethal_at(cm, 0.0, 0.0) is True, "the truck must survive the cap"
+        assert _lethal_at(cm, 20.0, 20.0) is False, "open ground stays free"
+
+
 class TestRoutesAroundSceneObstacles:
     """The payoff: the existing A* must detour around a projected 3-D wall."""
 
