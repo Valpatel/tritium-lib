@@ -1015,6 +1015,144 @@ class TargetTracker:
     ROBOT_POSE_GROUND_TRUTH_CONFIDENCE = 1.0
     ROBOT_POSE_ONBOARD_CONFIDENCE = 0.85
 
+    # Confidence carried by a clustered LiDAR return.  A range cluster proves
+    # something is THERE and nothing more — no identity, no allegiance — so it
+    # sits well below a self-reported robot pose (which knows what it is) and
+    # below a camera detection (which at least has a class).  Fusion should be
+    # free to let any classifying sensor overrule a bare obstacle.
+    LIDAR_OBSTACLE_CONFIDENCE = 0.6
+
+    # Association gate: how far a cluster centroid may move between sweeps and
+    # still be judged the SAME obstacle.  Sized for a 10 Hz sweep and a body
+    # under ~3 m/s; too wide and two neighbouring obstacles swap identities,
+    # too narrow and a static wall re-registers as a new contact every sweep.
+    LIDAR_ASSOCIATION_GATE_M = 1.5
+
+    def update_from_laser_scan(self, scan: dict) -> list[str]:
+        """A LaserScan sweep -> operator-visible obstacle tracks.
+
+        The SC-side landing point for :mod:`tritium_lib.geo.laser_scan`, and
+        the fifth ingest modality after RF / vision / mesh / acoustic.  The
+        geometry (polar -> world points -> range-gap clustering) lives in the
+        geo module; what this method adds is **identity across sweeps**.
+
+        That is the whole difficulty.  A cluster index is not a track: one
+        extra speckle at a low beam index renumbers every cluster behind it,
+        so index-derived ids make a static wall look like a stream of contacts
+        blinking in and out.  Instead each cluster is associated to the
+        nearest existing track *from the same lidar* within
+        :attr:`LIDAR_ASSOCIATION_GATE_M` (global nearest neighbour, the
+        standard LaserScan association), and only an unmatched cluster mints a
+        new id.  Ids stay namespaced per ``lidar_id`` so two sensors cannot
+        silently fuse two rooms into one.
+
+        Obstacles land as ``unknown`` alliance by design: a range return says
+        something is there, never what it is or whose it is.
+
+        Args:
+            scan: a ``/scan``-shaped payload — ``ranges`` (required),
+                ``angle_min``, ``angle_increment``, ``range_min``,
+                ``range_max``, ``lidar_id``, the sensor pose
+                (``sensor_x`` / ``sensor_y`` / ``sensor_yaw_deg``), and the
+                clustering knobs ``gap_m`` / ``min_points`` /
+                ``association_gate_m``.
+
+        Returns:
+            The target ids touched by this sweep, in beam order.  An empty or
+            malformed sweep returns ``[]`` rather than raising — a connector
+            must not be able to crash the tracker.
+        """
+        from ..geo.laser_scan import scan_obstacles
+
+        ranges = scan.get("ranges")
+        if not ranges:
+            return []
+
+        lidar_id = str(scan.get("lidar_id") or "lidar")
+        gate = float(scan.get("association_gate_m", self.LIDAR_ASSOCIATION_GATE_M))
+
+        try:
+            obstacles = scan_obstacles(
+                ranges,
+                angle_min=float(scan.get("angle_min", -math.pi)),
+                angle_increment=float(
+                    scan.get("angle_increment", 2.0 * math.pi / len(ranges))
+                ),
+                sensor_x=float(scan.get("sensor_x", 0.0)),
+                sensor_y=float(scan.get("sensor_y", 0.0)),
+                sensor_yaw_deg=float(scan.get("sensor_yaw_deg", 0.0)),
+                range_min=float(scan.get("range_min", 0.0)),
+                # A beam at exactly range_max is a NO-RETURN, not a hit at the
+                # horizon.  Excluding the boundary is what stops an empty room
+                # from being ingested as a solid ring of obstacles around the
+                # sensor.
+                range_max=float(scan.get("range_max", float("inf"))) - 1e-6,
+                gap_m=float(scan.get("gap_m", 0.5)),
+                min_points=int(scan.get("min_points", 1)),
+            )
+        except (TypeError, ValueError):
+            return []
+
+        now = time.monotonic()
+        touched: list[str] = []
+
+        with self._lock:
+            # Candidates are this lidar's own existing tracks.  Each may be
+            # claimed once per sweep, so two clusters can never collapse onto
+            # one track.
+            prefix = f"lidar_{lidar_id}_"
+            unclaimed = {
+                tid for tid in self._targets if tid.startswith(prefix)
+            }
+
+            for obs in obstacles:
+                best_id, best_d = None, gate
+                for tid in unclaimed:
+                    t = self._targets[tid]
+                    d = math.hypot(t.position[0] - obs.x, t.position[1] - obs.y)
+                    if d <= best_d:
+                        best_id, best_d = tid, d
+
+                if best_id is not None:
+                    unclaimed.discard(best_id)
+                    t = self._targets[best_id]
+                    t.position = (obs.x, obs.y)
+                    t.last_seen = now
+                    t.signal_count += 1
+                    t.position_confidence = self.LIDAR_OBSTACLE_CONFIDENCE
+                    self._add_confirming_source(t, "lidar")
+                    touched.append(best_id)
+                else:
+                    self._lidar_seq = getattr(self, "_lidar_seq", 0) + 1
+                    tid = f"{prefix}{self._lidar_seq}"
+                    self._membership_count += 1
+                    self._targets[tid] = TrackedTarget(
+                        target_id=tid,
+                        name=f"OBSTACLE {self._lidar_seq}",
+                        alliance="unknown",
+                        asset_type="obstacle",
+                        position=(obs.x, obs.y),
+                        heading=0.0,
+                        speed=0.0,
+                        last_seen=now,
+                        first_seen=now,
+                        signal_count=1,
+                        source="lidar",
+                        position_source="lidar",
+                        position_confidence=self.LIDAR_OBSTACLE_CONFIDENCE,
+                        _initial_confidence=self.LIDAR_OBSTACLE_CONFIDENCE,
+                        confirming_sources={"lidar"},
+                        classification="obstacle",
+                    )
+                    touched.append(tid)
+
+        for tid in touched:
+            t = self._targets.get(tid)
+            if t is not None:
+                self.history.record(tid, t.position)
+                self._check_geofence(tid, t.position[0], t.position[1])
+        return touched
+
     def update_from_robot_pose(self, pose: dict) -> str | None:
         """Update or create a target from a body reporting its OWN pose.
 
