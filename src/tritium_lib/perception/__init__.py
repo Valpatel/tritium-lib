@@ -44,7 +44,12 @@ from tritium_lib.perception.depth import (
     enrich_detections_with_depth,
     range_for_bbox,
 )
-from tritium_lib.perception.projection import GroundCameraModel
+from tritium_lib.perception.projection import (
+    CameraWorldPose,
+    GroundCameraModel,
+    place_detections_on_map,
+    world_from_camera_xyz,
+)
 from tritium_lib.perception.pipeline import FrameDetectionPipeline
 from tritium_lib.perception.extraction import extract_facts, extract_person_name
 from tritium_lib.perception.vision import (
@@ -69,7 +74,10 @@ __all__ = [
     "deproject_pixel",
     "enrich_detections_with_depth",
     "range_for_bbox",
+    "CameraWorldPose",
     "GroundCameraModel",
+    "place_detections_on_map",
+    "world_from_camera_xyz",
     "FrameDetectionPipeline",
     "available_backends",
     "build_frame_detector",

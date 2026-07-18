@@ -132,6 +132,23 @@ class CameraDetection(BaseModel):
             "Camera-frame 3D point (metres): +x right, +y down, +z forward"
         ),
     )
+    # World placement (optional — set by perception.projection.
+    # place_detections_on_map when a posed camera transform is available).
+    world_enu: Optional[tuple[float, float, float]] = Field(
+        None,
+        description=(
+            "World-frame point relative to the camera's ground footprint "
+            "(metres): +east, +north, +up"
+        ),
+    )
+    world_lat: Optional[float] = Field(
+        None, ge=-90.0, le=90.0,
+        description="Geographic latitude of the detection (degrees)",
+    )
+    world_lng: Optional[float] = Field(
+        None, ge=-180.0, le=180.0,
+        description="Geographic longitude of the detection (degrees)",
+    )
 
     @property
     def is_high_confidence(self) -> bool:
