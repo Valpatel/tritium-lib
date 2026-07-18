@@ -345,3 +345,88 @@ def test_obstacle_min_points_rejects_speckle():
     )
     assert len(kept) == 1
     assert kept[0].point_count == 3
+
+
+class TestAzimuthSeamWrap:
+    """A 360 deg sweep is a RING; the array holding it is a line.
+
+    Found by driving the SC /api/sighting lidar route live: three known boxes
+    produced FOUR obstacle tracks.  The extra one was a box sitting at dead
+    ahead, whose returns straddle the 0/360 seam -- ``np.diff`` compares
+    beam i to i+1 and so never compares the LAST beam to the FIRST, splitting
+    one surface into two obstacles at opposite ends of the array.
+
+    On the map that is a wall directly in front of the robot rendering as two
+    contacts that a planner must then thread between.
+    """
+
+    def test_seam_straddling_surface_is_one_cluster(self):
+        """The live three-box geometry that exposed this (Isaac, tick 22).
+
+        The OTHER two boxes are what make this bite: they sit between the
+        seam's two halves in the array, so the last kept point is far from
+        the first and the run cannot be rescued by luck.  A single seam
+        surface on an otherwise empty sweep does NOT reproduce the defect --
+        its endpoints stay within gap_m of each other in array order.
+        """
+        n = 360
+        ranges = [float("inf")] * n
+        for b in (359, 0, 1):          # box A, straddling the seam
+            ranges[b % n] = 3.597
+        for b in (89, 90, 91):         # box B
+            ranges[b] = 3.098
+        for b in (188, 189, 190):      # box C
+            ranges[b] = 3.649
+
+        obstacles = scan_obstacles(
+            ranges,
+            angle_min=0.0,
+            angle_increment=2.0 * math.pi / n,
+            range_max=30.0,
+            gap_m=0.5,
+        )
+
+        assert len(obstacles) == 3, (
+            f"seam split three boxes into {len(obstacles)} obstacles"
+        )
+        assert sorted(o.point_count for o in obstacles) == [3, 3, 3]
+
+    def test_partial_fov_does_not_wrap(self):
+        """A 180 deg scanner's two ends are NOT neighbours -- never join them.
+
+        This is why wrapping must be derived from the angular span rather than
+        applied unconditionally: a forward-facing lidar seeing a wall hard left
+        and another hard right would otherwise fuse them into one phantom
+        obstacle straight through the robot.
+        """
+        n = 180
+        ranges = [float("inf")] * n
+        ranges[0] = 4.0      # hard right
+        ranges[n - 1] = 4.0  # hard left, 180 deg away
+
+        obstacles = scan_obstacles(
+            ranges,
+            angle_min=0.0,
+            angle_increment=math.pi / n,  # spans pi, not 2pi
+            range_max=30.0,
+            gap_m=0.5,
+        )
+
+        assert len(obstacles) == 2
+
+    def test_full_circle_with_a_real_gap_still_splits(self):
+        """Wrapping must not merge ends that are genuinely far apart."""
+        n = 360
+        ranges = [float("inf")] * n
+        ranges[0] = 4.0
+        ranges[180] = 4.0
+
+        obstacles = scan_obstacles(
+            ranges,
+            angle_min=0.0,
+            angle_increment=2.0 * math.pi / n,
+            range_max=30.0,
+            gap_m=0.5,
+        )
+
+        assert len(obstacles) == 2

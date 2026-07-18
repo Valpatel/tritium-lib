@@ -156,13 +156,25 @@ def scan_to_world_points(
     return pts @ rot.T + np.array([float(sensor_x), float(sensor_y)], dtype=float)
 
 
-def cluster_points(points: np.ndarray, gap_m: float) -> list[np.ndarray]:
+def cluster_points(
+    points: np.ndarray, gap_m: float, wrap: bool = False
+) -> list[np.ndarray]:
     """Split scan points into obstacles by adjacent-beam range gap.
 
     Args:
         points: ``(N, 2)`` points IN BEAM ORDER, as returned by
             :func:`scan_to_body_points` or :func:`scan_to_world_points`.
         gap_m: successive points further apart than this begin a new cluster.
+        wrap: treat the last beam as adjacent to the first, for a sweep that
+            covers a full circle.  A 360 deg scan is a RING, but the array
+            holding it is a line, so a surface straddling the 0/360 seam
+            lands at BOTH ends of the array and reads as two obstacles --
+            on the map, a wall directly ahead of the robot renders as two
+            contacts with a phantom doorway between them that a planner will
+            happily try to drive through.  Off by default because a partial
+            FOV scanner's two ends are genuinely not neighbours: wrapping a
+            180 deg sweep would fuse a wall hard-left with a wall hard-right
+            into one obstacle straight through the robot.
 
     Returns:
         A list of ``(M, 2)`` arrays, in beam order, together containing every
@@ -197,7 +209,19 @@ def cluster_points(points: np.ndarray, gap_m: float) -> list[np.ndarray]:
     steps = np.linalg.norm(np.diff(pts, axis=0), axis=1)
     # +1 because a break at step i starts a new cluster at point i+1.
     breaks = np.flatnonzero(steps > float(gap_m)) + 1
-    return [c for c in np.split(pts, breaks) if c.size]
+    clusters = [c for c in np.split(pts, breaks) if c.size]
+
+    # Close the ring.  The seam is only joinable when the two ends are within
+    # the same gap that governs every other adjacency -- an end-to-end test,
+    # not an assumption that a full sweep must wrap.  The merged cluster is
+    # emitted at the FIRST cluster's position so the returned list stays in
+    # beam order.
+    if wrap and len(clusters) > 1:
+        if float(np.linalg.norm(pts[-1] - pts[0])) <= float(gap_m):
+            clusters[0] = np.concatenate([clusters[-1], clusters[0]])
+            clusters.pop()
+
+    return clusters
 
 
 def cluster_centroids(clusters: Iterable[np.ndarray]) -> list[Point]:
@@ -293,7 +317,16 @@ def scan_obstacles(
         range_min=range_min,
         range_max=range_max,
     )
-    clusters = cluster_points(pts, gap_m=gap_m)
+    # Whether the seam is real is a property of the SWEEP, not of the caller's
+    # intent, so it is derived rather than asked for: a scan whose beams span
+    # a full turn is a ring and its ends are neighbours.  One beam of slack
+    # covers the usual off-by-one between a 360-beam sweep and a 360.0 deg
+    # span, and any partial FOV falls short of the threshold and never wraps.
+    increment = abs(float(angle_increment))
+    span = increment * len(np.asarray(ranges))
+    wrap = span >= 2.0 * math.pi - increment - 1e-9
+
+    clusters = cluster_points(pts, gap_m=gap_m, wrap=wrap)
     if min_points > 1:
         clusters = [c for c in clusters if c.shape[0] >= min_points]
 
