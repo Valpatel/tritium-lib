@@ -785,6 +785,20 @@ from .quadruped import (
 from .rover import (
     RoverProfile,
 )
+from .multirotor import (
+    DEFAULT_HEXROTOR,
+    DEFAULT_QUADCOPTER,
+    G_MPS2,
+    BodyState,
+    ControlIntent,
+    MultirotorProfile,
+)
+from .fixedwing import (
+    DEFAULT_FIXEDWING,
+    DEFAULT_SURFACES,
+    ControlSurfaceSpec,
+    FixedWingProfile,
+)
 
 __all__ = [
     # Deployment
@@ -1463,4 +1477,17 @@ __all__ = [
     "QuadrupedProfile",
     # Rover (mini 4-wheel skid-steer body — second fleet body)
     "RoverProfile",
+    # Multirotor (quadcopter thrust+attitude body — third fleet body) + the
+    # body-agnostic aerial seam vocabulary (ControlIntent / BodyState)
+    "DEFAULT_HEXROTOR",
+    "DEFAULT_QUADCOPTER",
+    "G_MPS2",
+    "BodyState",
+    "ControlIntent",
+    "MultirotorProfile",
+    # Fixed-wing (airspeed + control-surfaces body — fourth fleet body)
+    "DEFAULT_FIXEDWING",
+    "DEFAULT_SURFACES",
+    "ControlSurfaceSpec",
+    "FixedWingProfile",
 ]
