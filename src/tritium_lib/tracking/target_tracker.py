@@ -1007,6 +1007,127 @@ class TargetTracker:
             self.history.record(tid, position)
             self._check_geofence(tid, position[0], position[1])
 
+    # Confidence carried by a robot's OWN pose report.  Ground truth out of a
+    # simulator is exact — it is the only position in the system that is known
+    # rather than estimated.  A real robot's onboard estimate (odometry, GPS,
+    # SLAM) drifts, so it sits high but deliberately below 1.0: fusion must be
+    # able to prefer a corroborating fix over a confidently-wrong dead reckon.
+    ROBOT_POSE_GROUND_TRUTH_CONFIDENCE = 1.0
+    ROBOT_POSE_ONBOARD_CONFIDENCE = 0.85
+
+    def update_from_robot_pose(self, pose: dict) -> str | None:
+        """Update or create a target from a body reporting its OWN pose.
+
+        Every other ``update_from_*`` method models a sensor observing
+        something else and has to infer heading from successive positions.
+        This one models a body — a quadruped in Isaac, a rover on the wire —
+        telling the operator where it is and which way it faces.  Heading
+        therefore arrives directly, which is what lets the map icon agree with
+        the simulator viewport instead of lagging a motion estimate.
+
+        This is the SC-side landing point for
+        :mod:`tritium_lib.geo.isaac_frame`: the Isaac pose bridge converts a
+        stage pose to east/north + compass heading and hands the result
+        straight here.
+
+        Args:
+            pose: ``target_id`` (required), ``position`` as ``{"x","y"}`` or
+                ``[x, y]``, ``heading`` degrees CW from north, and optionally
+                ``name`` / ``asset_type`` / ``alliance`` / ``speed`` /
+                ``battery`` / ``ground_truth``.
+
+        Returns:
+            The target id, or ``None`` when the payload carries no id.
+        """
+        tid = str(pose.get("target_id") or "").strip()
+        if not tid:
+            return None
+
+        raw_pos = pose.get("position")
+        if isinstance(raw_pos, dict):
+            position = (float(raw_pos.get("x", 0.0)), float(raw_pos.get("y", 0.0)))
+        elif isinstance(raw_pos, (list, tuple)) and len(raw_pos) >= 2:
+            position = (float(raw_pos[0]), float(raw_pos[1]))
+        elif "x" in pose or "y" in pose:
+            # Flat form — what the Isaac pose bridge and robot MQTT telemetry
+            # already put on the wire.  Accepting it here means the ingest
+            # seam does not force every producer to re-shape its payload.
+            position = (float(pose.get("x", 0.0)), float(pose.get("y", 0.0)))
+        else:
+            position = (0.0, 0.0)
+
+        heading = float(pose.get("heading", 0.0)) % 360.0
+        speed = float(pose.get("speed", 0.0))
+        battery = float(pose.get("battery", 1.0))
+        name = str(pose.get("name") or tid)
+        asset_type = str(pose.get("asset_type") or "robot")
+        alliance = str(pose.get("alliance") or "friendly")
+
+        ground_truth = bool(pose.get("ground_truth", False))
+        pos_source = "sim_truth" if ground_truth else "onboard"
+        confidence = (
+            self.ROBOT_POSE_GROUND_TRUTH_CONFIDENCE if ground_truth
+            else self.ROBOT_POSE_ONBOARD_CONFIDENCE
+        )
+
+        with self._lock:
+            t = self._targets.get(tid)
+            if t is not None:
+                # The integrity gate is a check on an ESTIMATE.  Ground truth
+                # cannot be spoofed and an operator repositioning a sim body
+                # is legitimate, so flagging it would put a permanent false
+                # alarm on the one track that is known to be correct.
+                if not ground_truth:
+                    self._check_velocity(t, position)
+                t.position = position
+                t.position_source = pos_source
+                t.heading = heading
+                t.speed = speed
+                t.battery = battery
+                t.name = name
+                t.asset_type = asset_type
+                # Operator alliance tags outrank declared telemetry (see
+                # ``set_operator_alliance``) — never clobber a human decision.
+                if t.alliance_source != "operator":
+                    t.alliance = alliance
+                t.last_seen = time.monotonic()
+                t.signal_count += 1
+                t.position_confidence = confidence
+                t._initial_confidence = confidence
+                self._add_confirming_source(t, "robot_pose")
+            else:
+                self._membership_count += 1
+                self._targets[tid] = TrackedTarget(
+                    target_id=tid,
+                    name=name,
+                    alliance=alliance,
+                    asset_type=asset_type,
+                    position=position,
+                    heading=heading,
+                    speed=speed,
+                    battery=battery,
+                    last_seen=time.monotonic(),
+                    first_seen=time.monotonic(),
+                    signal_count=1,
+                    source="robot_pose",
+                    position_source=pos_source,
+                    position_confidence=confidence,
+                    _initial_confidence=confidence,
+                    confirming_sources={"robot_pose"},
+                    classification=asset_type,
+                )
+                self.reappearance_monitor.check_reappearance(
+                    target_id=tid,
+                    name=name,
+                    source="robot_pose",
+                    asset_type=asset_type,
+                    position=position,
+                )
+
+        self.history.record(tid, position)
+        self._check_geofence(tid, position[0], position[1])
+        return tid
+
     # Acoustic targets — transient sounds (gunshot/voice/vehicle) detected by a
     # mic array.  Localisation is coarse (direction-of-arrival, weak range), so
     # tracks are low-confidence and short-lived, but they still confirm an
