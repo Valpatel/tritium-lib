@@ -9,20 +9,13 @@ module is the framework-free VOCABULARY + KINEMATICS a multirotor controller
 (edge), the sim, and real hardware all agree on — the aerial analogue of
 :mod:`tritium_lib.models.quadruped` and :mod:`tritium_lib.models.rover`.
 
-Because aerial bodies need more than the ground twist, this module also
-defines the body-agnostic SEAM vocabulary from the plan doc:
-
-* :class:`ControlIntent` — the superset intent. Ground bodies read
-  ``(forward, turn)`` (exactly the rover/gait_core twist); aerial bodies add
-  ``climb``. All three are normalized to ``[-1, 1]`` and scale to the
-  profile's limits, so the autonomy stack emits ONE intent type and never
-  imports a body. Zero intent = the body's natural steady state (a multirotor
-  hovers, a fixed-wing holds cruise).
-* :class:`BodyState` — the full 6-DOF pose + velocity a body reports back.
-  Ground bodies leave ``alt_m``/``pitch_deg``/``roll_deg``/``climb_mps`` at
-  zero; nothing else changes.
-
-:mod:`tritium_lib.models.fixedwing` imports both (extract, don't duplicate).
+SEAM: this body was the first to need more than the ground twist, so
+:class:`~tritium_lib.models.body.ControlIntent` and the 6-DOF
+:class:`~tritium_lib.models.body.BodyState` were born here — they now LIVE in
+:mod:`tritium_lib.models.body` (the neutral single source of truth for the
+body-agnostic seam, Track A step 2 of the plan doc) and are RE-EXPORTED here
+unchanged for compatibility: ``from tritium_lib.models.multirotor import
+ControlIntent, BodyState, G_MPS2`` keeps working forever.
 
 FRAME (identical to ``rover``/``gait_core``): Tritium convention — ``x`` =
 east, ``y`` = north, ``heading`` in degrees with ``0`` = north, increasing
@@ -44,42 +37,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-# Standard gravity — shared by every aerial body model.
-G_MPS2: float = 9.80665
-
-
-class ControlIntent(BaseModel):
-    """Body-agnostic control intent — the aerial superset of the ground twist.
-
-    All fields are normalized to ``[-1, 1]`` and scale to the receiving
-    profile's limits (``forward`` -> max speed, ``turn`` -> max yaw/turn rate,
-    ``climb`` -> max climb or descent rate). The all-zero default is the
-    body's steady state: hover for a multirotor, cruise for a fixed-wing,
-    standing for a ground body.
-    """
-
-    forward: float = Field(default=0.0, ge=-1.0, le=1.0)  # + ahead, - astern
-    turn: float = Field(default=0.0, ge=-1.0, le=1.0)  # + clockwise (heading increases)
-    climb: float = Field(default=0.0, ge=-1.0, le=1.0)  # + up, - down
-
-
-class BodyState(BaseModel):
-    """Full 6-DOF pose + velocity in the Tritium frame.
-
-    Ground bodies fill only ``x``/``y``/``heading_deg``/``speed_mps`` (their
-    2D state embeds losslessly); aerial bodies fill everything. This is the
-    ``get_state()`` side of the body seam from
-    ``docs/plans/multi-body-sil-framework.md``.
-    """
-
-    x: float = 0.0  # east, m
-    y: float = 0.0  # north, m
-    alt_m: float = Field(default=0.0, ge=0)  # above ground, m
-    heading_deg: float = 0.0  # yaw: 0 = north, increasing clockwise
-    pitch_deg: float = 0.0  # + nose up
-    roll_deg: float = 0.0  # + right side down
-    speed_mps: float = 0.0  # horizontal speed along heading (+ ahead)
-    climb_mps: float = 0.0  # vertical rate, + up
+# Hoisted to the neutral seam module (Track A step 2); re-exported here so
+# every pre-hoist import path (`from tritium_lib.models.multirotor import
+# ControlIntent, BodyState, G_MPS2`) keeps working unchanged.
+from .body import G_MPS2, BodyState, ControlIntent
 
 
 class MultirotorProfile(BaseModel):

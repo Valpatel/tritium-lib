@@ -5,10 +5,10 @@
 
 The fourth body in the multi-body fleet
 (``docs/plans/multi-body-sil-framework.md``). A fixed-wing aircraft is driven
-by the SAME :class:`~tritium_lib.models.multirotor.ControlIntent` the
-multirotor uses — ``forward`` picks an airspeed, ``turn`` a bank angle,
-``climb`` a vertical rate — so it plugs into the identical autonomy seam with
-ZERO changes to the autonomy stack. This module is the framework-free
+by the SAME :class:`~tritium_lib.models.body.ControlIntent` the multirotor
+uses — ``forward`` picks an airspeed, ``turn`` a bank angle, ``climb`` a
+vertical rate — so it plugs into the identical autonomy seam with ZERO
+changes to the autonomy stack. This module is the framework-free
 VOCABULARY + KINEMATICS a fixed-wing controller (edge), the sim, and real
 hardware all agree on — the winged analogue of
 :mod:`tritium_lib.models.multirotor`.
@@ -27,10 +27,10 @@ WHAT MAKES A WING DIFFERENT (and what the model enforces):
 
 FRAME + SEAM (identical to ``multirotor``/``rover``/``gait_core``): Tritium
 convention — ``x`` = east, ``y`` = north, ``heading`` 0 = north increasing
-clockwise; :class:`~tritium_lib.models.multirotor.BodyState` carries the
-6-DOF pose (imported, not duplicated). Ground track equals airspeed — no wind
-model at this tier; wind belongs to the physics rig (Isaac), not the shared
-vocabulary.
+clockwise; :class:`~tritium_lib.models.body.BodyState` carries the 6-DOF
+pose (imported from the neutral seam module, not duplicated). Ground track
+equals airspeed — no wind model at this tier; wind belongs to the physics
+rig (Isaac), not the shared vocabulary.
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .multirotor import G_MPS2, BodyState, ControlIntent
+from .body import G_MPS2, BodyState, ControlIntent
 
 
 class ControlSurfaceSpec(BaseModel):
@@ -158,7 +158,7 @@ class FixedWingProfile(BaseModel):
     def step(self, state: BodyState, intent: ControlIntent, dt: float) -> BodyState:
         """Integrate one tick of fixed-wing flight kinematics.
 
-        Returns a NEW :class:`~tritium_lib.models.multirotor.BodyState` in the
+        Returns a NEW :class:`~tritium_lib.models.body.BodyState` in the
         Tritium frame. ``turn`` intent banks the wing (roll = intent *
         :attr:`max_bank_deg`) and the heading rate follows the
         coordinated-turn relation — the wing rolls INTO the turn, unlike the

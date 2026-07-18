@@ -777,6 +777,18 @@ from .hits import (
     HitReport,
     RegisterHitCommand,
 )
+from .body import (
+    G_MPS2,
+    BodyController,
+    BodyState,
+    ControlIntent,
+    SupportsBattery,
+    SupportsGps,
+    SupportsImu,
+    SupportsTurret,
+    intent_from_motors,
+    motors_from_intent,
+)
 from .quadruped import (
     DEFAULT_GAITS,
     GaitSpec,
@@ -788,9 +800,6 @@ from .rover import (
 from .multirotor import (
     DEFAULT_HEXROTOR,
     DEFAULT_QUADCOPTER,
-    G_MPS2,
-    BodyState,
-    ControlIntent,
     MultirotorProfile,
 )
 from .fixedwing import (
@@ -1471,19 +1480,28 @@ __all__ = [
     "HealthTracker",
     "HitReport",
     "RegisterHitCommand",
+    # Body seam (neutral, body-agnostic — ControlIntent/BodyState vocabulary,
+    # the BodyController protocol + optional capability hooks, and the ground
+    # motor-twist <-> intent mapping)
+    "G_MPS2",
+    "BodyController",
+    "BodyState",
+    "ControlIntent",
+    "SupportsBattery",
+    "SupportsGps",
+    "SupportsImu",
+    "SupportsTurret",
+    "intent_from_motors",
+    "motors_from_intent",
     # Quadruped (robot-dog gait profile — sim animation + Go2-class telemetry)
     "DEFAULT_GAITS",
     "GaitSpec",
     "QuadrupedProfile",
     # Rover (mini 4-wheel skid-steer body — second fleet body)
     "RoverProfile",
-    # Multirotor (quadcopter thrust+attitude body — third fleet body) + the
-    # body-agnostic aerial seam vocabulary (ControlIntent / BodyState)
+    # Multirotor (quadcopter thrust+attitude body — third fleet body)
     "DEFAULT_HEXROTOR",
     "DEFAULT_QUADCOPTER",
-    "G_MPS2",
-    "BodyState",
-    "ControlIntent",
     "MultirotorProfile",
     # Fixed-wing (airspeed + control-surfaces body — fourth fleet body)
     "DEFAULT_FIXEDWING",
