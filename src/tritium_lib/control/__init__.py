@@ -23,7 +23,9 @@ from tritium_lib.control.attitude_stabilizer import (
 from tritium_lib.control.disturbance import (
     DisturbanceSchedule,
     Impulse,
+    KickVerdict,
     RecoveryScore,
+    kick_landed,
     score_recovery,
 )
 
@@ -32,8 +34,10 @@ __all__ = [
     "AttitudeStabilizer",
     "DisturbanceSchedule",
     "Impulse",
+    "KickVerdict",
     "LegPlacement",
     "RecoveryScore",
+    "kick_landed",
     "roll_pitch_deg",
     "score_recovery",
 ]

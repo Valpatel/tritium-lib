@@ -61,7 +61,9 @@ from dataclasses import dataclass, field
 __all__ = [
     "DisturbanceSchedule",
     "Impulse",
+    "KickVerdict",
     "RecoveryScore",
+    "kick_landed",
     "score_recovery",
 ]
 
@@ -310,4 +312,92 @@ def score_recovery(
         disturbed_at=float(disturbed_at),
         settled_below_deg=float(settled_below_deg),
         hold_for=float(hold_for),
+    )
+
+
+@dataclass(frozen=True)
+class KickVerdict:
+    """Whether a commanded impulse actually reached the body.
+
+    :param landed: whether the body gained enough velocity **along the
+        commanded direction** to treat the trial as genuinely disturbed.
+    :param expected_dv: ``|J| / m`` — the speed change an unopposed push
+        would produce.
+    :param projected_dv: the measured velocity change projected onto the
+        commanded direction.  Signed: negative means the body moved the
+        *other* way, which is evidence something other than the push moved it.
+    :param fraction: ``projected_dv / expected_dv``.
+    :param min_fraction: the threshold this verdict was judged against.
+    """
+
+    landed: bool
+    expected_dv: float
+    projected_dv: float
+    fraction: float
+    min_fraction: float
+
+    def as_dict(self) -> dict:
+        return {
+            "landed": self.landed,
+            "expected_dv": round(self.expected_dv, 6),
+            "projected_dv": round(self.projected_dv, 6),
+            "fraction": round(self.fraction, 4),
+            "min_fraction": self.min_fraction,
+        }
+
+
+def kick_landed(
+    *,
+    commanded: Sequence[float],
+    measured_dv: Sequence[float],
+    body_mass: float,
+    min_fraction: float = 0.4,
+) -> KickVerdict:
+    """Did the push land on the axis it was aimed at?
+
+    :func:`score_recovery` already refuses to score a run in which no impulse
+    ever fired.  This closes the next hole down, and it is not hypothetical:
+    the first live 3 N-s A/B recorded a lateral ``+Y`` push whose measured
+    velocity change was ``[-0.089, 0.0121, 0.1921]``.  The *magnitude* of that
+    vector is 0.212 m/s against an expected 0.2 — so a norm check calls it a
+    textbook push.  But the commanded axis gained 0.0121 m/s, about 6% of what
+    was asked.  The body was **falling**, not shoved.  That trial's 178-degree
+    tumble was then charged to the controller as a failure to reject a
+    disturbance it never received.
+
+    Hence a **projection onto the commanded direction**, never a norm.  A norm
+    check is worse than no check here, because the trials it waves through are
+    exactly the ones worth catching.
+
+    ``min_fraction`` defaults to 0.4 rather than something near 1.0 because a
+    real push into a real contact is partly absorbed by foot friction — about
+    half of ``J/m`` reaches the body, and that is physically correct, not a
+    miss.  The threshold separates "mostly delivered" from "barely moved".
+    """
+    if body_mass <= 0:
+        raise ValueError(f"body mass must be positive, got {body_mass!r}")
+
+    j = [float(c) for c in commanded]
+    j_mag = math.sqrt(sum(c * c for c in j))
+    if j_mag <= 0:
+        raise ValueError(
+            "commanded impulse is zero, so 'did it land' has no answer — "
+            "scoring it either way would silently validate an undisturbed run")
+
+    unit = [c / j_mag for c in j]
+    dv = [float(c) for c in measured_dv]
+    projected = sum(unit[i] * dv[i] for i in range(3))
+    expected = j_mag / float(body_mass)
+    fraction = projected / expected
+
+    # Tolerance, not cosmetics: a fraction landing exactly on the threshold
+    # is a division result, and 0.08/0.2 evaluates to 0.39999999999999997.
+    # A bare >= would reject a push delivered to spec, and the trial it threw
+    # away would be indistinguishable from one that never landed.
+    return KickVerdict(
+        landed=fraction >= min_fraction - 1e-9,
+        expected_dv=expected,
+        projected_dv=projected,
+        fraction=fraction,
+        min_fraction=float(min_fraction),
     )
