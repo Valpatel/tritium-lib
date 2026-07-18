@@ -8,6 +8,8 @@ L1: Complexity (edge density)
 L2: Motion (frame diff)
 L3: Object detection (frame -> bounding-box detections -> world position)
 L3+: Depth enrichment (aligned depth frame -> range_m + camera-frame xyz)
+One-call: process_depth_frame / DepthCameraPipeline (detect -> enrich ->
+place -> fuse, unique det_* map targets in a single call)
 Plus: LLM chat API client, regex fact extraction from conversation.
 
 Framework-free: pure OpenCV/numpy/stdlib. The LLM host is injected via
@@ -51,6 +53,10 @@ from tritium_lib.perception.projection import (
     world_from_camera_xyz,
 )
 from tritium_lib.perception.pipeline import FrameDetectionPipeline
+from tritium_lib.perception.depth_pipeline import (
+    DepthCameraPipeline,
+    process_depth_frame,
+)
 from tritium_lib.perception.extraction import extract_facts, extract_person_name
 from tritium_lib.perception.vision import (
     check_radio_detection,
@@ -79,6 +85,8 @@ __all__ = [
     "place_detections_on_map",
     "world_from_camera_xyz",
     "FrameDetectionPipeline",
+    "DepthCameraPipeline",
+    "process_depth_frame",
     "available_backends",
     "build_frame_detector",
     "decode_yolo_predictions",
