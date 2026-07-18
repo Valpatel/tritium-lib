@@ -22,8 +22,15 @@ Three things are protected here, in order of importance:
    from the linear-inverted-pendulum formula in the test itself — no golden
    blobs — so a failure says which physics changed, not just "digest moved".
 
-The deviation gate itself is NOT live-validated by anything here; these are
-design-conformance tests.  The live re-test is a separate job.
+The live re-test of the deviation gate has since RUN, and it disproved the
+walking use too (live Newton 2026-07-17/18: gate open on 100.0% of walking
+ticks at the legal nominal, baseline 6/6 upright vs reflex 0/5, Fisher
+p = 0.0022 — full numbers and three caveats in the module docstring).  The
+tests below are design-conformance pins of the math, the STANDING regime
+(the only supported one), and the layering contract — plus pins that the
+measured verdict stays stated in the module's own documentation, because
+documentation is now the only thing between a future integrator and the
+measured 0/5 walking faceplant.
 """
 
 from __future__ import annotations
@@ -460,6 +467,60 @@ class TestNominalIsRequired:
             reflex.decide(
                 (0.60, 0.0), LEGS, nominal_vel_xy=(0.6,), reach_limits=WIDE,
             )
+
+
+class TestVerdictStaysStated:
+    """The measured walking verdict must remain in the module's face.
+
+    The math is correct and the module ships for the standing regime, so
+    nothing *executable* stops a future integrator from wiring it to a
+    walking body — only the documentation does.  Pin its load-bearing
+    phrases so a docstring rewrite cannot quietly drop the verdict.
+    """
+
+    def test_module_docstring_states_the_walking_verdict(self):
+        import tritium_lib.control.step_reflex as mod
+
+        doc = mod.__doc__
+        for phrase in (
+            "cannot separate a push from the gait",  # the conclusion
+            "DO NOT WIRE",                            # the instruction
+            "WALKING BODY",                           # its scope
+            "STANDING",                               # the surviving regime
+            "contact/force",                          # the required rewire
+            "100.0%",                                 # gate-open rate, legal nominal
+            "0/5",                                    # live A/B reflex arm
+            "6/6",                                    # live A/B baseline arm
+            "p = 0.0022",                             # its significance
+            "2350/2350",                              # pooled gate-open ticks
+            "0.264",                                  # measured quiet floor
+        ):
+            assert phrase in doc, (
+                f"module docstring lost the verdict phrase {phrase!r}; the "
+                "2026-07-17/18 measured verdict must stay stated in full"
+            )
+
+    def test_module_docstring_states_all_three_caveats(self):
+        import tritium_lib.control.step_reflex as mod
+
+        doc = mod.__doc__
+        for phrase in (
+            "No visual evidence",   # caveat 1: numeric telemetry only
+            "control arm",          # caveat 2: gate-shut arm never ran
+            "~18%",                 # caveat 3: push signature's gait quality
+        ):
+            assert phrase in doc, (
+                f"module docstring lost caveat phrase {phrase!r}; the verdict "
+                "must not be overstated either"
+            )
+
+    def test_class_docstring_carries_the_verdict_too(self):
+        # Editors surface the class docstring, not the module's — the
+        # warning must live where autocomplete shows it.
+        doc = StepReflex.__doc__
+        assert "STANDING bodies only" in doc
+        assert "do not wire this to a" in doc
+        assert "0/5" in doc
 
 
 class TestConfig:

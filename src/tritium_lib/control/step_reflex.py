@@ -1,7 +1,17 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Capture-point stepping reflex — where to put a foot to stop a fall.
+"""Capture-point stepping reflex — MEASURED: unfit to gate a walking gait.
+
+    =====================================================================
+    MEASURED VERDICT (live Newton, 2026-07-17/18): a velocity residual
+    cannot separate a push from the gait on this body.  DO NOT WIRE
+    StepReflex TO A WALKING BODY.  It remains coherent for a STANDING
+    body, where the deviation gate degenerates to the absolute capture
+    point correctly.  A walking body needs a different trigger entirely —
+    contact/force sensing, or model-predicted vs actual state error.
+    Numbers, derivation, and three caveats below.
+    =====================================================================
 
 Why this exists
 ---------------
@@ -16,8 +26,8 @@ That stepping reflex is what this module computes.  The trim answers "how hard
 does each planted foot push"; this answers "which foot must leave the ground,
 and where must it land".
 
-What live measurement disproved (read before trusting anything below)
----------------------------------------------------------------------
+Round 1 of what live measurement disproved: the ABSOLUTE gate
+-------------------------------------------------------------
 The first shipped version of this module gated on the capture point of the
 body's **total** CoM velocity, with a default gate of 0.05 m, and its
 docstring claimed an undisturbed walk never crosses the gate.  Live Newton
@@ -43,23 +53,70 @@ proved that claim false and the design wrong:
   (reverse causation: a body already falling is what raises the capture
   point that far).
 
-The correction, and its honest status
--------------------------------------
+Round 2: the CORRECTED deviation gate is disproven too
+------------------------------------------------------
 This version gates on the capture point of the **deviation** from the gait's
 commanded velocity — ``measured − nominal`` — not on absolute velocity.  The
-caller MUST state what the gait commanded (``nominal_vel_xy``, a required
-argument with no default): a push moves the measured velocity while leaving
-the commanded velocity untouched, so in deviation space the push appears at
-full size while the walking carrier is subtracted out as common mode.  For a
-standing body the true nominal is ``(0, 0)`` and the deviation gate
-degenerates exactly to the old absolute gate — which is the one regime the
-old design was ever right in.
+theory: a push moves the measured velocity while leaving the commanded
+velocity untouched, so in deviation space the push appears at full size
+while the walking carrier subtracts out as common mode.  The caller MUST
+state what the gait commanded (``nominal_vel_xy``, required, no default).
 
-**This corrected version is NOT yet live-validated.**  The deviation gate is
-a design response to the measurements above, not a measured success; the
-live undisturbed-walk and push re-tests are a separate job.  What can and
-cannot be claimed from the existing data is stated at
-:data:`DEFAULT_DEVIATION_THRESHOLD_M`.
+Live physics then disproved the theory as well (Newton, 2026-07-17/18):
+
+* With the **legal nominal** — the commanded 1.2 m/s, the only value a real
+  caller has — the deviation capture point exceeded the 0.04 m gate on
+  **100.0% of undisturbed walking ticks** (median 0.170 m, n=2719;
+  corroborated on an independent run, n=1336).  Even the best-case nominal
+  — the realised MEAN velocity, which no caller knows ahead of time —
+  still exceeded the gate on **37.7%** of ticks.
+* Live A/B, matched trials: baseline **6/6 upright** (median tilt
+  9.22 deg) vs reflex **0/5 upright** (median tilt 179.98 deg), Fisher
+  p = 0.0022.  The gate was open on **2350/2350 pooled ticks**; the gate
+  signal's MINIMUM across a 470-tick window was 0.0996 m — 2.5x the
+  threshold.  The gate never closed once.
+* The separability floor, measured: staying quiet on 98% of undisturbed
+  walking ticks needs a gate of **0.264 m** (0.098 m in the best-nominal
+  case), against a weakest measured push signature of **0.058 m** — a
+  floor **4.6x** (best case **1.7x**) LARGER than the signal it exists to
+  catch.  Sweeping the nominal across 0.15–1.2 m/s never brings the
+  floor/signal ratio under 1.7x, and CoM height cancels out of the ratio,
+  so no ride-height retune can fix it either.
+
+The mechanism: the redesign assumed the walking carrier is common mode.
+Measured, it is not — this gait tracks its command loosely (caveat 3
+below), so ``measured − commanded`` is dominated by the gait's own
+tracking error, which dwarfs any push worth catching.  Retuning
+``threshold_m`` is not a fix; it would be the third disproven variation of
+the same idea.
+
+Three caveats, so the verdict is not overstated either
+------------------------------------------------------
+1. **No visual evidence** exists for the corrected-gate run — the 0/5 is
+   numeric telemetry (tilt + gate traces) only, never a watched render.
+2. **The gate-shut control arm never ran for the corrected build.**  A
+   trim-only arm with identical logging did run 6/6, which exonerates the
+   instrumentation, but "corrected reflex with the gate forced shut" was
+   never measured.
+3. **The push signature may need re-measurement**: the 0.058–0.087 m band
+   was measured on a gait realising only ~18% of its commanded speed, so
+   the separability ratio above may rest on a signal floor that moves if
+   the gait ever tracks its command tightly.
+
+Under caveats 2–3 the honest claim is "disproven as shipped, on this body,
+at this gait quality" — not "capture-point stepping can never work".  What
+IS closed: on THIS gait, no threshold on THIS signal separates push from
+walk.
+
+Why the module survives at all
+------------------------------
+The LIP math below (:func:`capture_point`, :func:`step_target`) is
+correct, closed-form, and reusable — deleting it would only invite an
+unmeasured rewrite.  And for a STANDING body the design is coherent: the
+honest nominal is ``(0, 0)``, the deviation gate degenerates exactly to
+the absolute capture point, and there is no gait carrier to alias.  That
+standing regime — plus telemetry/analysis reuse of the math — are the only
+supported uses.
 
 The physics, stated honestly
 ----------------------------
@@ -106,17 +163,19 @@ The reflex is an **optional, additive layer** over the existing trim:
   compatible swing slot and keeps re-reading it each tick — the reflex is
   stateless and recomputes from the current velocities every call.
 
-How an Isaac/Newton driver gates it: each control tick, read root horizontal
-velocity from the solver (or, for a scored A/B kick, the projected dv that
-:func:`tritium_lib.control.disturbance.kick_landed` already computes), pass
-it together with the velocity the gait is currently commanding as
-``nominal_vel_xy``, call :meth:`StepReflex.decide` with the stance-foot
-layout, and act only when ``decision.step`` is not ``None``.  The nominal is
-never inferred: a caller that cannot supply it gets a ``TypeError`` at the
-call site, not a silent fallback to the absolute-velocity behavior that
-measured 0/6.  Feeding ``(0, 0)`` as the nominal for a *walking* gait
-re-creates that measured failure by construction — ``(0, 0)`` is the honest
-nominal only when the gait genuinely commands standing still.
+How a driver gates it — for a STANDING body only: each control tick, read
+root horizontal velocity from the solver (or, for a scored A/B kick, the
+projected dv that :func:`tritium_lib.control.disturbance.kick_landed`
+already computes), pass ``nominal_vel_xy=(0.0, 0.0)`` — honest for a body
+commanded to stand still — call :meth:`StepReflex.decide` with the
+stance-foot layout, and act only when ``decision.step`` is not ``None``.
+For a WALKING body: do not wire this at all (measured verdict, top of this
+docstring) — supplying the honest commanded velocity as the nominal was
+measured NOT to rescue the gate (round 2), and feeding ``(0, 0)`` under a
+walking gait re-creates the round-1 absolute failure by construction.  The
+nominal stays REQUIRED with no default so a caller that cannot state it
+gets a ``TypeError`` at the call site, not a silent fallback into either
+measured failure.
 
 Conventions match the rest of :mod:`tritium_lib.control`: REP-103 body frame
 (+X forward, +Y left, +Z up), SI units, degrees only in logs.  Stdlib only —
@@ -151,29 +210,24 @@ GRAVITY_MPS2: float = 9.80665
 # Deviation-capture-point excursion below which no step fires, in metres of
 # capture point computed from (measured − nominal) velocity.
 #
-# Derived from the live-Newton numbers that killed the absolute gate:
+# Sized for the STANDING regime — the only supported one (module docstring):
+# 0.04 m sits ~30% under the weakest measured push signature (0.058 m, from
+# the 5 N·s trim-ceiling push), so a standing body steps *before* the
+# trim-only stack's inversion ceiling.  At Go2 ride height (~0.31 m, time
+# constant ~0.178 s) it corresponds to a sustained velocity error of
+# ~0.22 m/s.
 #
-# * The signal to catch: a 5 N·s push — the measured inversion ceiling of the
-#   trim-only stack — contributes 0.058–0.087 m of capture-point excursion.
-#   A push moves the measured velocity and not the commanded one, so in
-#   deviation space that full 0.058–0.087 m survives.  Gating at 0.04 m
-#   catches the weakest measured push signature with ~30% margin, so the
-#   reflex engages *before* the trim's ceiling rather than at it.
-# * The noise to stay silent through: after subtracting the nominal, the
-#   walking carrier (0.101–0.131 m of absolute excursion at a 1.2 m/s trot,
-#   stride-to-stride swing larger than the push signal) should be largely
-#   common mode.  What remains is the stride-phase ripple of the CoM
-#   velocity about its commanded mean.  0.04 m of deviation capture point at
-#   Go2 ride height (~0.31 m, time constant ~0.178 s) corresponds to a
-#   sustained velocity error of ~0.22 m/s.
-#
-# Stated honestly: the residual ripple of a healthy trot in DEVIATION space
-# has NOT been measured — only the absolute carrier has.  Whether it stays
-# under 0.04 m is exactly what the live re-test must decide.  If it does
-# not, the honest headroom for retuning is only up to ~0.058 m (the smallest
-# measured push contribution); needing more than that would mean the
-# velocity-residual signal itself cannot separate push from gait, not that
-# the threshold is mis-chosen.
+# For a WALKING body there is NO valid value of this constant — that is a
+# measurement, not caution.  The prior revision of this comment said the
+# walking residual in deviation space "has NOT been measured" and capped the
+# honest retuning headroom at ~0.058 m, past which "the velocity-residual
+# signal itself cannot separate push from gait".  The measurement came back
+# (live Newton, 2026-07-17/18, module docstring round 2) an order of
+# magnitude past that cap: median residual 0.170 m against this 0.04 m gate
+# (open on 100.0% of walking ticks, n=2719), with 0.264 m (0.098 m best
+# case) needed to stay quiet on 98% of ticks — 4.6x/1.7x the push signal it
+# must catch.  The escape clause triggered: do not retune this for walking;
+# the trigger signal itself is wrong there.
 DEFAULT_DEVIATION_THRESHOLD_M: float = 0.04
 
 Vec2 = tuple[float, float]
@@ -230,6 +284,13 @@ def velocity_deviation(
     The nominal must be the caller's *statement* of the commanded gait
     velocity — never an estimate inferred from the same measurement stream,
     which would subtract the disturbance out of its own detector.
+
+    Measured caution (live Newton, 2026-07-17/18): for a real walking gait
+    this residual does NOT vanish — the gait tracks its command loosely, so
+    the residual's capture point ran a median 0.170 m at the legal nominal,
+    dwarfing the 0.058 m push signature it was meant to expose.  The math
+    here is exact; it is the *premise* that the residual is small during a
+    healthy walk that measured false.  See the module docstring, round 2.
     """
     if len(measured_vel_xy) != 2:
         raise ValueError(
@@ -432,7 +493,18 @@ class ReflexDecision:
 
 @dataclass(frozen=True)
 class StepReflex:
-    """Gated capture-point stepping reflex for one body.
+    """Gated capture-point stepping reflex — STANDING bodies only (measured).
+
+    MEASURED VERDICT (live Newton, 2026-07-17/18): do not wire this to a
+    WALKING body.  With the legal nominal the deviation gate was open on
+    100.0% of undisturbed walking ticks (median 0.170 m vs the 0.04 m
+    gate), and the live A/B measured baseline 6/6 upright vs reflex 0/5
+    (Fisher p = 0.0022, gate open 2350/2350 pooled ticks).  A velocity
+    residual cannot separate a push from the gait on this body; walking
+    push-recovery needs a different trigger (contact/force, or
+    model-predicted vs actual state error).  The supported regime is a
+    STANDING body, where the deviation degenerates to the absolute capture
+    point correctly.  Full numbers and three caveats: module docstring.
 
     Frozen and stateless: configuration in, decision out, nothing remembered
     between ticks.  Statelessness is what makes the layering safe — the
@@ -446,9 +518,10 @@ class StepReflex:
         fires (strictly above; at or below the gate stays closed).  Compared
         against ``|capture_point(measured − nominal)|``, never against the
         absolute capture point — the absolute form measured 0/6 upright on
-        an undisturbed walk (module docstring).  Default:
-        :data:`DEFAULT_DEVIATION_THRESHOLD_M`, derivation and its unmeasured
-        assumption stated there.
+        an undisturbed walk (module docstring, round 1).  Default:
+        :data:`DEFAULT_DEVIATION_THRESHOLD_M`, sized for the STANDING
+        regime; no walking value exists for it (measured — round 2), so
+        retuning it for a walking body is not a supported escape.
     :param g_mps2: gravity, override for non-Earth or scaled-physics sims.
     """
 
@@ -480,15 +553,20 @@ class StepReflex:
     ) -> ReflexDecision:
         """Run the gate against the deviation from the commanded velocity.
 
+        Call this for a STANDING body only.  For a walking body no call is
+        correct (measured, module docstring): passing the honest commanded
+        velocity as the nominal left the gate open on 100.0% of undisturbed
+        walking ticks and measured 0/5 upright against a 6/6 baseline
+        (round 2), while passing ``(0, 0)`` under a walking gait re-creates
+        the round-1 absolute failure by construction.
+
         ``measured_vel_xy`` is the body's horizontal CoM velocity (m/s, body
         frame) — from the solver's root velocity or an estimator.
         ``nominal_vel_xy`` is REQUIRED and keyword-only: the horizontal
         velocity the gait is currently commanding, stated by the caller —
         never inferred here.  There is no default because the only universal
-        default is ``(0, 0)``, and ``(0, 0)`` under a walking gait silently
-        reverts to the absolute-velocity gate that measured 0/6 upright
-        undisturbed on live Newton.  Pass ``(0.0, 0.0)`` only when the gait
-        genuinely commands standing still.
+        default is ``(0, 0)``, which is honest exactly when the gait
+        genuinely commands standing still — the supported regime.
 
         The gate compares ``|capture_point(measured − nominal)|`` against
         :attr:`threshold_m`.  Below it, the decision carries ``step=None``
@@ -496,8 +574,9 @@ class StepReflex:
         ``leg_height_offsets`` rides through as the identical object.  Above
         it, the decision names the stepping leg and its landing point,
         targeted at the TOTAL-velocity capture point (arrest to a stand; see
-        the module docstring for why, and for what remains unvalidated); the
-        driver applies it at the next swing slot its gait allows.
+        the module docstring for why, and note the arrest step has never
+        been observed *helping* on live Newton); the driver applies it at
+        the next swing slot its gait allows.
         """
         if nominal_vel_xy is None:
             raise ValueError(
