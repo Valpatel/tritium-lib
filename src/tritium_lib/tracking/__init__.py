@@ -9,6 +9,7 @@ analysis, and dwell tracking.
 """
 
 from .target_tracker import VALID_ALLIANCES, TargetTracker, TrackedTarget
+from .depth_fusion import fuse_depth_detections
 from .correlator import TargetCorrelator, CorrelationRecord, start_correlator, stop_correlator
 from .geofence import GeofenceEngine, GeoZone, GeoEvent
 from .trilateration import TrilaterationEngine, PositionResult

@@ -658,13 +658,25 @@ class TargetTracker:
         metadata field — NOT in ``confirming_sources``, because camera and
         yolo are the same vision modality (see ``_add_confirming_source``).
         Existing kinematics keys from other sources are preserved.
+
+        Depth-fusion payloads (``tracking.depth_fusion``) additionally carry
+        measured 3D fields — ``range_m`` (slant range), ``world_enu`` /
+        ``elevation_m``, ``world_lat`` / ``world_lng``, ``depth_source`` —
+        which ride along here so the dossier/map can answer *how far and how
+        high* as well as *which camera*.
         """
         kin = dict(target.kinematics) if target.kinematics else {}
         kin["camera_id"] = camera_id
-        for key in ("bearing_deg", "distance_m"):
+        for key in (
+            "bearing_deg", "distance_m",
+            "range_m", "elevation_m", "world_lat", "world_lng", "depth_source",
+        ):
             value = detection.get(key)
             if value is not None:
                 kin[key] = value
+        enu = detection.get("world_enu")
+        if isinstance(enu, (list, tuple)) and len(enu) >= 3:
+            kin["world_enu"] = list(enu[:3])
         bbox = detection.get("bbox")
         if isinstance(bbox, dict):
             kin["bbox"] = dict(bbox)
