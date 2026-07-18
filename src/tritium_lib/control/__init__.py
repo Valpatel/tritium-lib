@@ -39,6 +39,7 @@ from tritium_lib.control.step_reflex import (
     StepReflex,
     capture_point,
     step_target,
+    velocity_deviation,
     velocity_from_impulse,
 )
 from tritium_lib.control.stride_filter import (
@@ -120,6 +121,7 @@ __all__ = [
     "score_recovery",
     "score_route_trace",
     "step_target",
+    "velocity_deviation",
     "velocity_from_impulse",
     "TurnCorrection",
     "YawRateCorrection",

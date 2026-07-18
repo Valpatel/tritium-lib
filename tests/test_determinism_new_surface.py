@@ -15,8 +15,10 @@ to the recently landed modules:
   * ``perception/depth_pipeline`` — ``process_depth_frame``
   * ``tracking/engagement``     — ``ShotEvent`` / ``EngagementLog``
   * ``models/body``             — ``intent_from_motors`` / ``motors_from_intent``
-  * ``control/step_reflex``     — ``capture_point`` / ``step_target`` /
-                                  ``StepReflex.decide``
+  * ``control/step_reflex``     — ``capture_point`` / ``velocity_deviation``
+                                  / ``step_target`` / ``StepReflex.decide``
+                                  (deviation-gated revision: ``decide`` takes
+                                  a required ``nominal_vel_xy``)
   * ``control/yaw_regulator``   — ``heading_error_deg`` /
                                   ``YawRegulator.correct`` / ``turn_intent``
   * ``control/yaw_rate_tracker`` — ``YawRateTracker.track`` (threaded
@@ -74,6 +76,7 @@ from tritium_lib.control import (
     capture_point,
     heading_error_deg,
     step_target,
+    velocity_deviation,
     velocity_from_impulse,
 )
 from tritium_lib.geo.camera_mount import CameraMount
@@ -357,27 +360,35 @@ _REFLEX_LEGS = (
 def _step_reflex_payload() -> dict:
     limits = ReachLimits(max_dx=0.1, max_dy=0.08)
     reflex = StepReflex(com_height_m=0.31)
-    velocities = (
-        (0.0, 0.0),        # captured — gate closed
-        (0.03, -0.02),     # undisturbed drift — gate closed
-        (0.0, 0.6),        # lateral shove — steps, tie broken by input order
-        (-0.5, 0.4),       # diagonal shove — steps
-        (1.5, 0.0),        # violent shove — clamped, honest residual
+    walk = (0.60, 0.0)  # commanded gait velocity for the walking cases
+    cases = (
+        # (measured, nominal)
+        ((0.0, 0.0), (0.0, 0.0)),    # standing, captured — gate closed
+        ((0.62, -0.03), walk),       # walking at nominal — gate closed
+        ((0.60, 0.50), walk),        # lateral shove on the walk — steps
+        ((0.20, 0.0), walk),         # blocked/tripped — steps backward
+        ((0.0, 0.6), (0.0, 0.0)),    # standing shove — steps, input-order tie
+        ((-0.5, 0.4), (0.0, 0.0)),   # standing diagonal shove — steps
+        ((2.1, 0.0), walk),          # violent — clamped, honest residual
     )
     return {
         "capture": [
-            list(capture_point(v, 0.31)) for v in velocities
+            list(capture_point(m, 0.31)) for m, _ in cases
         ] + [list(capture_point((0.42, -0.15), 0.36, 9.81))],
+        "deviation": [
+            list(velocity_deviation(m, n)) for m, n in cases
+        ],
         "impulse_velocity": list(velocity_from_impulse((5.0, -2.4), 12.0)),
         "step_target": list(
             step_target(_REFLEX_LEGS, (0.05, 0.30), reach_limits=limits)
         ),
         "decisions": [
             reflex.decide(
-                v, _REFLEX_LEGS, reach_limits=limits,
+                measured, _REFLEX_LEGS,
+                nominal_vel_xy=nominal, reach_limits=limits,
                 leg_height_offsets={"FL": 0.01, "FR": -0.01},
             ).as_dict()
-            for v in velocities
+            for measured, nominal in cases
         ],
     }
 
@@ -792,17 +803,26 @@ class TestStepReflexPins:
 
     def test_gated_decision_pins(self):
         reflex = StepReflex(com_height_m=0.31)
+        # Quiet case runs AT WALKING SPEED with the nominal supplied — the
+        # regime the absolute gate measured 0/6 upright in (2026-07-17).
+        # Its absolute capture point (~0.110 m) is deep inside the old
+        # failure band; the deviation gate must read only the residual.
         quiet = reflex.decide(
-            (0.03, -0.02), _REFLEX_LEGS,
+            (0.62, -0.03), _REFLEX_LEGS,
+            nominal_vel_xy=(0.60, 0.0),
             reach_limits=ReachLimits(max_dx=0.1, max_dy=0.08),
         )
         assert quiet.step is None
+        assert quiet.deviation_distance_m == pytest.approx(
+            0.006410504144216, rel=REL,
+        )
         shoved = reflex.decide(
             (0.0, 0.6), _REFLEX_LEGS,
+            nominal_vel_xy=(0.0, 0.0),  # standing: deviation == absolute
             reach_limits=ReachLimits(max_dx=0.1, max_dy=0.08),
         )
         assert shoved.step is not None
-        assert shoved.capture_distance_m == pytest.approx(
+        assert shoved.deviation_distance_m == pytest.approx(
             0.1066772372009778, rel=REL,
         )
         assert shoved.step.leg == "FL"

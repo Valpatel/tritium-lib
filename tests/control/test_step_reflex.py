@@ -1,18 +1,29 @@
 # Created by Matthew Valancy
 # Copyright 2026 Valpatel Software LLC
 # Licensed under AGPL-3.0 — see LICENSE for details.
-"""Tests for the capture-point stepping reflex.
+"""Tests for the capture-point stepping reflex (deviation-gated revision).
 
-Two things are protected here, in order of importance:
+Three things are protected here, in order of importance:
 
-1. **The undisturbed gait is untouched.**  AttitudeStabilizer measures 100%
+1. **The measured live failure is pinned.**  The first shipped reflex gated
+   on ABSOLUTE capture point (default 0.05 m) and, live on Newton
+   (2026-07-17, undisturbed, matched trials), turned a 6/6-upright gait into
+   0/6 — a healthy trot's capture point (0.101–0.131 m measured) crosses an
+   absolute gate every stride.  The steady-walk tests below construct that
+   exact regime (absolute capture point above the disproven gate) and assert
+   the deviation gate stays SHUT through it.
+2. **The undisturbed trim is untouched.**  AttitudeStabilizer measures 100%
    upright (34/34) on live Newton; the reflex is an additive layer that must
    not move a single byte of that behavior.  A hardcoded SHA-256 pin holds
-   today's trim outputs, and a layered run under the gate must reproduce the
-   exact same bytes AND the exact same offsets object.
-2. **The step math is closed-form honest.**  Every expectation is computed
+   today's trim outputs, and a layered run under the gate — now AT walking
+   speed, inside the measured failure band — must reproduce the exact same
+   bytes AND the exact same offsets object.
+3. **The step math is closed-form honest.**  Every expectation is computed
    from the linear-inverted-pendulum formula in the test itself — no golden
    blobs — so a failure says which physics changed, not just "digest moved".
+
+The deviation gate itself is NOT live-validated by anything here; these are
+design-conformance tests.  The live re-test is a separate job.
 """
 
 from __future__ import annotations
@@ -30,10 +41,11 @@ from tritium_lib.control import (
     StepReflex,
     capture_point,
     step_target,
+    velocity_deviation,
     velocity_from_impulse,
 )
 from tritium_lib.control.step_reflex import (
-    DEFAULT_CAPTURE_THRESHOLD_M,
+    DEFAULT_DEVIATION_THRESHOLD_M,
     GRAVITY_MPS2,
 )
 
@@ -47,6 +59,15 @@ LEGS = (
 
 WIDE = ReachLimits(max_dx=10.0, max_dy=10.0)  # never clamps
 COM_H = 0.31  # Go2-class ride height used throughout
+
+# The disproven absolute gate (2026-07-17 live failure: 6/6 -> 0/6
+# undisturbed).  Kept here as a literal, not an import — the constant was
+# deliberately removed from the module.
+DISPROVEN_ABSOLUTE_GATE_M = 0.05
+
+# Measured 5 N*s push contribution to capture-point excursion, live Newton.
+MEASURED_PUSH_CONTRIBUTION_LOW_M = 0.058
+MEASURED_PUSH_CONTRIBUTION_HIGH_M = 0.087
 
 
 def _canonical(obj: object) -> bytes:
@@ -99,6 +120,39 @@ class TestCapturePoint:
             capture_point((0.1, 0.0), 0.0)
         with pytest.raises(ValueError, match="g must be positive"):
             capture_point((0.1, 0.0), COM_H, 0.0)
+
+
+class TestVelocityDeviation:
+    def test_componentwise_subtraction(self):
+        assert velocity_deviation((0.72, -0.05), (0.60, 0.0)) == pytest.approx(
+            (0.12, -0.05), rel=1e-12,
+        )
+
+    def test_push_left_during_forward_walk_deviates_left_only(self):
+        # The whole point of the redesign: a lateral shove during a forward
+        # trot must appear as a PURELY lateral deviation — the forward
+        # carrier subtracts out as common mode.
+        dev = velocity_deviation((0.60, 0.50), (0.60, 0.0))
+        assert dev[0] == pytest.approx(0.0, abs=1e-15)
+        assert dev[1] == pytest.approx(0.50, rel=1e-12)
+
+    def test_falling_behind_the_gait_deviates_backward(self):
+        # Blocked/tripped: measured slower than commanded.  The deviation —
+        # and therefore the recovery direction — points BACKWARD (-X).
+        dev = velocity_deviation((0.20, 0.0), (0.60, 0.0))
+        assert dev == pytest.approx((-0.40, 0.0), rel=1e-12)
+
+    def test_standing_nominal_is_the_identity(self):
+        # For a body commanded to stand still, deviation == measured: the
+        # gate degenerates exactly to the old absolute behavior, which is
+        # the one regime the absolute design was ever right in.
+        assert velocity_deviation((0.3, -0.4), (0.0, 0.0)) == (0.3, -0.4)
+
+    def test_rejects_wrong_arity_on_either_argument(self):
+        with pytest.raises(ValueError, match="measured_vel_xy"):
+            velocity_deviation((1.0,), (0.0, 0.0))
+        with pytest.raises(ValueError, match="nominal_vel_xy"):
+            velocity_deviation((1.0, 0.0), (0.0, 0.0, 0.0))
 
 
 class TestVelocityFromImpulse:
@@ -186,48 +240,145 @@ class TestStepTarget:
 
 
 # --------------------------------------------------------------------------
-# StepReflex — the gate
+# StepReflex — the deviation gate
 # --------------------------------------------------------------------------
 
+# A stride's worth of measured-velocity samples for a trot commanded at
+# NOMINAL_WALK: the CoM speeds up and slows down through stance and swing,
+# oscillating about the commanded mean.  Chosen so every sample's ABSOLUTE
+# capture point exceeds the disproven 0.05 m gate (several inside the
+# measured 0.101–0.131 m band) while every DEVIATION stays under the new
+# gate — the exact regime that measured 6/6 -> 0/6 live.
+NOMINAL_WALK = (0.60, 0.0)
+STRIDE_SAMPLES = (
+    (0.45, 0.05),
+    (0.60, -0.08),
+    (0.74, 0.03),
+    (0.52, -0.06),
+    (0.68, 0.07),
+)
+
+
 class TestGate:
-    def test_below_threshold_no_step(self):
+    def test_steady_walk_at_nominal_never_opens_the_gate(self):
+        # THE regression this module shipped broken on.  Live Newton
+        # 2026-07-17: absolute gating opened essentially every stride of an
+        # undisturbed 1.2 m/s trot (capture point 0.101–0.131 m vs a 0.05 m
+        # gate) and flipped 6/6 upright to 0/6.  With the nominal supplied,
+        # the same walking carrier must subtract out and the gate stay SHUT.
         reflex = StepReflex(com_height_m=COM_H)
-        # 0.1 m/s -> ~0.018 m capture excursion, well under the 0.05 gate.
-        decision = reflex.decide((0.1, 0.0), LEGS, reach_limits=WIDE)
-        assert decision.step is None
-        assert not decision.stepping
+        for measured in STRIDE_SAMPLES:
+            # Prove each sample IS in the old failure regime first…
+            absolute = math.hypot(*capture_point(measured, COM_H))
+            assert absolute > DISPROVEN_ABSOLUTE_GATE_M, (
+                f"test setup broken: {measured} would not have tripped the "
+                "old absolute gate, so it does not pin the failure"
+            )
+            # …then that the deviation gate stays closed through it.
+            decision = reflex.decide(
+                measured, LEGS,
+                nominal_vel_xy=NOMINAL_WALK, reach_limits=WIDE,
+            )
+            assert decision.step is None, (
+                f"gate opened on an undisturbed stride sample {measured} — "
+                "this is the exact failure that measured 0/6 upright live"
+            )
+            assert not decision.stepping
 
-    def test_zero_velocity_no_step(self):
-        reflex = StepReflex(com_height_m=COM_H)
-        decision = reflex.decide((0.0, 0.0), LEGS, reach_limits=WIDE)
-        assert decision.step is None
-        assert decision.capture_pt == (0.0, 0.0)
-        assert decision.capture_distance_m == 0.0
+    def test_stride_samples_span_the_measured_carrier_band(self):
+        # At least one undisturbed sample must sit inside the LIVE-measured
+        # 0.101–0.131 m absolute band, or the pin above is weaker than the
+        # real failure.
+        absolutes = [
+            math.hypot(*capture_point(m, COM_H)) for m in STRIDE_SAMPLES
+        ]
+        assert any(0.101 <= a <= 0.131 for a in absolutes)
 
-    def test_exactly_at_threshold_stays_closed(self):
-        # The gate fires strictly ABOVE threshold.  Build the threshold from
-        # the identical computation path so the equality is byte-exact.
-        vel = (0.0, 0.4)
-        cp = capture_point(vel, COM_H)
-        distance = math.hypot(cp[0], cp[1])
-        reflex = StepReflex(com_height_m=COM_H, threshold_m=distance)
-        assert reflex.decide(vel, LEGS, reach_limits=WIDE).step is None
-
-    def test_pass_through_offsets_are_the_same_object(self):
-        offsets = {"FL": 0.01, "FR": -0.01, "RL": 0.0, "RR": 0.0}
+    def test_push_on_top_of_nominal_opens_the_gate(self):
+        # The same walking carrier plus a lateral shove: deviation is the
+        # shove alone, and it must fire.  0.50 m/s of deviation at Go2 ride
+        # height is ~0.089 m of deviation capture point — inside the
+        # measured 0.058–0.087 push band's upper edge.
         reflex = StepReflex(com_height_m=COM_H)
         decision = reflex.decide(
-            (0.05, 0.0), LEGS, reach_limits=WIDE, leg_height_offsets=offsets,
+            (0.60, 0.50), LEGS,
+            nominal_vel_xy=NOMINAL_WALK, reach_limits=WIDE,
         )
-        assert decision.leg_height_offsets is offsets  # identity, not a copy
-        assert decision.step is None
+        assert decision.stepping
+        expected = 0.50 * math.sqrt(COM_H / GRAVITY_MPS2)
+        assert decision.deviation_distance_m == pytest.approx(
+            expected, rel=1e-12,
+        )
 
-    def test_lateral_push_steps_in_the_push_direction(self):
-        # A +Y (leftward) shove: the step target must displace to +Y by the
-        # closed-form LIP magnitude — with wide limits, exactly v*sqrt(z/g).
+    def test_trim_ceiling_push_during_walk_fires(self):
+        # 5 N*s on 12 kg — the measured inversion ceiling of the trim-only
+        # stack — delivered laterally during the nominal walk.  Unopposed
+        # dv = 0.4167 m/s -> ~0.074 m of deviation capture point: above the
+        # default gate, so the reflex engages before the trim's ceiling.
+        dv = velocity_from_impulse((0.0, 5.0), 12.0)
+        measured = (NOMINAL_WALK[0] + dv[0], NOMINAL_WALK[1] + dv[1])
+        decision = StepReflex(com_height_m=COM_H).decide(
+            measured, LEGS, nominal_vel_xy=NOMINAL_WALK, reach_limits=WIDE,
+        )
+        assert decision.stepping
+        assert decision.deviation_distance_m > DEFAULT_DEVIATION_THRESHOLD_M
+
+    def test_deviation_direction_is_the_push_not_the_walk(self):
+        # Lateral push during forward walk: the deviation capture point must
+        # be PURELY lateral — zero forward component — even though the body
+        # is moving forward the whole time.
+        decision = StepReflex(com_height_m=COM_H).decide(
+            (0.60, 0.50), LEGS,
+            nominal_vel_xy=NOMINAL_WALK, reach_limits=WIDE,
+        )
+        assert decision.deviation_vel_xy == pytest.approx(
+            (0.0, 0.50), abs=1e-15,
+        )
+        assert decision.deviation_capture_pt[0] == pytest.approx(
+            0.0, abs=1e-15,
+        )
+        assert decision.deviation_capture_pt[1] == pytest.approx(
+            0.50 * math.sqrt(COM_H / GRAVITY_MPS2), rel=1e-12,
+        )
+
+    def test_falling_behind_the_gait_is_a_backward_disturbance(self):
+        # Tripped/blocked: measured well below commanded.  The deviation
+        # points -X, the gate opens, and the sign is preserved end-to-end.
+        decision = StepReflex(com_height_m=COM_H).decide(
+            (0.20, 0.0), LEGS,
+            nominal_vel_xy=NOMINAL_WALK, reach_limits=WIDE,
+        )
+        assert decision.deviation_vel_xy == pytest.approx(
+            (-0.40, 0.0), rel=1e-12,
+        )
+        assert decision.deviation_capture_pt[0] < 0.0
+        assert decision.stepping
+
+    def test_step_targets_the_total_capture_point_arrest(self):
+        # When the gate opens the step is an arrest-to-stand: with wide
+        # limits the landing point is exactly the TOTAL-velocity capture
+        # point (carrier + disturbance), the LIP point that brings the whole
+        # body to rest.  (This policy is NOT live-validated — see module
+        # docstring — but it must at least be the policy the code claims.)
+        measured = (0.60, 0.50)
+        decision = StepReflex(com_height_m=COM_H).decide(
+            measured, LEGS, nominal_vel_xy=NOMINAL_WALK, reach_limits=WIDE,
+        )
+        assert decision.step is not None
+        total_cp = capture_point(measured, COM_H)
+        assert decision.step.foot_target == pytest.approx(total_cp, rel=1e-12)
+        assert decision.step.residual_m == pytest.approx(0.0, abs=1e-12)
+        assert decision.capture_pt == pytest.approx(total_cp, rel=1e-12)
+
+    def test_standing_body_degenerates_to_absolute_gating(self):
+        # nominal (0,0) is the honest nominal for a stand — and there the
+        # deviation gate IS the absolute gate: a lateral shove steps in the
+        # shove direction by the closed-form LIP magnitude.
         vel = (0.0, 0.6)
         reflex = StepReflex(com_height_m=COM_H)
-        decision = reflex.decide(vel, LEGS, reach_limits=WIDE)
+        decision = reflex.decide(
+            vel, LEGS, nominal_vel_xy=(0.0, 0.0), reach_limits=WIDE,
+        )
         assert decision.step is not None
         expected_y = 0.6 * math.sqrt(COM_H / GRAVITY_MPS2)
         assert decision.step.foot_target[0] == pytest.approx(0.0, abs=1e-15)
@@ -237,29 +388,81 @@ class TestGate:
         assert decision.step.leg in ("FL", "RL")  # a left-side leg
         assert decision.step.residual_m == pytest.approx(0.0, abs=1e-15)
 
-    def test_measured_impulse_drives_the_same_decision(self):
-        # 7.2 N*s lateral on a 12 kg body = 0.6 m/s — above the ~5 N*s
-        # envelope the trim handles, so the reflex must engage.
-        vel = velocity_from_impulse((0.0, 7.2), 12.0)
-        assert vel == pytest.approx((0.0, 0.6), rel=1e-12)
-        decision = StepReflex(com_height_m=COM_H).decide(
-            vel, LEGS, reach_limits=WIDE,
+    def test_zero_deviation_zero_velocity_no_step(self):
+        reflex = StepReflex(com_height_m=COM_H)
+        decision = reflex.decide(
+            (0.0, 0.0), LEGS, nominal_vel_xy=(0.0, 0.0), reach_limits=WIDE,
         )
-        assert decision.stepping
+        assert decision.step is None
+        assert decision.deviation_capture_pt == (0.0, 0.0)
+        assert decision.deviation_distance_m == 0.0
+
+    def test_exactly_at_threshold_stays_closed(self):
+        # The gate fires strictly ABOVE threshold.  Build the threshold from
+        # the identical computation path so the equality is byte-exact.
+        measured, nominal = (0.60, 0.40), NOMINAL_WALK
+        dev = velocity_deviation(measured, nominal)
+        cp = capture_point(dev, COM_H)
+        distance = math.hypot(cp[0], cp[1])
+        reflex = StepReflex(com_height_m=COM_H, threshold_m=distance)
+        decision = reflex.decide(
+            measured, LEGS, nominal_vel_xy=nominal, reach_limits=WIDE,
+        )
+        assert decision.step is None
+
+    def test_pass_through_offsets_are_the_same_object(self):
+        offsets = {"FL": 0.01, "FR": -0.01, "RL": 0.0, "RR": 0.0}
+        reflex = StepReflex(com_height_m=COM_H)
+        decision = reflex.decide(
+            (0.62, 0.02), LEGS,
+            nominal_vel_xy=NOMINAL_WALK, reach_limits=WIDE,
+            leg_height_offsets=offsets,
+        )
+        assert decision.leg_height_offsets is offsets  # identity, not a copy
+        assert decision.step is None
 
     def test_clamped_step_reports_honest_residual(self):
         limits = ReachLimits(max_dx=0.1, max_dy=0.1)
-        vel = (0.0, 1.5)  # violent shove: capture point beyond every reach
+        measured = (0.60, 1.50)  # violent shove during the walk
         reflex = StepReflex(com_height_m=COM_H)
-        decision = reflex.decide(vel, LEGS, reach_limits=limits)
+        decision = reflex.decide(
+            measured, LEGS, nominal_vel_xy=NOMINAL_WALK, reach_limits=limits,
+        )
         assert decision.step is not None
-        cp = capture_point(vel, COM_H)
+        cp = capture_point(measured, COM_H)
         tx, ty = decision.step.foot_target
         assert decision.step.residual_m == pytest.approx(
             math.hypot(tx - cp[0], ty - cp[1]), rel=1e-12,
         )
         assert decision.step.residual_m > 0.0
 
+
+class TestNominalIsRequired:
+    """The API must fail LOUDLY without a nominal — never fall back to the
+    absolute-velocity behavior that measured 0/6 upright undisturbed."""
+
+    def test_old_call_shape_without_nominal_raises_type_error(self):
+        # The exact call every pre-revision caller makes.  It must not run.
+        reflex = StepReflex(com_height_m=COM_H)
+        with pytest.raises(TypeError):
+            reflex.decide((0.60, 0.0), LEGS, reach_limits=WIDE)
+
+    def test_nominal_none_raises_with_an_explanation(self):
+        reflex = StepReflex(com_height_m=COM_H)
+        with pytest.raises(ValueError, match="0/6"):
+            reflex.decide(
+                (0.60, 0.0), LEGS, nominal_vel_xy=None, reach_limits=WIDE,
+            )
+
+    def test_nominal_wrong_arity_raises(self):
+        reflex = StepReflex(com_height_m=COM_H)
+        with pytest.raises(ValueError, match="nominal_vel_xy"):
+            reflex.decide(
+                (0.60, 0.0), LEGS, nominal_vel_xy=(0.6,), reach_limits=WIDE,
+            )
+
+
+class TestConfig:
     def test_config_validation(self):
         with pytest.raises(ValueError, match="com_height_m"):
             StepReflex(com_height_m=0.0)
@@ -268,14 +471,30 @@ class TestGate:
         with pytest.raises(ValueError, match="g_mps2"):
             StepReflex(com_height_m=COM_H, g_mps2=0.0)
 
-    def test_default_threshold_sits_below_measured_inversion(self):
-        # The trim-only stack inverts above ~5 N*s (~0.42 m/s on 12 kg,
-        # ~0.07 m capture excursion at Go2 ride height).  The default gate
-        # must open BEFORE that regime, not at it.
-        excursion = math.hypot(
+    def test_default_gate_sits_below_the_measured_push_signal(self):
+        # The gate must catch the WEAKEST measured signature of a
+        # trim-ceiling push (5 N*s adds 0.058–0.087 m of capture point, and
+        # a push survives into deviation space at full size).
+        assert (
+            DEFAULT_DEVIATION_THRESHOLD_M < MEASURED_PUSH_CONTRIBUTION_LOW_M
+        )
+        # Cross-check against the closed form: 5 N*s / 12 kg at Go2 ride
+        # height lands inside the measured band, above the gate.
+        closed_form = math.hypot(
             *capture_point(velocity_from_impulse((5.0, 0.0), 12.0), COM_H)
         )
-        assert DEFAULT_CAPTURE_THRESHOLD_M < excursion
+        assert (
+            MEASURED_PUSH_CONTRIBUTION_LOW_M
+            <= closed_form
+            <= MEASURED_PUSH_CONTRIBUTION_HIGH_M
+        )
+        assert DEFAULT_DEVIATION_THRESHOLD_M < closed_form
+
+    def test_default_gate_is_not_the_disproven_absolute_default(self):
+        # 0.05 m ABSOLUTE was measured killing the gait.  The deviation gate
+        # is a different signal, but shipping the same number would invite
+        # the same copy-paste back into absolute gating; pin the separation.
+        assert DEFAULT_DEVIATION_THRESHOLD_M != DISPROVEN_ABSOLUTE_GATE_M
 
 
 # --------------------------------------------------------------------------
@@ -308,6 +527,18 @@ _PIN_QUATS = (
 # effect of another change, that change just altered the shipped gait.
 _PIN_DIGEST = "6e5d1be2da70dbb59b79afad9dd409e76e6ebf04b636c679728e4bf8646af131"
 
+# The layered pin below runs the reflex AT WALKING SPEED: each measured
+# sample's absolute capture point exceeds the disproven 0.05 m gate, so the
+# old code would have fired on every tick of this very trace.  The deviation
+# gate must stay shut and the trim bytes must not move.
+_PIN_MEASURED_VELS = (
+    (0.62, -0.03),
+    (0.55, 0.04),
+    (0.71, 0.02),
+    (0.58, -0.05),
+    (0.66, 0.03),
+)
+
 
 def _trim_trace() -> list[dict]:
     stab = AttitudeStabilizer()
@@ -337,19 +568,26 @@ class TestUndisturbedRegression:
 
     def test_layered_reflex_under_gate_changes_nothing(self):
         # Run the identical attitude history twice: bare trim, and trim with
-        # the reflex layered on at sub-threshold velocity.  The trim bytes
-        # must be identical, and the offsets objects the very same dicts.
+        # the reflex layered on at WALKING speed with the nominal supplied.
+        # The trim bytes must be identical, and the offsets objects the very
+        # same dicts.  This is the live 2026-07-17 failure condition
+        # replayed against the corrected gate.
         bare = _trim_trace()
 
         stab = AttitudeStabilizer()
         reflex = StepReflex(com_height_m=COM_H)
         layered = []
-        for quat in _PIN_QUATS:
+        for quat, measured in zip(_PIN_QUATS, _PIN_MEASURED_VELS):
+            # Each sample would have tripped the disproven absolute gate.
+            absolute = math.hypot(*capture_point(measured, COM_H))
+            assert absolute > DISPROVEN_ABSOLUTE_GATE_M
+
             c = stab.update(quat, 0.02)
             offsets = c.leg_height_offsets(LEGS)
             decision = reflex.decide(
-                (0.02, -0.01),  # undisturbed-walk drift, far under the gate
+                measured,
                 LEGS,
+                nominal_vel_xy=NOMINAL_WALK,
                 reach_limits=WIDE,
                 leg_height_offsets=offsets,
             )
@@ -380,18 +618,30 @@ class TestUndisturbedRegression:
 def _reflex_payload() -> dict:
     reflex = StepReflex(com_height_m=COM_H)
     limits = ReachLimits(max_dx=0.1, max_dy=0.08)
-    velocities = (
-        (0.0, 0.0), (0.03, -0.02), (0.0, 0.6), (-0.5, 0.4), (1.5, 0.0),
+    cases = (
+        # (measured, nominal)
+        ((0.0, 0.0), (0.0, 0.0)),       # standing, captured — closed
+        ((0.62, -0.03), NOMINAL_WALK),  # walking at nominal — closed
+        ((0.60, 0.50), NOMINAL_WALK),   # lateral shove on the walk — fires
+        ((0.20, 0.0), NOMINAL_WALK),    # blocked/tripped — fires backward
+        ((0.0, 0.6), (0.0, 0.0)),       # standing shove — fires
+        ((-0.5, 0.4), (0.0, 0.0)),      # standing diagonal shove — fires
+        ((2.1, 0.0), NOMINAL_WALK),     # violent — clamped, honest residual
     )
     return {
         "decisions": [
             reflex.decide(
-                v, LEGS, reach_limits=limits,
+                measured, LEGS,
+                nominal_vel_xy=nominal, reach_limits=limits,
                 leg_height_offsets={"FL": 0.01, "FR": -0.01},
             ).as_dict()
-            for v in velocities
+            for measured, nominal in cases
         ],
-        "capture": [list(capture_point(v, COM_H)) for v in velocities],
+        "deviation": [
+            list(velocity_deviation(measured, nominal))
+            for measured, nominal in cases
+        ],
+        "capture": [list(capture_point(m, COM_H)) for m, _ in cases],
     }
 
 
