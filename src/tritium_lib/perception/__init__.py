@@ -51,6 +51,10 @@ from tritium_lib.perception.depth_codec import (
     decode_depth16_png,
     encode_depth16_png,
 )
+from tritium_lib.perception.stream_sync import (
+    ApproximateTimeSync,
+    SyncedFrames,
+)
 from tritium_lib.perception.multipart import (
     MultipartPart,
     boundary_from_content_type,
@@ -96,6 +100,8 @@ __all__ = [
     "MultipartPart",
     "boundary_from_content_type",
     "iter_multipart",
+    "ApproximateTimeSync",
+    "SyncedFrames",
     "CameraWorldPose",
     "GroundCameraModel",
     "place_detections_on_map",
