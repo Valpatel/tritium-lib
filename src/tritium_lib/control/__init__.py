@@ -32,6 +32,9 @@ from tritium_lib.control.route_trace import (
     RouteScore,
     score_route_trace,
 )
+from tritium_lib.control.stride_filter import (
+    StrideFilter,
+)
 from tritium_lib.control.yaw_rate_loop import (
     YawRateCorrection,
     YawRateLoop,
@@ -57,6 +60,7 @@ __all__ = [
     "RecoveryScore",
     "RouteScore",
     "StrideBias",
+    "StrideFilter",
     "TwistCommand",
     "differential_stride",
     "kick_landed",
