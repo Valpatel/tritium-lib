@@ -121,6 +121,17 @@ class CameraDetection(BaseModel):
     confidence: float = Field(0.0, ge=0.0, le=1.0)  # 0.0 to 1.0
     bbox: BoundingBox = Field(default_factory=BoundingBox)
     timestamp: Optional[datetime] = None
+    # Depth enrichment (optional — set by perception.depth when an aligned
+    # depth frame is available, e.g. Isaac Sim or an RGB-D sensor).
+    range_m: Optional[float] = Field(
+        None, ge=0.0, description="Range to the object in metres, from depth"
+    )
+    camera_xyz: Optional[tuple[float, float, float]] = Field(
+        None,
+        description=(
+            "Camera-frame 3D point (metres): +x right, +y down, +z forward"
+        ),
+    )
 
     @property
     def is_high_confidence(self) -> bool:

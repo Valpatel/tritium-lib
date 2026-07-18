@@ -7,6 +7,7 @@ L0: Quality gate (sharpness, brightness)
 L1: Complexity (edge density)
 L2: Motion (frame diff)
 L3: Object detection (frame -> bounding-box detections -> world position)
+L3+: Depth enrichment (aligned depth frame -> range_m + camera-frame xyz)
 Plus: LLM chat API client, regex fact extraction from conversation.
 
 Framework-free: pure OpenCV/numpy/stdlib. The LLM host is injected via
@@ -37,6 +38,12 @@ from tritium_lib.perception.detector import (
     resolve_onnx_model,
     yolo_available,
 )
+from tritium_lib.perception.depth import (
+    CameraIntrinsics,
+    deproject_pixel,
+    enrich_detections_with_depth,
+    range_for_bbox,
+)
 from tritium_lib.perception.projection import GroundCameraModel
 from tritium_lib.perception.pipeline import FrameDetectionPipeline
 from tritium_lib.perception.extraction import extract_facts, extract_person_name
@@ -58,6 +65,10 @@ __all__ = [
     "FrameObjectDetector",
     "OnnxYoloDetector",
     "YoloObjectDetector",
+    "CameraIntrinsics",
+    "deproject_pixel",
+    "enrich_detections_with_depth",
+    "range_for_bbox",
     "GroundCameraModel",
     "FrameDetectionPipeline",
     "available_backends",
