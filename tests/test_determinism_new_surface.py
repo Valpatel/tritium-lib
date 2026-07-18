@@ -15,6 +15,8 @@ to the recently landed modules:
   * ``perception/depth_pipeline`` — ``process_depth_frame``
   * ``tracking/engagement``     — ``ShotEvent`` / ``EngagementLog``
   * ``models/body``             — ``intent_from_motors`` / ``motors_from_intent``
+  * ``control/step_reflex``     — ``capture_point`` / ``step_target`` /
+                                  ``StepReflex.decide``
 
 Four guarantees, each tested honestly:
 
@@ -55,6 +57,14 @@ import numpy as np
 import pytest
 
 import tritium_lib.geo as geo
+from tritium_lib.control import (
+    LegPlacement,
+    ReachLimits,
+    StepReflex,
+    capture_point,
+    step_target,
+    velocity_from_impulse,
+)
 from tritium_lib.geo.camera_mount import CameraMount
 from tritium_lib.geo.hitscan import (
     BoxTarget,
@@ -325,6 +335,42 @@ def _body_payload() -> dict:
     }
 
 
+_REFLEX_LEGS = (
+    LegPlacement("FL", 0.19, 0.13),
+    LegPlacement("FR", 0.19, -0.13),
+    LegPlacement("RL", -0.19, 0.13),
+    LegPlacement("RR", -0.19, -0.13),
+)
+
+
+def _step_reflex_payload() -> dict:
+    limits = ReachLimits(max_dx=0.1, max_dy=0.08)
+    reflex = StepReflex(com_height_m=0.31)
+    velocities = (
+        (0.0, 0.0),        # captured — gate closed
+        (0.03, -0.02),     # undisturbed drift — gate closed
+        (0.0, 0.6),        # lateral shove — steps, tie broken by input order
+        (-0.5, 0.4),       # diagonal shove — steps
+        (1.5, 0.0),        # violent shove — clamped, honest residual
+    )
+    return {
+        "capture": [
+            list(capture_point(v, 0.31)) for v in velocities
+        ] + [list(capture_point((0.42, -0.15), 0.36, 9.81))],
+        "impulse_velocity": list(velocity_from_impulse((5.0, -2.4), 12.0)),
+        "step_target": list(
+            step_target(_REFLEX_LEGS, (0.05, 0.30), reach_limits=limits)
+        ),
+        "decisions": [
+            reflex.decide(
+                v, _REFLEX_LEGS, reach_limits=limits,
+                leg_height_offsets={"FL": 0.01, "FR": -0.01},
+            ).as_dict()
+            for v in velocities
+        ],
+    }
+
+
 def build_payload() -> dict:
     """Every pinned surface, computed from constants — no time, no randomness."""
     return {
@@ -335,6 +381,7 @@ def build_payload() -> dict:
         "pipeline": _pipeline_payload(),
         "engagement": _engagement_payload(),
         "body": _body_payload(),
+        "step_reflex": _step_reflex_payload(),
     }
 
 
@@ -360,7 +407,7 @@ class TestRepeatability:
         payload = build_payload()
         assert set(payload) == {
             "gait", "hitscan", "depth", "projection", "pipeline",
-            "engagement", "body",
+            "engagement", "body", "step_reflex",
         }
         # The gait section must emit all 12 canonical joints.
         sample = payload["gait"]["trot_None"][0]
@@ -622,6 +669,44 @@ class TestEngagementPins:
         assert len(log) == 4
         stats = log.stats()
         assert stats == {"shots": 4, "hits": 4, "accuracy": 1.0}
+
+
+class TestStepReflexPins:
+    def test_capture_point_pins(self):
+        cx, cy = capture_point((0.42, -0.15), 0.31)
+        assert cx == pytest.approx(0.07467406604068445, rel=REL)
+        assert cy == pytest.approx(-0.02666930930024445, rel=REL)
+
+    def test_step_target_clamps_to_pinned_corner(self):
+        leg, target = step_target(
+            _REFLEX_LEGS, (0.05, 0.30),
+            reach_limits=ReachLimits(max_dx=0.1, max_dy=0.1),
+        )
+        assert leg == "FL"
+        assert target[0] == pytest.approx(0.09, rel=REL)
+        assert target[1] == pytest.approx(0.23, rel=REL)
+
+    def test_gated_decision_pins(self):
+        reflex = StepReflex(com_height_m=0.31)
+        quiet = reflex.decide(
+            (0.03, -0.02), _REFLEX_LEGS,
+            reach_limits=ReachLimits(max_dx=0.1, max_dy=0.08),
+        )
+        assert quiet.step is None
+        shoved = reflex.decide(
+            (0.0, 0.6), _REFLEX_LEGS,
+            reach_limits=ReachLimits(max_dx=0.1, max_dy=0.08),
+        )
+        assert shoved.step is not None
+        assert shoved.capture_distance_m == pytest.approx(
+            0.1066772372009778, rel=REL,
+        )
+        assert shoved.step.leg == "FL"
+        assert shoved.step.foot_target[0] == pytest.approx(0.09, rel=REL)
+        assert shoved.step.foot_target[1] == pytest.approx(
+            0.1066772372009778, rel=REL,
+        )
+        assert shoved.step.residual_m == pytest.approx(0.09, rel=REL)
 
 
 class TestBodyPins:
