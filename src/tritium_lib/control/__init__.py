@@ -20,10 +20,20 @@ from tritium_lib.control.attitude_stabilizer import (
     LegPlacement,
     roll_pitch_deg,
 )
+from tritium_lib.control.disturbance import (
+    DisturbanceSchedule,
+    Impulse,
+    RecoveryScore,
+    score_recovery,
+)
 
 __all__ = [
     "AttitudeCorrection",
     "AttitudeStabilizer",
+    "DisturbanceSchedule",
+    "Impulse",
     "LegPlacement",
+    "RecoveryScore",
     "roll_pitch_deg",
+    "score_recovery",
 ]
