@@ -47,9 +47,31 @@ from tritium_lib.control.waypoint_follower import (
     TwistCommand,
     differential_stride,
 )
+from tritium_lib.control.teleop import (
+    AxisMap,
+    GamepadState,
+    SlewLimiter,
+    TeleopProfile,
+    TeleopWatchdog,
+    apply_deadzone,
+    apply_expo,
+    shape_axis,
+    twist_command_from_intent,
+    twist_from_stick,
+)
 
 __all__ = [
     "AttitudeCorrection",
+    "AxisMap",
+    "GamepadState",
+    "SlewLimiter",
+    "TeleopProfile",
+    "TeleopWatchdog",
+    "apply_deadzone",
+    "apply_expo",
+    "shape_axis",
+    "twist_command_from_intent",
+    "twist_from_stick",
     "AttitudeStabilizer",
     "DisturbanceSchedule",
     "FollowState",
