@@ -41,7 +41,7 @@ from dataclasses import dataclass
 
 from .isaac_frame import LocalPose
 
-__all__ = ["CameraMount"]
+__all__ = ["AdvertisedMount", "CameraMount", "parse_advertised_mount"]
 
 # Points per arc when tessellating the field-of-view sector.  Sixteen segments
 # hold a 180-degree arc to well under a pixel at map zoom, and the polygon is
@@ -214,3 +214,129 @@ class CameraMount:
         else:
             xyz = (self.forward_m, self.up_m, -self.left_m)
         return (xyz[0] * scale, xyz[1] * scale, xyz[2] * scale)
+
+
+# --- Self-describing camera servers ----------------------------------------
+#
+# A camera process that renders from a body-parented lens is the only party
+# that knows the mount for certain -- it is the geometry it just rendered
+# with.  Making the consumer re-enter those numbers by hand creates a second
+# copy of one truth, and the two drift silently: the operator sees a picture
+# taken from the robot's nose and a cone drawn from its tail, with nothing in
+# the system able to notice.  So the server ADVERTISES its mount and this is
+# the parse of that advertisement.
+#
+# The parse is deliberately forgiving about everything except the one fact
+# that matters -- whether this camera rides a body at all.  A malformed offset
+# should degrade to zero, not discard the attachment; but a document with no
+# body named in it must NOT produce a mount, because binding a feed to an
+# empty target id makes the map cone vanish with no error anywhere.
+
+#: Keys a parsed mount writes into a feed's stored config, matching what the
+#: camera-feeds registration and its attachment PATCH already accept.
+_EXTRA_KEYS = {
+    "forward_m": "mount_forward_m",
+    "left_m": "mount_left_m",
+    "up_m": "mount_up_m",
+    "pan_deg": "mount_pan_deg",
+    "tilt_deg": "mount_tilt_deg",
+}
+
+
+@dataclass(frozen=True)
+class AdvertisedMount:
+    """What a camera server said about the body it is bolted to.
+
+    Attributes:
+        mount: the rigid body->lens transform, ready to pose a FOV cone.
+        attach_to: tracked-target id of the body, when the server knows it.
+            ``None`` means "rides a body we cannot name yet" -- the operator
+            still has to say which tracked target that prim corresponds to.
+        prim: the simulator scene path the render camera is parented under,
+            carried through for provenance and for operator display.
+    """
+
+    mount: CameraMount
+    attach_to: str | None = None
+    prim: str | None = None
+
+    def to_feed_extra(self) -> dict:
+        """The mount as camera-feed config keys.
+
+        ``attach_to`` is OMITTED rather than set to ``None`` when unknown: a
+        present-but-null key reads downstream as an attachment whose target
+        lookup fails forever, which shows as a permanently stale cone.
+        """
+        extra: dict = {
+            "fov_angle": self.mount.hfov_deg,
+            "fov_range": self.mount.range_m,
+        }
+        for field, key in _EXTRA_KEYS.items():
+            extra[key] = getattr(self.mount, field)
+        if self.attach_to:
+            extra["attach_to"] = self.attach_to
+        return extra
+
+
+def _num(source: dict, key: str, default: float) -> float:
+    """A float from an untrusted document, or the default.
+
+    Covers the three ways this goes wrong off a socket: the key is absent,
+    the value is JSON null (an unset command-line default serializes that
+    way), or the value is a string a different version wrote.
+    """
+    try:
+        value = source.get(key)
+        return default if value is None else float(value)
+    except (AttributeError, TypeError, ValueError):
+        return default
+
+
+def _text(source: dict, key: str) -> str | None:
+    value = source.get(key)
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def parse_advertised_mount(status: object) -> AdvertisedMount | None:
+    """Read a camera server's ``/status`` document as a body mount.
+
+    Returns ``None`` -- meaning "an ordinary fixed camera" -- for any
+    document that does not name a body, including junk that is not a mapping
+    at all.  Callers treat ``None`` as "leave the operator's pose alone",
+    so this must never raise on a response it did not expect.
+    """
+    if not isinstance(status, dict):
+        return None
+    mount_doc = status.get("mount")
+    if not isinstance(mount_doc, dict):
+        return None
+
+    attach_to = _text(mount_doc, "attach_to")
+    prim = _text(mount_doc, "prim")
+    if not attach_to and not prim:
+        # Offsets with nothing to hang them off. Not a mount.
+        return None
+
+    # FOV describes the render, not the bracket, so it sits at the top level
+    # of /status next to width/height -- the same keys a wall camera uses.
+    hfov = _num(status, "fov_angle", 90.0)
+    if not 0.0 < hfov < 360.0:
+        hfov = 90.0
+    range_m = _num(status, "fov_range", 50.0)
+    if range_m < 0.0:
+        range_m = 50.0
+
+    mount = CameraMount(
+        forward_m=_num(mount_doc, "forward_m", 0.0),
+        left_m=_num(mount_doc, "left_m", 0.0),
+        up_m=_num(mount_doc, "up_m", 0.0),
+        pan_deg=_num(mount_doc, "pan_deg", 0.0),
+        tilt_deg=_num(mount_doc, "tilt_deg", 0.0),
+        hfov_deg=hfov,
+        vfov_deg=hfov * 0.6,
+        range_m=range_m,
+    )
+    return AdvertisedMount(mount=mount, attach_to=attach_to, prim=prim)
