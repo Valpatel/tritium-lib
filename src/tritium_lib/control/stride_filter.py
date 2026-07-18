@@ -23,14 +23,22 @@ filter does that; a first-order low-pass with the same corner leaves the
 fundamental at -3 dB and every harmonic above it partly intact.
 
 **The cost, stated up front because it bounds what any loop built on this can
-do.**  A boxcar's group delay is exactly half its window.  On a Go2 trotting
-at a 0.3 m/s cruise the stride is 0.52 Hz — a 1.923 s period — so the filter
-costs ~0.96 s of delay.  A feedback loop cannot be faster than the delay in
-its own measurement path, so this filter caps the achievable rate-loop
-bandwidth at a small fraction of 1 Hz.  That is not a defect of the filter; it
-is the honest statement of a real constraint: **you cannot close a yaw-rate
-loop faster than the gait it rides on.**  A caller wanting a fast loop must
-raise the stride frequency, not lower the window.
+do.**  A boxcar's group delay is exactly half its window.  The Go2 gait these
+runs use trots at 0.975 Hz — a 1.026 s period — so the filter costs ~0.51 s of
+delay.  A feedback loop cannot be faster than the delay in its own measurement
+path, so this filter caps the achievable rate-loop bandwidth at a fraction of
+1 Hz.  That is not a defect of the filter; it is the honest statement of a
+real constraint: **you cannot close a yaw-rate loop faster than the gait it
+rides on.**  A caller wanting a fast loop must raise the stride frequency, not
+lower the window.
+
+Note that a quadruped's stride frequency is set by the *gait*, which is not
+necessarily the follower's commanded cruise — on this driver the two are
+decoupled (a gait table generated at 0.6 m/s while pure pursuit cruises at
+0.3).  That is exactly why :meth:`from_stride_hz` takes the frequency as an
+argument instead of deriving it from a speed: the null belongs on the
+frequency the body actually emits, and only the caller holding the gait knows
+what that is.
 
 Consequently this class is also useful *without* any loop at all, purely as
 the honest way to measure a legged body's steering authority offline — the
