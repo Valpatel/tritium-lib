@@ -36,6 +36,7 @@ from __future__ import annotations
 import pytest
 
 from tritium_lib.geo.collider_shape import (
+    ground_slab,
     ShapeReport,
     aabb_extent,
     check_convex_hull_input,
@@ -252,3 +253,58 @@ def test_the_validate_message_explains_the_consequence() -> None:
     message = str(excinfo.value).lower()
     assert "coplanar" in message
     assert "hull" in message
+
+
+# --- ground slab -------------------------------------------------------------
+#
+# The guard above tells an author their ground is unhullable.  These tests
+# cover the other half: handing them one that is not, with the surface where
+# they actually want to stand on it.
+
+
+def test_ground_slab_is_hullable() -> None:
+    """The whole reason this builder exists — the quad it replaces is not."""
+    slab = ground_slab()
+    assert check_convex_hull_input(slab.vertices).is_hullable
+    assert check_convex_hull_input(slab.vertices).rank == 3
+
+
+def test_ground_slab_puts_its_walkable_surface_at_the_requested_height() -> None:
+    """A floor is specified by the plane you stand on, not by its centroid.
+
+    Authoring a box by centre is the step where thickness silently drops the
+    surface by half a slab, which lands a robot in the floor.
+    """
+    slab = ground_slab(top_z=0.0, thickness_m=1.0)
+    assert slab.top_z == pytest.approx(0.0)
+    assert slab.center[2] == pytest.approx(-0.5)
+    assert max(v[2] for v in slab.vertices) == pytest.approx(0.0)
+
+
+def test_ground_slab_honours_a_raised_surface() -> None:
+    slab = ground_slab(top_z=2.5, thickness_m=0.4)
+    assert slab.top_z == pytest.approx(2.5)
+    assert slab.center[2] == pytest.approx(2.3)
+    assert max(v[2] for v in slab.vertices) == pytest.approx(2.5)
+
+
+def test_ground_slab_footprint_is_square_and_centred() -> None:
+    slab = ground_slab(size_m=50.0)
+    assert slab.half_extents[0] == pytest.approx(25.0)
+    assert slab.half_extents[1] == pytest.approx(25.0)
+    assert aabb_extent(slab.vertices)[0] == pytest.approx(50.0)
+
+
+def test_ground_slab_has_eight_corners() -> None:
+    assert len(ground_slab().vertices) == 8
+
+
+def test_ground_slab_refuses_zero_thickness() -> None:
+    """Thickness 0 rebuilds the exact bug this module exists to prevent."""
+    with pytest.raises(ValueError, match="thickness"):
+        ground_slab(thickness_m=0.0)
+
+
+def test_ground_slab_refuses_a_zero_footprint() -> None:
+    with pytest.raises(ValueError, match="size"):
+        ground_slab(size_m=0.0)

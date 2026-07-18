@@ -52,7 +52,9 @@ from dataclasses import dataclass
 __all__ = [
     "ShapeReport",
     "aabb_extent",
+    "SlabSpec",
     "check_convex_hull_input",
+    "ground_slab",
     "validate_convex_hull_input",
 ]
 
@@ -247,4 +249,73 @@ def validate_convex_hull_input(
         f"collider {name!r} cannot be convex-hulled: {report.reason} "
         f"(rank {report.rank}, extent {report.extent}). A physics backend that "
         f"hulls its collision shapes will fail on this, and may do so silently."
+    )
+
+
+# --- ground slab -------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SlabSpec:
+    """A box a scene builder can author as ground, described how ground is used.
+
+    The caller cares about one number the box form does not carry: the height of
+    the surface bodies stand on.  Authoring a box by its centre is precisely the
+    step where thickness silently sinks that surface by half a slab, so this
+    type carries ``top_z`` and derives the centre from it rather than the other
+    way round.
+
+    ``vertices`` are the eight corners, ready to hand to
+    :func:`check_convex_hull_input` — a slab always passes, and asserting that
+    in the caller's own tests costs nothing.
+    """
+
+    center: Point
+    half_extents: Point
+    top_z: float
+
+    @property
+    def vertices(self) -> list[Point]:
+        """The eight corners of the box, in stage units."""
+        cx, cy, cz = self.center
+        hx, hy, hz = self.half_extents
+        return [
+            (cx + sx * hx, cy + sy * hy, cz + sz * hz)
+            for sx in (-1.0, 1.0)
+            for sy in (-1.0, 1.0)
+            for sz in (-1.0, 1.0)
+        ]
+
+
+def ground_slab(
+    *,
+    size_m: float = 100.0,
+    thickness_m: float = 1.0,
+    top_z: float = 0.0,
+) -> SlabSpec:
+    """Ground geometry a hull solver accepts, with its surface at ``top_z``.
+
+    This is the replacement for the flat quad described at the top of this
+    module.  The footprint is unchanged from how a person would author a floor;
+    the only difference is that the shape has thickness, which takes the vertex
+    set from rank 2 to rank 3 and lets qhull seed its initial simplex.
+
+    A default 1 m thickness is far more than any solver needs numerically.  It
+    is chosen so that a fast-moving body cannot tunnel through the floor in one
+    step, which is the failure that replaces the hull failure once the hull
+    failure is fixed.
+    """
+    if thickness_m <= 0.0:
+        raise ValueError(
+            f"thickness_m must be positive, got {thickness_m!r}. A zero-thickness "
+            f"ground is the coplanar quad this builder exists to replace."
+        )
+    if size_m <= 0.0:
+        raise ValueError(f"size_m must be positive, got {size_m!r}")
+    half = size_m / 2.0
+    half_thickness = thickness_m / 2.0
+    return SlabSpec(
+        center=(0.0, 0.0, top_z - half_thickness),
+        half_extents=(half, half, half_thickness),
+        top_z=top_z,
     )
