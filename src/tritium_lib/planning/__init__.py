@@ -39,9 +39,23 @@ from .hierarchical import (
     plan_route_hierarchical,
 )
 from .layers import LocalElevationGrid, local_grid_from_gis, wgs84_to_local
+from .scene_costmap import (
+    DEFAULT_BODY_BAND,
+    SceneObstacle,
+    costmap_from_scene,
+    footprint_polygon,
+    obstacles_to_feature_collection,
+    scene_bounds,
+)
 
 __all__ = [
     "Costmap",
+    "DEFAULT_BODY_BAND",
+    "SceneObstacle",
+    "costmap_from_scene",
+    "footprint_polygon",
+    "obstacles_to_feature_collection",
+    "scene_bounds",
     "CostmapWeights",
     "CostmapBuilder",
     "LocalElevationGrid",
