@@ -319,6 +319,21 @@ class DossierStore(BaseStore):
 
     def get_dossier(self, dossier_id: str) -> dict | None:
         """Get a full dossier with its signals and enrichments."""
+        with self._lock:
+            return self._get_dossier_locked(dossier_id)
+
+    def _get_dossier_locked(self, dossier_id: str) -> dict | None:
+        """Body of :meth:`get_dossier`.  Caller must hold ``self._lock``.
+
+        Every touch of ``self._conn`` must hold the lock (BaseStore
+        contract): the single sqlite3 connection is shared across threads
+        with ``check_same_thread=False``, so an unlocked reader racing a
+        lock-holding writer interleaves the C-level statement lifecycle
+        and dies with ``InterfaceError: bad parameter or other API
+        misuse`` (SQLITE_MISUSE) — exactly the DossierManager listener
+        crash observed 2026-07-17 (find_by_identifier -> get_dossier on
+        the listener thread vs add_signal on another).
+        """
         row = self._conn.execute(
             "SELECT * FROM dossiers WHERE dossier_id = ?", (dossier_id,)
         ).fetchone()
@@ -426,16 +441,19 @@ class DossierStore(BaseStore):
         Scans the identifiers JSON column for a matching key-value pair.
         Returns the full dossier or None.
         """
-        # Use JSON extract for efficient lookup
-        rows = self._conn.execute(
-            """SELECT * FROM dossiers
-               WHERE json_extract(identifiers, ?) = ?""",
-            (f"$.{id_type}", id_value),
-        ).fetchall()
-        if not rows:
-            return None
-        # Return the first match as a full dossier
-        return self.get_dossier(rows[0]["dossier_id"])
+        # Use JSON extract for efficient lookup.  Lock + the locked
+        # get_dossier body: keeps the shared connection serialized AND
+        # makes lookup->fetch atomic (no TOCTOU with a concurrent delete).
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM dossiers
+                   WHERE json_extract(identifiers, ?) = ?""",
+                (f"$.{id_type}", id_value),
+            ).fetchall()
+            if not rows:
+                return None
+            # Return the first match as a full dossier
+            return self._get_dossier_locked(rows[0]["dossier_id"])
 
     # ------------------------------------------------------------------
     # Full-text search
@@ -449,14 +467,15 @@ class DossierStore(BaseStore):
         if not query or not query.strip():
             return []
         safe_q = '"' + query.strip().replace('"', '""') + '"'
-        rows = self._conn.execute(
-            """SELECT d.*
-               FROM dossiers d
-               JOIN dossiers_fts f ON d.rowid = f.rowid
-               WHERE dossiers_fts MATCH ?
-               ORDER BY rank""",
-            (safe_q,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT d.*
+                   FROM dossiers d
+                   JOIN dossiers_fts f ON d.rowid = f.rowid
+                   WHERE dossiers_fts MATCH ?
+                   ORDER BY rank""",
+                (safe_q,),
+            ).fetchall()
         return [self._row_to_dossier(r) for r in rows]
 
     # ------------------------------------------------------------------
@@ -477,21 +496,22 @@ class DossierStore(BaseStore):
         since:
             Only return dossiers with ``last_seen >= since``.
         """
-        if since is not None:
-            rows = self._conn.execute(
-                """SELECT * FROM dossiers
-                   WHERE last_seen >= ?
-                   ORDER BY last_seen DESC
-                   LIMIT ?""",
-                (since, limit),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """SELECT * FROM dossiers
-                   ORDER BY last_seen DESC
-                   LIMIT ?""",
-                (limit,),
-            ).fetchall()
+        with self._lock:
+            if since is not None:
+                rows = self._conn.execute(
+                    """SELECT * FROM dossiers
+                       WHERE last_seen >= ?
+                       ORDER BY last_seen DESC
+                       LIMIT ?""",
+                    (since, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT * FROM dossiers
+                       ORDER BY last_seen DESC
+                       LIMIT ?""",
+                    (limit,),
+                ).fetchall()
         return [self._row_to_dossier(r) for r in rows]
 
     # ------------------------------------------------------------------
