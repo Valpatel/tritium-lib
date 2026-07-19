@@ -38,6 +38,49 @@ Gait timing (speed, stride frequency) comes from
 :data:`~tritium_lib.models.quadruped.DEFAULT_GAITS` — the single gait table
 shared with the sim's body animation and the real dog's telemetry vocabulary.
 This module never redefines those numbers.
+
+Commanded vs realised speed — the ``speed`` contract (READ THIS)
+----------------------------------------------------------------
+``speed`` controls CADENCE (stride frequency), not ground speed, and the
+trajectory it produces CANNOT reach the commanded ground speed by
+construction.  Three facts, all verified live under Newton (2026-07):
+
+1. **Stride length is speed-invariant — the terms cancel.**  Both
+   ``stride_hz`` and the effective ``speed_mps`` scale by the same ratio
+   ``speed / spec.speed_mps``, so the commanded stride length
+   ``speed_mps / stride_hz`` collapses to the constant
+   ``spec.speed_mps / spec.stride_hz`` at EVERY commanded speed
+   (default trot: 1.6 / 2.6 = 0.6154 m).
+
+2. **The amplitude clamp pins the realised stride.**  The thigh amplitude
+   derived from that stride length (default trot: 0.769 rad) exceeds
+   ``_THIGH_AMP_MAX`` (0.45 rad), so it saturates at every commanded trot
+   speed and the achievable no-slip stride is pinned at
+   ``2 * 0.45 * body_height_m`` = 0.36 m (default profile).
+
+3. **Net: a hard no-slip ceiling of ~0.585 x commanded for default trot.**
+   Even with perfect joint tracking and infinite friction the body can
+   move at most ``achievable_stride * stride_hz`` = 0.585 x the commanded
+   speed — verified live across 0.4-3.2 m/s with the clamp saturated at
+   every point.  ``joint_targets_at(..., speed=1.2)`` can deliver at most
+   ~0.702 m/s.  (Walk: 0.823x; bound: 0.384x; ratios are per-gait and
+   per-profile — query them, below, instead of hardcoding.)
+
+Live measurement (healthy kit): 48.4% of commanded realised in practice
+(2.39x spread across trials), i.e. the sim tracks slightly under the 58.5%
+theoretical ceiling — the ceiling explains ~80.5% of the measured shortfall.
+**Do NOT "fix" this by raising ``_THIGH_AMP_MAX``**: a live sweep at x1.5
+and x2.0 thigh amplitude made realised speed WORSE (medians 0.194 and
+0.164 m/s vs 0.452 at x1.0) and tumbled the body (1/3 and 2/3 of trials
+lost upright posture).  Amplitude, stiffness, damping, torque limit, and
+friction all sit at or near their measured local optimum; the binding
+constraint is the open-loop position-controlled trot itself.  Closing the
+gap needs feedback control (a different module), not bigger constants.
+
+Callers that plan against ground speed must consult
+:meth:`QuadrupedGaitCycle.no_slip_speed_mps` /
+:func:`no_slip_speed_for` for the honest ceiling instead of assuming
+``speed`` is realised.
 """
 
 from __future__ import annotations
@@ -126,6 +169,15 @@ class QuadrupedGaitCycle:
     ``DEFAULT_GAITS`` operating point (``stride_hz`` at ``speed_mps``),
     clamped to [0.2x, 2.0x] of nominal so an absurd request degrades to a
     bounded cadence instead of a physically impossible one.
+
+    ``speed`` is COMMANDED, not realised: it sets cadence only.  Because
+    stride length is speed-invariant (the scaling cancels — see the module
+    docstring) and the derived thigh amplitude saturates ``_THIGH_AMP_MAX``
+    at the default profile, the emitted trajectory has a hard no-slip
+    ground-speed ceiling of ~0.585 x commanded for default trot (0.823x
+    walk, 0.384x bound), at every commanded speed.  Query
+    :attr:`no_slip_speed_mps` / :attr:`speed_ceiling_ratio` /
+    :attr:`thigh_amp_saturated` for the honest numbers for this instance.
     """
 
     def __init__(
@@ -169,9 +221,69 @@ class QuadrupedGaitCycle:
         # plausible band.
         stride_len_m = self.speed_mps / self.stride_hz
         raw_amp = stride_len_m / (2.0 * self.profile.body_height_m)
+        # Kept pre-clamp so the commanded-vs-realised accessors below can
+        # report whether (and by how much) the clamp binds.
+        self.raw_thigh_amp_rad = raw_amp
         self.thigh_amp_rad = min(max(raw_amp, _THIGH_AMP_MIN), _THIGH_AMP_MAX)
         self.calf_lift_rad = _CALF_LIFT_RAD
         self.hip_amp_rad = min(math.radians(self.spec.roll_amp_deg), _HIP_AMP_MAX)
+
+    # ------------------------------------------------------------------ #
+    # Commanded-vs-realised speed contract (see module docstring)
+    # ------------------------------------------------------------------ #
+
+    @property
+    def commanded_stride_m(self) -> float:
+        """Stride length (m) the commanded speed implies at this cadence.
+
+        Speed-INVARIANT by construction: cadence and effective speed scale
+        by the same ratio, so this is always ``spec.speed_mps /
+        spec.stride_hz`` regardless of the ``speed`` argument (default
+        trot: 0.6154 m).
+        """
+        return self.speed_mps / self.stride_hz
+
+    @property
+    def achievable_stride_m(self) -> float:
+        """Stride length (m) the CLAMPED thigh amplitude can actually sweep.
+
+        No-slip kinematic model (the same one the amplitude was derived
+        from, inverted): ``2 * thigh_amp_rad * body_height_m``.  With the
+        default profile the clamp saturates for every built-in gait, so
+        this is pinned at 0.36 m.
+        """
+        return 2.0 * self.thigh_amp_rad * self.profile.body_height_m
+
+    @property
+    def thigh_amp_saturated(self) -> bool:
+        """True when the derived thigh amplitude hit a clamp bound.
+
+        True for every built-in gait at the default profile — the visible
+        symptom of the speed ceiling.  ``raw_thigh_amp_rad`` holds the
+        unclamped value for diagnostics.
+        """
+        return self.thigh_amp_rad != self.raw_thigh_amp_rad
+
+    @property
+    def no_slip_speed_mps(self) -> float:
+        """Theoretical ground-speed ceiling (m/s) of this trajectory.
+
+        The body speed a PERFECT tracker with infinite friction would
+        realise: ``achievable_stride_m * stride_hz``.  Live Newton runs on
+        a healthy kit realise ~48.4% of commanded against this ~58.5%
+        trot ceiling.  Planners must compare against this, not ``speed``.
+        """
+        return self.achievable_stride_m * self.stride_hz
+
+    @property
+    def speed_ceiling_ratio(self) -> float:
+        """``no_slip_speed_mps / speed_mps`` — the honest fraction.
+
+        Constant per gait+profile at every commanded speed (default
+        profile: trot 0.585, walk 0.823, bound 0.384).  Equals 1.0 only
+        when the amplitude clamp does not bind (e.g. a taller profile).
+        """
+        return self.no_slip_speed_mps / self.speed_mps
 
     # ------------------------------------------------------------------ #
     # Core kinematics
@@ -261,6 +373,12 @@ def joint_targets_at(
     through the gait's table entry.  A USD Newton driver applies these as
     joint drive ``targetPositions`` after converting to degrees
     (``radians * 180 / pi``).
+
+    ``speed`` is COMMANDED cadence, not realised ground speed: the
+    trajectory has a hard no-slip ceiling of ~0.585 x commanded for trot
+    (see module docstring) — ``speed=1.2`` can deliver at most ~0.702 m/s
+    even under perfect tracking.  Call :func:`no_slip_speed_for` with the
+    same arguments for the honest ceiling.
     """
     key = (gait, speed)
     cycle = _CYCLE_CACHE.get(key)
@@ -268,3 +386,26 @@ def joint_targets_at(
         cycle = QuadrupedGaitCycle(gait, speed=speed)
         _CYCLE_CACHE[key] = cycle
     return cycle.angles_at_time(t)
+
+
+def no_slip_speed_for(
+    *,
+    gait: str = "trot",
+    speed: float | None = None,
+    profile: QuadrupedProfile | None = None,
+) -> float:
+    """Theoretical no-slip ground-speed ceiling (m/s) for a gait command.
+
+    The honest counterpart to :func:`joint_targets_at`: for the same
+    ``gait`` / ``speed`` arguments, returns the maximum body speed the
+    emitted trajectory can realise under PERFECT joint tracking and
+    infinite friction (``achievable_stride * stride_hz``).  Because stride
+    length is speed-invariant and the thigh-amplitude clamp saturates at
+    the default profile, this is ~0.585 x the (band-clamped) commanded
+    speed for trot at EVERY speed — e.g. ``speed=1.2`` -> ~0.702 m/s.
+    Live Newton runs on a healthy kit realise ~48.4% of commanded, i.e.
+    they track slightly under this ceiling; the ceiling accounts for
+    ~80.5% of the measured shortfall.  A planner that needs 1.2 m/s must
+    check this BEFORE dispatching, not discover it in the field.
+    """
+    return QuadrupedGaitCycle(gait, profile, speed=speed).no_slip_speed_mps

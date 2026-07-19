@@ -7,6 +7,14 @@ Pure kinematics — numpy/stdlib only, NO Isaac.  Validates the properties a
 USD Newton driver depends on: exact periodicity, trot diagonal anti-phase,
 swing-leg calf lift returning to the stand pose, plausible joint envelopes,
 and stride frequency scaling with commanded speed per DEFAULT_GAITS.
+
+Also PINS the commanded-vs-realised speed ceiling (live Newton finding,
+2026-07): stride length is speed-invariant because the speed scaling
+cancels, the thigh-amplitude clamp saturates at the default profile, and
+the resulting no-slip ceiling is exactly 0.585 x commanded for default
+trot at every speed.  If the cancellation is ever "fixed" these pins MUST
+fail loudly so the module docs, accessors, and Newton goldens get updated
+together — do not silently retune them.
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ from tritium_lib.models.gait_trajectory import (
     NEUTRAL_THIGH_RAD,
     QuadrupedGaitCycle,
     joint_targets_at,
+    no_slip_speed_for,
 )
 from tritium_lib.models.quadruped import DEFAULT_GAITS, QuadrupedProfile
 
@@ -262,3 +271,110 @@ class TestProfileAndErrors:
             QuadrupedGaitCycle("trot", tall).thigh_amp_rad
             <= QuadrupedGaitCycle("trot", short).thigh_amp_rad
         )
+
+
+# Speeds spanning the trot frequency band (0.32-3.2 m/s at DEFAULT_GAITS),
+# matching the live Newton sweep that established the ceiling.
+_TROT_SWEEP_SPEEDS = (0.4, 0.8, 1.2, 1.6, 2.4, 3.2)
+
+
+class TestCommandedVsRealisedCeiling:
+    """PIN the live Newton finding: `speed` is commanded, not realised.
+
+    These tests are the contract for the 2026-07 investigation result —
+    the no-slip ceiling is 0.585 x commanded for default trot at EVERY
+    speed, because stride length is speed-invariant (the scaling cancels)
+    and the thigh-amplitude clamp saturates.  If any of these fail, the
+    kinematics changed: update the module docstring, the accessors, and
+    the Newton goldens together, and re-run the live sweep.
+    """
+
+    def test_stride_length_is_speed_invariant(self):
+        # The cancellation itself: speed scales stride_hz and speed_mps by
+        # the same ratio, so commanded stride length is a constant
+        # spec.speed_mps / spec.stride_hz no matter what is commanded.
+        spec = DEFAULT_GAITS["trot"]
+        expected = spec.speed_mps / spec.stride_hz
+        assert expected == pytest.approx(0.6154, abs=1e-4)  # 1.6 / 2.6
+        for speed in _TROT_SWEEP_SPEEDS:
+            cycle = QuadrupedGaitCycle("trot", speed=speed)
+            assert cycle.commanded_stride_m == pytest.approx(
+                expected, rel=1e-12
+            ), speed
+
+    def test_thigh_amp_clamp_saturated_at_every_trot_speed(self):
+        # raw amplitude 0.769 rad > _THIGH_AMP_MAX 0.45 at the default
+        # profile, so the clamp binds at every commanded trot speed and
+        # pins the achievable stride at 2 * 0.45 * 0.40 = 0.36 m.
+        for speed in _TROT_SWEEP_SPEEDS:
+            cycle = QuadrupedGaitCycle("trot", speed=speed)
+            assert cycle.thigh_amp_saturated, speed
+            assert cycle.raw_thigh_amp_rad == pytest.approx(0.7692, abs=1e-4)
+            assert cycle.thigh_amp_rad == pytest.approx(0.45)
+            assert cycle.achievable_stride_m == pytest.approx(0.36)
+
+    def test_no_slip_ceiling_is_0585_of_commanded_at_every_speed(self):
+        # THE headline number: 0.36 * 2.6 / 1.6 = exactly 0.585, at every
+        # commanded speed in the band (verified live 0.4-3.2 m/s).
+        for speed in _TROT_SWEEP_SPEEDS:
+            cycle = QuadrupedGaitCycle("trot", speed=speed)
+            assert cycle.speed_ceiling_ratio == pytest.approx(
+                0.585, abs=1e-9
+            ), speed
+            assert cycle.no_slip_speed_mps == pytest.approx(
+                0.585 * cycle.speed_mps, rel=1e-9
+            ), speed
+
+    def test_planner_example_1p2_commanded_caps_at_0p702(self):
+        # The concrete lie the accessor exposes: ask for 1.2 m/s, the
+        # trajectory can deliver at most ~0.702 m/s under perfect tracking.
+        cycle = QuadrupedGaitCycle("trot", speed=1.2)
+        assert cycle.no_slip_speed_mps == pytest.approx(0.702, abs=1e-9)
+
+    def test_per_gait_ceiling_ratios_at_default_profile(self):
+        # All three built-in gaits saturate the clamp at the default
+        # profile; the ratio is per-gait (stride constants differ).
+        expected = {"walk": 0.36 * 1.6 / 0.7, "trot": 0.585, "bound": 0.384}
+        for gait, ratio in expected.items():
+            cycle = QuadrupedGaitCycle(gait)
+            assert cycle.thigh_amp_saturated, gait
+            assert cycle.speed_ceiling_ratio == pytest.approx(
+                ratio, abs=1e-9
+            ), gait
+
+    def test_unclamped_profile_has_no_ceiling_gap(self):
+        # Control case proving the CLAMP is the pin: a taller body keeps
+        # the derived amplitude inside the band, and commanded == no-slip.
+        tall = QuadrupedProfile(body_height_m=0.8)
+        cycle = QuadrupedGaitCycle("trot", tall, speed=1.2)
+        assert not cycle.thigh_amp_saturated
+        assert cycle.speed_ceiling_ratio == pytest.approx(1.0, rel=1e-12)
+        assert cycle.no_slip_speed_mps == pytest.approx(
+            cycle.speed_mps, rel=1e-12
+        )
+
+    def test_amp_floor_also_reported_as_saturated(self):
+        # The MIN clamp binds on an extremely tall profile — the flag must
+        # report that side too (ceiling ratio then exceeds 1.0).
+        giant = QuadrupedProfile(body_height_m=3.0)
+        cycle = QuadrupedGaitCycle("trot", giant)
+        assert cycle.thigh_amp_saturated
+        assert cycle.thigh_amp_rad == pytest.approx(0.12)
+        assert cycle.speed_ceiling_ratio > 1.0
+
+    def test_module_level_accessor_matches_class(self):
+        for gait in ("walk", "trot", "bound"):
+            for speed in (None, 0.7, 1.2, 1.9):
+                assert no_slip_speed_for(gait=gait, speed=speed) == (
+                    QuadrupedGaitCycle(gait, speed=speed).no_slip_speed_mps
+                ), (gait, speed)
+        # Custom profile flows through too.
+        tall = QuadrupedProfile(body_height_m=0.8)
+        assert no_slip_speed_for(gait="trot", speed=1.2, profile=tall) == (
+            QuadrupedGaitCycle("trot", tall, speed=1.2).no_slip_speed_mps
+        )
+
+    def test_accessor_exported_from_models_package(self):
+        from tritium_lib.models import no_slip_speed_for as exported
+
+        assert exported is no_slip_speed_for

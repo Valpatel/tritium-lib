@@ -800,6 +800,7 @@ from .gait_trajectory import (
     NEUTRAL_STAND_RAD,
     QuadrupedGaitCycle,
     joint_targets_at,
+    no_slip_speed_for,
 )
 from .rover import (
     RoverProfile,
@@ -1510,6 +1511,7 @@ __all__ = [
     "NEUTRAL_STAND_RAD",
     "QuadrupedGaitCycle",
     "joint_targets_at",
+    "no_slip_speed_for",
     # Rover (mini 4-wheel skid-steer body — second fleet body)
     "RoverProfile",
     # Multirotor (quadcopter thrust+attitude body — third fleet body)
