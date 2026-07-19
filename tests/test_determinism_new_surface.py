@@ -26,6 +26,11 @@ to the recently landed modules:
                                   scripted multi-tick sequence so the state
                                   threading itself is pinned, not just one
                                   stateless call)
+  * ``control/gait_speed``      — ``GaitSpeedTracker.track`` (scripted
+                                  multi-tick drives pinning the threaded
+                                  integral / slew-reference / slip-anchor
+                                  state) / ``StrideSpeedEstimator`` /
+                                  ``GaitPhaseClock``
   * ``perception/depth_codec``  — ``encode_depth16_png`` /
                                   ``decode_depth16_png`` / ``colorize_depth_bgr``
                                   (metric uint16-mm ROS ``16UC1`` transport —
@@ -94,6 +99,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -105,9 +111,13 @@ import pytest
 
 import tritium_lib.geo as geo
 from tritium_lib.control import (
+    GaitPhaseClock,
+    GaitSpeedState,
+    GaitSpeedTracker,
     LegPlacement,
     ReachLimits,
     StepReflex,
+    StrideSpeedEstimator,
     YawRateState,
     YawRateTracker,
     YawRegulator,
@@ -545,6 +555,63 @@ def _yaw_rate_payload() -> dict:
     return out
 
 
+def _gait_speed_payload() -> dict:
+    """Scripted multi-tick drives so the THREADED STATE is what gets pinned
+    — integral, slew reference, slip anchor/latch, ceiling ticks — plus the
+    windowed estimator and the phase-continuous clock.  All time injected.
+    """
+    default = GaitSpeedTracker(nominal_mps=1.6)  # documented defaults
+    tight = GaitSpeedTracker(
+        nominal_mps=1.0, kp=0.2, ki=0.8, max_cadence_scale=1.5,
+        max_slew_mps_per_s=0.25, deadband_mps=0.02,
+        slip_probe_delta_mps=0.04, slip_tol_mps=0.05, slip_release_s=1.0,
+    )
+    script = (
+        # (commanded_mps, measured_mps, dt_s)
+        (1.2, 1.20, 0.4),    # the byte-exact inert tick
+        (1.2, 0.45, 0.4),    # opening shortfall — integral building
+        (1.2, 0.50, 0.4),
+        (1.2, 0.48, 0.0),    # repeated timestamp: integrator holds
+        (2.0, 0.60, 0.4),    # unreachable ask — toward the stop
+        (2.0, 0.40, 0.4),    # demand up, speed DOWN: slip evidence
+        (2.0, 0.30, 0.4),
+        (2.0, 0.30, 0.4),
+        # Persistent overshoot: demand slews down to the FLOOR, then the
+        # strictly-downward amplitude trim engages.
+    ) + ((0.4, 1.00, 0.4),) * 12
+    out: dict = {}
+    for name, tracker in (("default", default), ("tight", tight)):
+        state: GaitSpeedState | None = None
+        ticks = []
+        for commanded, measured, dt in script:
+            cmd = tracker.track(commanded, measured, dt, state=state)
+            state = cmd.state
+            ticks.append(cmd.as_dict())
+        out[name] = ticks
+    out["stale_state_clamp"] = default.track(
+        1.0, 1.0, 0.4, state=GaitSpeedState(integral_mps=50.0),
+    ).as_dict()
+    out["limits"] = [
+        default.min_demand_mps,
+        default.max_demand_mps,
+        default.effective_integral_limit_mps,
+        tight.effective_integral_limit_mps,
+    ]
+    est = StrideSpeedEstimator(window_s=0.8)
+    out["estimator"] = [
+        est.update(0.25 * i, 1.1 * 0.25 * i, -0.4 * 0.25 * i)
+        for i in range(9)
+    ]
+    clock = GaitPhaseClock(2.6)
+    trace = [clock.phase_at(t) for t in (0.0, 0.5, 1.0)]
+    clock.retime(1.0, 3.25)
+    trace += [clock.phase_at(t) for t in (1.0, 1.5, 2.0)]
+    clock.retime(2.0, 1.3)
+    trace.append(clock.phase_at(3.0))
+    out["phase_clock"] = trace
+    return out
+
+
 _DEPTH_UNITS = np.array(
     [
         [0, 1, 2, 999, 1000],
@@ -920,6 +987,7 @@ def build_payload() -> dict:
         "step_reflex": _step_reflex_payload(),
         "yaw": _yaw_payload(),
         "yaw_rate": _yaw_rate_payload(),
+        "gait_speed": _gait_speed_payload(),
         "depth_codec": _depth_codec_payload(),
         "frame_push": _frame_push_payload(),
         "scan_pump": _scan_pump_payload(),
@@ -951,8 +1019,8 @@ class TestRepeatability:
         assert set(payload) == {
             "gait", "hitscan", "depth", "projection", "pipeline",
             "engagement", "body", "step_reflex", "yaw", "yaw_rate",
-            "depth_codec", "frame_push", "scan_pump", "sensor_rig",
-            "provenance",
+            "gait_speed", "depth_codec", "frame_push", "scan_pump",
+            "sensor_rig", "provenance",
         }
         # The gait section must emit all 12 canonical joints.
         sample = payload["gait"]["trot_None"][0]
@@ -1340,6 +1408,81 @@ class TestYawRateTrackerPins:
         assert YawRateTracker(
             turn_rate_dps=60.0
         ).effective_integral_limit_deg == pytest.approx(10.0, rel=REL)
+
+
+class TestGaitSpeedPins:
+    """Hand-computed single-tick pins for the gait speed tracker.
+
+    Defaults: nominal 1.6 -> band [0.32, 2.0] m/s, kp 0.4, ki 1.5,
+    slew 0.5 (m/s)/s, deadband 0.05, integral limit 2.0/1.5.
+    """
+
+    def test_inert_tick_is_byte_exact(self):
+        cmd = GaitSpeedTracker(nominal_mps=1.6).track(1.2, 1.2, 0.4)
+        assert cmd.demand_mps == 1.2          # ==, not approx: pass-through
+        assert cmd.amp_scale == 1.0
+        assert cmd.state.integral_mps == 0.0
+        assert not cmd.saturated
+        assert not cmd.at_ceiling
+
+    def test_slew_limited_opening_tick_is_not_reported_as_ceiling(self):
+        # cold ref = 1.2, slew band tops at 1.4; raw = 1.2 + 0.4*0.75 =
+        # 1.5 > 1.4 -> frozen integral, demand rides the slew bound, and
+        # at_ceiling stays False (a ramp is a transient, not a wall).
+        cmd = GaitSpeedTracker(nominal_mps=1.6).track(1.2, 0.45, 0.4)
+        assert cmd.demand_mps == pytest.approx(1.4, rel=REL)
+        assert cmd.state.integral_mps == 0.0
+        assert cmd.saturated
+        assert not cmd.at_ceiling
+
+    def test_unsaturated_tick_integrates_then_recomputes(self):
+        # error 0.1; I = 0.1 * 0.4 = 0.04;
+        # demand = 1.2 + 0.4*0.1 + 1.5*0.04 = 1.30.
+        cmd = GaitSpeedTracker(nominal_mps=1.6).track(1.2, 1.1, 0.4)
+        assert cmd.demand_mps == pytest.approx(1.30, rel=REL)
+        assert cmd.state.integral_mps == pytest.approx(0.04, rel=REL)
+
+    def test_authority_ceiling_reports_honestly(self):
+        # cold ref clamps to hi = 2.0; raw = 2.0 + 0.4*1.4 = 2.56 > 2.0:
+        # frozen integral, demand parked at the stop, shortfall told.
+        cmd = GaitSpeedTracker(nominal_mps=1.6).track(2.0, 0.6, 0.4)
+        assert cmd.demand_mps == pytest.approx(2.0, rel=REL)
+        assert cmd.at_ceiling
+        assert cmd.ceiling_ticks == 1
+        assert cmd.shortfall_mps == pytest.approx(1.4, rel=REL)
+        assert cmd.state.integral_mps == 0.0
+
+    def test_floor_tick_freezes_integral_and_trims_amplitude(self):
+        # raw = 0.4 + 0.4*(-0.6) = 0.16 < floor with error < 0: the
+        # floor-side conditional integration holds I at exactly zero,
+        # demand pins at lo = 0.32, amp trims to commanded/measured = 0.4.
+        cmd = GaitSpeedTracker(nominal_mps=1.6).track(0.4, 1.0, 0.4)
+        assert cmd.demand_mps == pytest.approx(0.32, rel=REL)
+        assert cmd.amp_scale == pytest.approx(0.4, rel=REL)
+        assert cmd.state.integral_mps == 0.0
+        assert cmd.saturated
+        assert not cmd.at_ceiling
+
+    def test_default_integral_limit_derivation(self):
+        assert GaitSpeedTracker(
+            nominal_mps=1.6
+        ).effective_integral_limit_mps == pytest.approx(2.0 / 1.5, rel=REL)
+
+    def test_estimator_window_pin(self):
+        est = StrideSpeedEstimator(window_s=0.8)
+        assert est.update(0.0, 0.0, 0.0) is None
+        assert est.update(0.5, 0.55, -0.2) is None    # half window: None
+        speed = est.update(1.0, 1.1, -0.4)
+        assert speed == pytest.approx(math.hypot(1.1, -0.4), rel=REL)
+
+    def test_phase_clock_pin(self):
+        clock = GaitPhaseClock(2.6)
+        assert clock.phase_at(1.0) == pytest.approx(2.6, rel=REL)
+        clock.retime(1.0, 3.25)
+        assert clock.phase_at(1.0) == pytest.approx(2.6, rel=REL)  # C0
+        assert clock.phase_at(2.0) == pytest.approx(5.85, rel=REL)
+        clock.retime(2.0, 1.3)
+        assert clock.phase_at(3.0) == pytest.approx(7.15, rel=REL)
 
 
 class TestBodyPins:

@@ -28,6 +28,13 @@ from tritium_lib.control.disturbance import (
     kick_landed,
     score_recovery,
 )
+from tritium_lib.control.gait_speed import (
+    GaitPhaseClock,
+    GaitSpeedCommand,
+    GaitSpeedState,
+    GaitSpeedTracker,
+    StrideSpeedEstimator,
+)
 from tritium_lib.control.route_trace import (
     RouteScore,
     score_route_trace,
@@ -101,6 +108,11 @@ __all__ = [
     "AttitudeStabilizer",
     "DisturbanceSchedule",
     "FollowState",
+    "GaitPhaseClock",
+    "GaitSpeedCommand",
+    "GaitSpeedState",
+    "GaitSpeedTracker",
+    "StrideSpeedEstimator",
     "Impulse",
     "KickVerdict",
     "LegPlacement",

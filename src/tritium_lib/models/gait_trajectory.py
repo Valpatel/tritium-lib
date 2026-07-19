@@ -75,7 +75,9 @@ and x2.0 thigh amplitude made realised speed WORSE (medians 0.194 and
 lost upright posture).  Amplitude, stiffness, damping, torque limit, and
 friction all sit at or near their measured local optimum; the binding
 constraint is the open-loop position-controlled trot itself.  Closing the
-gap needs feedback control (a different module), not bigger constants.
+gap needs feedback control, not bigger constants — that module now exists:
+:mod:`tritium_lib.control.gait_speed` (``GaitSpeedTracker`` — designed, NOT
+yet live-validated; its docstring keeps the measured/designed ledger).
 
 Callers that plan against ground speed must consult
 :meth:`QuadrupedGaitCycle.no_slip_speed_mps` /
