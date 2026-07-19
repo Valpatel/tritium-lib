@@ -214,6 +214,10 @@ class TrackedTarget:
     _v_samples: int = 0  # velocity deltas observed (two-point init at the first)
     classification: str = "unknown"  # RL/ML classification (person, vehicle, phone, etc.)
     classification_confidence: float = 0.0  # confidence of the classification model
+    # Origin of ``classification``: "classifier" (a model produced it),
+    # "heuristic" (a non-classifying backend guessed from geometry), or ""
+    # (unknown).  Lets the operator's UI distinguish a verdict from a guess.
+    class_source: str = ""
     # Civil-unrest crowd sub-classification — finer grain than ``alliance``.
     # "civilian" (protected), "instigator" (agitator), "rioter" (active).
     # None for non-crowd entities (rovers, drones, vehicles, etc.).  Threaded
@@ -304,6 +308,7 @@ class TrackedTarget:
             "spoof_score": round(self.spoof_score, 3),
             "classification": self.classification,
             "classification_confidence": self.classification_confidence,
+            "class_source": self.class_source,
             "crowd_role": self.crowd_role,
             "health": self.health,
             "max_health": self.max_health,
@@ -776,6 +781,20 @@ class TargetTracker:
         key = str(key) if key else None
 
         class_name = detection.get("class_name", "unknown")
+        # Who produced class_name.  A non-classifying backend (background
+        # subtraction) reports geometry, so its per-detection score is a
+        # foreground-solidity measure -- reporting it as classification
+        # confidence would dress a guess as a verdict on the operator's map.
+        # Zero it only for a backend that has DECLARED it does not classify.
+        # An unstamped payload is a legacy caller (the SC YOLO plugin and
+        # app/ai/ publish real classifier output with no class_source yet),
+        # so it keeps its confidence -- silently zeroing those would discard
+        # genuine verdicts, a worse error than the one being fixed.
+        class_source = str(detection.get("class_source") or "")
+        class_confidence = (
+            0.0 if class_source == "heuristic"
+            else float(detection.get("confidence", 0.0))
+        )
         cx = detection.get("center_x", 0.0)
         cy = detection.get("center_y", 0.0)
         camera_id = str(detection.get("source_camera") or "")
@@ -861,7 +880,8 @@ class TargetTracker:
                     _initial_confidence=0.1,
                     confirming_sources={src},
                     classification=class_name,
-                    classification_confidence=detection.get("confidence", 0.0),
+                    classification_confidence=class_confidence,
+                    class_source=class_source,
                 )
                 if camera_id:
                     self._stamp_camera_provenance(target, camera_id, detection)

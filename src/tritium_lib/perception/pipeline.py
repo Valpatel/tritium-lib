@@ -103,6 +103,11 @@ class FrameDetectionPipeline:
         payload = {
             "class_name": det.class_name,
             "confidence": det.confidence,
+            # Provenance must survive the boundary into the tracker.  Dropping
+            # it here is how a motion blob's guess becomes indistinguishable
+            # from a classifier's output once it is on the map.
+            "class_source": det.class_source,
+            "shape_hint": det.shape_hint,
             "source_camera": self.source_id,
             "bbox": {
                 "x": det.bbox.x, "y": det.bbox.y,

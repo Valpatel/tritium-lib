@@ -149,6 +149,44 @@ class CameraDetection(BaseModel):
         None, ge=-180.0, le=180.0,
         description="Geographic longitude of the detection (degrees)",
     )
+    # Provenance — WHO produced class_name.  Without this a geometric guess
+    # is indistinguishable from a model's output, and a background-subtraction
+    # blob reaches the tactical map wearing a COCO class it never earned.
+    class_source: str = Field(
+        "",
+        description=(
+            "Origin of class_name: 'classifier' (a model produced it), "
+            "'heuristic' (a non-classifying backend guessed it), or '' "
+            "(unknown -- treated as unclassified)"
+        ),
+    )
+    shape_hint: Optional[str] = Field(
+        None,
+        description=(
+            "Coarse geometry of the blob ('tall' / 'wide') from a "
+            "non-classifying backend.  A hint for downstream fusion, never "
+            "an identity -- do NOT render it as a class."
+        ),
+    )
+
+    @property
+    def is_classified(self) -> bool:
+        """True only if a real classifier produced ``class_name``.
+
+        Anything else -- a motion blob's aspect-ratio guess, an unstamped
+        detection -- is unclassified, and consumers that assign identity
+        (tracker, tactical map, alerting) must not treat it as a class.
+        """
+        return self.class_source == "classifier"
+
+    @property
+    def display_label(self) -> str:
+        """The badge an operator may honestly be shown.
+
+        An unclassified detection shows what actually happened (``MOTION``),
+        not what its geometry resembled.
+        """
+        return (self.class_name or "unknown").upper()
 
     @property
     def is_high_confidence(self) -> bool:

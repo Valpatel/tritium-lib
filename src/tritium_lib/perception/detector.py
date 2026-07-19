@@ -49,6 +49,11 @@ from tritium_lib.models.camera import BoundingBox, CameraDetection
 logger = logging.getLogger("tritium.perception.detector")
 
 
+# The class a NON-classifying backend reports.  Deliberately not a COCO name:
+# "something moved here" is the entire truth a background subtractor knows,
+# and any consumer that assigns identity must be able to see that.
+MOTION_CLASS = "motion"
+
 # COCO-ish classes a security camera cares about (mirrors the SC YOLO
 # pipeline's RELEVANT_CLASSES so a real-YOLO backend and the motion backend
 # agree on the vocabulary the tracker consumes).
@@ -118,9 +123,11 @@ class BackgroundMotionDetector(FrameObjectDetector):
     detector when there is no accelerator (and a legitimate production
     fallback the moment a GPU is unavailable).
 
-    Classification is a coarse geometric heuristic on the blob's aspect
-    ratio: tall blobs read as ``person``, wide blobs as ``car``; the tracker
-    downstream fuses these with richer sensors for a final identity.
+    **It does not classify, and it does not pretend to.**  Every detection
+    comes back as ``motion`` with ``class_source="heuristic"``; the blob's
+    aspect ratio is reported separately as ``shape_hint`` ("tall" / "wide"),
+    a signal for downstream fusion rather than an identity.  The tracker
+    fuses these with richer sensors to reach a final identity.
     """
 
     backend_name = "motion"
@@ -205,15 +212,18 @@ class BackgroundMotionDetector(FrameObjectDetector):
             # full-frame "person") and lighting-flood false positives.
             if float(w * h) / frame_area > self.max_area_ratio:
                 continue
-            class_name = self._classify(w, h)
             # Fill ratio: how solid the blob is inside its box (a real object
-            # fills more of its box than scattered noise).  Maps to confidence.
+            # fills more of its box than scattered noise).  This is a
+            # foreground-solidity score, NOT a class confidence -- class_source
+            # marks it so nothing downstream reads it as classifier certainty.
             fill = float(area) / float(w * h)
             confidence = max(0.4, min(0.98, 0.45 + 0.5 * fill))
             dets.append(
                 CameraDetection(
                     source_id=source_id or "motion",
-                    class_name=class_name,
+                    class_name=MOTION_CLASS,
+                    class_source="heuristic",
+                    shape_hint=self._shape_hint(w, h),
                     confidence=round(confidence, 3),
                     bbox=BoundingBox(x=float(x), y=float(y), w=float(w), h=float(h)),
                     timestamp=ts,
@@ -224,12 +234,21 @@ class BackgroundMotionDetector(FrameObjectDetector):
         dets.sort(key=lambda d: d.bbox.area, reverse=True)
         return dets[: self.max_detections]
 
-    def _classify(self, w: int, h: int) -> str:
+    def _shape_hint(self, w: int, h: int) -> str | None:
+        """Coarse geometry of the blob -- a hint for fusion, never a class.
+
+        This used to be ``_classify`` and returned COCO names, with
+        ``person`` as the *catch-all*: a blob that was neither tall nor wide
+        still came back "person".  A background subtractor cannot see what a
+        thing IS, so it now reports only what it can measure -- and when the
+        aspect ratio is ambiguous it reports nothing rather than inventing an
+        identity.
+        """
         if h >= w * self.person_aspect:
-            return "person"
+            return "tall"
         if w >= h * self.vehicle_aspect:
-            return "car"
-        return "person"
+            return "wide"
+        return None
 
 
 class YoloObjectDetector(FrameObjectDetector):
@@ -286,6 +305,7 @@ class YoloObjectDetector(FrameObjectDetector):
                     CameraDetection(
                         source_id=source_id or "yolo",
                         class_name=self._names.get(cls_id, RELEVANT_CLASSES[cls_id]),
+                        class_source="classifier",
                         confidence=round(conf, 3),
                         bbox=BoundingBox(
                             x=x1, y=y1, w=max(0.0, x2 - x1), h=max(0.0, y2 - y1),
@@ -520,6 +540,7 @@ class OnnxYoloDetector(FrameObjectDetector):
                 CameraDetection(
                     source_id=source_id or "onnx",
                     class_name=COCO80_NAMES[cls_id],
+                    class_source="classifier",
                     confidence=round(min(1.0, conf), 3),
                     bbox=BoundingBox(x=x1, y=y1, w=x2 - x1, h=y2 - y1),
                     timestamp=ts,

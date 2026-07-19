@@ -62,30 +62,35 @@ def test_backend_availability_reports_motion_always():
     assert "yolo" in backends  # bool either way
 
 
-def test_motion_detector_finds_a_person_blob():
+def test_motion_detector_finds_a_tall_blob():
     det = BackgroundMotionDetector(min_area=200)
     bg = _blank()
     _learn_background(det, bg)
 
     dets = det.detect(_with_person(bg, 160, 120), "cam1")
     assert dets, "no detection on a clear foreground object"
-    person = max(dets, key=lambda d: d.bbox.area)
-    assert person.class_name == "person"
-    assert person.source_id == "cam1"
-    assert 0.4 <= person.confidence <= 1.0
+    blob = max(dets, key=lambda d: d.bbox.area)
+    # A background subtractor reports motion, not identity -- the aspect
+    # ratio is a hint.  See tests/perception/test_detection_provenance.py.
+    assert blob.class_name == "motion"
+    assert blob.shape_hint == "tall"
+    assert blob.source_id == "cam1"
+    assert 0.4 <= blob.confidence <= 1.0
     # Box centre lands near the injected object centre.
-    ccx, ccy = person.bbox.center
+    ccx, ccy = blob.bbox.center
     assert abs(ccx - 160) < 30
     assert abs(ccy - 120) < 40
 
 
-def test_motion_detector_classifies_wide_blob_as_car():
+def test_motion_detector_hints_wide_blob_without_claiming_a_class():
     det = BackgroundMotionDetector(min_area=200)
     bg = _blank()
     _learn_background(det, bg)
     dets = det.detect(_with_car(bg, 160, 120), "cam1")
     assert dets
-    assert max(dets, key=lambda d: d.bbox.area).class_name == "car"
+    blob = max(dets, key=lambda d: d.bbox.area)
+    assert blob.class_name == "motion"
+    assert blob.shape_hint == "wide"
 
 
 def test_motion_detector_quiet_scene_yields_nothing():
@@ -241,7 +246,11 @@ def test_pipeline_full_chain_frame_to_sink():
     assert pipe.detections_total == emitted
     payload = captured[0]
     # Exactly the shape TargetTracker.update_from_detection wants.
-    assert payload["class_name"] == "person"
+    assert payload["class_name"] == "motion"
+    # Provenance survives the boundary, so the tracker can tell a geometric
+    # guess from a classifier's output.
+    assert payload["class_source"] == "heuristic"
+    assert payload["shape_hint"] == "tall"
     assert payload["source_camera"] == "cam-front-01"
     assert "center_x" in payload and "center_y" in payload
     assert isinstance(payload["center_x"], float)
