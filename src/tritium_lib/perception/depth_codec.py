@@ -137,8 +137,11 @@ def colorize_depth_bgr(
 
 
 # --------------------------------------------------------------------------- #
-# Image codec — cv2 when available (fast), Pillow otherwise. Both must produce
-# a byte-identical 16-bit single-channel PNG so a relay hop cannot drift.
+# Image codec — cv2 when available (fast), Pillow otherwise.  The two emit
+# DIFFERENT (both valid) PNG byte streams for the same pixels — compression
+# differs — but each must decode the other's blob to identical uint16 VALUES,
+# so a relay hop cannot drift metrically.  Value identity is the contract;
+# byte identity holds only within one codec (pinned by the determinism suite).
 # --------------------------------------------------------------------------- #
 
 def _encode_png16(units: np.ndarray) -> bytes:
@@ -155,8 +158,11 @@ def _encode_png16(units: np.ndarray) -> bytes:
     from PIL import Image
 
     out = io.BytesIO()
-    # mode "I;16" is Pillow's 16-bit single-channel.
-    Image.fromarray(units, mode="I;16").save(out, format="PNG")
+    # A uint16 array auto-selects Pillow's 16-bit single-channel mode
+    # ("I;16").  Passing mode= explicitly is deprecated and removed in
+    # Pillow 13 — on a cv2-less Jetson that removal would have killed the
+    # whole depth path.
+    Image.fromarray(units).save(out, format="PNG")
     return out.getvalue()
 
 
