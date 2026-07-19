@@ -149,3 +149,71 @@ def test_report_names_what_failed_so_the_operator_can_act():
 def test_unknown_outcome_is_rejected_rather_than_silently_counted_ok():
     with pytest.raises(ValueError):
         summarize_bringup([("isaac_rgb", "probably_fine")])
+
+
+# --------------------------------------------------------------------------- #
+# push mode: the rig dials OUT, because SC cannot dial IN
+#
+# A kit binds its MJPEG server to the render host's own loopback, so the
+# pull registration above is unreachable the moment the rig and the operator
+# are different machines.  In push mode the sensor POSTs its frames to the
+# operator instead, and the registration has to describe a source that
+# ACCEPTS those frames rather than one SC will try (and fail) to dial.
+# --------------------------------------------------------------------------- #
+
+
+def test_push_mode_registers_a_source_that_accepts_frames():
+    (call,) = registration_plan([_cam()], push=True)
+    assert call.method == "POST"
+    assert call.path == "/api/camera-feeds/sources"
+    assert call.payload["source_type"] == "push"
+    assert call.payload["source_id"] == "isaac_rgb"
+
+
+def test_push_mode_never_advertises_a_host_sc_cannot_reach():
+    """The whole point: no dial-out address may survive into the payload.
+
+    Leaving host/port in would let SC try to pull from a loopback address on
+    another machine — the exact failure push mode exists to remove.
+    """
+    (call,) = registration_plan([_cam()], push=True)
+    assert "host" not in call.payload
+    assert "port" not in call.payload
+    assert "mode" not in call.payload
+    assert not call.payload.get("uri")
+
+
+def test_push_mode_cannot_discover_a_mount_so_it_never_claims_to():
+    """Discovery probes the server's /status — unreachable under push."""
+    (call,) = registration_plan([_cam()], push=True)
+    assert "discover" not in call.payload
+
+
+def test_push_mode_passes_an_explicit_mount_through():
+    """With no discovery, an explicit attach_to is the ONLY way to bind."""
+    (call,) = registration_plan([_cam(attach_to="robot_go2")], push=True)
+    assert call.payload["attach_to"] == "robot_go2"
+
+
+def test_push_and_pull_agree_on_the_source_id():
+    """The id is the join between the pusher and the source it feeds.
+
+    A pusher targets /sources/{id}/frame; if push mode invented a different
+    id than pull mode, every pushed frame would 404.
+    """
+    (pull,) = registration_plan([_cam(role="depth")])
+    (push,) = registration_plan([_cam(role="depth")], push=True)
+    assert push.payload["source_id"] == pull.payload["source_id"] == "isaac_depth16"
+
+
+def test_push_mode_still_refuses_non_pixel_roles():
+    assert registration_plan([_cam(role="lidar")], push=True) == []
+
+
+def test_push_mode_still_refuses_an_unready_sensor():
+    assert registration_plan([_cam(ready=False)], push=True) == []
+
+
+def test_push_mode_carries_the_detect_flag():
+    (call,) = registration_plan([_cam()], push=True, detect=False)
+    assert call.payload["detect"] is False

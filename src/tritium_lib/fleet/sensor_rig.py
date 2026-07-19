@@ -52,6 +52,7 @@ __all__ = [
     "RegistrationCall",
     "RigBringupReport",
     "registration_plan",
+    "SOURCES_PATH",
     "summarize_bringup",
     "OUTCOMES",
 ]
@@ -59,6 +60,15 @@ __all__ = [
 #: The Isaac auto-bind route: it probes the server's own ``/status`` and adopts
 #: the mount it advertises, so the rig need not know the mount to bind one.
 ISAAC_FEED_PATH = "/api/camera-feeds/isaac"
+
+#: The generic route, used for push registrations.
+#:
+#: :data:`ISAAC_FEED_PATH` registers a source SC will *dial*, which is exactly
+#: wrong when the sensor is on another machine: a kit binds its MJPEG server to
+#: the render host's own loopback, so the address the rig would advertise is
+#: unreachable by definition.  A push source inverts that — the sensor POSTs
+#: frames to the operator — and it is registered here instead.
+SOURCES_PATH = "/api/camera-feeds/sources"
 
 #: Roles that carry pixels, and the ``stream`` each maps to on that route.
 #: ``depth`` is ``depth16`` (metric uint16-mm), not the colormapped preview —
@@ -152,6 +162,7 @@ def registration_plan(
     sensors: Iterable[RigSensor],
     *,
     detect: bool = True,
+    push: bool = False,
 ) -> list[RegistrationCall]:
     """Healthy pixel sensors -> the registration calls that surface them.
 
@@ -161,6 +172,22 @@ def registration_plan(
     Sensors that are not ``ready``, and roles with no feed surface (LiDAR, the
     body), yield nothing — see the module docstring for why each of those is a
     refusal rather than an omission.
+
+    ``push`` inverts the transport.  By default the plan registers feeds SC
+    will dial; with ``push=True`` it registers sources that *accept* frames the
+    sensor sends in.  Two consequences are deliberate, not oversights:
+
+    * **No address survives into the payload.**  Carrying host/port would
+      invite SC to pull from a loopback address on someone else's machine —
+      the precise failure push mode exists to remove.
+    * **No mount discovery.**  Discovery works by probing the camera server's
+      ``/status``, which is unreachable for the same reason the stream is.  So
+      a push registration binds to a body only when the rig was *told* the
+      mount via ``attach_to``; it never claims a mount it could not have read.
+
+    The ``source_id`` is identical in both modes on purpose — it is the join
+    between the pusher and the source it feeds, and a mode-dependent id would
+    make every pushed frame 404.
     """
     calls: list[RegistrationCall] = []
     for sensor in sensors:
@@ -170,24 +197,33 @@ def registration_plan(
         if stream is None:
             continue
 
-        payload: dict = {
-            "mode": "mjpeg",
-            "stream": stream,
-            "host": sensor.host,
-            "port": sensor.port,
-            "source_id": sensor.feed_source_id(),
-            "detect": detect,
-            "discover": True,
-        }
+        payload: dict
+        if push:
+            payload = {
+                "source_id": sensor.feed_source_id(),
+                "source_type": "push",
+                "detect": detect,
+            }
+        else:
+            payload = {
+                "mode": "mjpeg",
+                "stream": stream,
+                "host": sensor.host,
+                "port": sensor.port,
+                "source_id": sensor.feed_source_id(),
+                "detect": detect,
+                "discover": True,
+            }
         # Present only when known: an explicit null would clobber the mount the
-        # camera server advertises for itself.
+        # camera server advertises for itself (pull), and under push there is
+        # nothing else that could supply one.
         if sensor.attach_to:
             payload["attach_to"] = sensor.attach_to
 
         calls.append(
             RegistrationCall(
                 method="POST",
-                path=ISAAC_FEED_PATH,
+                path=SOURCES_PATH if push else ISAAC_FEED_PATH,
                 payload=payload,
                 role=sensor.role,
             )
