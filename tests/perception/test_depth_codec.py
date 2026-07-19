@@ -17,6 +17,7 @@ import pytest
 
 from tritium_lib.perception.depth_codec import (
     DEPTH_SCALE_MM,
+    colorize_depth_bgr,
     decode_depth16_png,
     encode_depth16_png,
 )
@@ -98,3 +99,60 @@ class TestContract:
     def test_decode_rejects_non_png(self):
         with pytest.raises(ValueError):
             decode_depth16_png(b"\xff\xd8not a png\xff\xd9")
+
+
+@pytest.mark.unit
+class TestColorizeDepthBgr:
+    """The picture side of the contract — viewable, and honestly labelled.
+
+    This lived in the Isaac addon's camera server, where SC could not reach
+    it; SC needs it to keep the operator's depth tile viewable while the
+    metric frame is preserved alongside.  Two callers means it belongs here.
+    """
+
+    def _ramp(self, h: int = 8, w: int = 16) -> np.ndarray:
+        return np.tile(np.linspace(1.0, 50.0, w, dtype=np.float32), (h, 1))
+
+    def test_shape_and_dtype(self):
+        out = colorize_depth_bgr(self._ramp())
+        assert out.shape == (8, 16, 3)
+        assert out.dtype == np.uint8
+
+    def test_near_and_far_are_visibly_different(self):
+        out = colorize_depth_bgr(self._ramp(), near=1.0, far=50.0)
+        # A ramp that renders flat means the mapping collapsed.
+        assert not np.array_equal(out[:, 0], out[:, -1])
+
+    def test_no_return_renders_as_far_not_as_near(self):
+        """A NaN sky painted near would be a wall of phantom close contacts."""
+        d = np.full((4, 4), np.nan, dtype=np.float32)
+        holes = colorize_depth_bgr(d, near=1.0, far=50.0)
+        far = colorize_depth_bgr(np.full((4, 4), 50.0, dtype=np.float32),
+                                 near=1.0, far=50.0)
+        assert np.array_equal(holes, far)
+
+    def test_beyond_far_clamps_rather_than_wrapping(self):
+        beyond = colorize_depth_bgr(np.full((2, 2), 5000.0, dtype=np.float32),
+                                    near=1.0, far=50.0)
+        at_far = colorize_depth_bgr(np.full((2, 2), 50.0, dtype=np.float32),
+                                    near=1.0, far=50.0)
+        assert np.array_equal(beyond, at_far)
+
+    def test_inverted_range_is_refused(self):
+        with pytest.raises(ValueError):
+            colorize_depth_bgr(self._ramp(), near=50.0, far=1.0)
+
+    def test_non_2d_input_is_refused(self):
+        with pytest.raises(ValueError):
+            colorize_depth_bgr(np.zeros((2, 2, 2, 2), dtype=np.float32))
+
+    def test_colormap_is_not_invertible_back_to_metres(self):
+        """Guards the reason this function is not a transport.
+
+        If a reviewer ever reaches for the colormapped tile as a depth source,
+        this is the fact that stops them: distinct ranges collide.
+        """
+        d = np.linspace(1.0, 50.0, 4096, dtype=np.float32).reshape(1, -1)
+        colours = colorize_depth_bgr(d, near=1.0, far=50.0).reshape(-1, 3)
+        unique = np.unique(colours, axis=0).shape[0]
+        assert unique < 4096, "expected a many-to-one map, not a codec"

@@ -48,6 +48,7 @@ from tritium_lib.perception.depth import (
 )
 from tritium_lib.perception.depth_codec import (
     DEPTH_SCALE_MM,
+    colorize_depth_bgr,
     decode_depth16_png,
     encode_depth16_png,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "range_for_bbox",
     "DEPTH_SCALE_MM",
     "decode_depth16_png",
+    "colorize_depth_bgr",
     "encode_depth16_png",
     "MultipartPart",
     "boundary_from_content_type",

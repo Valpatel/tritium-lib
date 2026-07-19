@@ -96,6 +96,46 @@ def decode_depth16_png(blob: bytes, scale: float = DEPTH_SCALE_MM) -> np.ndarray
     return metres
 
 
+def colorize_depth_bgr(
+    depth: np.ndarray, near: float = 0.5, far: float = 60.0,
+) -> np.ndarray:
+    """Render HxW float depth (metres) as an HxWx3 uint8 **BGR** image.
+
+    This is the *picture* side of the contract this module exists to protect:
+    a viewable tile for the operator, produced from — never instead of — the
+    metric frame.  The colormap is many-to-one and whatever encodes it is
+    usually lossy, so a consumer that needs the number must use
+    :func:`decode_depth16_png`, not this.
+
+    ``BGR`` is in the name deliberately.  The channel order of a depth
+    colormap is invisible on inspection — a near/far ramp looks equally
+    plausible either way round — so a silent RGB/BGR swap survives review and
+    shows up only as an operator wondering why close things are blue.  Callers
+    wanting RGB reverse the last axis at the call site, where it is legible.
+
+    ``NaN``/``inf`` (no-return: sky, glass, absorbed beam) render at ``far``:
+    a hole is unknown-therefore-distant, and rendering it near would paint a
+    wall of phantom close contacts across the sky.
+    """
+    d = np.asarray(depth, dtype=np.float32)
+    if d.ndim == 3:
+        d = d[..., 0]
+    if d.ndim != 2:
+        raise ValueError(f"depth must be a 2-D HxW array of metres, got shape {d.shape}")
+    if not far > near:
+        raise ValueError(f"far must exceed near, got near={near} far={far}")
+
+    d = np.nan_to_num(d, nan=far, posinf=far, neginf=far)
+    d = np.clip(d, near, far)
+    inv = 1.0 - (d - near) / (far - near)          # 1.0 near .. 0.0 far
+    gray = (inv * 255.0).astype(np.uint8)
+    try:
+        import cv2
+    except ImportError:
+        return np.repeat(gray[:, :, None], 3, axis=2)
+    return np.ascontiguousarray(cv2.applyColorMap(gray, cv2.COLORMAP_TURBO))
+
+
 # --------------------------------------------------------------------------- #
 # Image codec — cv2 when available (fast), Pillow otherwise. Both must produce
 # a byte-identical 16-bit single-channel PNG so a relay hop cannot drift.
